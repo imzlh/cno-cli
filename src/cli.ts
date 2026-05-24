@@ -1,4 +1,4 @@
-import { os } from '../cts/src/utils';
+import { os, console } from '../cts/src/utils';
 
 export type Subcommand =
     | 'run' | 'task' | 'eval' | 'cache' | 'repl'
@@ -29,6 +29,54 @@ const ALIASES: Record<string, string> = {
     '-v': 'version',
     '--version': 'version',
 };
+
+/**
+ * Flags cno actually honors. Anything not in this set and not in
+ * DENO_NOOP_FLAGS triggers a stderr warning so users notice silent typos.
+ */
+const KNOWN_FLAGS = new Set<string>([
+    // run / eval / cache
+    'cache-dir', 'lock-dir', 'no-lock', 'frozen', 'disable-cache',
+    'no-http', 'no-jsr', 'no-node',
+    'reload', 'r', 'precache',
+    // misc
+    'silent', 'q',
+    'memory-limit', 'max-stack-size',
+    // resource limits inherited from cts
+    'allow-all', 'A',
+    // shorthand aliases & subcommand-like flags handled in parser
+    'eval', 'help', 'h', 'version', 'v',
+]);
+
+/**
+ * Deno flags we recognise but intentionally don't implement. Silently
+ * accepted so deno scripts can be run unmodified. Add aliases freely.
+ */
+const DENO_NOOP_FLAGS = new Set<string>([
+    // permissions — cno has no permission system yet, allow everything
+    'allow-net', 'allow-read', 'allow-write', 'allow-env',
+    'allow-run', 'allow-ffi', 'allow-sys', 'allow-import',
+    'deny-net', 'deny-read', 'deny-write', 'deny-env',
+    'deny-run', 'deny-ffi', 'deny-sys', 'deny-import',
+    'no-prompt',
+    // version channel / experimental
+    'unstable', 'unstable-bare-node-builtins', 'unstable-byonm',
+    'unstable-sloppy-imports', 'unstable-workspaces', 'unstable-detect-cjs',
+    // type checking — cts always transpiles, never type-checks
+    'check', 'no-check',
+    // logging / output (we have our own)
+    'log-level', 'quiet',
+    // network / cert (delegated to underlying fetch impl)
+    'cert', 'cached-only',
+    // import map (cts uses its own config)
+    'import-map', 'no-config', 'config',
+    // locking
+    'no-remote', 'lock', 'lock-write',
+    // misc deno features we just ignore
+    'inspect', 'inspect-brk', 'inspect-wait', 'v8-flags',
+    'seed', 'location', 'no-npm',
+]);
+
 
 /**
  * Parse cno's argv.
@@ -126,6 +174,22 @@ export function parseArgv(argv: string[]): ParsedCli {
     }
 
     return { cmd, positional, flags, raw };
+}
+
+/**
+ * Warn (once, to stderr) about flags cno doesn't honor. Deno-compat no-op
+ * flags are silently accepted; everything else gets a yellow ⚠ line so a
+ * typo like `--frozenn` doesn't silently disable the intent.
+ *
+ * Returns the same parsed object for convenient chaining.
+ */
+export function warnUnknownFlags(cli: ParsedCli): ParsedCli {
+    for (const k of Object.keys(cli.flags)) {
+        if (KNOWN_FLAGS.has(k)) continue;
+        if (DENO_NOOP_FLAGS.has(k)) continue;
+        console.error(`cno: warning: unknown flag --${k} (ignored)`);
+    }
+    return cli;
 }
 
 /** Get argv passed to this cno invocation (skips the binary name). */

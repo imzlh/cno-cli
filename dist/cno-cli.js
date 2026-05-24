@@ -1,3 +1,4 @@
+const __cno_use__=globalThis[Symbol.for("cjs.internal.use")],__cno_register__=globalThis[Symbol.for("cjs.internal.register")];
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -1324,20 +1325,730 @@ var require_build = __commonJS({
   }
 });
 
+// http/src/dns-cache.ts
+var dns2, engine3, DEFAULT_TTL_MS, DnsCache, dnsCache, clearDnsCache;
+var init_dns_cache = __esm({
+  "http/src/dns-cache.ts"() {
+    dns2 = __cno_use__("dns");
+    engine3 = __cno_use__("engine");
+    DEFAULT_TTL_MS = 3e5;
+    DnsCache = class {
+      cache = /* @__PURE__ */ new Map();
+      async resolve(hostname, options) {
+        const key = `${hostname}:${options?.family ?? 0}`;
+        const cached = this.cache.get(key);
+        if (cached && Date.now() < cached.expiresAt) return cached.addresses;
+        const addrs = await dns2.resolve(hostname, { family: options?.family ?? 0 });
+        if (!addrs?.length) return addrs;
+        const ttl = this.inferTtl(addrs);
+        this.cache.set(key, { addresses: addrs, expiresAt: Date.now() + ttl });
+        return addrs;
+      }
+      resolveSync(hostname, family = 0) {
+        const key = `${hostname}:${family}`;
+        const cached = this.cache.get(key);
+        if (cached && Date.now() < cached.expiresAt) return cached.addresses;
+        const addrs = engine3.waitPromise(dns2.resolve(hostname, { family }));
+        if (!addrs?.length) return addrs;
+        const ttl = this.inferTtl(addrs);
+        this.cache.set(key, { addresses: addrs, expiresAt: Date.now() + ttl });
+        return addrs;
+      }
+      invalidate(hostname) {
+        for (const key of this.cache.keys()) {
+          if (key.startsWith(hostname + ":")) this.cache.delete(key);
+        }
+      }
+      clear() {
+        this.cache.clear();
+      }
+      getStats() {
+        const now = Date.now();
+        return {
+          size: this.cache.size,
+          entries: [...this.cache.entries()].map(([key, entry]) => ({
+            hostname: key.split(":")[0] ?? "",
+            ttlRemaining: Math.max(0, entry.expiresAt - now)
+          }))
+        };
+      }
+      inferTtl(addrs) {
+        const ttls = addrs.map((a2) => a2.ttl).filter((t2) => typeof t2 === "number" && t2 > 0);
+        return ttls.length > 0 ? Math.min(...ttls) * 1e3 : DEFAULT_TTL_MS;
+      }
+    };
+    dnsCache = new DnsCache();
+    clearDnsCache = () => dnsCache.clear();
+  }
+});
+
+// http/src/connection.ts
+function assert3(condition, message) {
+  if (!condition) throw new Error(message ?? "Assertion failed");
+}
+function ioRead(buf) {
+  return { tag: "read", buf };
+}
+function ioWrite(data) {
+  return { tag: "write", data };
+}
+async function generateWindowsCaBundle() {
+  const tmpDir = os3.tmpDir || "C:\\Windows\\Temp";
+  const tmp = tmpDir + "\\cno-ca-bundle.pem";
+  try {
+    const certs = windows.exportCerts();
+    if (!certs || certs.length === 0) return null;
+    const pemContent = certs.join("\n");
+    const fh = await asfs2.open(tmp, "w", 384);
+    await fh.write(engine4.encodeString(pemContent));
+    await fh.close();
+    return tmp;
+  } catch {
+    return null;
+  }
+}
+function findSystemCaPathSync() {
+  const sysname = os3.uname().sysname;
+  if (sysname === "Windows_NT") {
+    if (windowsCaCache) return windowsCaCache;
+    if (!windowsCaPromise) {
+      windowsCaPromise = generateWindowsCaBundle().then((result) => {
+        windowsCaCache = result;
+        windowsCaPromise = null;
+        return result;
+      });
+    }
+    return engine4.waitPromise(windowsCaPromise);
+  }
+  const candidates = (() => {
+    switch (sysname) {
+      case "Linux":
+        return [
+          "/etc/ssl/certs/ca-certificates.crt",
+          "/etc/pki/tls/certs/ca-bundle.crt",
+          "/etc/pki/tls/cert.pem",
+          "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+          "/etc/ssl/cert.pem",
+          "/etc/ssl/ca-bundle.pem",
+          "/etc/ca-certificates/extracted/tls-ca-bundle.pem",
+          "/etc/ssl/ca-bundle.pem",
+          "/etc/ca-certificates.crt",
+          "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        ];
+      case "Darwin":
+        return [
+          "/etc/ssl/cert.pem",
+          "/usr/local/etc/openssl/cert.pem",
+          "/opt/homebrew/etc/openssl/cert.pem",
+          "/opt/homebrew/etc/openssl@3/cert.pem",
+          "/usr/local/etc/openssl@3/cert.pem",
+          "/System/Library/OpenSSL/certs"
+        ];
+      case "FreeBSD":
+        return [
+          "/usr/local/share/certs/ca-root-nss.crt",
+          "/usr/local/openssl/cert.pem",
+          "/etc/ssl/cert.pem"
+        ];
+      case "OpenBSD":
+        return [
+          "/etc/ssl/cert.pem",
+          "/usr/local/share/cert.pem"
+        ];
+      default:
+        return [];
+    }
+  })();
+  for (const path of candidates) {
+    try {
+      const stat = fs3.stat(path);
+      if (stat.isFile) return path;
+      if (stat.isDirectory && path.includes("certs")) return path;
+    } catch {
+    }
+  }
+  return null;
+}
+async function findSystemCaPath() {
+  const sysname = os3.uname().sysname;
+  const candidates = await (async () => {
+    switch (sysname) {
+      case "Linux":
+        return [
+          "/etc/ssl/certs/ca-certificates.crt",
+          "/etc/pki/tls/certs/ca-bundle.crt",
+          "/etc/pki/tls/cert.pem",
+          "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+          "/etc/ssl/cert.pem",
+          "/etc/ssl/ca-bundle.pem",
+          "/etc/ca-certificates/extracted/tls-ca-bundle.pem",
+          "/etc/ssl/ca-bundle.pem",
+          "/etc/ca-certificates.crt",
+          "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        ];
+      case "Darwin":
+        return [
+          "/etc/ssl/cert.pem",
+          "/usr/local/etc/openssl/cert.pem",
+          "/opt/homebrew/etc/openssl/cert.pem",
+          "/opt/homebrew/etc/openssl@3/cert.pem",
+          "/usr/local/etc/openssl@3/cert.pem",
+          "/System/Library/OpenSSL/certs"
+        ];
+      case "Windows_NT":
+        return [];
+      case "FreeBSD":
+        return [
+          "/usr/local/share/certs/ca-root-nss.crt",
+          "/usr/local/openssl/cert.pem",
+          "/etc/ssl/cert.pem"
+        ];
+      case "OpenBSD":
+        return [
+          "/etc/ssl/cert.pem",
+          "/usr/local/share/cert.pem"
+        ];
+      default:
+        return [];
+    }
+  })();
+  for (const path of candidates) {
+    try {
+      const stat = await asfs2.stat(path);
+      if (stat.isFile) return path;
+      if (stat.isDirectory && path.includes("certs")) return path;
+    } catch {
+    }
+  }
+  if (sysname === "Windows_NT") {
+    if (windowsCaCache) return windowsCaCache;
+    if (!windowsCaPromise) {
+      windowsCaPromise = generateWindowsCaBundle().then((result) => {
+        windowsCaCache = result;
+        windowsCaPromise = null;
+        return result;
+      });
+    }
+    return windowsCaPromise;
+  }
+  return null;
+}
+var os3, timers3, asfs2, engine4, ssl2, windows, fs3, streams2, windowsCaCache, windowsCaPromise, Connection, ConnectionManager, connectionManager;
+var init_connection = __esm({
+  "http/src/connection.ts"() {
+    init_dns_cache();
+    os3 = __cno_use__("os");
+    timers3 = __cno_use__("timers");
+    asfs2 = __cno_use__("asyncfs");
+    engine4 = __cno_use__("engine");
+    ssl2 = __cno_use__("ssl");
+    windows = __cno_use__("win32");
+    fs3 = __cno_use__("fs");
+    streams2 = __cno_use__("streams");
+    windowsCaCache = null;
+    windowsCaPromise = null;
+    Connection = class {
+      socket;
+      sslPipe = null;
+      state = "connecting" /* CONNECTING */;
+      lastUsed = Date.now();
+      requests = 0;
+      onClose = null;
+      isSync = false;
+      idleTimer = null;
+      config;
+      pendingCiphertext = null;
+      constructor(cfg) {
+        this.config = cfg;
+        this.socket = new streams2.TCP();
+      }
+      // -----------------------------------------------------------------------
+      // Connect (sync) — uses connectSync + readSync/writeSync
+      // -----------------------------------------------------------------------
+      connect() {
+        try {
+          this.isSync = true;
+          const isSecure = this.config.protocol === "https:";
+          if (this.config.client) {
+            this.socket = engine4.waitPromise(
+              this.config.client.connect(this.config.hostname, this.config.port, isSecure)
+            );
+          } else {
+            const addrs = dnsCache.resolveSync(this.config.hostname, os3.AF_UNSPEC);
+            if (!addrs?.length) throw new Error(`DNS resolution failed for ${this.config.hostname}`);
+            const addr = addrs.find((a2) => a2.family === 4) || addrs[0];
+            assert3(addr, `No IP address found for ${this.config.hostname}`);
+            this.socket.connectSync({ ip: addr.ip, port: this.config.port });
+          }
+          if (isSecure) {
+            const clientCtx = this.config.client?.getSSLContext();
+            if (clientCtx) {
+              this.syncDriver(this.performTLSHandshake(clientCtx, this.config.hostname));
+            } else {
+              const caPath = findSystemCaPathSync();
+              if (!caPath) throw new Error("No system CA bundle found - cannot verify TLS certificates.");
+              const ctx = new ssl2.Context({ mode: "client", verify: true, ca: caPath });
+              this.syncDriver(this.performTLSHandshake(ctx, this.config.hostname));
+            }
+          }
+          this.socket.onclose = () => {
+            if (this.state === "closed" /* CLOSED */) return;
+            this.stopIdleTimer();
+            this.state = "closed" /* CLOSED */;
+            this.onClose?.();
+          };
+          this.state = "idle" /* IDLE */;
+          this.startIdleTimer();
+        } catch (err2) {
+          this.state = "closed" /* CLOSED */;
+          throw err2;
+        }
+      }
+      // -----------------------------------------------------------------------
+      // Connect (async)
+      // -----------------------------------------------------------------------
+      async connectAsync() {
+        try {
+          const isSecure = this.config.protocol === "https:";
+          if (this.config.client) {
+            this.socket = await this.config.client.connect(
+              this.config.hostname,
+              this.config.port,
+              isSecure
+            );
+          } else {
+            const addrs = await dnsCache.resolve(this.config.hostname, { family: os3.AF_UNSPEC });
+            if (!addrs?.length) throw new Error(`DNS resolution failed for ${this.config.hostname}`);
+            const addr = addrs.find((a2) => a2.family === 4) || addrs[0];
+            assert3(addr, `No IP address found for ${this.config.hostname}`);
+            await this.socket.connect({ ip: addr.ip, port: this.config.port });
+          }
+          if (isSecure) {
+            const clientCtx = this.config.client?.getSSLContext();
+            if (clientCtx) {
+              await this.asyncDriver(this.performTLSHandshake(clientCtx, this.config.hostname));
+            } else {
+              const caPath = await findSystemCaPath();
+              if (!caPath) throw new Error("No system CA bundle found - cannot verify TLS certificates.");
+              const ctx = new ssl2.Context({ mode: "client", verify: true, ca: caPath });
+              await this.asyncDriver(this.performTLSHandshake(ctx, this.config.hostname));
+            }
+          }
+          this.socket.onclose = () => {
+            if (this.state === "closed" /* CLOSED */) return;
+            this.stopIdleTimer();
+            this.state = "closed" /* CLOSED */;
+            this.onClose?.();
+          };
+        } catch (err2) {
+          this.state = "closed" /* CLOSED */;
+          throw err2;
+        }
+      }
+      // -----------------------------------------------------------------------
+      // Write (sync) — direct writeSync on socket
+      // -----------------------------------------------------------------------
+      write(data) {
+        if (this.sslPipe) {
+          let offset = 0;
+          while (offset < data.length) {
+            const written = this.sslPipe.write(data.subarray(offset));
+            if (written < 0) throw new Error(`SSL_write failed: ${written}`);
+            offset += written;
+          }
+          const encrypted = this.sslPipe.getOutput();
+          if (encrypted) this.socket.writeSync(new Uint8Array(encrypted));
+        } else {
+          this.socket.writeSync(data);
+        }
+      }
+      // -----------------------------------------------------------------------
+      // Write (async)
+      // -----------------------------------------------------------------------
+      async writeAsync(data) {
+        if (data.length === 0) return;
+        if (this.sslPipe) {
+          let offset = 0;
+          while (offset < data.length) {
+            const written = this.sslPipe.write(data.subarray(offset));
+            if (written < 0) throw new Error(`SSL_write failed: ${written}`);
+            offset += written;
+          }
+          const encrypted = this.sslPipe.getOutput();
+          if (encrypted) await this.socket.write(new Uint8Array(encrypted));
+        } else {
+          await this.socket.write(data);
+        }
+      }
+      // -----------------------------------------------------------------------
+      // Read (sync/async) — dispatch to generator + driver
+      // -----------------------------------------------------------------------
+      read(size = 16384, waitForData = false) {
+        return this.syncDriver(this.sslPipe ? this.readSSL(size, waitForData) : this.readPlain(size, waitForData));
+      }
+      readAsync(size = 16384, waitForData = false) {
+        return this.asyncDriver(this.sslPipe ? this.readSSL(size, waitForData) : this.readPlain(size, waitForData));
+      }
+      // -----------------------------------------------------------------------
+      // Plain read generator — yields IOOp (read)
+      // -----------------------------------------------------------------------
+      *readPlain(size, waitForData) {
+        const buf = new Uint8Array(size);
+        const n = yield ioRead(buf);
+        if (n === null) return null;
+        if (n === 0) {
+          if (!waitForData) return null;
+          for (let i = 0; i < 3; i++) {
+            const retryN = yield ioRead(buf);
+            if (retryN === null) return null;
+            if (retryN > 0) return buf.subarray(0, retryN);
+          }
+          return null;
+        }
+        return buf.subarray(0, n);
+      }
+      // -----------------------------------------------------------------------
+      // SSL read generator — yields IOOp (read or write)
+      // -----------------------------------------------------------------------
+      *readSSL(size, waitForData) {
+        const maxAttempts = waitForData ? 10 : 1;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          if (this.pendingCiphertext && this.pendingCiphertext.length > 0) {
+            const consumed2 = this.feedCiphertext(this.pendingCiphertext);
+            if (consumed2 > 0) {
+              this.pendingCiphertext = consumed2 < this.pendingCiphertext.length ? this.pendingCiphertext.subarray(consumed2) : null;
+            }
+          }
+          const plaintext = this.sslPipe.read(size);
+          if (plaintext && plaintext.byteLength > 0) {
+            return new Uint8Array(plaintext);
+          }
+          const cipherBuf = new Uint8Array(size);
+          const n = yield ioRead(cipherBuf);
+          if (n === null) return null;
+          if (n === 0) {
+            if (!waitForData) {
+              const finalPlaintext = this.sslPipe.read(size);
+              if (finalPlaintext && finalPlaintext.byteLength > 0) {
+                return new Uint8Array(finalPlaintext);
+              }
+              return null;
+            }
+            continue;
+          }
+          const ciphertext = cipherBuf.subarray(0, n);
+          const consumed = this.feedCiphertext(ciphertext);
+          if (consumed < ciphertext.length) {
+            const unfed = ciphertext.subarray(consumed);
+            this.pendingCiphertext = this.pendingCiphertext ? (() => {
+              const m = new Uint8Array(this.pendingCiphertext.length + unfed.length);
+              m.set(this.pendingCiphertext);
+              m.set(unfed, this.pendingCiphertext.length);
+              return m;
+            })() : unfed;
+          }
+          const sslOutput = this.sslPipe.getOutput();
+          if (sslOutput) yield ioWrite(new Uint8Array(sslOutput));
+          const newPlaintext = this.sslPipe.read(size);
+          if (newPlaintext && newPlaintext.byteLength > 0) {
+            return new Uint8Array(newPlaintext);
+          }
+          if (!waitForData) return null;
+        }
+        return null;
+      }
+      // -----------------------------------------------------------------------
+      // I/O drivers
+      //
+      // syncDriver: uses readSync/writeSync — OS-level blocking I/O.
+      //   On Windows: connectSync commits the socket to sync mode permanently;
+      //   readSync/writeSync work natively.
+      //
+      // asyncDriver: uses native await for truly async execution.
+      // -----------------------------------------------------------------------
+      async asyncDriver(gen) {
+        let next2 = gen.next();
+        while (!next2.done) try {
+          const op = next2.value;
+          if (op.tag === "read") {
+            const n = await this.socket.read(op.buf);
+            next2 = gen.next(n);
+          } else {
+            await this.socket.write(op.data);
+            next2 = gen.next(void 0);
+          }
+        } catch (e) {
+          next2 = gen.throw(e);
+        }
+        return next2.value;
+      }
+      syncDriver(gen) {
+        let next2 = gen.next();
+        while (!next2.done) try {
+          const op = next2.value;
+          if (op.tag === "read") {
+            const n = this.socket.readSync(op.buf);
+            next2 = gen.next(n);
+          } else {
+            this.socket.writeSync(op.data);
+            next2 = gen.next(void 0);
+          }
+        } catch (e) {
+          next2 = gen.throw(e);
+        }
+        return next2.value;
+      }
+      // -----------------------------------------------------------------------
+      // TLS handshake generator — yields IOOp for both read AND write
+      // -----------------------------------------------------------------------
+      *performTLSHandshake(ctx, servername) {
+        this.sslPipe = new ssl2.Pipe(ctx, servername ? { servername } : void 0);
+        this.sslPipe.handshake();
+        const initialData = this.sslPipe.getOutput();
+        if (initialData) {
+          yield ioWrite(new Uint8Array(initialData));
+        }
+        while (!this.sslPipe.handshakeComplete) {
+          const buf = new Uint8Array(16384);
+          const n = yield ioRead(buf);
+          if (n === null) throw new Error("TLS handshake failed: connection closed (EOF)");
+          if (n === 0) throw new Error("TLS handshake failed: no data available (EAGAIN)");
+          let toFeed = buf.subarray(0, n);
+          while (toFeed.length > 0) {
+            const consumed = this.feedCiphertext(toFeed);
+            if (consumed === 0) break;
+            if (consumed < 0) throw new Error(`SSL feed failed during handshake: consumed=${consumed}`);
+            toFeed = toFeed.subarray(consumed);
+          }
+          this.sslPipe.handshake();
+          const responseData = this.sslPipe.getOutput();
+          if (responseData) {
+            yield ioWrite(new Uint8Array(responseData));
+          }
+        }
+      }
+      // -----------------------------------------------------------------------
+      // SSL helpers
+      // -----------------------------------------------------------------------
+      feedCiphertext(data) {
+        if (!this.sslPipe) return 0;
+        const consumed = this.sslPipe.feed(data);
+        if (consumed < 0) throw new Error(`SSL feed error: ${consumed}`);
+        return consumed;
+      }
+      // -----------------------------------------------------------------------
+      // State transitions
+      // -----------------------------------------------------------------------
+      markActive() {
+        this.stopIdleTimer();
+        this.state = "active" /* ACTIVE */;
+        this.lastUsed = Date.now();
+        this.requests++;
+      }
+      markIdle() {
+        this.state = "idle" /* IDLE */;
+        this.lastUsed = Date.now();
+        if (this.config.keepAlive) this.startIdleTimer();
+        else this.close();
+      }
+      close() {
+        if (this.state === "closed" /* CLOSED */) return;
+        this.stopIdleTimer();
+        try {
+          if (this.sslPipe) this.sslPipe.shutdown();
+        } catch {
+        }
+        this.sslPipe = null;
+        this.pendingCiphertext = null;
+        try {
+          this.socket.close();
+        } catch {
+        }
+        this.state = "closed" /* CLOSED */;
+        this.onClose?.();
+      }
+      isAvailable() {
+        return this.state === "idle" /* IDLE */;
+      }
+      isClosed() {
+        return this.state === "closed" /* CLOSED */;
+      }
+      // -----------------------------------------------------------------------
+      // Idle timer
+      // -----------------------------------------------------------------------
+      startIdleTimer() {
+        if (!this.config.keepAlive) return;
+        this.stopIdleTimer();
+        this.idleTimer = timers3.setTimeout(() => {
+          if (this.state === "idle" /* IDLE */) this.close();
+        }, this.config.keepAliveTimeout || 5e3);
+      }
+      stopIdleTimer() {
+        if (this.idleTimer !== null) {
+          timers3.clearTimeout(this.idleTimer);
+          this.idleTimer = null;
+        }
+      }
+    };
+    ConnectionManager = class {
+      pools = /* @__PURE__ */ new Map();
+      waiters = /* @__PURE__ */ new Map();
+      defaultConfig = {
+        timeout: 3e4,
+        keepAlive: true,
+        keepAliveTimeout: 5e3,
+        maxSockets: 10
+      };
+      getKey(cfg, sync = false) {
+        const clientId = cfg.client ? `[client-${cfg.client.getSSLContext() ? "custom" : "default"}]` : "";
+        const proxyId = cfg.client?.getProxyUrl() ? `[proxy]` : "";
+        const modeTag = sync ? "[sync]" : "[async]";
+        return `${cfg.protocol}//${cfg.hostname}:${cfg.port}${clientId}${proxyId}${modeTag}`;
+      }
+      acquire(cfg) {
+        const fullCfg = { ...this.defaultConfig, ...cfg };
+        const key = this.getKey(fullCfg, true);
+        this.cleanupPool(key);
+        let pool = this.pools.get(key) || [];
+        const available = pool.find((c) => c.isAvailable());
+        if (available) {
+          available.markActive();
+          return available;
+        }
+        if (pool.length >= (fullCfg.maxSockets || 10)) {
+          this.closeIdleConnections(key);
+        }
+        const conn = new Connection(fullCfg);
+        conn.onClose = () => this.removeConnection(fullCfg, conn);
+        pool.push(conn);
+        this.pools.set(key, pool);
+        conn.connect();
+        conn.markActive();
+        return conn;
+      }
+      async acquireAsync(cfg) {
+        const fullCfg = { ...this.defaultConfig, ...cfg };
+        const key = this.getKey(fullCfg);
+        this.cleanupPool(key);
+        let pool = this.pools.get(key) || [];
+        const available = pool.find((c) => c.isAvailable());
+        if (available) {
+          available.markActive();
+          return available;
+        }
+        if (pool.length >= (fullCfg.maxSockets || 10)) {
+          return this.waitForConnection(key, fullCfg);
+        }
+        const conn = new Connection(fullCfg);
+        conn.onClose = () => this.removeConnection(fullCfg, conn);
+        pool.push(conn);
+        this.pools.set(key, pool);
+        await conn.connectAsync();
+        conn.markActive();
+        return conn;
+      }
+      release(cfg, conn) {
+        if (conn.isClosed()) {
+          this.removeConnection(cfg, conn);
+          return;
+        }
+        conn.markIdle();
+        this.notifyWaiters(this.getKey(cfg, conn.isSync));
+      }
+      closeIdleConnections(key) {
+        const pool = this.pools.get(key) || [];
+        for (const conn of pool) {
+          if (conn.state === "idle" /* IDLE */) conn.close();
+        }
+      }
+      notifyWaiters(key) {
+        const queue = this.waiters.get(key);
+        if (!queue || queue.length === 0) return;
+        const pool = this.pools.get(key);
+        if (!pool) return;
+        const available = pool.find((c) => c.isAvailable());
+        if (!available) return;
+        const waiter = queue.shift();
+        timers3.clearTimeout(waiter.timeoutId);
+        if (queue.length === 0) this.waiters.delete(key);
+        available.markActive();
+        waiter.resolve(available);
+      }
+      closeAll() {
+        for (const pool of this.pools.values()) for (const c of pool) c.close();
+        this.pools.clear();
+        for (const queue of this.waiters.values()) {
+          for (const w2 of queue) {
+            timers3.clearTimeout(w2.timeoutId);
+            w2.reject(new Error("Connection pool closed"));
+          }
+        }
+        this.waiters.clear();
+      }
+      getStats() {
+        const stats = {};
+        for (const [key, pool] of this.pools.entries()) {
+          stats[key] = {
+            total: pool.length,
+            idle: pool.filter((c) => c.state === "idle" /* IDLE */).length,
+            active: pool.filter((c) => c.state === "active" /* ACTIVE */).length
+          };
+        }
+        return stats;
+      }
+      async waitForConnection(key, cfg) {
+        return new Promise((resolve3, reject) => {
+          const timeoutId = timers3.setTimeout(() => {
+            const queue2 = this.waiters.get(key);
+            if (queue2) {
+              const idx = queue2.findIndex((w2) => w2.reject === reject);
+              if (idx !== -1) queue2.splice(idx, 1);
+              if (queue2.length === 0) this.waiters.delete(key);
+            }
+            reject(new Error("Connection pool timeout"));
+          }, cfg.timeout || 3e4);
+          let queue = this.waiters.get(key);
+          if (!queue) {
+            queue = [];
+            this.waiters.set(key, queue);
+          }
+          queue.push({ resolve: resolve3, reject, timeoutId });
+        });
+      }
+      cleanupPool(key) {
+        const pool = this.pools.get(key);
+        if (!pool) return;
+        const alive = pool.filter((c) => !c.isClosed());
+        if (alive.length === 0) this.pools.delete(key);
+        else if (alive.length < pool.length) this.pools.set(key, alive);
+      }
+      removeConnection(cfg, conn) {
+        const key = this.getKey(cfg, conn.isSync);
+        const pool = this.pools.get(key);
+        if (!pool) return;
+        const i = pool.indexOf(conn);
+        if (i !== -1) pool.splice(i, 1);
+        if (pool.length === 0) this.pools.delete(key);
+      }
+    };
+    connectionManager = new ConnectionManager();
+  }
+});
+
 // http/src/socket.ts
-var streams2, ssl2, error, READ_SIZE, TcpSocket;
+var streams3, ssl3, error, READ_SIZE, TcpSocket;
 var init_socket = __esm({
   "http/src/socket.ts"() {
-    streams2 = import.meta.use("streams");
-    ssl2 = import.meta.use("ssl");
-    error = import.meta.use("error");
+    streams3 = __cno_use__("streams");
+    ssl3 = __cno_use__("ssl");
+    error = __cno_use__("error");
     READ_SIZE = 16384;
     TcpSocket = class {
       socket;
       sslPipe = null;
       pending = null;
       constructor(socket) {
-        this.socket = socket ?? new streams2.TCP();
+        this.socket = socket ?? new streams3.TCP();
       }
       /* -------------------------------------------------------------- */
       /* Callback-based readable (for async event-driven protocols)     */
@@ -1436,7 +2147,7 @@ var init_socket = __esm({
       /* -------------------------------------------------------------- */
       /** Server-side TLS handshake. */
       async serverHandshake(ctx) {
-        this.sslPipe = new ssl2.Pipe(ctx);
+        this.sslPipe = new ssl3.Pipe(ctx);
         const buf = new Uint8Array(READ_SIZE);
         while (!this.sslPipe.handshakeComplete) {
           const n = await this.socket.read(buf);
@@ -1454,7 +2165,7 @@ var init_socket = __esm({
       }
       /** Client-side TLS handshake. */
       async clientHandshake(ctx, servername) {
-        this.sslPipe = new ssl2.Pipe(ctx, servername ? { servername } : void 0);
+        this.sslPipe = new ssl3.Pipe(ctx, servername ? { servername } : void 0);
         this.sslPipe.handshake();
         const initial = this.sslPipe.getOutput();
         if (initial) await this.socket.write(new Uint8Array(initial));
@@ -1521,365 +2232,6 @@ var init_socket = __esm({
         return code === error.errno.ECONNRESET || code === error.errno.EPIPE || code === error.errno.EBADF;
       }
     };
-  }
-});
-
-// http/src/dns-cache.ts
-var dns2, engine3, DEFAULT_TTL_MS, DnsCache, dnsCache, clearDnsCache;
-var init_dns_cache = __esm({
-  "http/src/dns-cache.ts"() {
-    dns2 = import.meta.use("dns");
-    engine3 = import.meta.use("engine");
-    DEFAULT_TTL_MS = 3e5;
-    DnsCache = class {
-      cache = /* @__PURE__ */ new Map();
-      async resolve(hostname, options) {
-        const key = `${hostname}:${options?.family ?? 0}`;
-        const cached = this.cache.get(key);
-        if (cached && Date.now() < cached.expiresAt) return cached.addresses;
-        const addrs = await dns2.resolve(hostname, { family: options?.family ?? 0 });
-        if (!addrs?.length) return addrs;
-        const ttl = this.inferTtl(addrs);
-        this.cache.set(key, { addresses: addrs, expiresAt: Date.now() + ttl });
-        return addrs;
-      }
-      resolveSync(hostname, family = 0) {
-        const key = `${hostname}:${family}`;
-        const cached = this.cache.get(key);
-        if (cached && Date.now() < cached.expiresAt) return cached.addresses;
-        const addrs = engine3.waitPromise(dns2.resolve(hostname, { family }));
-        if (!addrs?.length) return addrs;
-        const ttl = this.inferTtl(addrs);
-        this.cache.set(key, { addresses: addrs, expiresAt: Date.now() + ttl });
-        return addrs;
-      }
-      invalidate(hostname) {
-        for (const key of this.cache.keys()) {
-          if (key.startsWith(hostname + ":")) this.cache.delete(key);
-        }
-      }
-      clear() {
-        this.cache.clear();
-      }
-      getStats() {
-        const now = Date.now();
-        return {
-          size: this.cache.size,
-          entries: [...this.cache.entries()].map(([key, entry]) => ({
-            hostname: key.split(":")[0] ?? "",
-            ttlRemaining: Math.max(0, entry.expiresAt - now)
-          }))
-        };
-      }
-      inferTtl(addrs) {
-        const ttls = addrs.map((a2) => a2.ttl).filter((t2) => typeof t2 === "number" && t2 > 0);
-        return ttls.length > 0 ? Math.min(...ttls) * 1e3 : DEFAULT_TTL_MS;
-      }
-    };
-    dnsCache = new DnsCache();
-    clearDnsCache = () => dnsCache.clear();
-  }
-});
-
-// http/src/connection.ts
-function assert3(condition, message) {
-  if (!condition) throw new Error(message ?? "Assertion failed");
-}
-async function generateWindowsCaBundle() {
-  const tmpDir = os3.tmpDir || "C:\\Windows\\Temp";
-  const tmp = tmpDir + "\\cno-ca-bundle.pem";
-  try {
-    const certs = windows.exportCerts();
-    if (!certs || certs.length === 0) return null;
-    const pemContent = certs.join("\n");
-    const fh = await asfs2.open(tmp, "w", 384);
-    await fh.write(engine4.encodeString(pemContent));
-    await fh.close();
-    return tmp;
-  } catch {
-    return null;
-  }
-}
-async function findSystemCaPath() {
-  const sysname = os3.uname().sysname;
-  const candidates = await (async () => {
-    switch (sysname) {
-      case "Linux":
-        return [
-          "/etc/ssl/certs/ca-certificates.crt",
-          "/etc/pki/tls/certs/ca-bundle.crt",
-          "/etc/pki/tls/cert.pem",
-          "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
-          "/etc/ssl/cert.pem",
-          "/etc/ssl/ca-bundle.pem",
-          "/etc/ca-certificates/extracted/tls-ca-bundle.pem",
-          "/etc/ssl/ca-bundle.pem",
-          "/etc/ca-certificates.crt",
-          "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-        ];
-      case "Darwin":
-        return [
-          "/etc/ssl/cert.pem",
-          "/usr/local/etc/openssl/cert.pem",
-          "/opt/homebrew/etc/openssl/cert.pem",
-          "/opt/homebrew/etc/openssl@3/cert.pem",
-          "/usr/local/etc/openssl@3/cert.pem",
-          "/System/Library/OpenSSL/certs"
-        ];
-      case "Windows_NT":
-        return [];
-      case "FreeBSD":
-        return [
-          "/usr/local/share/certs/ca-root-nss.crt",
-          "/usr/local/openssl/cert.pem",
-          "/etc/ssl/cert.pem"
-        ];
-      case "OpenBSD":
-        return [
-          "/etc/ssl/cert.pem",
-          "/usr/local/share/cert.pem"
-        ];
-      default:
-        return [];
-    }
-  })();
-  for (const path of candidates) {
-    try {
-      const stat = await asfs2.stat(path);
-      if (stat.isFile) return path;
-      if (stat.isDirectory && path.includes("certs")) return path;
-    } catch {
-    }
-  }
-  if (sysname === "Windows_NT") {
-    if (windowsCaCache) return windowsCaCache;
-    if (!windowsCaPromise) {
-      windowsCaPromise = generateWindowsCaBundle().then((result) => {
-        windowsCaCache = result;
-        windowsCaPromise = null;
-        return result;
-      });
-    }
-    return windowsCaPromise;
-  }
-  return null;
-}
-var os3, timers3, asfs2, engine4, ssl3, dns3, windows, windowsCaCache, windowsCaPromise, Connection, ConnectionManager, connectionManager;
-var init_connection = __esm({
-  "http/src/connection.ts"() {
-    init_socket();
-    init_dns_cache();
-    os3 = import.meta.use("os");
-    timers3 = import.meta.use("timers");
-    asfs2 = import.meta.use("asyncfs");
-    engine4 = import.meta.use("engine");
-    ssl3 = import.meta.use("ssl");
-    dns3 = import.meta.use("dns");
-    windows = import.meta.use("win32");
-    windowsCaCache = null;
-    windowsCaPromise = null;
-    Connection = class extends TcpSocket {
-      state = "connecting" /* CONNECTING */;
-      lastUsed = Date.now();
-      requests = 0;
-      onClose = null;
-      idleTimer = null;
-      config;
-      constructor(cfg) {
-        super();
-        this.config = cfg;
-      }
-      async connect() {
-        try {
-          const isSecure = this.config.protocol === "https:";
-          if (this.config.client) {
-            this.socket = await this.config.client.connect(
-              this.config.hostname,
-              this.config.port,
-              isSecure
-            );
-          } else {
-            const addrs = await dnsCache.resolve(this.config.hostname, { family: os3.AF_UNSPEC });
-            if (!addrs?.length) throw new Error(`DNS resolution failed for ${this.config.hostname}`);
-            const addr = addrs.find((a2) => a2.family === 4) || addrs[0];
-            assert3(addr, `No IP address found for ${this.config.hostname}`);
-            await this.socket.connect({ ip: addr.ip, port: this.config.port });
-          }
-          if (isSecure) {
-            const clientCtx = this.config.client?.getSSLContext();
-            if (clientCtx) {
-              await this.clientHandshake(clientCtx, this.config.hostname);
-            } else {
-              const caPath = await findSystemCaPath();
-              if (!caPath) throw new Error("No system CA bundle found - cannot verify TLS certificates.");
-              const ctx = new ssl3.Context({ mode: "client", verify: true, ca: caPath });
-              await this.clientHandshake(ctx, this.config.hostname);
-            }
-          }
-          this.socket.onclose = () => {
-            if (this.state === "closed" /* CLOSED */) return;
-            this.stopIdleTimer();
-            this.state = "closed" /* CLOSED */;
-            this.onClose?.();
-          };
-        } catch (err2) {
-          this.state = "closed" /* CLOSED */;
-          throw err2;
-        }
-      }
-      markActive() {
-        this.stopIdleTimer();
-        this.state = "active" /* ACTIVE */;
-        this.lastUsed = Date.now();
-        this.requests++;
-      }
-      markIdle() {
-        this.state = "idle" /* IDLE */;
-        this.lastUsed = Date.now();
-        if (this.config.keepAlive) this.startIdleTimer();
-        else this.close();
-      }
-      close() {
-        if (this.state === "closed" /* CLOSED */) return;
-        this.stopIdleTimer();
-        super.close();
-        this.state = "closed" /* CLOSED */;
-        this.onClose?.();
-      }
-      isAvailable() {
-        return this.state === "idle" /* IDLE */;
-      }
-      isClosed() {
-        return this.state === "closed" /* CLOSED */;
-      }
-      startIdleTimer() {
-        if (!this.config.keepAlive) return;
-        this.stopIdleTimer();
-        this.idleTimer = timers3.setTimeout(() => {
-          if (this.state === "idle" /* IDLE */) this.close();
-        }, this.config.keepAliveTimeout || 5e3);
-      }
-      stopIdleTimer() {
-        if (this.idleTimer !== null) {
-          timers3.clearTimeout(this.idleTimer);
-          this.idleTimer = null;
-        }
-      }
-    };
-    ConnectionManager = class {
-      pools = /* @__PURE__ */ new Map();
-      waiters = /* @__PURE__ */ new Map();
-      defaultConfig = {
-        timeout: 3e4,
-        keepAlive: true,
-        keepAliveTimeout: 5e3,
-        maxSockets: 10
-      };
-      getKey(cfg) {
-        const clientId = cfg.client ? `[client-${cfg.client.getSSLContext() ? "custom" : "default"}]` : "";
-        const proxyId = cfg.client?.getProxyUrl() ? `[proxy]` : "";
-        return `${cfg.protocol}//${cfg.hostname}:${cfg.port}${clientId}${proxyId}`;
-      }
-      async acquire(cfg) {
-        const fullCfg = { ...this.defaultConfig, ...cfg };
-        const key = this.getKey(fullCfg);
-        this.cleanupPool(key);
-        let pool = this.pools.get(key) || [];
-        const available = pool.find((c) => c.isAvailable());
-        if (available) {
-          available.markActive();
-          return available;
-        }
-        if (pool.length >= (fullCfg.maxSockets || 10)) {
-          return this.waitForConnection(key, fullCfg);
-        }
-        const conn = new Connection(fullCfg);
-        conn.onClose = () => this.removeConnection(fullCfg, conn);
-        pool.push(conn);
-        this.pools.set(key, pool);
-        await conn.connect();
-        conn.markActive();
-        return conn;
-      }
-      release(cfg, conn) {
-        if (conn.isClosed()) {
-          this.removeConnection(cfg, conn);
-          return;
-        }
-        conn.markIdle();
-        this.notifyWaiters(this.getKey(cfg));
-      }
-      notifyWaiters(key) {
-        const queue = this.waiters.get(key);
-        if (!queue || queue.length === 0) return;
-        const pool = this.pools.get(key);
-        if (!pool) return;
-        const available = pool.find((c) => c.isAvailable());
-        if (!available) return;
-        const waiter = queue.shift();
-        timers3.clearTimeout(waiter.timeoutId);
-        if (queue.length === 0) this.waiters.delete(key);
-        available.markActive();
-        waiter.resolve(available);
-      }
-      closeAll() {
-        for (const pool of this.pools.values()) for (const c of pool) c.close();
-        this.pools.clear();
-        for (const queue of this.waiters.values()) {
-          for (const w2 of queue) {
-            timers3.clearTimeout(w2.timeoutId);
-            w2.reject(new Error("Connection pool closed"));
-          }
-        }
-        this.waiters.clear();
-      }
-      getStats() {
-        const stats = {};
-        for (const [key, pool] of this.pools.entries()) {
-          stats[key] = {
-            total: pool.length,
-            idle: pool.filter((c) => c.state === "idle" /* IDLE */).length,
-            active: pool.filter((c) => c.state === "active" /* ACTIVE */).length
-          };
-        }
-        return stats;
-      }
-      async waitForConnection(key, cfg) {
-        return new Promise((resolve3, reject) => {
-          const timeoutId = timers3.setTimeout(() => {
-            const queue2 = this.waiters.get(key);
-            if (queue2) {
-              const idx = queue2.findIndex((w2) => w2.reject === reject);
-              if (idx !== -1) queue2.splice(idx, 1);
-              if (queue2.length === 0) this.waiters.delete(key);
-            }
-            reject(new Error("Connection pool timeout"));
-          }, cfg.timeout || 3e4);
-          let queue = this.waiters.get(key);
-          if (!queue) {
-            queue = [];
-            this.waiters.set(key, queue);
-          }
-          queue.push({ resolve: resolve3, reject, timeoutId });
-        });
-      }
-      cleanupPool(key) {
-        const pool = this.pools.get(key);
-        if (!pool) return;
-        const alive = pool.filter((c) => !c.isClosed());
-        if (alive.length === 0) this.pools.delete(key);
-        else if (alive.length < pool.length) this.pools.set(key, alive);
-      }
-      removeConnection(cfg, conn) {
-        const key = this.getKey(cfg);
-        const pool = this.pools.get(key);
-        if (!pool) return;
-        const i = pool.indexOf(conn);
-        if (i !== -1) pool.splice(i, 1);
-        if (pool.length === 0) this.pools.delete(key);
-      }
-    };
-    connectionManager = new ConnectionManager();
   }
 });
 
@@ -1954,7 +2306,7 @@ function createCompressor(encoding, level = zlib2.DEFAULT_COMPRESSION) {
 var zlib2, StreamingDecompressor;
 var init_zlib = __esm({
   "http/src/zlib.ts"() {
-    zlib2 = import.meta.use("zlib");
+    zlib2 = __cno_use__("zlib");
     StreamingDecompressor = class {
       _decompressFn;
       _encoding;
@@ -2001,8 +2353,8 @@ var init_h1 = __esm({
     init_socket();
     init_protocol();
     init_zlib();
-    http2 = import.meta.use("http");
-    engine5 = import.meta.use("engine");
+    http2 = __cno_use__("http");
+    engine5 = __cno_use__("engine");
     HttpRequestBuilder = class _HttpRequestBuilder {
       method = "GET";
       path = "/";
@@ -3051,7 +3403,7 @@ var internal, ESC, RESET, styles, noColor, timers4, counters, groupIndent, webCo
 var init_console = __esm({
   "cno/src/webapi/console.ts"() {
     "use strict";
-    internal = import.meta.use("console");
+    internal = __cno_use__("console");
     ESC = "\x1B[";
     RESET = `${ESC}0m`;
     styles = {
@@ -3213,17 +3565,17 @@ var init_assert = __esm({
 
 // cno/src/webapi/basic.ts
 var basic_exports = {};
-var crypto4, engine8, text, os5, timer, streams4;
+var crypto4, engine8, text, os5, timer, streams5;
 var init_basic = __esm({
   "cno/src/webapi/basic.ts"() {
     "use strict";
     init_assert();
-    crypto4 = import.meta.use("crypto");
-    engine8 = import.meta.use("engine");
-    text = import.meta.use("text");
-    os5 = import.meta.use("os");
-    timer = import.meta.use("timers");
-    streams4 = import.meta.use("streams");
+    crypto4 = __cno_use__("crypto");
+    engine8 = __cno_use__("engine");
+    text = __cno_use__("text");
+    os5 = __cno_use__("os");
+    timer = __cno_use__("timers");
+    streams5 = __cno_use__("streams");
     globalThis.atob = function(str) {
       const dec = crypto4.base64Decode(str);
       return engine8.decodeString(dec);
@@ -3236,7 +3588,7 @@ var init_basic = __esm({
       console.log(msg);
     };
     globalThis.prompt = function(msg) {
-      const { stdin: stdin3, stdout: stdout3 } = streams4;
+      const { stdin: stdin3, stdout: stdout3 } = streams5;
       assert5(stdout3.writeSync(
         engine8.encodeString(msg ? msg + " " : "? ")
       ), "write() operation failed");
@@ -4691,7 +5043,7 @@ var init_streams = __esm({
   "cno/src/webapi/streams.ts"() {
     "use strict";
     init_assert();
-    zlib3 = import.meta.use("zlib");
+    zlib3 = __cno_use__("zlib");
     validateHighWaterMark = (value) => {
       const hwm = Number(value);
       if (Number.isNaN(hwm) || hwm < 0) {
@@ -5491,14 +5843,14 @@ __export(formdata_exports, {
   File: () => FileImpl,
   FormData: () => FormDataImpl
 });
-var engine9, asfs3, fs3, FormDataImpl, BlobImpl, filePathStore, FileImpl, blobToFile, normalizeType, calculateSize, normalizeIndex, guessContentType;
+var engine9, asfs3, fs4, FormDataImpl, BlobImpl, filePathStore, FileImpl, blobToFile, normalizeType, calculateSize, normalizeIndex, guessContentType;
 var init_formdata = __esm({
   "cno/src/webapi/formdata.ts"() {
     "use strict";
     init_malloc();
-    engine9 = import.meta.use("engine");
-    asfs3 = import.meta.use("asyncfs");
-    fs3 = import.meta.use("fs");
+    engine9 = __cno_use__("engine");
+    asfs3 = __cno_use__("asyncfs");
+    fs4 = __cno_use__("fs");
     FormDataImpl = class {
       #entries = [];
       constructor(form) {
@@ -5914,7 +6266,7 @@ var init_messaging = __esm({
   "cno/src/webapi/messaging.ts"() {
     "use strict";
     init_events();
-    engine10 = import.meta.use("engine");
+    engine10 = __cno_use__("engine");
     otherPortSymbol = /* @__PURE__ */ Symbol("otherPort");
     startedSymbol = /* @__PURE__ */ Symbol("started");
     closedSymbol = /* @__PURE__ */ Symbol("closed");
@@ -6044,7 +6396,7 @@ var init_worker = __esm({
     "use strict";
     init_events();
     init_messaging();
-    worker2 = import.meta.use("worker");
+    worker2 = __cno_use__("worker");
     transferredPorts = /* @__PURE__ */ new WeakMap();
     portRegistry = /* @__PURE__ */ new Map();
     Worker = class extends EventTarget2 {
@@ -6744,7 +7096,7 @@ __export(fetch_exports, {
   Response: () => Response2,
   fetchAsync: () => fetchAsync2
 });
-function mergeChunks2(chunks) {
+function mergeChunks3(chunks) {
   if (chunks.length === 0) return new Uint8Array(0);
   if (chunks.length === 1) return chunks[0];
   const total = chunks.reduce((s, c) => s + c.length, 0);
@@ -6806,7 +7158,7 @@ async function readHeaders(ctx) {
   while (!ctx.h1Conn.parser.isHeadersComplete) {
     if (ctx.aborted) throw new DOMException("The operation was aborted", "AbortError");
     try {
-      const data = await ctx.connection.read();
+      const data = await ctx.connection.readAsync();
       if (data === null) throw new TypeError("Failed to fetch: EOF while reading header");
       ctx.h1Conn.parser.feed(data);
     } catch (err2) {
@@ -6817,7 +7169,7 @@ async function readHeaders(ctx) {
 }
 async function readBody(ctx) {
   if (ctx.aborted) return;
-  const data = await ctx.connection.read();
+  const data = await ctx.connection.readAsync();
   if (ctx.aborted || !data) return;
   ctx.h1Conn.parser.feed(data);
 }
@@ -6829,7 +7181,6 @@ function releaseConnection(ctx) {
 }
 async function sendRequest(request, url, connection) {
   const bodyBuffer = await request.getBodyBuffer();
-  const isUsingProxy = false;
   const headers = [];
   request.headers.forEach((v2, k) => headers.push([k, v2]));
   const builder = new HttpRequestBuilder({
@@ -6840,7 +7191,7 @@ async function sendRequest(request, url, connection) {
     headers,
     body: bodyBuffer
   });
-  await connection.write(builder.build());
+  await connection.writeAsync(builder.build());
   return { parser: new HttpResponseParser() };
 }
 async function handleRedirect(request, url, location2, statusCode, redirectCount) {
@@ -6852,8 +7203,8 @@ async function handleRedirect(request, url, location2, statusCode, redirectCount
 async function performFetch(request, url, redirectCount = 0) {
   if (redirectCount > 20) throw new TypeError("Too many redirects");
   const port = url.port ? parseInt(url.port) : url.protocol === "https:" ? 443 : 80;
-  const connConfig = { hostname: url.hostname, port, protocol: url.protocol, keepAlive: request.keepalive, timeout: 3e4 };
-  let connection = await connectionManager.acquire(connConfig);
+  const connConfig2 = { hostname: url.hostname, port, protocol: url.protocol, keepAlive: request.keepalive, timeout: 3e4 };
+  let connection = await connectionManager.acquireAsync(connConfig2);
   const h1Conn = { parser: new HttpResponseParser() };
   const ctx = { request, url, connection, h1Conn, aborted: false };
   function abortHandler() {
@@ -6867,9 +7218,9 @@ async function performFetch(request, url, redirectCount = 0) {
     try {
       await readHeaders(ctx);
     } catch (err2) {
-      if (!ctx.aborted && err2 instanceof TypeError && err2.message === "Failed to fetch") {
+      if (!ctx.aborted && err2 instanceof TypeError && err2.message.startsWith("Failed to fetch")) {
         connection.close();
-        connection = await connectionManager.acquire(connConfig);
+        connection = await connectionManager.acquireAsync(connConfig2);
         ctx.connection = connection;
         h1Conn.parser = new HttpResponseParser();
         await sendRequest(request, url, connection);
@@ -6918,7 +7269,7 @@ var init_fetch = __esm({
     init_connection();
     init_h1();
     init_assert();
-    engine11 = import.meta.use("engine");
+    engine11 = __cno_use__("engine");
     Request2 = class _Request {
       url;
       method;
@@ -7016,7 +7367,7 @@ var init_fetch = __esm({
         } finally {
           reader.releaseLock();
         }
-        this._bodyBuffer = mergeChunks2(chunks);
+        this._bodyBuffer = mergeChunks3(chunks);
         return this._bodyBuffer;
       }
       async arrayBuffer() {
@@ -7129,7 +7480,7 @@ var init_fetch = __esm({
         } finally {
           reader.releaseLock();
         }
-        this._bodyBuffer = mergeChunks2(chunks);
+        this._bodyBuffer = mergeChunks3(chunks);
         return this._bodyBuffer;
       }
       arrayBuffer() {
@@ -8150,7 +8501,7 @@ var crypto5, CryptoKeyImpl, SubtleCrypto, subtle, webCrypto;
 var init_crypto = __esm({
   "cno/src/webapi/crypto.ts"() {
     "use strict";
-    crypto5 = import.meta.use("crypto");
+    crypto5 = __cno_use__("crypto");
     CryptoKeyImpl = class {
       constructor(type, extractable, algorithm, usages, _handle) {
         this.type = type;
@@ -9409,7 +9760,7 @@ var wasm2, CompileError, LinkError2, RuntimeError, Module, Memory, VALID_GLOBAL_
 var init_wasm = __esm({
   "cno/src/webapi/wasm.ts"() {
     "use strict";
-    wasm2 = import.meta.use("wasm");
+    wasm2 = __cno_use__("wasm");
     CompileError = class extends Error {
       constructor(message) {
         super(message);
@@ -9661,15 +10012,15 @@ function closeAllStorages() {
 function StorageCtor() {
   throw new Error("Storage is not constructable. Use createStorage() or getLocalStorage() instead.");
 }
-var sqlite3, fs4, os6, crypto6, engine12, StorageEvent, Storage, StorageManager, storageManager;
+var sqlite3, fs5, os6, crypto6, engine12, StorageEvent, Storage, StorageManager, storageManager;
 var init_storage = __esm({
   "cno/src/webapi/storage.ts"() {
     "use strict";
-    sqlite3 = import.meta.use("sqlite3");
-    fs4 = import.meta.use("fs");
-    os6 = import.meta.use("os");
-    crypto6 = import.meta.use("crypto");
-    engine12 = import.meta.use("engine");
+    sqlite3 = __cno_use__("sqlite3");
+    fs5 = __cno_use__("fs");
+    os6 = __cno_use__("os");
+    crypto6 = __cno_use__("crypto");
+    engine12 = __cno_use__("engine");
     StorageEvent = class extends Event {
       key;
       oldValue;
@@ -9737,7 +10088,7 @@ var init_storage = __esm({
        */
       ensureStorageDirectory() {
         const dir = this.getDirectoryPath(this.options.path);
-        if (dir && dir !== "." && !fs4.exists(dir)) {
+        if (dir && dir !== "." && !fs5.exists(dir)) {
           this.mkdirRecursive(dir);
         }
       }
@@ -9760,8 +10111,8 @@ var init_storage = __esm({
         let current = path.startsWith("/") ? "/" : "";
         for (const part of parts) {
           current += part;
-          if (!fs4.exists(current)) {
-            fs4.mkdir(current, 493);
+          if (!fs5.exists(current)) {
+            fs5.mkdir(current, 493);
           }
           current += "/";
         }
@@ -10828,15 +11179,18 @@ var init_intl = __esm({
 });
 
 // ext-quic/index.js
-var os7, ext, ext_quic_default;
+var os7, fs6, ext, ext_quic_default;
 var init_ext_quic = __esm({
   "ext-quic/index.js"() {
     "use strict";
-    os7 = import.meta.use("os");
+    os7 = __cno_use__("os");
+    fs6 = __cno_use__("fs");
     ext = "so";
     if (os7.uname().sysname.startsWith("Windows")) ext = "dll";
-    import.meta.register("ext:quic", "./native." + ext);
-    ext_quic_default = import.meta.use("ext:quic");
+    if (fs6.exists("native." + ext)) {
+      __cno_register__("ext:quic", "./native." + ext);
+    }
+    ext_quic_default = __cno_use__("ext:quic");
   }
 });
 
@@ -11291,7 +11645,7 @@ var init_webapi = __esm({
   async "cno/src/webapi/index.ts"() {
     "use strict";
     init_events();
-    ({ onEvent, EventType } = import.meta.use("engine"));
+    ({ onEvent, EventType } = __cno_use__("engine"));
     Object.defineProperties(globalThis, {
       global: {
         value: globalThis,
@@ -11606,7 +11960,7 @@ var os8, os_args;
 var init_args = __esm({
   "cno/src/utils/args.ts"() {
     "use strict";
-    os8 = import.meta.use("os");
+    os8 = __cno_use__("os");
     os_args = (function() {
       const { args } = os8;
       for (let i = 1; i < args.length; i++) {
@@ -11810,7 +12164,7 @@ var init_wrap = __esm({
   "cno/src/utils/wrap.ts"() {
     "use strict";
     init_errors();
-    error2 = import.meta.use("error");
+    error2 = __cno_use__("error");
   }
 });
 
@@ -11893,28 +12247,28 @@ function mkdirRecursiveSync(fullPath, mode) {
       currentPath = currentPath + "/" + part;
     }
     try {
-      if (!fs5.stat(currentPath).isDirectory)
+      if (!fs7.stat(currentPath).isDirectory)
         throw -1;
     } catch (error5) {
       if (error5 === -1) {
         throw new Error(`Cannot create directory '${currentPath}': File exists`);
       } else {
-        fs5.mkdir(currentPath, mode);
+        fs7.mkdir(currentPath, mode);
       }
     }
   }
 }
 function removeRecursiveSync(targetPath) {
   try {
-    const stats = fs5.stat(targetPath);
+    const stats = fs7.stat(targetPath);
     if (stats.isDirectory) {
-      const items = fs5.readdir(targetPath);
+      const items = fs7.readdir(targetPath);
       for (const item of items) {
         removeRecursiveSync(join(targetPath, item));
       }
-      fs5.rmdir(targetPath);
+      fs7.rmdir(targetPath);
     } else {
-      fs5.unlink(targetPath);
+      fs7.unlink(targetPath);
     }
   } catch (error5) {
     throw error5;
@@ -12055,19 +12409,19 @@ function watchToIterator(path) {
   });
   return iterator;
 }
-var fs5, asfs4, engine13, fswatch, os9, error3, toString;
+var fs7, asfs4, engine13, fswatch, os9, error3, toString;
 var init_fs = __esm({
   "cno/src/deno/02_fs.ts"() {
     "use strict";
     init_path();
     init_wrap();
     init_errors();
-    fs5 = import.meta.use("fs");
-    asfs4 = import.meta.use("asyncfs");
-    engine13 = import.meta.use("engine");
-    fswatch = import.meta.use("fswatch");
-    os9 = import.meta.use("os");
-    error3 = import.meta.use("error");
+    fs7 = __cno_use__("fs");
+    asfs4 = __cno_use__("asyncfs");
+    engine13 = __cno_use__("engine");
+    fswatch = __cno_use__("fswatch");
+    os9 = __cno_use__("os");
+    error3 = __cno_use__("error");
     toString = (e) => e instanceof URL ? e.pathname : e;
     Object.assign(Deno, wrapFSns({
       // @ts-ignore not SharedArrayBuffer
@@ -12075,7 +12429,7 @@ var init_fs = __esm({
         return asfs4.readFile(toString(path));
       },
       readFileSync(path) {
-        return new Uint8Array(fs5.readFile(toString(path)));
+        return new Uint8Array(fs7.readFile(toString(path)));
       },
       readTextFile(path, opt2) {
         return Deno.readFile(path, opt2).then((b2) => engine13.decodeString(b2));
@@ -12097,8 +12451,8 @@ var init_fs = __esm({
         }
       },
       *readDirSync(path) {
-        for (const el of fs5.readdir(toString(path))) {
-          const stat = fs5.stat(path + "/" + el);
+        for (const el of fs7.readdir(toString(path))) {
+          const stat = fs7.stat(path + "/" + el);
           yield {
             name: el,
             isDirectory: stat.isDirectory,
@@ -12111,13 +12465,13 @@ var init_fs = __esm({
         return asfs4.readLink(toString(path));
       },
       readLinkSync(path) {
-        return fs5.readlink(toString(path));
+        return fs7.readlink(toString(path));
       },
       link(old, newf) {
         return asfs4.link(toString(old), toString(newf));
       },
       linkSync(old, newf) {
-        return fs5.link(toString(old), toString(newf));
+        return fs7.link(toString(old), toString(newf));
       },
       async symlink(old, newf, opt2) {
         return asfs4.symlink(
@@ -12128,23 +12482,23 @@ var init_fs = __esm({
         );
       },
       symlinkSync(old, newf, opt2) {
-        return fs5.symlink(toString(old), toString(newf));
+        return fs7.symlink(toString(old), toString(newf));
       },
       realPath(path) {
         return asfs4.realPath(toString(path));
       },
       realPathSync(path) {
-        return fs5.realpath(toString(path));
+        return fs7.realpath(toString(path));
       },
       removeSync(path, opt2) {
         const pathStr = toString(path);
         const recursive = opt2?.recursive ?? false;
         if (!recursive) {
           try {
-            fs5.unlink(pathStr);
+            fs7.unlink(pathStr);
           } catch (error1) {
             try {
-              fs5.rmdir(pathStr);
+              fs7.rmdir(pathStr);
             } catch (error22) {
               throw error1;
             }
@@ -12167,8 +12521,8 @@ var init_fs = __esm({
       },
       renameSync(oldPath, newPath) {
         const np = toString(newPath);
-        if (fs5.exists(np)) fs5.unlink(np);
-        return fs5.rename(toString(oldPath), np);
+        if (fs7.exists(np)) fs7.unlink(np);
+        return fs7.rename(toString(oldPath), np);
       },
       async rename(oldPath, newPath) {
         const np = toString(newPath);
@@ -12183,22 +12537,22 @@ var init_fs = __esm({
         return asfs4.copyFile(toString(from), toString(to));
       },
       copyFileSync(from, to) {
-        return fs5.copy(toString(from), toString(to));
+        return fs7.copy(toString(from), toString(to));
       },
       async lstat(path) {
         return toDenoStat(await asfs4.lstat(toString(path)));
       },
       lstatSync(path) {
-        return toDenoStat(fs5.lstat(toString(path)));
+        return toDenoStat(fs7.lstat(toString(path)));
       },
       writeFileSync(path, data, options) {
-        fs5.writeFile(toString(path), data.buffer);
+        fs7.writeFile(toString(path), data.buffer);
       },
       writeFile(path, data, options) {
         return denoWriteAnyFile(path, data, options);
       },
       writeTextFileSync(path, data, options) {
-        fs5.writeFile(toString(path), engine13.encodeString(data).buffer);
+        fs7.writeFile(toString(path), engine13.encodeString(data).buffer);
       },
       writeTextFile(path, data, options) {
         return denoWriteAnyFile(path, data, options);
@@ -12209,7 +12563,7 @@ var init_fs = __esm({
         await file.close();
       },
       truncateSync(name2, len) {
-        fs5.truncate(toString(name2), len ?? 0);
+        fs7.truncate(toString(name2), len ?? 0);
       },
       async mkdir(path, opt2) {
         const pathStr = toString(path);
@@ -12224,7 +12578,7 @@ var init_fs = __esm({
         const pathStr = toString(path);
         const recursive = opt2?.recursive ?? false;
         if (!recursive) {
-          return fs5.mkdir(pathStr, opt2?.mode);
+          return fs7.mkdir(pathStr, opt2?.mode);
         }
         mkdirRecursiveSync(pathStr, opt2?.mode);
       },
@@ -12244,21 +12598,21 @@ var init_fs = __esm({
         return asfs4.chmod(toString(path), mode);
       },
       chmodSync(path, mode) {
-        return fs5.chmod(toString(path), mode);
+        return fs7.chmod(toString(path), mode);
       },
       chown(path, uid, gid) {
         const info = os9.userInfo;
         return asfs4.chown(toString(path), uid ?? info.userId, gid ?? info.groupId);
       },
       chownSync(path, uid, gid) {
-        return fs5.chown(toString(path), uid ?? os9.userInfo.userId, gid ?? os9.userInfo.groupId);
+        return fs7.chown(toString(path), uid ?? os9.userInfo.userId, gid ?? os9.userInfo.groupId);
       },
       async stat(path) {
         const st = await asfs4.stat(toString(path));
         return toDenoStat(st);
       },
       statSync(path) {
-        const st = fs5.stat(toString(path));
+        const st = fs7.stat(toString(path));
         return toDenoStat(st);
       },
       async makeTempFile(opt2) {
@@ -12277,8 +12631,8 @@ var init_fs = __esm({
         const suffix = opt2?.suffix ?? "";
         const randomValue = Math.floor(Math.random() * 1e9).toString(36);
         const path = join(dir, prefix + randomValue + suffix);
-        const fd = fs5.open(path, "w", 420);
-        fs5.close(fd);
+        const fd = fs7.open(path, "w", 420);
+        fs7.close(fd);
         return path;
       },
       watchFs(path, options) {
@@ -12414,16 +12768,16 @@ function optionsToMode(options) {
   }
   return "r";
 }
-var fs6, asfs5, error4, toDate, _utimeSync_dec, _utime_dec, _unlockSync_dec, _lockSync_dec, _syncData_dec, _sync_dec, _seekSync_dec, _seek_dec, _statSync_dec, _stat_dec, _truncate_dec, _readSync_dec, _read_dec, _writeSync_dec, _write_dec, _init, FSFile;
+var fs8, asfs5, error4, toDate, _utimeSync_dec, _utime_dec, _unlockSync_dec, _lockSync_dec, _syncData_dec, _sync_dec, _seekSync_dec, _seek_dec, _statSync_dec, _stat_dec, _truncate_dec, _readSync_dec, _read_dec, _writeSync_dec, _write_dec, _init, FSFile;
 var init_fopen = __esm({
   "cno/src/deno/03_fopen.ts"() {
     "use strict";
     init_malloc();
     init_fs();
     init_wrap();
-    fs6 = import.meta.use("fs");
-    asfs5 = import.meta.use("asyncfs");
-    error4 = import.meta.use("error");
+    fs8 = __cno_use__("fs");
+    asfs5 = __cno_use__("asyncfs");
+    error4 = __cno_use__("error");
     toDate = (t2) => {
       if (typeof t2 === "number" || typeof t2 === "bigint") {
         return Number(t2);
@@ -12483,7 +12837,7 @@ var init_fopen = __esm({
       }
       writeSync(p) {
         const fno = this.$handle.fileno();
-        const n = fs6.pwrite(fno, p, this.fpointer);
+        const n = fs8.pwrite(fno, p, this.fpointer);
         this.fpointer += n;
         return n;
       }
@@ -12495,7 +12849,7 @@ var init_fopen = __esm({
       }
       readSync(p) {
         const fno = this.$handle.fileno();
-        const n = fs6.pread(fno, p, this.fpointer);
+        const n = fs8.pread(fno, p, this.fpointer);
         this.fpointer += n;
         return n;
       }
@@ -12509,23 +12863,23 @@ var init_fopen = __esm({
         return toDenoStat(await this.$handle.stat());
       }
       statSync() {
-        const stat = fs6.stat(this.$handle.path);
+        const stat = fs8.stat(this.$handle.path);
         return toDenoStat(stat);
       }
       async seek(offset, whence) {
-        const fs9 = (await this.$handle.stat()).size;
+        const fs11 = (await this.$handle.stat()).size;
         const off = Number(offset);
         if (whence === Deno.SeekMode.Start) {
-          this.fpointer = Math.min(off, fs9);
+          this.fpointer = Math.min(off, fs11);
         } else if (whence === Deno.SeekMode.Current) {
-          this.fpointer = Math.max(0, Math.min(this.fpointer + off, fs9));
+          this.fpointer = Math.max(0, Math.min(this.fpointer + off, fs11));
         } else if (whence === Deno.SeekMode.End) {
-          this.fpointer = Math.max(fs9 - off, 0);
+          this.fpointer = Math.max(fs11 - off, 0);
         }
         return this.fpointer;
       }
       seekSync(offset, whence) {
-        const fsize = fs6.lstat(this.$handle.path).size;
+        const fsize = fs8.lstat(this.$handle.path).size;
         const off = Number(offset);
         if (whence === Deno.SeekMode.Start) {
           this.fpointer = Math.min(off, fsize);
@@ -12553,14 +12907,14 @@ var init_fopen = __esm({
       }
       lockSync(exclusive) {
         const fd = this.$handle.fileno();
-        fs6.flock(fd, exclusive ? fs6.LOCK_EX | fs6.LOCK_NB : fs6.LOCK_SH | fs6.LOCK_NB);
+        fs8.flock(fd, exclusive ? fs8.LOCK_EX | fs8.LOCK_NB : fs8.LOCK_SH | fs8.LOCK_NB);
       }
       unlock() {
         return Promise.resolve(this.unlockSync());
       }
       unlockSync() {
         const fd = this.$handle.fileno();
-        fs6.flock(fd, fs6.LOCK_UN);
+        fs8.flock(fd, fs8.LOCK_UN);
       }
       async tryLock(exclusive) {
         return this.tryLockSync(exclusive);
@@ -12568,7 +12922,7 @@ var init_fopen = __esm({
       tryLockSync(exclusive) {
         const fd = this.$handle.fileno();
         try {
-          fs6.flock(fd, exclusive ? fs6.LOCK_EX | fs6.LOCK_NB : fs6.LOCK_SH | fs6.LOCK_NB);
+          fs8.flock(fd, exclusive ? fs8.LOCK_EX | fs8.LOCK_NB : fs8.LOCK_SH | fs8.LOCK_NB);
           return true;
         } catch (e) {
           if (e.code == error4.errno.EAGAIN) {
@@ -12623,7 +12977,7 @@ var init_fopen = __esm({
       openSync(path, opt2) {
         let flag = "r";
         if (opt2) flag = optionsToMode(opt2);
-        const fno = fs6.open(toString(path), flag, opt2?.mode);
+        const fno = fs8.open(toString(path), flag, opt2?.mode);
         return new FSFile(asfs5.newStdioFile(toString(path), fno));
       }
     }));
@@ -12648,17 +13002,17 @@ function unlock(fd) {
 function tryLock(fd) {
   if (lockings[fd]) throw new Error("File is already locked");
 }
-var os10, pipe, fs7, syncfs, lockings, _setRaw_dec, _createWriteStream_dec, _createReadStream_dec, _writeSync_dec2, _readSync_dec2, _read_dec2, _write_dec2, _init2, Stream, stdin, stdout, stderr;
+var os10, pipe, fs9, syncfs, lockings, _setRaw_dec, _createWriteStream_dec, _createReadStream_dec, _writeSync_dec2, _readSync_dec2, _read_dec2, _write_dec2, _init2, Stream, stdin, stdout, stderr;
 var init_stdio = __esm({
   "cno/src/deno/04_stdio.ts"() {
     "use strict";
     init_malloc();
     init_wrap();
     init_fopen();
-    os10 = import.meta.use("os");
-    pipe = import.meta.use("streams");
-    fs7 = import.meta.use("asyncfs");
-    syncfs = import.meta.use("fs");
+    os10 = __cno_use__("os");
+    pipe = __cno_use__("streams");
+    fs9 = __cno_use__("asyncfs");
+    syncfs = __cno_use__("fs");
     lockings = {
       [os10.STDIN_FILENO]: false,
       [os10.STDOUT_FILENO]: false,
@@ -12687,7 +13041,7 @@ var init_stdio = __esm({
             this.type = "tty";
             break;
           case "file":
-            this.stream = new FSFile(fs7.newStdioFile("stdio", fd));
+            this.stream = new FSFile(fs9.newStdioFile("stdio", fd));
             this.type = "file";
             break;
         }
@@ -12907,17 +13261,17 @@ function toConn(sslpipe, pipe3) {
     pipe3.startRead();
   }));
 }
-var os11, stream, ssl4, dns4, symbolGetPipe, useWritable, useReadable, kRawPipe, _dec, _a2, _closeWrite_dec, _close_dec, _write_dec3, _read_dec3, _b2, _init3, Conn, addrinfo2deno, _setKeepAlive_dec, _setNoDelay_dec, _a3, _init4, TcpConn, _dec2, _a4, _closeWrite_dec2, _write_dec4, _read_dec4, _close_dec2, _output_dec, _init5, TlsConn, UnixConn, _dec3, _a5, _dec4, _b3, _accept_dec, _init6, Listener, _dec5, _a6, _accept_dec2, _init7, _b4, TcpListener, _dec6, _a7, _accept_dec3, _init8, _b5, TlsListener;
+var os11, stream, ssl4, dns3, symbolGetPipe, useWritable, useReadable, kRawPipe, _dec, _a2, _closeWrite_dec, _close_dec, _write_dec3, _read_dec3, _b2, _init3, Conn, addrinfo2deno, _setKeepAlive_dec, _setNoDelay_dec, _a3, _init4, TcpConn, _dec2, _a4, _closeWrite_dec2, _write_dec4, _read_dec4, _close_dec2, _output_dec, _init5, TlsConn, UnixConn, _dec3, _a5, _dec4, _b3, _accept_dec, _init6, Listener, _dec5, _a6, _accept_dec2, _init7, _b4, TcpListener, _dec6, _a7, _accept_dec3, _init8, _b5, TlsListener;
 var init_net = __esm({
   "cno/src/deno/05_net.ts"() {
     "use strict";
     init_malloc();
     init_wrap();
     init_dns_cache();
-    os11 = import.meta.use("os");
-    stream = import.meta.use("streams");
-    ssl4 = import.meta.use("ssl");
-    dns4 = import.meta.use("dns");
+    os11 = __cno_use__("os");
+    stream = __cno_use__("streams");
+    ssl4 = __cno_use__("ssl");
+    dns3 = __cno_use__("dns");
     symbolGetPipe = /* @__PURE__ */ Symbol("Stream.getPipe");
     useWritable = (pipe3) => new WritableStream({
       write: async (chunk, control) => {
@@ -13247,27 +13601,27 @@ var init_net = __esm({
           if (opt2.nameServer.port)
             server += `:${opt2.nameServer.port}`;
         }
-        const info = await dns4.query(query);
+        const info = await dns3.query(query);
         switch (type) {
           case "A":
           case "AAAA":
           case "CNAME":
           case "NS":
           case "PTR":
-            return info.filter((i) => i.type == dns4[type]).map((i) => i.name);
+            return info.filter((i) => i.type == dns3[type]).map((i) => i.name);
           case "CAA":
-            return info.filter((i) => i.type == dns4.CAA).map((i) => ({
+            return info.filter((i) => i.type == dns3.CAA).map((i) => ({
               critical: i.ttl === 0,
               tag: i.tag,
               value: i.value
             }));
           case "MX":
-            return info.filter((i) => i.type == dns4.MX).map((i) => ({
+            return info.filter((i) => i.type == dns3.MX).map((i) => ({
               exchange: i.exchange,
               preference: i.priority
             }));
           case "NAPTR":
-            return info.filter((i) => i.type == dns4.NAPTR).map((i) => ({
+            return info.filter((i) => i.type == dns3.NAPTR).map((i) => ({
               flags: i.flags,
               order: i.order,
               preference: i.preference,
@@ -13276,7 +13630,7 @@ var init_net = __esm({
               services: i.services
             }));
           case "SOA":
-            return info.filter((i) => i.type == dns4.SOA).map((i) => ({
+            return info.filter((i) => i.type == dns3.SOA).map((i) => ({
               expire: i.expire,
               refresh: i.refresh,
               retry: i.retry,
@@ -13286,14 +13640,14 @@ var init_net = __esm({
               rname: i.name
             }));
           case "SRV":
-            return info.filter((i) => i.type == dns4.SRV).map((i) => ({
+            return info.filter((i) => i.type == dns3.SRV).map((i) => ({
               port: i.port,
               priority: i.priority,
               target: i.target,
               weight: i.weight
             }));
           case "TXT":
-            return info.filter((i) => i.type == dns4.TXT).map((i) => i.text);
+            return info.filter((i) => i.type == dns3.TXT).map((i) => i.text);
           default:
             throw new Error(`Unsupported DNS record type: ${type}`);
         }
@@ -13425,12 +13779,12 @@ var init_process = __esm({
     init_wrap();
     init_fs();
     init_net();
-    os12 = import.meta.use("os");
-    proc = import.meta.use("process");
-    signal = import.meta.use("signals");
-    text2 = import.meta.use("text");
-    pty2 = import.meta.use("pty");
-    engine14 = import.meta.use("engine");
+    os12 = __cno_use__("os");
+    proc = __cno_use__("process");
+    signal = __cno_use__("signals");
+    text2 = __cno_use__("text");
+    pty2 = __cno_use__("pty");
+    engine14 = __cno_use__("engine");
     pipe2 = (type) => type == "piped" ? "pipe" : type == "null" ? "ignore" : "inherit";
     RStream = class extends (_a8 = ReadableStream, _readAll_dec = [wrapFsClassDec], _a8) {
       constructor(pipe3) {
@@ -13635,7 +13989,7 @@ async function connectHttpProxy(proxyUrl, targetHost, targetPort, basicAuth) {
     throw new Error(`DNS resolution failed for proxy ${proxyUrl.hostname}`);
   }
   const addr = addrs.find((a2) => a2.family === 4) || addrs[0];
-  const socket = new streams5.TCP();
+  const socket = new streams6.TCP();
   await socket.connect({
     ip: addr.ip,
     port: parseInt(proxyUrl.port) || 80
@@ -13672,16 +14026,16 @@ function getRequestClient(request) {
 function createHttpClient(options) {
   return new HttpClient(options);
 }
-var ssl5, streams5, engine15, os13, _connect_dec, _init12, HttpClient, httpClients;
+var ssl5, streams6, engine15, os13, _connect_dec, _init12, HttpClient, httpClients;
 var init_http = __esm({
   "cno/src/deno/07_http.ts"() {
     "use strict";
     init_wrap();
     init_dns_cache();
-    ssl5 = import.meta.use("ssl");
-    streams5 = import.meta.use("streams");
-    engine15 = import.meta.use("engine");
-    os13 = import.meta.use("os");
+    ssl5 = __cno_use__("ssl");
+    streams6 = __cno_use__("streams");
+    engine15 = __cno_use__("engine");
+    os13 = __cno_use__("os");
     HttpClient = class {
       constructor(options = {}) {
         __runInitializers(_init12, 5, this);
@@ -13758,7 +14112,7 @@ var init_http = __esm({
             throw new Error(`DNS resolution failed for proxy ${proxyUrl.hostname}`);
           }
           const addr = addrs.find((a2) => a2.family === 4) || addrs[0];
-          const socket = new streams5.TCP();
+          const socket = new streams6.TCP();
           await socket.connect({
             ip: addr.ip,
             port: parseInt(proxyUrl.port) || 80
@@ -13773,7 +14127,7 @@ var init_http = __esm({
             throw new Error(`DNS resolution failed for ${hostname}`);
           }
           const addr = addrs.find((a2) => a2.family === 4) || addrs[0];
-          const socket = new streams5.TCP();
+          const socket = new streams6.TCP();
           await socket.connect({ ip: addr.ip, port });
           return socket;
         }
@@ -13797,7 +14151,7 @@ var init_http = __esm({
 });
 
 // http/src/h2.ts
-function mergeChunks3(chunks) {
+function mergeChunks4(chunks) {
   if (chunks.length === 0) return new globalThis.Uint8Array(0);
   if (chunks.length === 1) return chunks[0];
   const total = chunks.reduce((sum, c) => sum + c.length, 0);
@@ -13815,8 +14169,8 @@ var init_h2 = __esm({
     init_socket();
     init_protocol();
     init_zlib();
-    engine16 = import.meta.use("engine");
-    nghttp2Mod = import.meta.use("@cnojs/http/ext-h2");
+    engine16 = __cno_use__("engine");
+    nghttp2Mod = __cno_use__("@cnojs/http/ext-h2");
     H2Stream = class {
       _id = 0;
       _connection;
@@ -13921,7 +14275,7 @@ var init_h2 = __esm({
               status,
               statusText: "OK",
               headers: headers.filter((h) => !h[0].startsWith(":")),
-              body: mergeChunks3(this._pendingBody)
+              body: mergeChunks4(this._pendingBody)
             };
             resolve3(response);
           }
@@ -13937,7 +14291,7 @@ var init_h2 = __esm({
             status,
             statusText: "OK",
             headers: headers.filter((h) => !h[0].startsWith(":")),
-            body: mergeChunks3(this._pendingBody)
+            body: mergeChunks4(this._pendingBody)
           };
           this._requestResolve(response);
           this._requestResolve = void 0;
@@ -13959,7 +14313,7 @@ var init_h2 = __esm({
               status,
               statusText: "OK",
               headers: headers.filter((h) => !h[0].startsWith(":")),
-              body: mergeChunks3(this._pendingBody)
+              body: mergeChunks4(this._pendingBody)
             };
             this._requestResolve(response);
             this._requestResolve = void 0;
@@ -14196,18 +14550,18 @@ function assert6(condition, message) {
 function createServer(handler, config) {
   return new Server(handler, config);
 }
-var console6, engine17, ssl6, streams6, timers5, PROTOCOL_MODULES, Server;
+var console5, engine17, ssl6, streams7, timers5, PROTOCOL_MODULES, Server;
 var init_server = __esm({
   "http/src/server.ts"() {
     init_socket();
     init_h1();
     init_h2();
     init_protocol();
-    console6 = import.meta.use("console");
-    engine17 = import.meta.use("engine");
-    ssl6 = import.meta.use("ssl");
-    streams6 = import.meta.use("streams");
-    timers5 = import.meta.use("timers");
+    console5 = __cno_use__("console");
+    engine17 = __cno_use__("engine");
+    ssl6 = __cno_use__("ssl");
+    streams7 = __cno_use__("streams");
+    timers5 = __cno_use__("timers");
     PROTOCOL_MODULES = /* @__PURE__ */ new Map([
       ["1.1" /* HTTP11 */, h1],
       ["2" /* HTTP2 */, { client: h2, server: h2 }]
@@ -14240,7 +14594,7 @@ var init_server = __esm({
         if (this.config.cert && this.config.key) {
           this.sslContext = new ssl6.Context({ mode: "server", cert: this.config.cert, key: this.config.key });
         }
-        this.listener = new streams6.TCP();
+        this.listener = new streams7.TCP();
         this.listener.bind({ ip: this.config.hostname, port: this.config.port });
         this.listener.listen(511);
         this.listening = true;
@@ -14248,9 +14602,9 @@ var init_server = __esm({
       async acceptLoop() {
         assert6(this.listener, "Server not listening");
         const proto = this.sslContext ? "https" : "http";
-        console6.debug(`Server listening on ${proto}://${this.config.hostname}:${this.config.port}`);
+        console5.debug(`Server listening on ${proto}://${this.config.hostname}:${this.config.port}`);
         this.listener.onconnection = (error5, client) => {
-          if (error5) return console6.error("Accept error:", error5);
+          if (error5) return console5.error("Accept error:", error5);
           if (this.draining) {
             client.close();
             return;
@@ -14258,7 +14612,7 @@ var init_server = __esm({
           client.setNoDelay(true);
           client.setKeepAlive(true, 1e3);
           this.handleConnection(client).catch((e) => {
-            if (!TcpSocket.isDisconnectError(e)) console6.error("Connection error:", e);
+            if (!TcpSocket.isDisconnectError(e)) console5.error("Connection error:", e);
           });
         };
       }
@@ -14297,7 +14651,7 @@ var init_server = __esm({
         const secure = !!this.sslContext;
         const version3 = this.negotiateProtocol(alpnProtocol);
         if (!version3) {
-          console6.error(`No supported protocol negotiated (ALPN: ${alpnProtocol})`);
+          console5.error(`No supported protocol negotiated (ALPN: ${alpnProtocol})`);
           socket.close();
           return;
         }
@@ -14319,7 +14673,7 @@ var init_server = __esm({
         this.connections.add(protoConn);
         protoConn.on({
           onstream: (stream2) => this.handleStream(stream2),
-          onError: (err2) => console6.error(`Protocol error:`, err2),
+          onError: (err2) => console5.error(`Protocol error:`, err2),
           onClose: () => {
             this.connections.delete(protoConn);
             if (this.draining && this.connections.size === 0) this.drainResolve?.();
@@ -14354,7 +14708,7 @@ var init_server = __esm({
             });
             firstRequest = false;
           } catch (err2) {
-            if (!TcpSocket.isDisconnectError(err2) && !timedOut) console6.error("Request error:", err2);
+            if (!TcpSocket.isDisconnectError(err2) && !timedOut) console5.error("Request error:", err2);
             keepAlive = false;
           } finally {
             timers5.clearTimeout(tid);
@@ -14372,7 +14726,7 @@ var init_server = __esm({
             const httpRes = this.h2ToHttpResponse(stream2);
             await this.handler(httpReq, httpRes);
           } catch (err2) {
-            if (!TcpSocket.isDisconnectError(err2)) console6.error("H2 stream error:", err2);
+            if (!TcpSocket.isDisconnectError(err2)) console5.error("H2 stream error:", err2);
             stream2.abort();
           }
         })().catch(() => {
@@ -14659,9 +15013,9 @@ var init_serve = __esm({
     init_assert();
     init_wrap();
     init_errors();
-    crypto7 = import.meta.use("crypto");
-    engine18 = import.meta.use("engine");
-    http3 = import.meta.use("http");
+    crypto7 = __cno_use__("crypto");
+    engine18 = __cno_use__("engine");
+    http3 = __cno_use__("http");
     websocketSymbol = /* @__PURE__ */ Symbol("deno.serve.websocket");
     _handleWebSocketUpgrade_dec = [wrapFsClassDec];
     ResponseAdapter = class {
@@ -15034,13 +15388,13 @@ function getEndKeyForPrefix(prefix) {
   }
   return key + "\u{10FFFF}";
 }
-var sqlite32, fs8, CREATE_TABLE_SQL, GET_SQL, SET_SQL, DELETE_SQL, COUNT_SQL, CLEANUP_SQL, DELETE_PREFIX_SQL, LIST_SQL, LIST_REVERSE_SQL, KvDatabase;
+var sqlite32, fs10, CREATE_TABLE_SQL, GET_SQL, SET_SQL, DELETE_SQL, COUNT_SQL, CLEANUP_SQL, DELETE_PREFIX_SQL, LIST_SQL, LIST_REVERSE_SQL, KvDatabase;
 var init_db = __esm({
   "cno/src/deno/kv/db.ts"() {
     "use strict";
     init_types();
-    sqlite32 = import.meta.use("sqlite3");
-    fs8 = import.meta.use("fs");
+    sqlite32 = __cno_use__("sqlite3");
+    fs10 = __cno_use__("fs");
     CREATE_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS kv_entries (
     key TEXT PRIMARY KEY,
@@ -15095,8 +15449,8 @@ CREATE INDEX IF NOT EXISTS idx_created ON kv_entries(created_at);
         let current = path.startsWith("/") ? "/" : "";
         for (const part of parts) {
           current += part;
-          if (!fs8.exists(current)) {
-            fs8.mkdir(current, 493);
+          if (!fs10.exists(current)) {
+            fs10.mkdir(current, 493);
           }
           current += "/";
         }
@@ -16106,7 +16460,7 @@ var ffi, brand, UnsafePointer, UnsafePointerView;
 var init_pointer = __esm({
   "cno/src/deno/ffi/pointer.ts"() {
     "use strict";
-    ffi = import.meta.use("ffi");
+    ffi = __cno_use__("ffi");
     brand = /* @__PURE__ */ Symbol("brand");
     UnsafePointer = class {
       static create(value) {
@@ -16297,7 +16651,7 @@ var init_callback = __esm({
     "use strict";
     init_types2();
     init_pointer();
-    ffi2 = import.meta.use("ffi");
+    ffi2 = __cno_use__("ffi");
     callbackRegistry = /* @__PURE__ */ new Map();
     UnsafeCallback = class _UnsafeCallback {
       pointer;
@@ -16497,7 +16851,7 @@ var init_library = __esm({
     "use strict";
     init_types2();
     init_pointer();
-    ffi3 = import.meta.use("ffi");
+    ffi3 = __cno_use__("ffi");
     DynamicLibraryImpl = class {
       lib;
       _symbols;
@@ -16787,16 +17141,16 @@ function createTestContext(name2, origin, parent) {
         stepDef = definitionOrName;
       }
       if (stepDef.ignore) {
-        console7.warn(`  skip ${stepDef.name}`);
+        console6.warn(`  skip ${stepDef.name}`);
         return false;
       }
       const stepCtx = createTestContext(stepDef.name, origin, ctx);
       try {
         await stepDef.fn(stepCtx);
-        console7.info(`  ok ${stepDef.name}`);
+        console6.info(`  ok ${stepDef.name}`);
         return true;
       } catch (e) {
-        console7.error(`  fail ${stepDef.name}`, e);
+        console6.error(`  fail ${stepDef.name}`, e);
         failedTests.push(stepDef);
         return false;
       }
@@ -17023,17 +17377,17 @@ function createBenchFunction() {
   };
   return benchFn;
 }
-var os14, engine19, signal2, console7, signalMap, testRegistry, benchRegistry, beforeAllHooks, beforeEachHooks, afterEachHooks, afterAllHooks, failedTests, uname2, stdin2, stdout2, stderr2;
+var os14, engine19, signal2, console6, signalMap, testRegistry, benchRegistry, beforeAllHooks, beforeEachHooks, afterEachHooks, afterAllHooks, failedTests, uname2, stdin2, stdout2, stderr2;
 var init_deno = __esm({
   async "cno/src/deno/index.ts"() {
     "use strict";
     init_errors();
     init_package();
     init_args();
-    os14 = import.meta.use("os");
-    engine19 = import.meta.use("engine");
-    signal2 = import.meta.use("signals");
-    console7 = import.meta.use("console");
+    os14 = __cno_use__("os");
+    engine19 = __cno_use__("engine");
+    signal2 = __cno_use__("signals");
+    console6 = __cno_use__("console");
     signalMap = {};
     testRegistry = [];
     benchRegistry = [];
@@ -17150,7 +17504,7 @@ var init_deno = __esm({
           if (ret) ret.close();
         },
         inspect(obj, opt2) {
-          return console7.inspect(obj, {
+          return console6.inspect(obj, {
             colors: opt2?.colors ?? Deno.noColor,
             depth: opt2?.depth ?? void 0,
             showHidden: opt2?.showHidden ?? false
@@ -17173,22 +17527,22 @@ var init_deno = __esm({
           for (const testItem of testRegistry) try {
             await tctx.step(testItem);
           } catch (e) {
-            console7.error(`  fail ${testItem.name}`);
-            console7.error(e);
+            console6.error(`  fail ${testItem.name}`);
+            console6.error(e);
           }
           const bctx = createBenchContext("main", "<core>");
           bctx.start();
           for (const benchItem of benchRegistry) try {
             await benchItem.fn(bctx);
           } catch (e) {
-            console7.error(`  fail ${benchItem.name}`);
-            console7.error(e);
+            console6.error(`  fail ${benchItem.name}`);
+            console6.error(e);
           }
           bctx.end();
           if (failedTests.length > 0) {
-            console7.error("Failed tests:");
+            console6.error("Failed tests:");
             for (const failed of failedTests) {
-              console7.error(`  ${failed.name}`);
+              console6.error(`  ${failed.name}`);
             }
           }
           return failedTests.length === 0;
@@ -17216,7 +17570,7 @@ var engine20, cnoEngine;
 var init_engine = __esm({
   "cno/src/cno/engine.ts"() {
     "use strict";
-    engine20 = import.meta.use("engine");
+    engine20 = __cno_use__("engine");
     cnoEngine = {
       serialize(obj) {
         return engine20.serialize(obj);
@@ -17263,7 +17617,7 @@ var zlib4, cnoCompress;
 var init_compress = __esm({
   "cno/src/cno/compress.ts"() {
     "use strict";
-    zlib4 = import.meta.use("zlib");
+    zlib4 = __cno_use__("zlib");
     cnoCompress = {
       deflate: (data, level) => zlib4.deflate(data, level),
       inflate: (data) => zlib4.inflate(data),
@@ -17290,7 +17644,7 @@ var ssl7, cnoSsl;
 var init_ssl = __esm({
   "cno/src/cno/ssl.ts"() {
     "use strict";
-    ssl7 = import.meta.use("ssl");
+    ssl7 = __cno_use__("ssl");
     cnoSsl = {
       createSelfSignedCert(options) {
         return ssl7.createSelfSignedCert(options);
@@ -17512,8 +17866,8 @@ var http4, engine21, METHODS, CRLF, decode2, LLHttpParser, StreamingParser;
 var init_llhttp = __esm({
   "cno/src/cno/llhttp.ts"() {
     "use strict";
-    http4 = import.meta.use("http");
-    engine21 = import.meta.use("engine");
+    http4 = __cno_use__("http");
+    engine21 = __cno_use__("engine");
     METHODS = [
       "DELETE",
       "GET",
@@ -17825,8 +18179,8 @@ var init_pty = __esm({
     "use strict";
     init_malloc();
     init_wrap();
-    process2 = import.meta.use("process");
-    os15 = import.meta.use("os");
+    process2 = __cno_use__("process");
+    os15 = __cno_use__("os");
     PtyProcess = class _PtyProcess {
       #proc;
       #readable;
@@ -18489,7 +18843,7 @@ function parseArgs(argv, tpl) {
 }
 
 // cts/src/utils/index.ts
-var useFn = import.meta.use;
+var useFn = __cno_use__;
 if (!useFn) useFn = globalThis[/* @__PURE__ */ Symbol.for("cjs.internal.use")];
 if (!useFn) throw new Error("Fatal: Not running in CJS environment");
 var asyncfs = useFn("asyncfs");
@@ -36748,6 +37102,86 @@ var ALIASES = {
   "-v": "version",
   "--version": "version"
 };
+var KNOWN_FLAGS = /* @__PURE__ */ new Set([
+  // run / eval / cache
+  "cache-dir",
+  "lock-dir",
+  "no-lock",
+  "frozen",
+  "disable-cache",
+  "no-http",
+  "no-jsr",
+  "no-node",
+  "reload",
+  "r",
+  "precache",
+  // misc
+  "silent",
+  "q",
+  "memory-limit",
+  "max-stack-size",
+  // resource limits inherited from cts
+  "allow-all",
+  "A",
+  // shorthand aliases & subcommand-like flags handled in parser
+  "eval",
+  "help",
+  "h",
+  "version",
+  "v"
+]);
+var DENO_NOOP_FLAGS = /* @__PURE__ */ new Set([
+  // permissions — cno has no permission system yet, allow everything
+  "allow-net",
+  "allow-read",
+  "allow-write",
+  "allow-env",
+  "allow-run",
+  "allow-ffi",
+  "allow-sys",
+  "allow-import",
+  "deny-net",
+  "deny-read",
+  "deny-write",
+  "deny-env",
+  "deny-run",
+  "deny-ffi",
+  "deny-sys",
+  "deny-import",
+  "no-prompt",
+  // version channel / experimental
+  "unstable",
+  "unstable-bare-node-builtins",
+  "unstable-byonm",
+  "unstable-sloppy-imports",
+  "unstable-workspaces",
+  "unstable-detect-cjs",
+  // type checking — cts always transpiles, never type-checks
+  "check",
+  "no-check",
+  // logging / output (we have our own)
+  "log-level",
+  "quiet",
+  // network / cert (delegated to underlying fetch impl)
+  "cert",
+  "cached-only",
+  // import map (cts uses its own config)
+  "import-map",
+  "no-config",
+  "config",
+  // locking
+  "no-remote",
+  "lock",
+  "lock-write",
+  // misc deno features we just ignore
+  "inspect",
+  "inspect-brk",
+  "inspect-wait",
+  "v8-flags",
+  "seed",
+  "location",
+  "no-npm"
+]);
 function parseArgv(argv) {
   const raw = argv.slice();
   const flags = {};
@@ -36828,6 +37262,14 @@ function parseArgv(argv) {
   }
   return { cmd, positional, flags, raw };
 }
+function warnUnknownFlags(cli) {
+  for (const k of Object.keys(cli.flags)) {
+    if (KNOWN_FLAGS.has(k)) continue;
+    if (DENO_NOOP_FLAGS.has(k)) continue;
+    console2.error(`cno: warning: unknown flag --${k} (ignored)`);
+  }
+  return cli;
+}
 function readArgv() {
   return os.args.slice(1);
 }
@@ -36841,9 +37283,9 @@ var package_default = {
   type: "module",
   scripts: {
     "type-check": "tsc --noEmit",
-    bundle: "esbuild src/main.ts --bundle --format=esm --platform=node --target=es2024 --loader:.json=json --outfile=dist/cno-cli.js",
-    "bundle:dev": "esbuild src/main.ts --bundle --format=esm --platform=node --target=es2024 --loader:.json=json --sourcemap=inline --outfile=dist/cno-cli.js",
-    "bundle:min": "esbuild src/main.ts --bundle --format=esm --platform=node --target=es2024 --loader:.json=json --minify --outfile=dist/cno-cli.min.js",
+    bundle: "node scripts/bundle.mjs release",
+    "bundle:dev": "node scripts/bundle.mjs dev",
+    "bundle:min": "node scripts/bundle.mjs min",
     dev: "cts src/main.ts"
   },
   keywords: [
@@ -36915,7 +37357,6 @@ ${C2.bold("COMMON OPTIONS")}
   ${C2.cyan("--no-jsr")}                 Disable jsr: imports
   ${C2.cyan("--no-node")}                Disable Node.js compatibility
   ${C2.cyan("--silent")}, ${C2.cyan("-q")}             Suppress download progress
-  ${C2.cyan("--polyfill")} <file>        Override cno polyfill bundle
   ${C2.cyan("--memory-limit")} <size>    e.g. ${C2.cyan("256MB")}, ${C2.cyan("1GB")}
   ${C2.cyan("--max-stack-size")} <n>     e.g. ${C2.cyan("4MB")}
   ${C2.cyan("--version")}, ${C2.cyan("-v")}            Print version
@@ -36941,38 +37382,12 @@ function tryFile2(path) {
   }
   return null;
 }
-function fromEnv() {
-  try {
-    const v2 = os.getenv("CNO_POLYFILL");
-    if (v2) return tryFile2(v2);
-  } catch {
-  }
-  return null;
-}
 function binaryDir() {
   try {
-    return dirname(os.exePath);
+    return os.exePath.replace(/[\\/][^\\/]+$/, "");
   } catch {
     return os.cwd;
   }
-}
-function resolvePolyfillPath(override) {
-  if (override) return tryFile2(override);
-  const env2 = fromEnv();
-  if (env2) return env2;
-  const dir = binaryDir();
-  const candidates = [
-    joinPaths(dir, "lib", "cno-polyfill.js"),
-    joinPaths(dir, "..", "cno", "dist.js"),
-    joinPaths(dir, "..", "..", "cno", "dist.js"),
-    // Repo-root fallback when this file runs as TS via cts:
-    joinPaths(import.meta.dirname ?? dir, "..", "cno", "dist.js")
-  ];
-  for (const c of candidates) {
-    const hit = tryFile2(c);
-    if (hit) return hit;
-  }
-  return null;
 }
 function resolveExtDir() {
   try {
@@ -36996,7 +37411,7 @@ var EXTENSIONS = {
 function registerExtensions() {
   const dir = resolveExtDir();
   if (!dir) return;
-  const reg = import.meta.register;
+  const reg = __cno_register__;
   if (typeof reg !== "function") return;
   for (const [name2, file] of Object.entries(EXTENSIONS)) {
     const p = joinPaths(dir, file);
@@ -37264,7 +37679,7 @@ var FileHandler = class {
 init_connection();
 init_h1();
 init_protocol();
-var engine6 = import.meta.use("engine");
+var engine6 = __cno_use__("engine");
 function parseUrl(url) {
   const match2 = url.match(/^(https?):\/\/([^/:]+)(?::(\d+))?(\/.*)?$/);
   if (!match2) throw new Error(`Invalid URL: ${url}`);
@@ -37275,51 +37690,19 @@ function parseUrl(url) {
     path: match2[4] ?? "/"
   };
 }
-async function fetchBytes(url, onProgress, httpVersion = "1.1" /* HTTP11 */) {
-  const parsed = parseUrl(url);
-  const conn = await connectionManager.acquire({
-    hostname: parsed.hostname,
-    port: parsed.port,
-    protocol: parsed.protocol
-  });
-  const headers = [
-    ["host", parsed.hostname],
-    ["user-agent", "cnojs/http"],
-    ["accept", "*/*"],
+function buildHeaders(hostname, httpVersion, opts) {
+  const h = [
+    ["host", hostname],
     ["connection", httpVersion === "1.0" /* HTTP10 */ ? "close" : "keep-alive"]
   ];
-  const builder = new HttpRequestBuilder({
-    method: "GET",
-    path: parsed.path,
-    host: parsed.hostname,
-    httpVersion,
-    headers
-  });
-  await conn.write(builder.build());
-  const parser = new HttpResponseParser();
-  const chunks = [];
-  let contentLength = 0;
-  let loaded = 0;
-  parser.onHeadersComplete = (status, hdrs) => {
-    void status;
-    const cl = hdrs.find(([n]) => n === "content-length");
-    if (cl) contentLength = parseInt(cl[1], 10);
-  };
-  parser.onData = (chunk) => {
-    chunks.push(chunk);
-    loaded += chunk.length;
-    onProgress?.(loaded, contentLength);
-  };
-  while (!parser.isCompleted) {
-    const d = await conn.read(128 * 1024);
-    if (!d) break;
-    parser.feed(d);
+  if (opts?.headers) {
+    for (const [k, v2] of Object.entries(opts.headers)) h.push([k.toLowerCase(), v2]);
   }
-  connectionManager.release({
-    hostname: parsed.hostname,
-    port: parsed.port,
-    protocol: parsed.protocol
-  }, conn);
+  if (!h.find(([n]) => n === "user-agent")) h.push(["user-agent", "cnojs/http"]);
+  if (!h.find(([n]) => n === "accept")) h.push(["accept", "*/*"]);
+  return h;
+}
+function mergeChunks2(chunks) {
   const total = chunks.reduce((s, c) => s + c.length, 0);
   const result = new Uint8Array(total);
   let off = 0;
@@ -37329,33 +37712,34 @@ async function fetchBytes(url, onProgress, httpVersion = "1.1" /* HTTP11 */) {
   }
   return result;
 }
-async function fetchAsync(url, onProgress, httpVersion = "1.1" /* HTTP11 */) {
+var connConfig = (parsed) => ({
+  hostname: parsed.hostname,
+  port: parsed.port,
+  protocol: parsed.protocol
+});
+function fetchBytes(url, onProgress, httpVersionOrOpts) {
+  const opts = typeof httpVersionOrOpts === "object" ? httpVersionOrOpts : void 0;
+  const httpVersion = typeof httpVersionOrOpts === "string" ? httpVersionOrOpts : "1.1" /* HTTP11 */;
   const parsed = parseUrl(url);
-  const conn = await connectionManager.acquire({
-    hostname: parsed.hostname,
-    port: parsed.port,
-    protocol: parsed.protocol
-  });
-  const headers = [
-    ["host", parsed.hostname],
-    ["user-agent", "cnojs/http"],
-    ["accept", "*/*"],
-    ["connection", httpVersion === "1.0" /* HTTP10 */ ? "close" : "keep-alive"]
-  ];
+  const cfg = connConfig(parsed);
+  const conn = connectionManager.acquire(cfg);
+  const headers = buildHeaders(parsed.hostname, httpVersion, opts);
   const builder = new HttpRequestBuilder({
-    method: "GET",
+    method: opts?.method ?? "GET",
     path: parsed.path,
     host: parsed.hostname,
     httpVersion,
-    headers
+    headers,
+    body: opts?.body ?? null
   });
-  await conn.write(builder.build());
+  conn.write(builder.build());
   const parser = new HttpResponseParser();
   const chunks = [];
   let contentLength = 0;
   let loaded = 0;
-  parser.onHeadersComplete = (status, hdrs) => {
-    void status;
+  let parseError = null;
+  parser.onHeadersComplete = (status2, hdrs) => {
+    void status2;
     const cl = hdrs.find(([n]) => n === "content-length");
     if (cl) contentLength = parseInt(cl[1], 10);
   };
@@ -37364,28 +37748,94 @@ async function fetchAsync(url, onProgress, httpVersion = "1.1" /* HTTP11 */) {
     loaded += chunk.length;
     onProgress?.(loaded, contentLength);
   };
-  while (!parser.isCompleted) {
-    const d = await conn.read(128 * 1024);
+  parser.onError = (e) => {
+    parseError = e;
+  };
+  while (!parser.isCompleted && !parseError) {
+    const d = conn.read(128 * 1024);
     if (!d) break;
     parser.feed(d);
   }
-  connectionManager.release({
-    hostname: parsed.hostname,
-    port: parsed.port,
-    protocol: parsed.protocol
-  }, conn);
-  const total = chunks.reduce((s, c) => s + c.length, 0);
-  const result = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    result.set(c, off);
-    off += c.length;
+  if (parseError) {
+    conn.close();
+    throw parseError;
   }
-  return { body: result };
+  const status = parser.getStatusCode();
+  if (status >= 300 && status < 400) {
+    const location2 = parser.getHeaders().find(([n]) => n === "location")?.[1];
+    if (location2) {
+      connectionManager.release(cfg, conn);
+      const nextUrl = location2.startsWith("/") ? `${parsed.protocol}://${parsed.hostname}:${parsed.port}${location2}` : location2;
+      return fetchBytes(nextUrl, onProgress, httpVersionOrOpts);
+    }
+  }
+  connectionManager.release(cfg, conn);
+  if (status < 200 || status >= 300) throw new Error(`HTTP ${status} ${url}`);
+  return mergeChunks2(chunks);
 }
-async function fetchText(url, httpVersion) {
-  const bytes = await fetchBytes(url, void 0, httpVersion);
+function fetchText(url, httpVersion) {
+  const bytes = fetchBytes(url, void 0, httpVersion);
   return engine6.decodeString(bytes);
+}
+async function fetchBytesAsync(url, onProgress, httpVersionOrOpts) {
+  const opts = typeof httpVersionOrOpts === "object" ? httpVersionOrOpts : void 0;
+  const httpVersion = typeof httpVersionOrOpts === "string" ? httpVersionOrOpts : "1.1" /* HTTP11 */;
+  const parsed = parseUrl(url);
+  const cfg = connConfig(parsed);
+  const conn = await connectionManager.acquireAsync(cfg);
+  const headers = buildHeaders(parsed.hostname, httpVersion, opts);
+  const builder = new HttpRequestBuilder({
+    method: opts?.method ?? "GET",
+    path: parsed.path,
+    host: parsed.hostname,
+    httpVersion,
+    headers,
+    body: opts?.body ?? null
+  });
+  await conn.writeAsync(builder.build());
+  const parser = new HttpResponseParser();
+  const chunks = [];
+  let contentLength = 0;
+  let loaded = 0;
+  let parseError = null;
+  parser.onHeadersComplete = (status2, hdrs) => {
+    void status2;
+    const cl = hdrs.find(([n]) => n === "content-length");
+    if (cl) contentLength = parseInt(cl[1], 10);
+  };
+  parser.onData = (chunk) => {
+    chunks.push(chunk);
+    loaded += chunk.length;
+    onProgress?.(loaded, contentLength);
+  };
+  parser.onError = (e) => {
+    parseError = e;
+  };
+  while (!parser.isCompleted && !parseError) {
+    const d = await conn.readAsync(128 * 1024);
+    if (!d) break;
+    parser.feed(d);
+  }
+  if (parseError) {
+    conn.close();
+    throw parseError;
+  }
+  const status = parser.getStatusCode();
+  if (status >= 300 && status < 400) {
+    const location2 = parser.getHeaders().find(([n]) => n === "location")?.[1];
+    if (location2) {
+      connectionManager.release(cfg, conn);
+      const nextUrl = location2.startsWith("/") ? `${parsed.protocol}://${parsed.hostname}:${parsed.port}${location2}` : location2;
+      return fetchBytesAsync(nextUrl, onProgress, httpVersionOrOpts);
+    }
+  }
+  connectionManager.release(cfg, conn);
+  if (status < 200 || status >= 300) throw new Error(`HTTP ${status} ${url}`);
+  return mergeChunks2(chunks);
+}
+async function fetchAsync(url, onProgress, opts) {
+  const bytes = await fetchBytesAsync(url, onProgress, opts);
+  return { body: bytes };
 }
 
 // cts/src/utils/progress.ts
@@ -39287,9 +39737,16 @@ var ENV_MODULE = {
   tan: Math.tan,
   min_f32: Math.fround,
   max_f32: Math.fround,
-  memory: () => 0
+  memory: () => 0,
+  // Timing — wasm-bindgen / emscripten ship glue that ultimately reads
+  // host time; in the absence of a glue file (./env.js etc.) we satisfy
+  // the import directly so deno-dom and friends boot.
+  now: Date.now,
+  // @ts-ignore - cts has performance
+  emscripten_get_now: () => performance?.now?.() ?? Date.now()
 };
 var WASI_MODULES = /* @__PURE__ */ new Set(["wasi_unstable", "wasi_snapshot_preview1"]);
+var RE_ENV_MODULE = /^(?:\.\/)?env(?:\.js)?$/;
 function getExport(exports, name2) {
   if (name2 in exports) return exports[name2];
   const def = exports.default;
@@ -39299,6 +39756,7 @@ function getExport(exports, name2) {
 function resolveImportFunc(imp, parentPath, importSource) {
   assert(wasm, "WASM support not available in this build");
   const { module: modName, name: fnName } = imp;
+  let resolveErr = null;
   try {
     const exports = importSource.require(modName, parentPath);
     if (exports) {
@@ -39307,11 +39765,16 @@ function resolveImportFunc(imp, parentPath, importSource) {
       if (fn !== void 0) return () => fn;
     }
   } catch (e) {
-    log.debug("wasm", () => `import resolve "${modName}" failed: ${errMsg(e)}`);
+    resolveErr = e;
+    log.debug("wasm", () => `import resolve "${modName}" failed: ${errMsg(e)}
+${e?.stack ?? ""}`);
   }
-  if (modName === "env") {
+  if (RE_ENV_MODULE.test(modName)) {
     const fn = ENV_MODULE[fnName];
     if (fn) return fn;
+  }
+  if (resolveErr) {
+    log.warn("wasm", () => `unresolved ${modName}::${fnName}: ${errMsg(resolveErr)}`);
   }
   return null;
 }
@@ -39746,17 +40209,12 @@ var ModuleLoader = class {
     this.wasmLoading.add(info.localPath);
     const importSource = {
       require: (spec, parentPath) => {
-        try {
-          const resolved = this.resolver.resolve(spec, parentPath);
-          const loaded = this.load(resolved, {});
-          loaded.eval();
-          const ns = loaded.namespace;
-          log.debug("wasm", () => `import "${spec}" resolved \u2192 ${resolved.specPath} (${Object.keys(ns).length} exports)`);
-          return ns;
-        } catch (e) {
-          log.debug("wasm", () => `import "${spec}" from "${parentPath}" failed: ${errMsg(e)}`);
-          return null;
-        }
+        const resolved = this.resolver.resolve(spec, parentPath);
+        const loaded = this.load(resolved, {});
+        loaded.eval();
+        const ns = loaded.namespace;
+        log.debug("wasm", () => `import "${spec}" resolved \u2192 ${resolved.specPath} (${Object.keys(ns).length} exports)`);
+        return ns;
       }
     };
     const result = buildWasmModule(info, importSource);
@@ -39829,6 +40287,8 @@ var ModuleLoader = class {
 
 // cts/src/deps.ts
 var SCANNABLE = /* @__PURE__ */ new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
+var WASM_EXT = ".wasm";
+var WASI_MODS = /* @__PURE__ */ new Set(["wasi_unstable", "wasi_snapshot_preview1"]);
 function extractImports(source, isTs = true) {
   if (!source.includes("import") && !source.includes("export") && !source.includes("require")) return [];
   let tokens;
@@ -39941,7 +40401,7 @@ var DepScanner = class {
           if (this.seen.has(info.specPath)) continue;
           this.seen.add(info.specPath);
           this.found.push({ specPath: info.specPath, localPath: info.localPath });
-          if (fs.exists(info.localPath) && SCANNABLE.has(extname(info.localPath)))
+          if (fs.exists(info.localPath) && (SCANNABLE.has(extname(info.localPath)) || extname(info.localPath) === WASM_EXT))
             next2.push({ specPath: info.specPath, localPath: info.localPath });
         }
         batch = next2;
@@ -39959,7 +40419,26 @@ var DepScanner = class {
   // -------------------------------------------------------------------------
   async parseLevel(batch) {
     const results = await Promise.all(batch.map(async ({ specPath, localPath }) => {
-      if (!SCANNABLE.has(extname(localPath))) return [];
+      const ext2 = extname(localPath);
+      if (ext2 === WASM_EXT) {
+        if (!wasm) return [];
+        try {
+          const bytes = await asyncfs.readFile(localPath);
+          const wmod = wasm.parseModule(new Uint8Array(bytes));
+          const seen = /* @__PURE__ */ new Set();
+          for (const imp of wasm.moduleImports(wmod)) {
+            if (WASI_MODS.has(imp.module)) continue;
+            if (imp.module === "env") continue;
+            if (seen.has(imp.module)) continue;
+            seen.add(imp.module);
+          }
+          return [...seen].map((spec) => ({ spec, parent: specPath }));
+        } catch (e) {
+          log.debug("deps", () => `wasm scan failed for ${localPath}: ${errMsg(e)}`);
+          return [];
+        }
+      }
+      if (!SCANNABLE.has(ext2)) return [];
       try {
         const bytes = await asyncfs.readFile(localPath);
         const src = engine2.decodeString(bytes);
@@ -40479,25 +40958,11 @@ async function runFile(opts) {
   const { entry, dir } = entryAndDir(opts.file);
   const fileCfg = loadConfigFile(dir);
   const cliCfg = flagsToConfig(opts.flags);
-  const polyfill = cliCfg.polyfill ?? resolvePolyfillPath();
-  if (!polyfill) {
-    console2.error(`${C2.warn("\u26A0")} cno polyfill bundle not found.`);
-    console2.error(`  Set ${C2.cyan("CNO_POLYFILL")} or pass ${C2.cyan("--polyfill <file>")}.`);
-    console2.error(`  Running without polyfill \u2014 Deno/Node APIs will be unavailable.`);
-  }
   const cfg = {
     ...fileCfg,
-    ...cliCfg,
-    polyfill: polyfill ?? ""
+    ...cliCfg
   };
   const runtime = createRuntime(cfg, dir);
-  if (runtime.config.polyfill) {
-    try {
-      await runtime.loadPolyfill(runtime.config.polyfill);
-    } catch (e) {
-      fatal(e, `loading polyfill ${runtime.config.polyfill}`);
-    }
-  }
   if (opts.flags["precache"] || opts.flags["reload"]) {
     try {
       const info = runtime.resolver.resolve(entry, `${os.cwd}/<precache>`);
@@ -40520,22 +40985,12 @@ async function runEval(opts) {
   const cwd = os.cwd;
   const evalPath = joinPaths(cwd, "<eval>.ts");
   const fileCfg = loadConfigFile(cwd);
-  const polyfillOverride = typeof opts.flags["polyfill"] === "string" ? opts.flags["polyfill"] : void 0;
-  const polyfill = polyfillOverride ?? resolvePolyfillPath() ?? "";
   const cfg = {
     ...fileCfg,
-    polyfill,
     silent: opts.flags["silent"] === true,
     noLock: opts.flags["no-lock"] === true
   };
   const runtime = createRuntime(cfg, cwd);
-  if (runtime.config.polyfill) {
-    try {
-      await runtime.loadPolyfill(runtime.config.polyfill);
-    } catch (e) {
-      fatal(e, `loading polyfill ${runtime.config.polyfill}`);
-    }
-  }
   const info = {
     specPath: evalPath,
     localPath: evalPath,
@@ -40653,7 +41108,8 @@ function stripDenoRunFlags(tokens) {
     const flag = eq !== -1 ? t2.slice(0, eq) : t2;
     if (DENO_VALUE_FLAGS.has(flag)) {
       if (eq === -1) i++;
-    } else if (!DENO_BOOL_FLAGS.has(flag)) {
+    } else if (DENO_BOOL_FLAGS.has(flag) || /^--unstable(-|$)/.test(flag) || /^--allow-/.test(flag) || /^--deny-/.test(flag)) {
+    } else {
       out.push(t2);
     }
     i++;
@@ -40707,12 +41163,15 @@ async function execCommand(cmd, env2, cwd, extraArgs) {
     prog = shell;
     argv = [shellArg, fullCmd];
   }
-  const mergedEnv = {};
+  const mergedEnv = {
+    ...os.environ(),
+    ...env2
+  };
   const child = process.spawn([prog, ...argv], {
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
-    env: env2,
+    env: mergedEnv,
     cwd
   });
   const info = await child.wait();
@@ -40816,11 +41275,11 @@ async function runTask(args) {
 }
 
 // src/commands/repl/runner.ts
-var os4 = import.meta.use("os");
-var streams3 = import.meta.use("streams");
-var engine7 = import.meta.use("engine");
-var console5 = import.meta.use("console");
-Reflect.set(globalThis, "console", console5);
+var os4 = __cno_use__("os");
+var streams4 = __cno_use__("streams");
+var engine7 = __cno_use__("engine");
+var console4 = __cno_use__("console");
+Reflect.set(globalThis, "console", console4);
 var COLOR = {
   reset: "\x1B[0m",
   black: "\x1B[30m",
@@ -41245,26 +41704,26 @@ var CnoRepl = class {
       utf8: true
     };
     if (os4.guessHandle(os4.STDOUT_FILENO) === "tty") {
-      this.#stdout = new streams3.TTY(os4.STDOUT_FILENO, false);
+      this.#stdout = new streams4.TTY(os4.STDOUT_FILENO, false);
     } else {
-      const pipe3 = new streams3.Pipe();
+      const pipe3 = new streams4.Pipe();
       pipe3.open(os4.STDOUT_FILENO);
       this.#stdout = pipe3;
     }
     if (os4.guessHandle(os4.STDIN_FILENO) === "tty") {
-      const stdin3 = this.#stdin = new streams3.TTY(os4.STDIN_FILENO, true);
-      stdin3.setMode(streams3.TTY_MODE_RAW_VT);
+      const stdin3 = this.#stdin = new streams4.TTY(os4.STDIN_FILENO, true);
+      stdin3.setMode(streams4.TTY_MODE_RAW_VT);
       this.#isatty = true;
     } else {
-      const pipe3 = new streams3.Pipe();
+      const pipe3 = new streams4.Pipe();
       pipe3.open(os4.STDIN_FILENO);
       this.#stdin = pipe3;
-      console5.warn("stdin is not a TTY, some features may not work");
+      console4.warn("stdin is not a TTY, some features may not work");
     }
     this.#onExit(() => {
       if (this.#isatty) {
         this.#stdin.write(engine7.encodeString("\x1B[?2004l"));
-        this.#stdin.setMode(streams3.TTY_MODE_NORMAL);
+        this.#stdin.setMode(streams4.TTY_MODE_NORMAL);
       }
     });
   }
@@ -41300,7 +41759,7 @@ var CnoRepl = class {
   async #readInput() {
     this.#stdin.onread = (res, err2) => {
       if (!res) {
-        console5.error("Failed to read from console:", err2 ?? "EOF");
+        console4.error("Failed to read from console:", err2 ?? "EOF");
         os4.exit(1);
         throw 0;
       }
@@ -41771,7 +42230,7 @@ var CnoRepl = class {
         return false;
       case "u":
         rest = rest.trim();
-        globalThis[rest] = import.meta.use(rest);
+        globalThis[rest] = __cno_use__(rest);
         return false;
       default:
         await this.#print(`Unknown directive: .${cmd}
@@ -41799,7 +42258,7 @@ var CnoRepl = class {
         const hex = typeof result === "bigint" ? "0x" + result.toString(16) : "0x" + Math.floor(result).toString(16);
         await this.#print(hex + (typeof result === "bigint" ? "n" : ""));
       } else {
-        console5.log(result);
+        console4.log(result);
       }
       await this.#print(COLOR.reset + "\n");
       globalThis._ = result;
@@ -41811,7 +42270,7 @@ var CnoRepl = class {
   }
   #showHelp() {
     const sel = (n) => n ? "*" : " ";
-    console5.log(
+    console4.log(
       `.h          this help
 .x         ${sel(this.#config.hexMode)} hexadecimal number display
 .d         ${sel(!this.#config.hexMode)} decimal number display
@@ -41832,7 +42291,7 @@ var CnoRepl = class {
   async #printError(err2) {
     await this.#print(COLOR.brightRed);
     if (!(err2 instanceof Error)) await this.#print("Throw: ");
-    console5.log(err2);
+    console4.log(err2);
     await this.#print(COLOR.reset + "\n");
   }
   #alert() {
@@ -41877,24 +42336,7 @@ function homeDir() {
     return null;
   }
 }
-async function runRepl(flags) {
-  const cwd = os.cwd;
-  const fileCfg = loadConfigFile(cwd);
-  const polyfill = (typeof flags["polyfill"] === "string" ? flags["polyfill"] : void 0) ?? resolvePolyfillPath() ?? "";
-  const cfg = {
-    ...fileCfg,
-    polyfill,
-    silent: flags["silent"] === true,
-    noLock: true
-  };
-  const runtime = createRuntime(cfg, cwd);
-  if (runtime.config.polyfill) {
-    try {
-      await runtime.loadPolyfill(runtime.config.polyfill);
-    } catch (e) {
-      fatal(e, `loading polyfill ${runtime.config.polyfill}`);
-    }
-  }
+async function runRepl(_flags) {
   engine2.onEvent((_e) => false);
   const transformer = new Transformer2(
     /* sourceMaps */
@@ -42044,7 +42486,7 @@ function notImplemented(name2) {
   throw new Error("unreachable");
 }
 async function dispatch() {
-  const cli = parseArgv(readArgv());
+  const cli = warnUnknownFlags(parseArgv(readArgv()));
   if (cli.cmd === "help") return showHelp();
   if (cli.cmd === "version") return showVersion();
   if (cli.cmd === "eval") {
@@ -42073,6 +42515,7 @@ async function dispatch() {
   if (cli.cmd === "run" || cli.cmd === null) {
     const [file, ...args] = cli.positional;
     if (!file) {
+      if (cli.cmd === null) return runRepl(cli.flags);
       showHelp();
       os.exit(1);
     }

@@ -1,10 +1,9 @@
-import { os, console } from '../../cts/src/utils';
+import { os } from '../../cts/src/utils';
 import { createRuntime } from '../../cts/src/runtime';
 import { loadConfigFile } from '../../cts/src/config';
 import { fatal } from '../../cts/src/errors';
 import { joinPaths } from '../../cts/src/utils/path';
 import type { ConfigOptions, ModuleInfo } from '../../cts/src/types';
-import { resolvePolyfillPath } from '../bootstrap';
 
 interface EvalOpts {
     code: string;
@@ -16,24 +15,13 @@ export async function runEval(opts: EvalOpts): Promise<void> {
     const evalPath = joinPaths(cwd, '<eval>.ts');
     const fileCfg  = loadConfigFile(cwd);
 
-    const polyfillOverride = typeof opts.flags['polyfill'] === 'string'
-        ? (opts.flags['polyfill'] as string)
-        : undefined;
-    const polyfill = polyfillOverride ?? resolvePolyfillPath() ?? '';
-
     const cfg: Partial<ConfigOptions> = {
         ...fileCfg,
-        polyfill,
         silent: opts.flags['silent'] === true,
         noLock: opts.flags['no-lock'] === true,
     };
 
     const runtime = createRuntime(cfg, cwd);
-
-    if (runtime.config.polyfill) {
-        try { await runtime.loadPolyfill(runtime.config.polyfill); }
-        catch (e) { fatal(e, `loading polyfill ${runtime.config.polyfill}`); }
-    }
 
     const info: ModuleInfo = {
         specPath:  evalPath,

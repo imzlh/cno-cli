@@ -127,9 +127,17 @@ if(_CNO_EXTRA_SOURCES)
 endif()
 
 # ─── circu.js (runtime + host cjsc) ─────────────────────────────────────────
-if(CNO_RELEASE)
-    set(CJS_USE_SYMBOL_INTERNAL ON CACHE BOOL "" FORCE)
-endif()
+# cno always feeds the cno-cli bundle to cjsc → bytecode, and qjs bytecode
+# rejects `import.meta.*`. Our bundler replaces those with __cno_use__ /
+# __cno_register__ bound to globalThis[Symbol.for("cjs.internal.use"|"...register")],
+# which only exist when CJS_USE_SYMBOL_INTERNAL is ON. So force it on
+# unconditionally — independent of CNO_RELEASE.
+set(CJS_USE_SYMBOL_INTERNAL ON CACHE BOOL "" FORCE)
+# ASan defaults to ON in circu.js Debug builds; that pulls in
+# clang_rt.asan_dynamic-x86_64.dll from MSVC's install dir, which vcpkg's
+# applocal can't see. For cno (a distributable binary) we don't want it.
+# Override if the user really wants ASan: pass -DENABLE_ASAN=ON.
+set(ENABLE_ASAN OFF CACHE BOOL "" FORCE)
 add_subdirectory(circu.js)
 
 # cjsc is target-level EXCLUDE_FROM_ALL inside circu.js so it doesn't get
@@ -181,7 +189,10 @@ else()
 endif()
 
 file(GLOB_RECURSE _CLI_SRCS CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.ts")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.ts"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cts/src/*.ts"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cno/src/*.ts"
+    "${CMAKE_CURRENT_SOURCE_DIR}/http/src/*.ts")
 add_custom_command(
     OUTPUT  "${_CLI_BUNDLE}"
     COMMAND "${PNPM_EXE}" run "${_BUNDLE_SCRIPT}"
@@ -215,6 +226,31 @@ add_custom_command(
     COMMENT "Building final cno binary at ${_CNO_OUTPUT}"
     VERBATIM)
 
+# ─── Stage runtime-dependency DLLs alongside cno.exe (Windows) ──────────────
+# vcpkg's applocal post-build step copies every transitive runtime DLL next
+# to cjs-cli.exe at build time. We just mirror that directory into stage/
+# so cno.exe (which is cjs-cli.exe + attached bytecode) can find them too.
+# Done via a -P helper so the glob runs at build time, not configure time
+# (the multi-config $<TARGET_FILE_DIR:cjs-cli> only resolves then).
+set(_RUNTIME_DLLS_STAMP "${_STAGE_DIR}/.runtime-dlls.stamp")
+if(WIN32)
+    add_custom_command(
+        OUTPUT  "${_RUNTIME_DLLS_STAMP}"
+        COMMAND "${CMAKE_COMMAND}"
+                "-DSRC_DIR=$<TARGET_FILE_DIR:cjs-cli>"
+                "-DDST_DIR=${_STAGE_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/stage_dlls.cmake"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${_RUNTIME_DLLS_STAMP}"
+        DEPENDS cjs-cli
+        COMMENT "Mirroring runtime DLLs from cjs-cli output dir → stage/"
+        VERBATIM)
+else()
+    add_custom_command(
+        OUTPUT  "${_RUNTIME_DLLS_STAMP}"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${_RUNTIME_DLLS_STAMP}"
+        VERBATIM)
+endif()
+
 # ─── Step 4: stage any pre-built native extensions from CNO_EXT_DIR ─────────
 # Polyfill is bundled into the CLI bundle directly (src/main.ts does
 # `import '../cno/src/main'`), so we no longer stage a separate
@@ -242,6 +278,7 @@ endif()
 # ─── The umbrella `cno` target ──────────────────────────────────────────────
 add_custom_target(cno ALL
     DEPENDS "${_CNO_OUTPUT}"
+            "${_RUNTIME_DLLS_STAMP}"
             ${_EXT_OUTPUTS}
     COMMENT "cno build complete — staged at ${_STAGE_DIR}")
 
@@ -250,12 +287,18 @@ include(GNUInstallDirs)
 install(PROGRAMS "${_CNO_OUTPUT}"      DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(DIRECTORY "${_STAGE_DIR}/ext/" DESTINATION "${CMAKE_INSTALL_LIBDIR}/cno/ext"
         FILES_MATCHING PATTERN "*${CMAKE_SHARED_LIBRARY_SUFFIX}")
+if(WIN32)
+    # Runtime DLLs (vcpkg / system) need to sit next to cno.exe on Windows.
+    install(DIRECTORY "${_STAGE_DIR}/" DESTINATION "${CMAKE_INSTALL_BINDIR}"
+            FILES_MATCHING PATTERN "*.dll")
+endif()
 
 # ─── Status echo ────────────────────────────────────────────────────────────
 message(STATUS "")
 message(STATUS "cno-cli configuration:")
 message(STATUS "  Build type:        ${CMAKE_BUILD_TYPE}")
-message(STATUS "  CNO_RELEASE:       ${CNO_RELEASE}  (CJS_USE_SYMBOL_INTERNAL=${CJS_USE_SYMBOL_INTERNAL})")
+message(STATUS "  CNO_RELEASE:       ${CNO_RELEASE}")
+message(STATUS "  CJS_USE_SYMBOL_INTERNAL: ${CJS_USE_SYMBOL_INTERNAL} (forced, required by bundle)")
 message(STATUS "  CNO_BUNDLE_MINIFY: ${CNO_BUNDLE_MINIFY}")
 message(STATUS "  CNO_EMBED_EXT_H2:  ${CNO_EMBED_EXT_H2}")
 message(STATUS "  CNO_EMBED_EXT_QUIC: ${CNO_EMBED_EXT_QUIC}")

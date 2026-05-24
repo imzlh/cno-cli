@@ -1,12 +1,7 @@
-// Resolve where the cno polyfill bundle lives, and register native .so
-// extensions with circu.js before any polyfill code runs.
+// Register native .so extensions with circu.js before any polyfill code runs.
 //
-// Polyfill lookup priority:
-//   1. --polyfill CLI flag                (handled by caller)
-//   2. CNO_POLYFILL env var
-//   3. <binary_dir>/lib/cno-polyfill.js   (release layout)
-//   4. <binary_dir>/../cno/dist.js        (dev layout, run from build tree)
-//   5. <repo_root>/cno/dist.js            (last resort, dev via `cts src/main.ts`)
+// The cno polyfill itself is bundled into the cno binary (src/main.ts imports
+// '../cno/src/main'), so there is no external polyfill file to resolve.
 //
 // Extension lookup:
 //   - CNO_EXT_PATH env var
@@ -15,7 +10,7 @@
 // `tjs_module_info` (see circu.js/src/tjs.h DEF_MODULE).
 
 import { os, fs, uname, console } from '../cts/src/utils';
-import { dirname, joinPaths } from '../cts/src/utils/path';
+import { joinPaths } from '../cts/src/utils/path';
 
 const IS_WIN = uname.sysname.includes('Windows');
 const IS_MAC = uname.sysname === 'Darwin';
@@ -28,45 +23,12 @@ function tryFile(path: string): string | null {
     return null;
 }
 
-function fromEnv(): string | null {
-    try {
-        const v = os.getenv('CNO_POLYFILL');
-        if (v) return tryFile(v);
-    } catch {}
-    return null;
-}
-
 function binaryDir(): string {
     try {
-        return dirname(os.exePath as string);
+        return (os.exePath as string).replace(/[\\/][^\\/]+$/, '');
     } catch {
         return os.cwd as string;
     }
-}
-
-/**
- * Resolve the polyfill bundle to load before user code.
- * Returns absolute path, or null if no bundle was found.
- */
-export function resolvePolyfillPath(override?: string): string | null {
-    if (override) return tryFile(override);
-
-    const env = fromEnv();
-    if (env) return env;
-
-    const dir = binaryDir();
-    const candidates = [
-        joinPaths(dir, 'lib', 'cno-polyfill.js'),
-        joinPaths(dir, '..', 'cno', 'dist.js'),
-        joinPaths(dir, '..', '..', 'cno', 'dist.js'),
-        // Repo-root fallback when this file runs as TS via cts:
-        joinPaths(((import.meta as any).dirname as string) ?? dir, '..', 'cno', 'dist.js'),
-    ];
-    for (const c of candidates) {
-        const hit = tryFile(c);
-        if (hit) return hit;
-    }
-    return null;
 }
 
 /**
@@ -112,8 +74,6 @@ export function registerExtensions(): void {
         try { reg(name, p); }
         catch (e) {
             const msg = (e as Error).message || '';
-            // Built-in shadow / already-registered — expected when statically
-            // embedded; not worth surfacing.
             if (/built-in|already registered/i.test(msg)) continue;
             console.error(`cno: register('${name}') failed: ${msg}`);
         }

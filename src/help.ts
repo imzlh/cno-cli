@@ -47,7 +47,6 @@ ${C.bold('COMMON OPTIONS')}
   ${C.cyan('--no-jsr')}                 Disable jsr: imports
   ${C.cyan('--no-node')}                Disable Node.js compatibility
   ${C.cyan('--silent')}, ${C.cyan('-q')}             Suppress download progress
-  ${C.cyan('--polyfill')} <file>        Override cno polyfill bundle
   ${C.cyan('--memory-limit')} <size>    e.g. ${C.cyan('256MB')}, ${C.cyan('1GB')}
   ${C.cyan('--max-stack-size')} <n>     e.g. ${C.cyan('4MB')}
   ${C.cyan('--version')}, ${C.cyan('-v')}            Print version

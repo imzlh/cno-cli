@@ -4,8 +4,6 @@ import { loadConfigFile } from '../../cts/src/config';
 import { fatal, formatError } from '../../cts/src/errors';
 import { dirname, normalizePath, isAbsolute, joinPaths } from '../../cts/src/utils/path';
 import type { ConfigOptions } from '../../cts/src/types';
-import { resolvePolyfillPath } from '../bootstrap';
-import { C } from '../help';
 
 interface RunOpts {
     file: string;
@@ -47,29 +45,12 @@ export async function runFile(opts: RunOpts): Promise<void> {
     const fileCfg = loadConfigFile(dir);
     const cliCfg  = flagsToConfig(opts.flags);
 
-    // Polyfill: respect explicit --polyfill, otherwise auto-resolve cno bundle.
-    const polyfill = cliCfg.polyfill ?? resolvePolyfillPath();
-    if (!polyfill) {
-        console.error(`${C.warn('⚠')} cno polyfill bundle not found.`);
-        console.error(`  Set ${C.cyan('CNO_POLYFILL')} or pass ${C.cyan('--polyfill <file>')}.`);
-        console.error(`  Running without polyfill — Deno/Node APIs will be unavailable.`);
-    }
-
     const cfg: Partial<ConfigOptions> = {
         ...fileCfg,
         ...cliCfg,
-        polyfill: polyfill ?? '',
     };
 
     const runtime = createRuntime(cfg, dir);
-
-    if (runtime.config.polyfill) {
-        try {
-            await runtime.loadPolyfill(runtime.config.polyfill);
-        } catch (e) {
-            fatal(e, `loading polyfill ${runtime.config.polyfill}`);
-        }
-    }
 
     if (opts.flags['precache'] || opts.flags['reload']) {
         try {

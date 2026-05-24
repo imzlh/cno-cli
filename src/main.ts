@@ -8,7 +8,7 @@ import { isCompilerWorker, runCompilerWorker } from '../cts/src/precompile';
 import { fatal } from '../cts/src/errors';
 import { log } from '../cts/src/utils/log';
 
-import { parseArgv, readArgv } from './cli';
+import { parseArgv, readArgv, warnUnknownFlags } from './cli';
 import { showHelp, showVersion, C } from './help';
 import { registerExtensions } from './bootstrap';
 import { runFile } from './commands/run';
@@ -31,7 +31,7 @@ function notImplemented(name: string): never {
 }
 
 async function dispatch(): Promise<void> {
-    const cli = parseArgv(readArgv());
+    const cli = warnUnknownFlags(parseArgv(readArgv()));
 
     if (cli.cmd === 'help') return showHelp();
     if (cli.cmd === 'version') return showVersion();
@@ -65,10 +65,12 @@ async function dispatch(): Promise<void> {
         notImplemented(cli.cmd);
     }
 
-    // `cno run <file>` or `cno <file>` (implicit run)
+    // `cno run <file>` or `cno <file>` (implicit run).
+    // Bare `cno` (no subcommand, no positional) drops into the REPL, like deno.
     if (cli.cmd === 'run' || cli.cmd === null) {
         const [file, ...args] = cli.positional;
         if (!file) {
+            if (cli.cmd === null) return runRepl(cli.flags);
             showHelp();
             os.exit(1);
         }

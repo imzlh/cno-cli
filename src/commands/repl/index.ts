@@ -1,11 +1,6 @@
 import { os, fs, asyncfs, engine, console, uname, __use_fn } from '../../../cts/src/utils';
-import { createRuntime } from '../../../cts/src/runtime';
-import { loadConfigFile } from '../../../cts/src/config';
 import { Transformer } from '../../../cts/src/transformer';
-import { fatal } from '../../../cts/src/errors';
 import { joinPaths } from '../../../cts/src/utils/path';
-import type { ConfigOptions } from '../../../cts/src/types';
-import { resolvePolyfillPath } from '../../bootstrap';
 import { version } from '../../version';
 import { CnoRepl } from './runner';
 
@@ -20,24 +15,9 @@ function homeDir(): string | null {
     } catch { return null; }
 }
 
-export async function runRepl(flags: Record<string, string | boolean>): Promise<void> {
-    // 1. Load cno polyfill so Deno/Node APIs are available at the prompt.
-    const cwd      = os.cwd as string;
-    const fileCfg  = loadConfigFile(cwd);
-    const polyfill = (typeof flags['polyfill'] === 'string' ? flags['polyfill'] as string : undefined)
-                     ?? resolvePolyfillPath() ?? '';
-
-    const cfg: Partial<ConfigOptions> = {
-        ...fileCfg,
-        polyfill,
-        silent: flags['silent'] === true,
-        noLock: true,
-    };
-    const runtime = createRuntime(cfg, cwd);
-    if (runtime.config.polyfill) {
-        try { await runtime.loadPolyfill(runtime.config.polyfill); }
-        catch (e) { fatal(e, `loading polyfill ${runtime.config.polyfill}`); }
-    }
+export async function runRepl(_flags: Record<string, string | boolean>): Promise<void> {
+    // Polyfill is bundled into the cno binary itself (src/main.ts imports it),
+    // so it has already run by the time we reach here.
 
     // 2. Prevent default unhandled-rejection crash so a bad expression doesn't
     //    take down the whole REPL.
