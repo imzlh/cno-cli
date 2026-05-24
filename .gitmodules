@@ -1,15 +1,15 @@
 [submodule "circu.js"]
 	path = circu.js
-	url = .\\circu.js\\
+	url = https://github.com/imzlh/circu.js
 [submodule "cno"]
 	path = cno
-	url = .\\cno\\
+	url = https://github.com/imzlh/cno
 [submodule "cts"]
 	path = cts
-	url = .\\cts
+	url = https://github.com/imzlh/cts
 [submodule "ext-quic"]
 	path = ext-quic
-	url = .\\ext-quic\\
+	url = https://github.com/imzlh/cno-ext-quic
 [submodule "http"]
 	path = http
-	url = ./http
+	url = https://github.com/imzlh/cno-exthttp
