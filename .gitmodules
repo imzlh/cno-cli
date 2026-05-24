@@ -1,0 +1,15 @@
+[submodule "circu.js"]
+	path = circu.js
+	url = .\\circu.js\\
+[submodule "cno"]
+	path = cno
+	url = .\\cno\\
+[submodule "cts"]
+	path = cts
+	url = .\\cts
+[submodule "ext-quic"]
+	path = ext-quic
+	url = .\\ext-quic\\
+[submodule "http"]
+	path = http
+	url = ./http
