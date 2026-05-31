@@ -2,7 +2,7 @@ import { os, console } from '../cts/src/utils';
 
 export type Subcommand =
     | 'run' | 'task' | 'eval' | 'cache' | 'repl'
-    | 'fmt' | 'lint' | 'test' | 'upgrade'
+    | 'fmt' | 'lint' | 'test' | 'upgrade' | 'setup'
     | 'help' | 'version'
     | null;
 
@@ -19,7 +19,7 @@ export interface ParsedCli {
 
 const SUBCOMMANDS = new Set<string>([
     'run', 'task', 'eval', 'cache', 'repl',
-    'fmt', 'lint', 'test', 'upgrade',
+    'fmt', 'lint', 'test', 'upgrade', 'setup',
     'help', 'version',
 ]);
 

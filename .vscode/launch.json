@@ -33,10 +33,18 @@
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/stage/cno.exe",
-            "args": ["run", "${file}"],
+            // "args": ["run", "${file}"],
+            // "args": ["run", "main.ts"],
+            "args": [],
             "stopAtEntry": false,
-            "cwd": "${fileDirname}",
-            "environment": [],
+            // "cwd": "${fileDirname}",
+            "cwd": "E:\\docs\\Documents\\vdown",
+            "environment": [
+                {
+                    "name": "DEBUG", 
+                    "value": "*"
+                }
+            ],
             "console": "internalConsole",
         },
     ]

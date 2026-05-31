@@ -17,9 +17,13 @@ import { runCache } from './commands/cache';
 import { runTask } from './commands/task';
 import { runRepl } from './commands/repl';
 import { runTest } from './commands/test';
+import { runSetup } from './commands/setup';
 
 // import polyfill
 import '../cno/src/main'
+
+// Import connectionManager for cleanup
+import { connectionManager } from '../http/src/connection';
 
 // Register native .so extensions before anything tries to use them.
 registerExtensions();
@@ -61,6 +65,10 @@ async function dispatch(): Promise<void> {
         return runTest(cli.positional, cli.flags);
     }
 
+    if (cli.cmd === 'setup') {
+        return runSetup(cli.flags);
+    }
+
     if (cli.cmd === 'fmt' || cli.cmd === 'lint' || cli.cmd === 'upgrade') {
         notImplemented(cli.cmd);
     }
@@ -95,5 +103,8 @@ async function workerEntry(): Promise<void> {
 
 {
     const boot = worker.isWorker ? workerEntry() : dispatch();
-    boot.catch(e => fatal(e));
+    boot.catch(e => fatal(e)).finally(() => {
+        // Clean up connection pool on exit
+        connectionManager.closeAll();
+    });
 }

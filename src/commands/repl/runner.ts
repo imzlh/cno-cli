@@ -1,8 +1,6 @@
 /*
  * cno Read Eval Print Loop — adapted from circu.js/src/repl.ts
  *
- * Adds: TypeScript transform pipeline, configurable prompt and banner.
- *
  * Copyright (c) 2025~2026 iz
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -404,7 +402,8 @@ export class CnoRepl {
     #stdout: CModuleStreams.Pipe | CModuleStreams.Stream;
     #isatty: boolean = false;
     #termWidth = 80;
-    #termCursorX = 0;
+    #termCursorX = 0;   // cursor X after prompt (start of input area)
+    #inputRows = 0;     // how many rows below the prompt line the cursor currently is
 
     // Configuration
     #config: {
@@ -418,9 +417,6 @@ export class CnoRepl {
     #escBuffer = '';
     #pasteBuffer = '';
     #inPasteMode = false;
-
-    // Performance tracking
-    #evalStartTime = 0;
 
     constructor(opts: CnoReplOptions = {}) {
         this.#transform = opts.transform ?? ((c) => c);
@@ -444,7 +440,7 @@ export class CnoRepl {
 
         if (os.guessHandle(os.STDIN_FILENO) === 'tty') {
             const stdin = this.#stdin = new streams.TTY(os.STDIN_FILENO, true);
-            stdin.setMode(streams.TTY_MODE_RAW_VT);
+            stdin.mode = streams.TTY_MODE_RAW_VT;
             this.#isatty = true;
         } else {
             const pipe = new streams.Pipe();
@@ -458,17 +454,15 @@ export class CnoRepl {
         // Disable bracketed paste mode before exiting
             if (this.#isatty) {
                 this.#stdin.write(engine.encodeString('\x1b[?2004l'));
-                (this.#stdin as CModuleStreams.TTY).setMode(streams.TTY_MODE_NORMAL);
+                (this.#stdin as CModuleStreams.TTY).mode = streams.TTY_MODE_NORMAL;
             }
         });
     }
 
     async start(): Promise<void> {
-        await this.#print(this.#config.banner);
-        // Enable bracketed paste mode
-        if (this.#isatty) {
-            await this.#print('\x1b[?2004h');
-        }
+        this.#print(this.#config.banner);
+        if (this.#isatty) this.#print('\x1b[?2004h');
+        this.#flush();
         this.#readInput();
         await this.#readLineLoop();
     }
@@ -479,23 +473,33 @@ export class CnoRepl {
         try {
             while (this.#running) {
                 const line = await this.#readLine();
-                if (line === null) break;
+                if (line === null) {
+                    // null means cancelled (Ctrl+C) — just loop for next line
+                    if (!this.#running) break;
+                    continue;
+                }
                 await this.#handleCommand(line);
             }
         } catch (e) {
-            await this.#printError(e);
+            this.#printError(e);
         }
     }
 
-    #readLine(): Promise<string | null> {
+    async #readLine(): Promise<string | null> {
+        this.#cmd = '';
+        this.#cursorPos = 0;
+        this.#historyIndex = this.#history.length;
+        this.#inputRows = 0;
+        // Start fresh on a new line — no matter where external output left the cursor
+        this.#printPrompt();
+        this.#flush();
         return new Promise((resolve) => {
             this.#readlineResolver = resolve;
-            this.#cmd = '';
-            this.#cursorPos = 0;
-            this.#historyIndex = this.#history.length;
-            this.#printPrompt().then(() => this.#update());
         });
     }
+
+    // Pending async command queue — ensures onread callbacks are serialised
+    #cmdQueue: Promise<void> = Promise.resolve();
 
     async #readInput(): Promise<void> {
         this.#stdin.onread = (res: null | undefined | Uint8Array, err: undefined | CModuleError.Error) => {
@@ -504,9 +508,12 @@ export class CnoRepl {
                 os.exit(1);
                 throw 0;    // fallback
             }
-            for (let i = 0; i < res.length && this.#running; i++)
-                this.#handleByte(res[i]!);
-            if (!this.#running) this.#stdin.stopRead();
+            const bytes = res.slice(); // copy before async gap
+            this.#cmdQueue = this.#cmdQueue.then(async () => {
+                for (let i = 0; i < bytes.length && this.#running; i++)
+                    this.#handleByte(bytes[i]!);
+                if (!this.#running) this.#stdin.stopRead();
+            });
         };
         this.#stdin.startRead();
     }
@@ -608,16 +615,16 @@ export class CnoRepl {
         if (this.#quoteFlag) {
             if ([...char].length === 1) this.#insert(char);
             this.#quoteFlag = false;
-            this.#update();
+            this.#cmdQueue = this.#cmdQueue.then(() => this.#update());
             return;
         }
 
         const cmd = this.#keyMap.get(char);
         if (cmd) {
-            this.#executeCommand(cmd, char);
+            this.#cmdQueue = this.#cmdQueue.then(() => this.#executeCommand(cmd, char));
         } else if ([...char].length === 1 && char >= ' ') {
             this.#insert(char);
-            this.#update();
+            this.#cmdQueue = this.#cmdQueue.then(() => this.#update());
         } else {
             this.#alert();
         }
@@ -626,7 +633,7 @@ export class CnoRepl {
     #processEscSequence(seq: string): void {
         const cmd = this.#keyMap.get(seq) ?? this.#keyMap.get(seq.slice(1));
         if (cmd) {
-            this.#executeCommand(cmd, seq);
+            this.#cmdQueue = this.#cmdQueue.then(() => this.#executeCommand(cmd, seq));
         } else {
             this.#alert();
         }
@@ -660,7 +667,7 @@ export class CnoRepl {
                 break;
             default:
                 this.#cursorPos = Math.max(0, Math.min(this.#cmd.length, this.#cursorPos));
-                await this.#update();
+                this.#update();
         }
     }
 
@@ -670,11 +677,18 @@ export class CnoRepl {
         ['\x01', () => { this.#cursorPos = 0; }],                    // ^A
         ['\x02', () => this.#moveCursor(-1)],                         // ^B
         ['\x03', async () => {                                        // ^C
+            // Clear current input and multiline state
+            this.#cmd = '';
+            this.#cursorPos = 0;
+            this.#multilineExpr = '';
+            this.#pstate = '';
+            this.#braceLevel = 0;
+
             if (this.#lastCommand === '\x03') {
                 return { type: 'exit' } as const;
             }
-            await this.#print(COLOR.gray + ' ^C (again to exit) ' + COLOR.reset);
-            return { type: 'continue' } as const;
+            await this.#print('\n' + COLOR.gray + '^C (again to exit)' + COLOR.reset + '\n');
+            return { type: 'cancel' } as const;
         }],
         ['\x04', async () => {                                        // ^D
             if (this.#cmd.length === 0) return { type: 'exit' } as const;
@@ -686,28 +700,12 @@ export class CnoRepl {
         ['\x08', () => this.#deleteChar(-1)],                         // ^H
         ['\x7f', () => this.#deleteChar(-1)],
         ['\t', () => this.#complete()],                               // Tab
-        ['\n', async () => {                                          // ^J
-            if (this.#inPasteMode) {
-                this.#insert('\n');
-                return;
-            }
-            await this.#print('\n');
-            this.#history.push(this.#cmd);
-            return { type: 'submit', value: this.#cmd } as const;
-        }],
+        ['\n', () => this.#submitLine()],                            // ^J
         ['\x0b', () => {                                              // ^K
             this.#clipboard = this.#cmd.slice(this.#cursorPos);
             this.#cmd = this.#cmd.slice(0, this.#cursorPos);
         }],
-        ['\x0d', async () => {                                        // ^M
-            if (this.#inPasteMode) {
-                this.#insert('\n');
-                return;
-            }
-            await this.#print('\n');
-            this.#history.push(this.#cmd);
-            return { type: 'submit', value: this.#cmd } as const;
-        }],
+        ['\x0d', () => this.#submitLine()],                          // ^M
         ['\x0e', () => this.#nextHistory()],                          // ^N
         ['\x10', () => this.#prevHistory()],                          // ^P
         ['\x11', () => { this.#quoteFlag = true; }],                  // ^Q
@@ -744,6 +742,21 @@ export class CnoRepl {
     #lastCommand = '';
 
     // ==================== Command Implementation ====================
+
+    #submitLine(): CommandResult | void {
+        if (this.#inPasteMode) {
+            this.#insert('\n');
+            return;
+        }
+        // Move cursor to end of input, then newline — so prompt clears from correct position
+        this.#cursorPos = this.#cmd.length;
+        this.#update();
+        this.#print('\n');
+        this.#flush();
+        this.#inputRows = 0;
+        this.#history.push(this.#cmd);
+        return { type: 'submit', value: this.#cmd } as const;
+    }
 
     #moveCursor(delta: number): void {
         const newPos = Math.max(0, Math.min(this.#cmd.length, this.#cursorPos + delta));
@@ -804,7 +817,7 @@ export class CnoRepl {
         }
     }
 
-    async #complete(): Promise<void> {
+    #complete(): void {
         const { completions, position } = this.#completer.getCompletions(this.#cmd, this.#cursorPos);
 
         if (completions.length === 0) {
@@ -832,19 +845,19 @@ export class CnoRepl {
         }
 
         if (this.#lastCommand === '\t') {
-            await this.#showCompletions(completions);
+            this.#showCompletions(completions);
             return;
         }
 
         this.#alert();
     }
 
-    async #showCompletions(list: string[]): Promise<void> {
+    #showCompletions(list: string[]): void {
         const maxWidth = Math.max(...list.map(s => s.length)) + 2;
         const cols = Math.max(1, Math.floor(this.#termWidth / maxWidth));
         const rows = Math.ceil(list.length / cols);
 
-        await this.#print('\n');
+        this.#print('\n');
         for (let row = 0; row < rows; row++) {
             const line: string[] = [];
             for (let col = 0; col < cols; col++) {
@@ -854,10 +867,11 @@ export class CnoRepl {
                     line.push(col === cols - 1 ? item : item.padEnd(maxWidth));
                 }
             }
-            await this.#print(line.join('') + '\n');
+            this.#print(line.join('') + '\n');
         }
-        await this.#printPrompt();
-        await this.#print(this.#cmd);
+        this.#printPrompt();
+        this.#print(this.#cmd);
+        this.#flush();
     }
 
     #skipWordForward(pos: number): number {
@@ -874,64 +888,68 @@ export class CnoRepl {
 
     // ==================== Display ====================
 
-    async #printPrompt(): Promise<void> {
+    #printPrompt(): void {
         const timeStr = this.#config.showTime ? `${(Date.now() / 1000).toFixed(6)} ` : '';
         const prompt = this.#multilineExpr
             ? ' '.repeat(this.#config.ps1.length) + this.#config.ps2
             : timeStr + this.#config.ps1;
-
-        await this.#print(prompt);
+        this.#print(prompt);
         this.#termCursorX = [...prompt].length % this.#termWidth;
     }
 
-    async #update(): Promise<void> {
-        // Move to start
-        await this.#moveToStart();
+    #update(): void {
+        this.#moveToStart();
 
-        // Print content with optional highlighting
         if (this.#config.colors) {
             const fullExpr = this.#multilineExpr ? this.#multilineExpr + '\n' + this.#cmd : this.#cmd;
             const startOffset = fullExpr.length - this.#cmd.length;
             const { styles } = this.#colorizer.colorize(fullExpr, this.#pstate, this.#braceLevel);
-            await this.#printHighlighted(fullExpr.slice(startOffset), styles.slice(startOffset));
+            this.#printHighlighted(fullExpr.slice(startOffset), styles.slice(startOffset));
         } else {
-            await this.#print(this.#cmd);
+            this.#print(this.#cmd);
         }
 
-        // Clear rest of line
-        await this.#print('\x1b[J');
+        // Clear from cursor to end of screen
+        this.#print('\x1b[J');
 
-        // Position cursor
-        const cmdWidth = [...this.#cmd.slice(0, this.#cursorPos)].length;
-        const targetX = (this.#termCursorX + cmdWidth + 1) % this.#termWidth;
-        const linesUp = Math.floor((this.#termCursorX + cmdWidth) / this.#termWidth);
+        // Calculate cursor position relative to prompt start
+        const cmdChars = [...this.#cmd.slice(0, this.#cursorPos)].length;
+        const absCol = this.#termCursorX + cmdChars;
+        const cursorRow = Math.floor(absCol / this.#termWidth);
+        const cursorCol = absCol % this.#termWidth;
 
-        if (linesUp > 0) {
-            await this.#print(`\x1b[${linesUp}A`);
-        }
-        if (targetX < this.#termWidth - 1) {
-            await this.#print(`\x1b[${targetX}G`);
-        }
+        // Track total rows for next moveToStart
+        const totalChars = this.#termCursorX + [...this.#cmd].length;
+        this.#inputRows = Math.floor(totalChars / this.#termWidth);
+
+        // Move up from end of text to cursor row if needed
+        const endRow = this.#inputRows;
+        if (endRow > cursorRow) this.#print(`\x1b[${endRow - cursorRow}A`);
+        // Set column (1-based)
+        this.#print(`\x1b[${cursorCol + 1}G`);
+
+        this.#flush();
     }
 
-    async #moveToStart(): Promise<void> {
-        // Simplified: just CR and clear
-        await this.#print('\r\x1b[J');
-        await this.#printPrompt();
+    #moveToStart(): void {
+        if (this.#inputRows > 0) this.#print(`\x1b[${this.#inputRows}A`);
+        this.#print('\r\x1b[J');
+        this.#inputRows = 0;
+        this.#printPrompt();
     }
 
-    async #printHighlighted(str: string, styles: TokenStyle[]): Promise<void> {
+    #printHighlighted(str: string, styles: TokenStyle[]): void {
         let currentStyle: TokenStyle | null = null;
         for (let i = 0; i < str.length; i++) {
             const style = styles[i] ?? 'default';
             if (style !== currentStyle) {
-                if (currentStyle) await this.#print(COLOR.reset);
-                if (style !== 'default') await this.#print(COLOR[STYLE_MAP[style]]);
+                if (currentStyle) this.#print(COLOR.reset);
+                if (style !== 'default') this.#print(COLOR[STYLE_MAP[style]]);
                 currentStyle = style;
             }
-            await this.#print(str[i]!);
+            this.#print(str[i]!);
         }
-        if (currentStyle) await this.#print(COLOR.reset);
+        if (currentStyle) this.#print(COLOR.reset);
     }
 
     // ==================== Evaluation ====================
@@ -957,8 +975,10 @@ export class CnoRepl {
             line = this.#multilineExpr + '\n' + line;
         }
 
-        // Check for incomplete input
-        const highlight = this.#colorizer.colorize(line, this.#pstate, this.#braceLevel);
+        // Check for incomplete input.
+        // Always colorize from fresh state — `line` is the full accumulated expression,
+        // so seeding with accumulated pstate/braceLevel would double-count openers.
+        const highlight = this.#colorizer.colorize(line, '', 0);
         if (highlight.state || highlight.level > 0) {
             this.#multilineExpr = line;
             this.#pstate = highlight.state;
@@ -986,11 +1006,11 @@ export class CnoRepl {
             case 'd': this.#config.hexMode = false; return false;
             case 't': this.#config.showTime = !this.#config.showTime; return false;
             case 'clear':
-                await this.#print('\x1b[H\x1b[J');
+                this.#print('\x1b[H\x1b[J');
+                this.#flush();
                 return false;
             case 'q':
                 this.#running = false;
-                await this.#print('Press any key to exit...');
                 return false;
             case 'u':
                 rest = rest.trim();
@@ -998,43 +1018,44 @@ export class CnoRepl {
                 globalThis[rest] = import.meta.use(rest);
                 return false;
             default:
-                await this.#print(`Unknown directive: .${cmd}\n`);
+                this.#print(`Unknown directive: .${cmd}\n`);
+                this.#flush();
                 return false;
         }
     }
 
     async #evaluate(expr: string): Promise<void> {
         try {
-            this.#evalStartTime = Date.now();
             let code: string;
             try {
                 code = this.#transform(expr);
             } catch (e) {
-                await this.#printError(e);
+                this.#printError(e);
                 return;
             }
             const result = (await engine.eval<any>(code, '<eval>', engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)).value;
 
-            const time = Date.now() - this.#evalStartTime;
             if (this.#config.showTime) {
-                this.#config.showTime = false; // Show once
+                this.#config.showTime = false;
             }
 
-            await this.#print(COLOR.brightWhite);
+            this.#print(COLOR.brightWhite);
+            this.#flush();
             if (this.#config.hexMode && (typeof result === 'number' || typeof result === 'bigint')) {
                 const hex = typeof result === 'bigint'
                     ? '0x' + result.toString(16)
                     : '0x' + Math.floor(result).toString(16);
-                await this.#print(hex + (typeof result === 'bigint' ? 'n' : ''));
+                this.#print(hex + (typeof result === 'bigint' ? 'n' : ''));
             } else {
                 console.log(result);
             }
-            await this.#print(COLOR.reset + '\n');
+            this.#print(COLOR.reset + '\n');
+            this.#flush();
 
             // @ts-ignore
             globalThis._ = result;
         } catch (e) {
-            await this.#printError(e);
+            this.#printError(e);
         } finally {
             engine.gc.run();
         }
@@ -1054,24 +1075,35 @@ export class CnoRepl {
     }
 
     // ==================== Utilities ====================
-    async #write(buf: Uint8Array) {
-        return this.#stdout.write(buf);
+
+    // Accumulate output during an update cycle, flush once at the end.
+    #outBuf = '';
+
+    #writeSync(data: Uint8Array): void {
+        this.#stdout.write(data);
     }
 
-    async #print(str: string): Promise<void> {
-        const buf = engine.encodeString(str);
-        this.#write(buf);
+    #print(str: string): void {
+        this.#outBuf += str;
     }
 
-    async #printError(err: unknown): Promise<void> {
-        await this.#print(COLOR.brightRed);
-        if (!(err instanceof Error)) await this.#print('Throw: ');
+    #flush(): void {
+        if (!this.#outBuf) return;
+        this.#writeSync(engine.encodeString(this.#outBuf));
+        this.#outBuf = '';
+    }
+
+    #printError(err: unknown): void {
+        this.#print(COLOR.brightRed);
+        if (!(err instanceof Error)) this.#print('Throw: ');
+        this.#flush();
         console.log(err);
-        await this.#print(COLOR.reset + '\n');
+        this.#print(COLOR.reset + '\n');
+        this.#flush();
     }
 
     #alert(): void {
-        this.#write(new Uint8Array([0x07]));
+        this.#writeSync(new Uint8Array([0x07]));
     }
 
     #isWordChar(c: string) { return /[a-zA-Z0-9_$]/.test(c); }
@@ -1080,16 +1112,13 @@ export class CnoRepl {
         return code !== undefined && code >= 0xdc00 && code < 0xe000;
     }
 
-    #onExit(callback: () => void): void {
-        // Simple cleanup registration
-        // In real implementation, use addEventListener('beforeExit') or similar
-    }
+    #onExit(_callback: () => void): void {}
 
     handleCtrlC(): void {
         if (this.#readlineResolver) {
             this.#cmd = '';
             this.#cursorPos = 0;
-            this.#write(new Uint8Array([0x07]));  // bell
+            this.#writeSync(new Uint8Array([0x07]));  // bell
             const resolver = this.#readlineResolver;
             this.#readlineResolver = null;
             resolver(null);

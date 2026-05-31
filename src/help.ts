@@ -57,6 +57,6 @@ ${C.bold('ENVIRONMENT')}
   ${C.cyan('CNO_EXT_PATH')}             Directory of native extensions (default: <cno-dir>/ext)
   ${C.cyan('CTS_CACHE_DIR')}            Override cache directory
   ${C.cyan('CTS_SILENT')}               Suppress output ${C.dim('(true/false)')}
-  ${C.cyan('CTS_DEBUG')}                Debug categories: ${C.cyan('resolver, npm, jsr, lock, cjs, loader, config, stack, *')}
+  ${C.cyan('DEBUG')}                    Debug categories: ${C.cyan('resolver, npm, jsr, lock, cjs, loader, config, stack, http, http.conn, http.fetch, *')}
     `.trim());
 }

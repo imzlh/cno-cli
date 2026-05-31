@@ -5,6 +5,7 @@ import { version } from '../../version';
 import { CnoRepl } from './runner';
 
 const signals = __use_fn('signals');
+const timers = __use_fn('timers');
 
 function homeDir(): string | null {
     try {
@@ -47,8 +48,21 @@ export async function runRepl(_flags: Record<string, string | boolean>): Promise
     }
 
     // 5. SIGINT handling — first ^C clears the line, second exits.
+    let exitRequested = false;
     signals.signal(signals.signals.SIGINT, () => {
+        if (exitRequested) {
+            // Second Ctrl+C: save history and exit immediately
+            if (histPath) {
+                try {
+                    fs.writeFile(histPath, engine.encodeString(repl.exportHistory().join('\n')), 0o600);
+                } catch {}
+            }
+            os.exit(130); // Standard exit code for SIGINT
+        }
+        exitRequested = true;
         repl.handleCtrlC();
+        // Reset flag after a short delay
+        timers.setTimeout(() => { exitRequested = false; }, 1000);
     });
 
     // 6. Run, then persist history.

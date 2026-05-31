@@ -12,13 +12,10 @@
         "resolveJsonModule": true,
         "allowSyntheticDefaultImports": true,
         // "types": [],
-        "typeRoots": [
-            "./circu.js/types/",
-            "node_modules/@types/node/",
-        ],
+        "typeRoots": [],
         // For nodejs:
         "lib": [
-            "esnext"
+            "esnext",
         ],
         "paths": {
             "@cnojs/http": ["./http/"],
@@ -51,6 +48,6 @@
         "skipLibCheck": true,
         "allowJs": true
     },
-    "include": ["src/**/*.ts", "circu.js/types/*.d.ts"],
+    "include": ["src/**/*.ts", "cno/lib.deno.d.ts", "./circu.js/types/*", "node_modules/@types/node/**/*", "./cno/src/type/*"],
     "exclude": ["node_modules", "dist", "build", "build_release"]
 }

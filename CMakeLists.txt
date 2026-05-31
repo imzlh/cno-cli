@@ -47,7 +47,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(CNO_RELEASE        "Release build: enable CJS_USE_SYMBOL_INTERNAL, strip"   OFF)
 option(CNO_BUNDLE_MINIFY  "Minify the cno-cli JS bundle"                           OFF)
 option(CNO_SKIP_PNPM      "Skip pnpm install (assume node_modules already present)" OFF)
-option(CNO_EMBED_EXT_H2   "Statically link the HTTP/2 extension into cno"          ON)
 option(CNO_EMBED_EXT_QUIC "Statically link the QUIC extension into cno"            OFF)
 
 set(CNO_HOST_CJSC "" CACHE FILEPATH
@@ -202,7 +201,7 @@ add_custom_command(
     VERBATIM)
 add_custom_target(cno-cli-bundle DEPENDS "${_CLI_BUNDLE}")
 
-# ─── Step 3: assemble the final `cno` binary via cjsc self-attach ───────────
+# ─── Step 3: assemble the final `cno` binary ────────────────────────────────
 set(_STAGE_DIR "${CMAKE_CURRENT_BINARY_DIR}/stage")
 if(WIN32)
     set(_CNO_OUTPUT "${_STAGE_DIR}/cno.exe")
@@ -216,14 +215,43 @@ else()
     set(_CJSC_STRIP "-s")     # -s:  strip source only (keep debug)
 endif()
 
+# ─── Bytecode blob: compile JS → raw .jsc, embed at link time ───────────────
+set(_BLOB_PATH "${CMAKE_CURRENT_BINARY_DIR}/cno-cli.jsc")
+
+add_custom_command(
+    OUTPUT  "${_BLOB_PATH}"
+    COMMAND "${_CJSC_CMD}" -m ${_CJSC_STRIP} -n "cno-cli.js"
+            -o "${_BLOB_PATH}" "${_CLI_BUNDLE}"
+    DEPENDS ${_CJSC_DEPENDS} cno-cli-bundle "${_CLI_BUNDLE}"
+    COMMENT "Compiling JS bundle → bytecode blob ${_BLOB_PATH}"
+    VERBATIM)
+add_custom_target(cno-blob DEPENDS "${_BLOB_PATH}")
+
+if(MSVC)
+    set(_RC_FILE "${CMAKE_CURRENT_BINARY_DIR}/cno_blob.rc")
+    file(WRITE "${_RC_FILE}" "CJS_CORE RCDATA \"${_BLOB_PATH}\"\n")
+    target_sources(cjs-cli PRIVATE "${_RC_FILE}")
+    target_compile_definitions(libcjs PUBLIC CJS_BLOB_RCDATA)
+    add_dependencies(cjs-cli cno-blob)
+else()
+    set(_BLOB_S "${CMAKE_CURRENT_SOURCE_DIR}/circu.js/src/binary_blob.S")
+    target_sources(libcjs PRIVATE "${_BLOB_S}")
+    set(_BLOB_PATH_ESC "\"${_BLOB_PATH}\"")
+    set_property(SOURCE "${_BLOB_S}" APPEND PROPERTY
+        COMPILE_OPTIONS "-DCJS_BLOB_PATH=${_BLOB_PATH_ESC}")
+    target_compile_definitions(libcjs PUBLIC CJS_BLOB_INCBIN)
+    set_property(SOURCE "${_BLOB_S}" APPEND PROPERTY
+        OBJECT_DEPENDS "${_BLOB_PATH}")
+endif()
+
+# cno binary is just a copy of cjs-cli (blob already baked in)
 add_custom_command(
     OUTPUT  "${_CNO_OUTPUT}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_STAGE_DIR}/lib"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_STAGE_DIR}/ext"
     COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:cjs-cli>" "${_CNO_OUTPUT}"
-    COMMAND "${_CJSC_CMD}" -m ${_CJSC_STRIP} -n "cno-cli.js" -o "${_CNO_OUTPUT}" "${_CLI_BUNDLE}"
-    DEPENDS cjs-cli ${_CJSC_DEPENDS} cno-cli-bundle "${_CLI_BUNDLE}"
-    COMMENT "Building final cno binary at ${_CNO_OUTPUT}"
+    DEPENDS cjs-cli cno-blob
+    COMMENT "Staging cno binary at ${_CNO_OUTPUT}"
     VERBATIM)
 
 # ─── Stage runtime-dependency DLLs alongside cno.exe (Windows) ──────────────
