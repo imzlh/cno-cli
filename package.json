@@ -1,6 +1,6 @@
 {
   "name": "cno-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Deno-compatible TypeScript runtime CLI on circu.js (cno binary)",
   "main": "src/main.ts",
   "type": "module",

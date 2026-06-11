@@ -22,9 +22,6 @@ import { runSetup } from './commands/setup';
 // import polyfill
 import '../cno/src/main'
 
-// Import connectionManager for cleanup
-import { connectionManager } from '../http/src/connection';
-
 // Register native .so extensions before anything tries to use them.
 registerExtensions();
 
@@ -103,8 +100,5 @@ async function workerEntry(): Promise<void> {
 
 {
     const boot = worker.isWorker ? workerEntry() : dispatch();
-    boot.catch(e => fatal(e)).finally(() => {
-        // Clean up connection pool on exit
-        connectionManager.closeAll();
-    });
+    boot.catch(e => fatal(e))
 }

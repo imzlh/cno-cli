@@ -105,7 +105,7 @@ interface CModuleEngine {
     deserialize(buf: Uint8Array): any;
     
     eval(code: string, filename?: string): Module;
-    waitPromise<T>(p: Promise<T>): T;
+    waitIO<T>(p: Promise<T>): T;
     
     setMemoryLimit(bytes: number): void;
     setMaxStackSize(bytes: number): void;
@@ -191,7 +191,7 @@ class ModuleLoader {
 ```
 ESM imports CJS → module.exports becomes `default`; named keys also exported
 ESM imports CJS with __esModule=true → treat as transpiled ESM
-CJS requires ESM → synchronously extract via engine.waitPromise
+CJS requires ESM → synchronously extract via engine.waitIO
 CJS requires CJS → normal require() chain
 Circular CJS → return partial exports (Node.js behavior)
 ```
@@ -471,6 +471,11 @@ export const promises = {
 - **NO WebAPI types**: Does not use URL, Headers, Request, Response
 - **Raw bytes + callbacks**: All I/O via `Uint8Array` and callbacks
 - **CNO wrapping**: `cno/src/webapi/fetch.ts` maps WebAPI to this layer
+
+Current note: standard fetch requests are curl-backed. The raw connection pool
+is primarily for long-lived protocol transports such as SSE/WebSocket, and
+those callers should prefer the explicit `raw-connection` entry instead of
+treating `connection.ts` as the default fetch backend.
 
 ### TcpSocket Details
 

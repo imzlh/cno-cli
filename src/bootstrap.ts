@@ -66,12 +66,10 @@ const EXTENSIONS: Record<string, string> = {
 export function registerExtensions(): void {
     const dir = resolveExtDir();
     if (!dir) return;
-    const reg = (import.meta as any).register;
-    if (typeof reg !== 'function') return;  // older circu.js — silently no-op
     for (const [name, file] of Object.entries(EXTENSIONS)) {
         const p = joinPaths(dir, file);
         if (!tryFile(p)) continue;
-        try { reg(name, p); }
+        try { import.meta.register(name, p); }
         catch (e) {
             const msg = (e as Error).message || '';
             if (/built-in|already registered/i.test(msg)) continue;

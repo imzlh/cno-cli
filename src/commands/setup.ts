@@ -12,7 +12,7 @@
 import { os, console } from '../../cts/src/utils';
 import { joinPaths, dirname } from '../../cts/src/utils/path';
 import { loadConfigFile } from '../../cts/src/config';
-import { fetchBytes } from '../../http/src/fetch';
+import { fetchAsync } from '../../cno/src/webapi/fetch';
 
 const fs     = import.meta.use('fs');
 const engine = import.meta.use('engine');
@@ -21,7 +21,7 @@ const GITHUB_BASE = 'https://raw.githubusercontent.com/imzlh/cno/master/cno/src/
 const GITHUB_TREE = 'https://api.github.com/repos/imzlh/cno/git/trees/master?recursive=1';
 
 function selfDir(): string {
-    const self = (os as any).exePath as string | undefined
+    const self = os.exePath as string | undefined
         ?? (os.args as string[])[0]!;
     return dirname(self.replace(/\\/g, '/'));
 }
@@ -31,22 +31,22 @@ function mkdirp(dir: string): void {
     let cur = '';
     for (const p of parts) {
         cur += '/' + p;
-        try { (fs as any).mkdir(cur, 0o755); } catch { /* exists */ }
+        try { fs.mkdir(cur, 0o755); } catch { /* exists */ }
     }
 }
 
 function copyFile(src: string, dst: string): void {
     mkdirp(dst.substring(0, dst.lastIndexOf('/')));
-    (fs as any).writeFile(dst, (fs as any).readFile(src));
+    fs.writeFile(dst, fs.readFile(src));
 }
 
 function walkTs(dir: string, prefix = ''): string[] {
     const out: string[] = [];
     try {
-        for (const name of (fs as any).readdir(dir) as string[]) {
+        for (const name of fs.readdir(dir) as string[]) {
             const full = dir + '/' + name;
             const rel  = prefix ? prefix + '/' + name : name;
-            const st   = (fs as any).stat(full);
+            const st   = fs.stat(full);
             if (st.isDirectory) out.push(...walkTs(full, rel));
             else if (name.endsWith('.ts')) out.push(rel);
         }
@@ -65,9 +65,9 @@ function installLocal(srcBase: string, dstBase: string): void {
         const src = srcBase + '/' + rel;
         const dst = dstBase + '/' + rel;
         try {
-            const srcMtime = (fs as any).stat(src).mtime;
+            const srcMtime = fs.stat(src).mtime;
             try {
-                if ((fs as any).stat(dst).mtime >= srcMtime) { skip++; continue; }
+                if (fs.stat(dst).mtime >= srcMtime) { skip++; continue; }
             } catch { /* dst missing */ }
             copyFile(src, dst);
             console.log(`  COPY  ${rel}`);
@@ -81,9 +81,9 @@ function installLocal(srcBase: string, dstBase: string): void {
 
 // ── Remote: fetch .ts files from GitHub → dstBase ───────────────────────────
 
-function installRemote(dstBase: string): void {
+async function installRemote(dstBase: string): Promise<void> {
     console.log('Fetching file list from GitHub...');
-    const treeJson = engine.decodeString(fetchBytes(GITHUB_TREE));
+    const treeJson = engine.decodeString(await fetchAsync(GITHUB_TREE).then(r => r.arrayBuffer()));
     const tree: { tree: Array<{ path: string; type: string }> } = JSON.parse(treeJson);
 
     const nodeFiles = tree.tree.filter(
@@ -97,9 +97,9 @@ function installRemote(dstBase: string): void {
         const rel = entry.path.slice('cno/src/node/'.length);
         const dst = dstBase + '/' + rel;
         try {
-            const data = fetchBytes(GITHUB_BASE + '/' + rel);
+            const data = await fetchAsync(GITHUB_BASE + '/' + rel);
             mkdirp(dst.substring(0, dst.lastIndexOf('/')));
-            (fs as any).writeFile(dst, data);
+            fs.writeFile(dst, await data.arrayBuffer());
             console.log(`  GET   ${rel}`);
             ok++;
         } catch (e: any) {
@@ -113,11 +113,11 @@ function installRemote(dstBase: string): void {
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
-export function runSetup(_flags: Record<string, string | boolean>): void {
+export async function runSetup(_flags: Record<string, string | boolean>): Promise<void> {
     // Resolve cacheDir the same way cts does
     const cwd = String(os.cwd).replace(/\\/g, '/');
     const cfg  = loadConfigFile(cwd);
-    const cacheDir = (cfg as any).cacheDir ?? (joinPaths(String((os as any).homeDir ?? '~'), '.cts'));
+    const cacheDir = cfg.cacheDir ?? (joinPaths(String(os.homeDir ?? '~'), '.cts'));
     const dstBase  = cacheDir + '/node';
     mkdirp(dstBase);
 
@@ -130,7 +130,7 @@ export function runSetup(_flags: Record<string, string | boolean>): void {
     let localSrc: string | null = null;
     for (const c of candidates) {
         try {
-            if ((fs as any).stat(c).isDirectory) { localSrc = c; break; }
+            if (fs.stat(c).isDirectory) { localSrc = c; break; }
         } catch { /* not found */ }
     }
 
@@ -139,7 +139,7 @@ export function runSetup(_flags: Record<string, string | boolean>): void {
         installLocal(localSrc, dstBase);
     } else {
         console.log('Local source not found, fetching from GitHub (imzlh/cno)...');
-        installRemote(dstBase);
+        await installRemote(dstBase);
     }
 
     console.log(`\nNode polyfills ready at: ${dstBase}`);

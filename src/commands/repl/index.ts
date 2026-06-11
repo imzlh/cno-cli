@@ -26,7 +26,9 @@ export async function runRepl(_flags: Record<string, string | boolean>): Promise
 
     // 3. Build the TypeScript transformer. Use a stable virtual filename so
     //    source-map noise is predictable.
-    const transformer = new Transformer(/* sourceMaps */ false);
+    const transformer = new Transformer(/* sourceMaps */ {
+        "sourceMaps": false
+    });
     const transform = (code: string): string =>
         transformer.transform(code, '<repl>.ts');
 

@@ -660,6 +660,7 @@ export class CnoRepl {
                 }
                 break;
             case 'exit':
+                this.#writeSync(engine.encodeString('Press any key to exit'));
                 this.#running = false;
                 if (this.#readlineResolver) {
                     this.#readlineResolver(null);
@@ -1010,6 +1011,7 @@ export class CnoRepl {
                 this.#flush();
                 return false;
             case 'q':
+                this.#writeSync(engine.encodeString('Press any key to exit'));
                 this.#running = false;
                 return false;
             case 'u':

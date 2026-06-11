@@ -26,10 +26,10 @@ ${C.bold('USAGE')}
   ${C.cyan('cno')} [command] [options] [args…]
 
 ${C.bold('COMMANDS')}
-  ${C.cyan('run')}    ${C.cyan('<file>')} [args…]   Run a TypeScript/JavaScript file
+  ${C.cyan('run')}    ${C.cyan('<file>')} [args…]      Run a TypeScript/JavaScript file
   ${C.cyan('task')}   [name] [args…]      Run a task from ${C.cyan('deno.json')}
-  ${C.cyan('eval')}   ${C.cyan('<code>')}            Evaluate inline code
-  ${C.cyan('cache')}  ${C.cyan('<file>')}            Pre-download deps and write lock
+  ${C.cyan('eval')}   ${C.cyan('<code>')}              Evaluate inline code
+  ${C.cyan('cache')}  ${C.cyan('<file>')}              Pre-download deps and write lock
   ${C.cyan('repl')}                       Start an interactive TypeScript REPL
   ${C.cyan('fmt')}    [paths…]            Format source files            ${C.dim('(not yet)')}
   ${C.cyan('lint')}   [paths…]            Lint source files              ${C.dim('(not yet)')}
