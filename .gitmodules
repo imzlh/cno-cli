@@ -13,3 +13,6 @@
 [submodule "http"]
 	path = http
 	url = https://github.com/imzlh/cno-exthttp
+[submodule "ext-oxc"]
+	path = ext-oxc
+	url = https://github.com/imzlh/cjs-ext-oxc

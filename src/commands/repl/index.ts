@@ -1,11 +1,19 @@
-import { os, fs, asyncfs, engine, console, uname, __use_fn } from '../../../cts/src/utils';
+import { createRuntime } from '../../../cts/src/runtime';
+import { loadConfigFile } from '../../../cts/src/config';
 import { Transformer } from '../../../cts/src/transformer';
 import { joinPaths } from '../../../cts/src/utils/path';
 import { version } from '../../version';
 import { CnoRepl } from './runner';
+import { uname } from '../../../cts/src/utils';
+import { Inspector } from '../../inspector';
 
-const signals = __use_fn('signals');
-const timers = __use_fn('timers');
+const os = import.meta.use('os');
+const console = import.meta.use('console');
+const fs = import.meta.use('fs');
+const engine = import.meta.use('engine');
+const signals = import.meta.use('signals');
+const timers = import.meta.use('timers');
+const asyncfs = import.meta.use('asyncfs');
 
 function homeDir(): string | null {
     try {
@@ -16,7 +24,20 @@ function homeDir(): string | null {
     } catch { return null; }
 }
 
-export async function runRepl(_flags: Record<string, string | boolean>): Promise<void> {
+export async function runRepl(flags: Record<string, string | boolean>): Promise<void> {
+    // ---- CDP inspector ----
+    const dbg = await startInspector(flags);
+
+    // 1. Initialize cts runtime (this sets up module loader, resolver, etc.)
+    const cwd = String(os.cwd).replace(/\\/g, '/');
+    const cfg = loadConfigFile(cwd);
+    const runtime = createRuntime(cfg, cwd);
+
+    // Wire up CDP scriptParsed hook
+    if (dbg?.scriptInitHook) {
+        runtime.addInitHook(dbg.scriptInitHook);
+    }
+
     // Polyfill is bundled into the cno binary itself (src/main.ts imports it),
     // so it has already run by the time we reach here.
 
@@ -59,6 +80,7 @@ export async function runRepl(_flags: Record<string, string | boolean>): Promise
                     fs.writeFile(histPath, engine.encodeString(repl.exportHistory().join('\n')), 0o600);
                 } catch {}
             }
+            repl.cleanup();
             os.exit(130); // Standard exit code for SIGINT
         }
         exitRequested = true;
@@ -69,6 +91,8 @@ export async function runRepl(_flags: Record<string, string | boolean>): Promise
 
     // 6. Run, then persist history.
     await repl.start();
+    repl.cleanup();
+    await dbg?.detach();
     if (histPath) {
         try {
             fs.writeFile(histPath, engine.encodeString(repl.exportHistory().join('\n')), 0o600);
@@ -76,4 +100,25 @@ export async function runRepl(_flags: Record<string, string | boolean>): Promise
             console.error(`cno: failed to write ${histPath}: ${(e as Error).message}`);
         }
     }
+}
+
+async function startInspector(flags: Record<string, string | boolean>): Promise<any | null> {
+    const hasInspect     = 'inspect'      in flags;
+    const hasInspectBrk  = 'inspect-brk'  in flags;
+    const hasInspectWait = 'inspect-wait' in flags;
+    if (!hasInspect && !hasInspectBrk && !hasInspectWait) return null;
+
+    const raw = hasInspectBrk  ? flags['inspect-brk']
+              : hasInspectWait ? flags['inspect-wait']
+              :                  flags['inspect'];
+    const port = (typeof raw === 'string' && raw !== 'true') ? (parseInt(raw, 10) || 9229) : 9229;
+
+    // In REPL mode, --inspect-brk degrades to --inspect-wait:
+    // there is no "first line" to break on in an interactive session.
+    const waitForClient = hasInspectBrk || hasInspectWait;
+    const dbg = new Inspector({ port, waitForClient, entryFile: 'repl' });
+    await dbg.attach();
+    console.info(`Debugger listening on ${dbg.inspectorUrl}`);
+    console.info(`Visit chrome://inspect to connect to the debugger.`);
+    return dbg;
 }

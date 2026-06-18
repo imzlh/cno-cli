@@ -26,6 +26,7 @@ const os = import.meta.use('os');
 const streams = import.meta.use('streams');
 const engine = import.meta.use('engine');
 const console = import.meta.use('console');
+const sfs = import.meta.use('fs');
 
 // preset some envs
 Reflect.set(globalThis, 'console', console);
@@ -453,7 +454,7 @@ export class CnoRepl {
         this.#onExit(() => {
         // Disable bracketed paste mode before exiting
             if (this.#isatty) {
-                this.#stdin.write(engine.encodeString('\x1b[?2004l'));
+                sfs.write(os.STDOUT_FILENO, engine.encodeString('\x1b[?2004l'));
                 (this.#stdin as CModuleStreams.TTY).mode = streams.TTY_MODE_NORMAL;
             }
         });
@@ -505,6 +506,7 @@ export class CnoRepl {
         this.#stdin.onread = (res: null | undefined | Uint8Array, err: undefined | CModuleError.Error) => {
             if (!res) {
                 console.error('Failed to read from console:', err ?? 'EOF');
+                this.cleanup();
                 os.exit(1);
                 throw 0;    // fallback
             }
@@ -660,11 +662,12 @@ export class CnoRepl {
                 }
                 break;
             case 'exit':
-                this.#writeSync(engine.encodeString('Press any key to exit'));
                 this.#running = false;
                 if (this.#readlineResolver) {
                     this.#readlineResolver(null);
                 }
+                this.cleanup();
+                os.exit(0);
                 break;
             default:
                 this.#cursorPos = Math.max(0, Math.min(this.#cmd.length, this.#cursorPos));
@@ -1011,8 +1014,9 @@ export class CnoRepl {
                 this.#flush();
                 return false;
             case 'q':
-                this.#writeSync(engine.encodeString('Press any key to exit'));
                 this.#running = false;
+                this.cleanup();
+                os.exit(0); // avoid blocking
                 return false;
             case 'u':
                 rest = rest.trim();
@@ -1114,7 +1118,16 @@ export class CnoRepl {
         return code !== undefined && code >= 0xdc00 && code < 0xe000;
     }
 
-    #onExit(_callback: () => void): void {}
+    #onExit(callback: () => void): void { this.#exitCallback = callback; }
+    #exitCallback: (() => void) | null = null;
+
+    /** Restore terminal state (TTY mode, bracketed paste). Call before exit. */
+    cleanup(): void {
+        if (this.#exitCallback) {
+            this.#exitCallback();
+            this.#exitCallback = null;
+        }
+    }
 
     handleCtrlC(): void {
         if (this.#readlineResolver) {

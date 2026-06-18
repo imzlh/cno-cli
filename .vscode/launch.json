@@ -33,12 +33,13 @@
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/stage/cno.exe",
-            "args": ["run", "${file}"],
+            // "args": ["run", "${file}"],
             // "args": ["run", "main.ts"],
-            // "args": [],
+            // "args": ["cache"],
+            "args": ["--inspect"],
             "stopAtEntry": false,
-            "cwd": "${fileDirname}",
-            // "cwd": "E:\\docs\\Documents\\vdown",
+            // "cwd": "${fileDirname}",
+            "cwd": "D:\\project\\NeWplayer",
             "environment": [
                 {
                     "name": "DEBUG", 

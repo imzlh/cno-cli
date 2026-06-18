@@ -5,3 +5,5 @@ package-lock.json
 build/
 .claude/
 dist/
+cts.lock
+tests/

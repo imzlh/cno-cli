@@ -1,346 +1,235 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# cno-cli — top-level build orchestrator
-#
-# Builds:
-#   1. circu.js runtime           → cjs (target)
-#   2. host cjsc compiler         → cjsc (target)
-#   3. cno-cli bundle             → dist/cno-cli.js  (via `pnpm run bundle`)
-#                                   The bundle includes the cno polyfill
-#                                   (src/main.ts: `import '../cno/src/main'`).
-#   4. final cno binary           = cjs + self-attached cno-cli bytecode
-#
-# Native extensions (ext-h2, ext-quic) can be handled three ways:
-#
-#   (1) Statically embedded (default for ext-h2):
-#       Set -DCNO_EMBED_EXT_H2=ON / -DCNO_EMBED_EXT_QUIC=ON. The extension's
-#       .c file is compiled directly into libcjs via the CJS_EXTRA_* hooks
-#       in circu.js's CMakeLists. No .so/.dll needed at runtime.
-#
-#   (2) Pre-built shared libraries:
-#       Build the extensions standalone via their own CMakeLists, then pass
-#       -DCNO_EXT_DIR=/path/to/built/.so-or-dll-files. CMake will stage them
-#       into stage/ext/. At runtime src/bootstrap.ts registers them via
-#       import.meta.register.
-#
-#   (3) None: leave both off — cno still runs, just without those modules.
-#
-# (1) and (2) are mutually independent — you can do either, both, or neither.
-# circu.js's dlopen/import.meta.register machinery stays available regardless,
-# so other projects depending on circu.js can still ship dynamic extensions.
-#
-# Output layout (under ${CMAKE_BINARY_DIR}/stage/):
-#   cno[.exe]                     ← runtime + attached bytecode (polyfill embedded)
-#   ext/*{.so|.dll|.dylib}        ← native extensions (staged from CNO_EXT_DIR)
-#
-# ASSUMPTIONS:
-#   - Building for host platform (no cross). For cross, pre-build cjsc on host
-#     and pass -DCNO_HOST_CJSC=/abs/path/to/cjsc.
-#   - Node.js + pnpm available on PATH for the bundling steps.
-# ─────────────────────────────────────────────────────────────────────────────
-
 cmake_minimum_required(VERSION 3.16)
 project(cno-cli LANGUAGES C)
-
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# ─── Options ────────────────────────────────────────────────────────────────
-option(CNO_RELEASE        "Release build: enable CJS_USE_SYMBOL_INTERNAL, strip"   OFF)
-option(CNO_BUNDLE_MINIFY  "Minify the cno-cli JS bundle"                           OFF)
-option(CNO_SKIP_PNPM      "Skip pnpm install (assume node_modules already present)" OFF)
-option(CNO_EMBED_EXT_QUIC "Statically link the QUIC extension into cno"            OFF)
+option(CNO_BUNDLE_MINIFY  "Minify the JS bundle"                   OFF)
+option(CNO_EMBED_EXT_H2   "Statically embed HTTP/2 extension"      OFF)
+option(CNO_EMBED_EXT_QUIC "Statically embed QUIC extension"        OFF)
+set(CNO_HOST_CJSC  "" CACHE FILEPATH "Pre-built host cjsc (for cross-compile)")
+set(CNO_EXT_DIR    "" CACHE PATH     "Pre-built native extensions dir (.so/.dll)")
 
-set(CNO_HOST_CJSC "" CACHE FILEPATH
-    "Absolute path to a pre-built host cjsc binary (for cross-compile). Empty = build locally.")
+# ── Static extensions ─────────────────────────────────────────────────────────
+set(_EXT_SRCS "" CACHE INTERNAL "")
+set(_EXT_INCS "" CACHE INTERNAL "")
+set(_EXT_LIBS "" CACHE INTERNAL "")
+set(_EXT_NAMES "" CACHE INTERNAL "")
+set(_EXT_INITS "" CACHE INTERNAL "")
+set(_EXT_SAFE  "" CACHE INTERNAL "")
 
-set(CNO_EXT_DIR "" CACHE PATH
-    "Directory containing pre-built native extensions (.so/.dll/.dylib). \
-Files matching the platform's shared-library suffix are staged into stage/ext/. \
-Independent from the CNO_EMBED_* options — use this for extensions you want \
-shipped alongside cno as loadable .so files.")
-
-# ─── Resolve & inject static extensions (BEFORE add_subdirectory(circu.js)) ─
-# We populate the circu.js generic CJS_EXTRA_* hooks. circu.js doesn't know
-# about cno — it just compiles whatever we hand it into libcjs and adds the
-# named init functions to its static module table.
-set(_CNO_EXTRA_SOURCES "")
-set(_CNO_EXTRA_INCLUDES "")
-set(_CNO_EXTRA_LIBS "")
-set(_CNO_EXTRA_NAMES "")
-set(_CNO_EXTRA_INITS "")
-set(_CNO_EXTRA_SAFE "")
-
+macro(_cno_add_ext name init safe src inc)
+    list(APPEND _EXT_SRCS  "${src}")
+    list(APPEND _EXT_INCS  "${inc}")
+    list(APPEND _EXT_NAMES "${name}")
+    list(APPEND _EXT_INITS "${init}")
+    list(APPEND _EXT_SAFE  "${safe}")
+endmacro()
 
 if(CNO_EMBED_EXT_H2)
-    # nghttp2 → vcpkg provides nghttp2::nghttp2 (CONFIG mode) on Windows;
-    # pkg-config provides it on Linux/macOS. Try CONFIG first, fall back.
     find_package(nghttp2 CONFIG QUIET)
-    if(NOT nghttp2_FOUND)
+    if(nghttp2_FOUND)
+        set(_NGHTTP2 nghttp2::nghttp2)
+    else()
         find_package(PkgConfig REQUIRED)
         pkg_check_modules(NGHTTP2 REQUIRED IMPORTED_TARGET libnghttp2)
-        set(_NGHTTP2_TARGET PkgConfig::NGHTTP2)
-    else()
-        set(_NGHTTP2_TARGET nghttp2::nghttp2)
+        set(_NGHTTP2 PkgConfig::NGHTTP2)
     endif()
-
-    list(APPEND _CNO_EXTRA_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/http/ext-h2/http2.c")
-    list(APPEND _CNO_EXTRA_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/http/ext-h2")
-    list(APPEND _CNO_EXTRA_LIBS "${_NGHTTP2_TARGET}")
-    list(APPEND _CNO_EXTRA_NAMES "@cnojs/http/ext-h2")
-    list(APPEND _CNO_EXTRA_INITS "h2_ns_init")
-    list(APPEND _CNO_EXTRA_SAFE  "false")
-    message(STATUS "Embedding ext-h2 (nghttp2 = ${_NGHTTP2_TARGET})")
+    list(APPEND _EXT_LIBS "${_NGHTTP2}")
+    _cno_add_ext("@cnojs/http/ext-h2" "h2_ns_init" "false"
+        "${CMAKE_CURRENT_SOURCE_DIR}/http/ext-h2/http2.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/http/ext-h2")
+    message(STATUS "[cno] embed ext-h2 (${_NGHTTP2})")
 endif()
 
 if(CNO_EMBED_EXT_QUIC)
-    # quicly + picotls come from ext-quic/deps/quicly (submodule). Build them
-    # in-tree so cno-cli pulls them as transitive deps of libcjs.
-    set(_QUICLY_SRC "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic/deps/quicly")
-    if(NOT EXISTS "${_QUICLY_SRC}/CMakeLists.txt")
-        message(FATAL_ERROR
-            "CNO_EMBED_EXT_QUIC=ON but ${_QUICLY_SRC}/CMakeLists.txt is missing.\n"
-            "Run: cd ext-quic && git submodule update --init --recursive")
+    set(_QUICLY "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic/deps/quicly")
+    if(NOT EXISTS "${_QUICLY}/CMakeLists.txt")
+        message(FATAL_ERROR "CNO_EMBED_EXT_QUIC: missing submodule at ${_QUICLY}")
     endif()
     find_package(OpenSSL REQUIRED)
-    add_subdirectory("${_QUICLY_SRC}" "${CMAKE_BINARY_DIR}/quicly")
-
-    list(APPEND _CNO_EXTRA_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic/native.c")
-    list(APPEND _CNO_EXTRA_INCLUDES
-        "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic"
-        "${_QUICLY_SRC}/include"
-        "${_QUICLY_SRC}/deps/picotls/include")
-    list(APPEND _CNO_EXTRA_LIBS quicly picotls-core picotls-openssl OpenSSL::SSL OpenSSL::Crypto)
-    list(APPEND _CNO_EXTRA_NAMES "@cnojs/quic")
-    list(APPEND _CNO_EXTRA_INITS "qc_ns_init")
-    list(APPEND _CNO_EXTRA_SAFE  "false")
-    message(STATUS "Embedding ext-quic (in-tree quicly + picotls)")
+    add_subdirectory("${_QUICLY}" "${CMAKE_BINARY_DIR}/quicly")
+    list(APPEND _EXT_LIBS quicly picotls-core picotls-openssl OpenSSL::SSL OpenSSL::Crypto)
+    _cno_add_ext("@cnojs/quic" "qc_ns_init" "false"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic/native.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic")
+    list(APPEND _EXT_INCS
+        "${_QUICLY}/include"
+        "${_QUICLY}/deps/picotls/include")
+    message(STATUS "[cno] embed ext-quic (in-tree quicly)")
 endif()
 
-if(_CNO_EXTRA_SOURCES)
-    set(CJS_EXTRA_SOURCES            "${_CNO_EXTRA_SOURCES}"  CACHE INTERNAL "")
-    set(CJS_EXTRA_INCLUDE_DIRS       "${_CNO_EXTRA_INCLUDES}" CACHE INTERNAL "")
-    set(CJS_EXTRA_LIBS               "${_CNO_EXTRA_LIBS}"     CACHE INTERNAL "")
-    set(CJS_EXTRA_DEFINES            "CJS_STATIC_LINK"        CACHE INTERNAL "")
-    set(CJS_EXTRA_MODULE_NAMES       "${_CNO_EXTRA_NAMES}"    CACHE INTERNAL "")
-    set(CJS_EXTRA_MODULE_INITS       "${_CNO_EXTRA_INITS}"    CACHE INTERNAL "")
-    set(CJS_EXTRA_MODULE_WORKER_SAFE "${_CNO_EXTRA_SAFE}"     CACHE INTERNAL "")
+if(_EXT_SRCS)
+    set(CJS_EXTRA_SOURCES            "${_EXT_SRCS}"   CACHE INTERNAL "")
+    set(CJS_EXTRA_INCLUDE_DIRS       "${_EXT_INCS}"   CACHE INTERNAL "")
+    set(CJS_EXTRA_LIBS               "${_EXT_LIBS}"   CACHE INTERNAL "")
+    set(CJS_EXTRA_DEFINES            "CJS_STATIC_LINK" CACHE INTERNAL "")
+    set(CJS_EXTRA_MODULE_NAMES       "${_EXT_NAMES}"  CACHE INTERNAL "")
+    set(CJS_EXTRA_MODULE_INITS       "${_EXT_INITS}"  CACHE INTERNAL "")
+    set(CJS_EXTRA_MODULE_WORKER_SAFE "${_EXT_SAFE}"   CACHE INTERNAL "")
 endif()
 
-# ─── circu.js (runtime + host cjsc) ─────────────────────────────────────────
-# cno always feeds the cno-cli bundle to cjsc → bytecode, and qjs bytecode
-# rejects `import.meta.*`. Our bundler replaces those with __cno_use__ /
-# __cno_register__ bound to globalThis[Symbol.for("cjs.internal.use"|"...register")],
-# which only exist when CJS_USE_SYMBOL_INTERNAL is ON. So force it on
-# unconditionally — independent of CNO_RELEASE.
+# ── Blob path — must be resolved before add_subdirectory(circu.js) ────────────
+set(_BLOB_C "${CMAKE_CURRENT_BINARY_DIR}/cno_cli_blob.c")
+set(_BLOB_H "${CMAKE_CURRENT_BINARY_DIR}/cno_cli_blob.h")
+set(CJS_BLOB_C "${_BLOB_C}" CACHE INTERNAL
+    "Generated .c file containing bytecode as C array (cjs_blob[])")
+
+# ── circu.js ──────────────────────────────────────────────────────────────────
 set(CJS_USE_SYMBOL_INTERNAL ON CACHE BOOL "" FORCE)
-# ASan defaults to ON in circu.js Debug builds; that pulls in
-# clang_rt.asan_dynamic-x86_64.dll from MSVC's install dir, which vcpkg's
-# applocal can't see. For cno (a distributable binary) we don't want it.
-# Override if the user really wants ASan: pass -DENABLE_ASAN=ON.
-set(ENABLE_ASAN OFF CACHE BOOL "" FORCE)
+set(ENABLE_ASAN ON CACHE BOOL "" FORCE)
 add_subdirectory(circu.js)
-
-# cjsc is target-level EXCLUDE_FROM_ALL inside circu.js so it doesn't get
-# built unless someone depends on it. Our bundling step does — pull it in.
 if(TARGET cjsc)
     set_target_properties(cjsc PROPERTIES EXCLUDE_FROM_ALL FALSE)
 endif()
 
-# ─── External tools ─────────────────────────────────────────────────────────
+# ── JS toolchain ──────────────────────────────────────────────────────────────
 find_program(PNPM_EXE NAMES pnpm pnpm.cmd)
 if(NOT PNPM_EXE)
-    message(FATAL_ERROR "pnpm not found on PATH — install pnpm first.")
+    message(FATAL_ERROR "pnpm not found — install pnpm first.")
 endif()
 
-# Host cjsc (use override if provided, else build target).
 if(CNO_HOST_CJSC)
-    set(_CJSC_CMD "${CNO_HOST_CJSC}")
-    set(_CJSC_DEPENDS "")
+    set(_CJSC_EXE "${CNO_HOST_CJSC}")
+    set(_CJSC_DEP "")
 else()
-    set(_CJSC_CMD "$<TARGET_FILE:cjsc>")
-    set(_CJSC_DEPENDS cjsc)
+    set(_CJSC_EXE "$<TARGET_FILE:cjsc>")
+    set(_CJSC_DEP cjsc)
 endif()
 
-# ─── Step 0: pnpm install ───────────────────────────────────────────────────
-set(_NM_STAMP "${CMAKE_CURRENT_SOURCE_DIR}/node_modules/.cmake-installed")
-if(NOT CNO_SKIP_PNPM)
-    add_custom_command(
-        OUTPUT  "${_NM_STAMP}"
-        COMMAND "${PNPM_EXE}" install --frozen-lockfile=false
-        COMMAND "${CMAKE_COMMAND}" -E touch "${_NM_STAMP}"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/package.json"
-                "${CMAKE_CURRENT_SOURCE_DIR}/pnpm-workspace.yaml"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        COMMENT "pnpm install (workspace)"
-        VERBATIM)
-    add_custom_target(cno-pnpm-install DEPENDS "${_NM_STAMP}")
-else()
-    add_custom_target(cno-pnpm-install)
-endif()
+# pnpm install
+set(_NM_STAMP "${CMAKE_CURRENT_BINARY_DIR}/.pnpm-installed")
+add_custom_command(
+    OUTPUT  "${_NM_STAMP}"
+    COMMAND "${PNPM_EXE}" install --frozen-lockfile=false
+    COMMAND "${CMAKE_COMMAND}" -E touch "${_NM_STAMP}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/package.json"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "pnpm install"
+    VERBATIM)
+add_custom_target(cno-pnpm-install DEPENDS "${_NM_STAMP}")
 
-# ─── Step 1/2: cno-cli bundle  (`pnpm run bundle` or `bundle:min`) ────────────
-set(_CLI_BUNDLE "${CMAKE_CURRENT_SOURCE_DIR}/dist/cno-cli.js")
-
+# esbuild bundle
+set(_BUNDLE_SCRIPT "bundle")
+set(_CLI_BUNDLE    "${CMAKE_CURRENT_SOURCE_DIR}/dist/cno-cli.js")
 if(CNO_BUNDLE_MINIFY)
     set(_BUNDLE_SCRIPT "bundle:min")
     set(_CLI_BUNDLE    "${CMAKE_CURRENT_SOURCE_DIR}/dist/cno-cli.min.js")
-else()
-    set(_BUNDLE_SCRIPT "bundle")
 endif()
 
 file(GLOB_RECURSE _CLI_SRCS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.ts"
     "${CMAKE_CURRENT_SOURCE_DIR}/cts/src/*.ts"
     "${CMAKE_CURRENT_SOURCE_DIR}/cno/src/*.ts"
-    "${CMAKE_CURRENT_SOURCE_DIR}/http/src/*.ts")
+    "${CMAKE_CURRENT_SOURCE_DIR}/http/src/*.ts"
+    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/*.mjs")
 add_custom_command(
     OUTPUT  "${_CLI_BUNDLE}"
     COMMAND "${PNPM_EXE}" run "${_BUNDLE_SCRIPT}"
     DEPENDS ${_CLI_SRCS} cno-pnpm-install
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "pnpm run ${_BUNDLE_SCRIPT} → ${_CLI_BUNDLE}"
+    COMMENT "bundle → ${_CLI_BUNDLE}"
     VERBATIM)
 add_custom_target(cno-cli-bundle DEPENDS "${_CLI_BUNDLE}")
 
-# ─── Step 3: assemble the final `cno` binary ────────────────────────────────
+# cjsc → C source (bytecode as const uint8_t cjs_blob[])
+set(_STRIP_FLAG "-s")
+if(CNO_RELEASE)
+    set(_STRIP_FLAG "-ss")
+endif()
+add_custom_command(
+    OUTPUT  "${_BLOB_H}"
+    COMMAND "${_CJSC_EXE}" -m -N cjs_blob -n "<core>" ${_STRIP_FLAG} -o "${_BLOB_H}" "${_CLI_BUNDLE}"
+    DEPENDS ${_CJSC_DEP} cno-cli-bundle "${_CLI_BUNDLE}"
+    COMMENT "cjsc → ${_BLOB_H}"
+    VERBATIM)
+
+file(WRITE "${_BLOB_C}" "#include \"cno_cli_blob.h\"\n")
+add_custom_target(cno-blob DEPENDS "${_BLOB_H}")
+
+# libcjs must not compile the blob until cno-blob produces the real .c file
+add_dependencies(libcjs cno-blob)
+
+# ── Stage ─────────────────────────────────────────────────────────────────────
 set(_STAGE_DIR "${CMAKE_CURRENT_BINARY_DIR}/stage")
 if(WIN32)
-    set(_CNO_OUTPUT "${_STAGE_DIR}/cno.exe")
+    set(_CNO_BIN "${_STAGE_DIR}/cno.exe")
 else()
-    set(_CNO_OUTPUT "${_STAGE_DIR}/cno")
+    set(_CNO_BIN "${_STAGE_DIR}/cno")
 endif()
-
-if(CNO_RELEASE)
-    set(_CJSC_STRIP "-ss")    # -ss: strip source AND debug info (smallest bytecode)
-else()
-    set(_CJSC_STRIP "-s")     # -s:  strip source only (keep debug)
-endif()
-
-# ─── Bytecode blob: compile JS → raw .jsc, embed at link time ───────────────
-set(_BLOB_PATH "${CMAKE_CURRENT_BINARY_DIR}/cno-cli.jsc")
 
 add_custom_command(
-    OUTPUT  "${_BLOB_PATH}"
-    COMMAND "${_CJSC_CMD}" -m ${_CJSC_STRIP} -n "cno-cli.js"
-            -o "${_BLOB_PATH}" "${_CLI_BUNDLE}"
-    DEPENDS ${_CJSC_DEPENDS} cno-cli-bundle "${_CLI_BUNDLE}"
-    COMMENT "Compiling JS bundle → bytecode blob ${_BLOB_PATH}"
-    VERBATIM)
-add_custom_target(cno-blob DEPENDS "${_BLOB_PATH}")
-
-if(MSVC)
-    set(_RC_FILE "${CMAKE_CURRENT_BINARY_DIR}/cno_blob.rc")
-    file(WRITE "${_RC_FILE}" "CJS_CORE RCDATA \"${_BLOB_PATH}\"\n")
-    target_sources(cjs-cli PRIVATE "${_RC_FILE}")
-    target_compile_definitions(libcjs PUBLIC CJS_BLOB_RCDATA)
-    add_dependencies(cjs-cli cno-blob)
-else()
-    set(_BLOB_S "${CMAKE_CURRENT_SOURCE_DIR}/circu.js/src/binary_blob.S")
-    target_sources(libcjs PRIVATE "${_BLOB_S}")
-    set(_BLOB_PATH_ESC "\"${_BLOB_PATH}\"")
-    set_property(SOURCE "${_BLOB_S}" APPEND PROPERTY
-        COMPILE_OPTIONS "-DCJS_BLOB_PATH=${_BLOB_PATH_ESC}")
-    target_compile_definitions(libcjs PUBLIC CJS_BLOB_INCBIN)
-    set_property(SOURCE "${_BLOB_S}" APPEND PROPERTY
-        OBJECT_DEPENDS "${_BLOB_PATH}")
-endif()
-
-# cno binary is just a copy of cjs-cli (blob already baked in)
-add_custom_command(
-    OUTPUT  "${_CNO_OUTPUT}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${_STAGE_DIR}/lib"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${_STAGE_DIR}/ext"
-    COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:cjs-cli>" "${_CNO_OUTPUT}"
-    DEPENDS cjs-cli cno-blob
-    COMMENT "Staging cno binary at ${_CNO_OUTPUT}"
+    OUTPUT  "${_CNO_BIN}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${_STAGE_DIR}/lib" "${_STAGE_DIR}/ext"
+    COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:cjs-cli>" "${_CNO_BIN}"
+    DEPENDS cjs-cli
+    COMMENT "Stage cno → ${_STAGE_DIR}"
     VERBATIM)
 
-# ─── Stage runtime-dependency DLLs alongside cno.exe (Windows) ──────────────
-# vcpkg's applocal post-build step copies every transitive runtime DLL next
-# to cjs-cli.exe at build time. We just mirror that directory into stage/
-# so cno.exe (which is cjs-cli.exe + attached bytecode) can find them too.
-# Done via a -P helper so the glob runs at build time, not configure time
-# (the multi-config $<TARGET_FILE_DIR:cjs-cli> only resolves then).
-set(_RUNTIME_DLLS_STAMP "${_STAGE_DIR}/.runtime-dlls.stamp")
+# Mirror runtime DLLs from cjs-cli output dir (Windows only)
+set(_DLL_STAMP "${_STAGE_DIR}/.dlls.stamp")
 if(WIN32)
     add_custom_command(
-        OUTPUT  "${_RUNTIME_DLLS_STAMP}"
+        OUTPUT  "${_DLL_STAMP}"
         COMMAND "${CMAKE_COMMAND}"
                 "-DSRC_DIR=$<TARGET_FILE_DIR:cjs-cli>"
                 "-DDST_DIR=${_STAGE_DIR}"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/stage_dlls.cmake"
-        COMMAND "${CMAKE_COMMAND}" -E touch "${_RUNTIME_DLLS_STAMP}"
-        DEPENDS cjs-cli
-        COMMENT "Mirroring runtime DLLs from cjs-cli output dir → stage/"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${_DLL_STAMP}"
+        DEPENDS "${_CNO_BIN}"
+        COMMENT "Stage runtime DLLs"
         VERBATIM)
 else()
     add_custom_command(
-        OUTPUT  "${_RUNTIME_DLLS_STAMP}"
-        COMMAND "${CMAKE_COMMAND}" -E touch "${_RUNTIME_DLLS_STAMP}"
+        OUTPUT  "${_DLL_STAMP}"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${_DLL_STAMP}"
+        DEPENDS "${_CNO_BIN}"
         VERBATIM)
 endif()
 
-# ─── Step 4: stage any pre-built native extensions from CNO_EXT_DIR ─────────
-# Polyfill is bundled into the CLI bundle directly (src/main.ts does
-# `import '../cno/src/main'`), so we no longer stage a separate
-# lib/cno-polyfill.js file.
-#
-# Files are picked up at configure time via GLOB — re-configure after adding/removing.
-set(_EXT_OUTPUTS "")
+# Stage pre-built shared extensions (CNO_EXT_DIR)
+set(_STAGED_EXTS "")
 if(CNO_EXT_DIR AND EXISTS "${CNO_EXT_DIR}")
-    file(GLOB _EXT_INPUTS CONFIGURE_DEPENDS
-        "${CNO_EXT_DIR}/*${CMAKE_SHARED_LIBRARY_SUFFIX}")
-    foreach(_extfile IN LISTS _EXT_INPUTS)
-        get_filename_component(_name "${_extfile}" NAME)
-        set(_staged "${_STAGE_DIR}/ext/${_name}")
+    file(GLOB _EXT_INPUTS CONFIGURE_DEPENDS "${CNO_EXT_DIR}/*${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    foreach(_f IN LISTS _EXT_INPUTS)
+        get_filename_component(_name "${_f}" NAME)
+        set(_dest "${_STAGE_DIR}/ext/${_name}")
         add_custom_command(
-            OUTPUT  "${_staged}"
+            OUTPUT  "${_dest}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${_STAGE_DIR}/ext"
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_extfile}" "${_staged}"
-            DEPENDS "${_extfile}"
-            COMMENT "Stage extension ${_name}"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_f}" "${_dest}"
+            DEPENDS "${_f}"
+            COMMENT "Stage ext/${_name}"
             VERBATIM)
-        list(APPEND _EXT_OUTPUTS "${_staged}")
+        list(APPEND _STAGED_EXTS "${_dest}")
     endforeach()
 endif()
 
-# ─── The umbrella `cno` target ──────────────────────────────────────────────
+# ── Umbrella target ───────────────────────────────────────────────────────────
 add_custom_target(cno ALL
-    DEPENDS "${_CNO_OUTPUT}"
-            "${_RUNTIME_DLLS_STAMP}"
-            ${_EXT_OUTPUTS}
-    COMMENT "cno build complete — staged at ${_STAGE_DIR}")
+    DEPENDS "${_DLL_STAMP}" ${_STAGED_EXTS}
+    COMMENT "cno staged at ${_STAGE_DIR}")
 
-# ─── install() — copy stage/ to ${CMAKE_INSTALL_PREFIX} ─────────────────────
+# ── Install ───────────────────────────────────────────────────────────────────
 include(GNUInstallDirs)
-install(PROGRAMS "${_CNO_OUTPUT}"      DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(DIRECTORY "${_STAGE_DIR}/ext/" DESTINATION "${CMAKE_INSTALL_LIBDIR}/cno/ext"
+install(PROGRAMS "${_CNO_BIN}" DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(DIRECTORY "${_STAGE_DIR}/ext/"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cno/ext"
         FILES_MATCHING PATTERN "*${CMAKE_SHARED_LIBRARY_SUFFIX}")
 if(WIN32)
-    # Runtime DLLs (vcpkg / system) need to sit next to cno.exe on Windows.
-    install(DIRECTORY "${_STAGE_DIR}/" DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    install(DIRECTORY "${_STAGE_DIR}/"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}"
             FILES_MATCHING PATTERN "*.dll")
 endif()
 
-# ─── Status echo ────────────────────────────────────────────────────────────
-message(STATUS "")
-message(STATUS "cno-cli configuration:")
-message(STATUS "  Build type:        ${CMAKE_BUILD_TYPE}")
-message(STATUS "  CNO_RELEASE:       ${CNO_RELEASE}")
-message(STATUS "  CJS_USE_SYMBOL_INTERNAL: ${CJS_USE_SYMBOL_INTERNAL} (forced, required by bundle)")
-message(STATUS "  CNO_BUNDLE_MINIFY: ${CNO_BUNDLE_MINIFY}")
-message(STATUS "  CNO_EMBED_EXT_H2:  ${CNO_EMBED_EXT_H2}")
-message(STATUS "  CNO_EMBED_EXT_QUIC: ${CNO_EMBED_EXT_QUIC}")
-message(STATUS "  pnpm:              ${PNPM_EXE}")
-if(CNO_HOST_CJSC)
-    message(STATUS "  host cjsc:         ${CNO_HOST_CJSC} (override)")
-else()
-    message(STATUS "  host cjsc:         <built locally>")
-endif()
+# ── Status ────────────────────────────────────────────────────────────────────
 if(CNO_EXT_DIR AND EXISTS "${CNO_EXT_DIR}")
-    list(LENGTH _EXT_OUTPUTS _ext_count)
-    message(STATUS "  CNO_EXT_DIR:       ${CNO_EXT_DIR} (${_ext_count} extension(s))")
+    list(LENGTH _STAGED_EXTS _n)
+    set(_ext_info "${CNO_EXT_DIR} (${_n} file(s))")
 else()
-    message(STATUS "  CNO_EXT_DIR:       <none>  (build extensions separately, set -DCNO_EXT_DIR=...)")
+    set(_ext_info "<none>")
 endif()
-message(STATUS "  Stage dir:         ${_STAGE_DIR}")
+message(STATUS "")
+message(STATUS "[cno] stage=${_STAGE_DIR}")
+message(STATUS "[cno] blob=${_BLOB_C}")
+message(STATUS "[cno] release=${CNO_RELEASE}  h2=${CNO_EMBED_EXT_H2}  quic=${CNO_EMBED_EXT_QUIC}")
+message(STATUS "[cno] ext_dir=${_ext_info}")
 message(STATUS "")

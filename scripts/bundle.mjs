@@ -24,7 +24,10 @@
 import { build } from 'esbuild';
 import { argv, exit } from 'node:process';
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const mode = argv[2] || 'release';
 
@@ -39,13 +42,17 @@ const SYMBOL_BANNER = {
         '__cno_register__=globalThis[Symbol.for("cjs.internal.register")];',
 };
 
+/**
+ * @type { import('esbuild').BuildOptions }
+ */
 const common = {
-    entryPoints: ['src/main.ts'],
-    bundle:      true,
-    format:      'esm',
-    platform:    'node',
-    target:      'es2024',
-    loader:      { '.json': 'json' },
+    entryPoints:        ['src/main.ts'],
+    bundle:             true,
+    format:             'esm',
+    platform:           'node',
+    target:             'es2024',
+    loader:             { '.json': 'json' },
+    keepNames:          true
 };
 
 let opts;

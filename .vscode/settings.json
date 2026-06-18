@@ -1,3 +1,6 @@
 {
-    "deno.enable": false
+    "deno.enable": true,
+    "deno.enablePaths": [
+        "./tests/"
+    ]
 }

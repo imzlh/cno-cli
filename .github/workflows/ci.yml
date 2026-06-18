@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['v[0-9]+.[0-9]+.[0-9]+']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux-x64:
+    name: Test - Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system deps
+        run: |
+          sudo apt update
+          sudo apt install -y cmake ninja-build \
+            libcurl4-openssl-dev libltdl-dev libffi-dev \
+            libsqlite3-dev libssl-dev zlib1g-dev libexpat1-dev \
+            libiconv-hook-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+
+      - name: Build ext-oxc
+        run: |
+          cmake -S ext-oxc -B ext-oxc/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCNO_SRC_DIR="$PWD/circu.js/src" \
+            -DQUICKJS_DIR="$PWD/circu.js/deps/quickjs"
+          cmake --build ext-oxc/build --parallel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cno-linux-x64-test
+          path: |
+            build/stage/cno
+            ext-oxc/build/swc.so
+
+  build-mac-arm64:
+    name: Test - macOS ARM64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system deps
+        run: brew install cmake ninja libffi sqlite3 openssl zlib expat curl
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build build --parallel
+
+      - name: Build ext-oxc
+        run: |
+          cmake -S ext-oxc -B ext-oxc/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCNO_SRC_DIR="$PWD/circu.js/src" \
+            -DQUICKJS_DIR="$PWD/circu.js/deps/quickjs"
+          cmake --build ext-oxc/build --parallel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cno-mac-arm64-test
+          path: |
+            build/stage/cno
+            ext-oxc/build/swc.dylib
+
+  build-windows-x64:
+    name: Test - Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '0b88aacde46a853151730fbe7d0b7ee45f4b6864'
+
+      - name: Install deps via vcpkg
+        run: |
+          vcpkg install sqlite3:x64-windows openssl:x64-windows zlib:x64-windows `
+            expat:x64-windows curl:x64-windows libffi:x64-windows libiconv:x64-windows
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build
+        shell: cmd
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake
+          cmake --build build --config Release --parallel
+
+      - name: Build ext-oxc
+        shell: pwsh
+        run: |
+          $CnoLib = "build\circu.js\Release\cjs.lib"
+          cmake -S ext-oxc -B ext-oxc\build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCNO_SRC_DIR="$PWD\circu.js\src" `
+            -DQUICKJS_DIR="$PWD\circu.js\deps\quickjs" `
+            -DCNO_IMPLIB="$PWD\$CnoLib"
+          cmake --build ext-oxc\build --config Release --parallel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cno-windows-x64-test
+          path: |
+            build\stage\
+            ext-oxc\build\Release\swc.dll

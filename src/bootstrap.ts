@@ -9,8 +9,12 @@
 // Each name → file mapping is hard-coded below. The .so must export
 // `tjs_module_info` (see circu.js/src/tjs.h DEF_MODULE).
 
-import { os, fs, uname, console } from '../cts/src/utils';
+import { uname } from '../cts/src/utils';
 import { joinPaths } from '../cts/src/utils/path';
+
+const fs = import.meta.use('fs');
+const os = import.meta.use('os');
+const console = import.meta.use('console');
 
 const IS_WIN = uname.sysname.includes('Windows');
 const IS_MAC = uname.sysname === 'Darwin';

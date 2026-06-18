@@ -1,0 +1,236 @@
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Linux glibc (Debian bookworm) ─────────────────────────────────────────
+  build-linux-glibc:
+    name: Linux ${{ matrix.target }} (glibc)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64, platform: linux/amd64,  runner: ubuntu-latest    }
+          - { target: i386,   platform: linux/386,    runner: ubuntu-latest    }
+          - { target: arm64,  platform: linux/arm64,  runner: ubuntu-24.04-arm }
+          - { target: armv7,  platform: linux/arm/v7, runner: ubuntu-24.04-arm }
+          - { target: armv6,  platform: linux/arm/v6, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: docker/setup-qemu-action@v3
+      - name: Build
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v ${{ github.workspace }}:/work -w /work \
+            debian:bookworm-slim bash -c "
+              apt update && apt install -y cmake ninja-build gcc g++ \
+                libcurl4-openssl-dev libltdl-dev libffi-dev \
+                libsqlite3-dev libssl-dev zlib1g-dev libexpat1-dev &&
+              npm install -g pnpm &&
+              cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release &&
+              cmake --build build --parallel &&
+              strip build/stage/cno"
+      - name: Package
+        run: tar czf cno-linux-${{ matrix.target }}.tar.gz -C build/stage .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cno-linux-${{ matrix.target }}
+          path: cno-linux-${{ matrix.target }}.tar.gz
+
+  # ── Linux musl (Alpine, x86 + ARM) ───────────────────────────────────────
+  build-linux-musl:
+    name: Linux ${{ matrix.target }} (musl)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64, platform: linux/amd64,  runner: ubuntu-latest    }
+          - { target: i386,   platform: linux/386,    runner: ubuntu-latest    }
+          - { target: arm64,  platform: linux/arm64,  runner: ubuntu-24.04-arm }
+          - { target: armv7,  platform: linux/arm/v7, runner: ubuntu-24.04-arm }
+          - { target: armv6,  platform: linux/arm/v6, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: docker/setup-qemu-action@v3
+      - name: Build
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v ${{ github.workspace }}:/work -w /work \
+            alpine:3.21 sh -c "
+              apk add --no-cache cmake ninja-build gcc g++ musl-dev nodejs npm &&
+              npm install -g pnpm &&
+              apk add --no-cache \
+                sqlite-dev sqlite-static \
+                openssl-dev openssl-libs-static \
+                zlib-dev zlib-static \
+                curl-dev curl-static \
+                libffi-dev expat-dev expat-static libtool-dev &&
+              cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_EXE_LINKER_FLAGS='-static' &&
+              cmake --build build --parallel &&
+              strip build/stage/cno"
+      - name: Package
+        run: tar czf cno-linux-musl-${{ matrix.target }}.tar.gz -C build/stage .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cno-linux-musl-${{ matrix.target }}
+          path: cno-linux-musl-${{ matrix.target }}.tar.gz
+
+  # ── Linux musl exotic (MIPS / RISC-V / ARMv5, QEMU) ─────────────────────
+  build-linux-musl-exotic:
+    name: Linux ${{ matrix.target }} (musl-exotic)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: mips,    platform: linux/mips    }
+          - { target: mipsel,  platform: linux/mipsle  }
+          - { target: mips64,  platform: linux/mips64  }
+          - { target: riscv64, platform: linux/riscv64 }
+          - { target: armv5,   platform: linux/arm/v5  }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: docker/setup-qemu-action@v3
+      - name: Build
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v ${{ github.workspace }}:/work -w /work \
+            alpine:3.21 sh -c "
+              apk add --no-cache cmake ninja-build gcc g++ musl-dev nodejs npm &&
+              npm install -g pnpm &&
+              apk add --no-cache \
+                sqlite-dev sqlite-static \
+                openssl-dev openssl-libs-static \
+                zlib-dev zlib-static \
+                curl-dev curl-static \
+                libffi-dev expat-dev expat-static libtool-dev &&
+              cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_EXE_LINKER_FLAGS='-static' &&
+              cmake --build build --parallel &&
+              strip build/stage/cno"
+      - name: Package
+        run: tar czf cno-linux-musl-${{ matrix.target }}.tar.gz -C build/stage .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cno-linux-musl-${{ matrix.target }}
+          path: cno-linux-musl-${{ matrix.target }}.tar.gz
+
+  # ── macOS ARM64 ───────────────────────────────────────────────────────────
+  build-macos-arm64:
+    name: macOS ARM64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: brew install cmake ninja libffi sqlite3 openssl zlib expat curl pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build cno
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build build --parallel
+          strip build/stage/cno
+      - name: Build ext-oxc
+        run: |
+          cmake -S ext-oxc -B ext-oxc/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCNO_SRC_DIR="$PWD/circu.js/src" \
+            -DQUICKJS_DIR="$PWD/circu.js/deps/quickjs"
+          cmake --build ext-oxc/build --parallel
+          cp ext-oxc/build/swc.dylib build/stage/ext/swc.dylib
+      - name: Package
+        run: tar czf cno-macos-arm64.tar.gz -C build/stage .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cno-macos-arm64
+          path: cno-macos-arm64.tar.gz
+
+  # ── Windows x64 ───────────────────────────────────────────────────────────
+  build-windows-x64:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '0b88aacde46a853151730fbe7d0b7ee45f4b6864'
+      - name: Install deps via vcpkg
+        run: |
+          vcpkg install sqlite3:x64-windows openssl:x64-windows zlib:x64-windows `
+            expat:x64-windows curl:x64-windows libffi:x64-windows libiconv:x64-windows
+      - uses: pnpm/action-setup@v4
+        with:
+          version: latest
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build cno
+        shell: cmd
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake
+          cmake --build build --config Release --parallel
+      - name: Build ext-oxc
+        shell: pwsh
+        run: |
+          cmake -S ext-oxc -B ext-oxc\build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCNO_SRC_DIR="$PWD\circu.js\src" `
+            -DQUICKJS_DIR="$PWD\circu.js\deps\quickjs" `
+            -DCNO_IMPLIB="$PWD\build\circu.js\Release\cjs.lib"
+          cmake --build ext-oxc\build --config Release --parallel
+          Copy-Item ext-oxc\build\Release\swc.dll build\stage\ext\swc.dll
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path build\stage\* -DestinationPath cno-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cno-windows-x64
+          path: cno-windows-x64.zip
+
+  # ── Release ───────────────────────────────────────────────────────────────
+  release:
+    name: Create Release
+    needs:
+      - build-linux-glibc
+      - build-linux-musl
+      - build-linux-musl-exotic
+      - build-macos-arm64
+      - build-windows-x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: cno-*
+      - name: Flatten artifacts
+        run: find dist -mindepth 2 \( -name '*.tar.gz' -o -name '*.zip' \) -exec mv {} dist/ \;
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz dist/*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

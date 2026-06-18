@@ -1,4 +1,5 @@
-import { os, console } from '../cts/src/utils';
+const os = import.meta.use('os');
+const console = import.meta.use('console');
 
 export type Subcommand =
     | 'run' | 'task' | 'eval' | 'cache' | 'repl'
@@ -37,11 +38,12 @@ const ALIASES: Record<string, string> = {
 const KNOWN_FLAGS = new Set<string>([
     // run / eval / cache
     'cache-dir', 'lock-dir', 'no-lock', 'frozen', 'disable-cache',
-    'no-http', 'no-jsr', 'no-node',
+    'no-http', 'no-jsr', 'no-node', 'no-swc', 'ignore-scripts',
     'reload', 'r', 'precache',
     // misc
     'silent', 'q',
     'memory-limit', 'max-stack-size',
+    'inspect', 'inspect-brk', 'inspect-wait',
     // resource limits inherited from cts
     'allow-all', 'A',
     // shorthand aliases & subcommand-like flags handled in parser
@@ -73,7 +75,7 @@ const DENO_NOOP_FLAGS = new Set<string>([
     // locking
     'no-remote', 'lock', 'lock-write',
     // misc deno features we just ignore
-    'inspect', 'inspect-brk', 'inspect-wait', 'v8-flags',
+    'v8-flags',
     'seed', 'location', 'no-npm',
 ]);
 
@@ -132,6 +134,19 @@ export function parseArgv(argv: string[]): ParsedCli {
                 continue;
             }
             const next = argv[i + 1];
+            // --inspect and --inspect-brk/--inspect-wait: optional port/host:port value — only
+            // consume the next token if it looks like a port number or host:port,
+            // not if it's a file path or another flag.
+            if (k === 'inspect' || k === 'inspect-brk' || k === 'inspect-wait') {
+                if (next !== undefined && /^(\d+|[a-z0-9.-]+:\d+)$/i.test(next)) {
+                    flags[k] = next;
+                    i += 2;
+                } else {
+                    flags[k] = true;
+                    i++;
+                }
+                continue;
+            }
             if (next !== undefined && !next.startsWith('-')) {
                 // Heuristic: value flags consume next token if it doesn't look like a flag.
                 // Booleans are still possible — pre-emptively grab the value; subcommand

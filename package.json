@@ -1,6 +1,6 @@
 {
   "name": "cno-cli",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Deno-compatible TypeScript runtime CLI on circu.js (cno binary)",
   "main": "src/main.ts",
   "type": "module",
@@ -25,6 +25,7 @@
   "dependencies": {
     "@cnojs/http": "workspace:./http",
     "cts": "workspace:./cts",
+    "node-buffer": "npm:buffer@^6.0.3",
     "ts-interface-checker": "^1.0.2"
   },
   "devDependencies": {

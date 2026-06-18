@@ -1,9 +1,10 @@
-import { os } from '../../cts/src/utils';
 import { createRuntime } from '../../cts/src/runtime';
 import { loadConfigFile } from '../../cts/src/config';
 import { fatal } from '../../cts/src/errors';
 import { joinPaths } from '../../cts/src/utils/path';
 import type { ConfigOptions, ModuleInfo } from '../../cts/src/types';
+
+const os = import.meta.use('os');
 
 interface EvalOpts {
     code: string;
