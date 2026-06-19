@@ -55,9 +55,6 @@ export const ChannelReq = {
 /** One entry of native.getLocalVariables(level). */
 export type LocalVariable = ReturnType<typeof native.getLocalVariables>[number];
 
-/** One entry of native.getGlobalLexicalVariables(). */
-export type GlobalLexicalVariable = ReturnType<typeof native.getGlobalLexicalVariables>[number];
-
 /** Non-null result of native.getFrameInfo(level). */
 export type FrameInfo = NonNullable<ReturnType<typeof native.getFrameInfo>>;
 

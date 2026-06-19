@@ -18,11 +18,13 @@ import { Evaluator } from './evaluator'
 import { Hooks } from './hooks'
 import { PauseController } from './pause-controller'
 import { registerRpcHandlers } from './rpc-handlers'
-import { log } from '../../../cts/src/utils/log'
+import type { ModuleInfo } from '../../../cts/src/types'
 
 const worker = import.meta.use('worker')
 const console = import.meta.use('console')
 const timers = import.meta.use('timers')
+
+type WorkerErrorPayload = { message: string; stack?: string; phase?: string }
 
 export interface InspectorOptions {
 	port: number
@@ -54,7 +56,7 @@ export class Inspector {
 	private connectedResolve: (() => void) | null = null
 
 	/** Script-init hook; run.ts wires this into runtime.addInitHook() after attach. */
-	scriptInitHook?: (specPath: string) => void
+	scriptInitHook?: (specPath: string, info: ModuleInfo) => void
 
 	constructor(opts: InspectorOptions) {
 		this.port = opts.port
@@ -64,8 +66,6 @@ export class Inspector {
 	}
 
 	async attach(): Promise<void> {
-		log.debug('debug', () => `inspector.attach: port=${this.port} entry=${this.entryFile}`)
-
 		// Independent debug channel (own rings + semaphores; never touches uv).
 		const pair = native.createDebugChannel()
 		this.dc = pair.dc
@@ -76,6 +76,9 @@ export class Inspector {
 			channelHandle: pair.handle,
 			entryFile: this.entryFile,
 		})
+		this.worker.messagePipe.onmessageerror = (error: unknown) => {
+			console.error('[inspector] debug worker pipe error:', error)
+		}
 
 		const endpoint = new MainEndpoint(this.worker.messagePipe, pair.dc)
 		const serializer = new Serializer()
@@ -102,17 +105,29 @@ export class Inspector {
 					this.connectedResolve = null
 				}
 			},
+			onWorkerError: (error: WorkerErrorPayload) => {
+				const phase = error.phase ? ` during ${error.phase}` : ''
+				console.error(`[inspector] debug worker crashed${phase}: ${error.message}`)
+				if (error.stack) console.error(error.stack)
+			},
 		})
-		log.debug('debug', () => 'inspector: worker spawned, RPC handlers registered')
-
 		// Wait for the worker's WS server to report its URL via the ready RPC.
 		const ready = await new Promise<{ wsUrl: string }>((resolve, reject) => {
 			this.readyResolve = resolve
 			this.readyReject = reject
-			timers.setTimeout(() => reject(new Error('inspector attach timed out waiting for worker ready')), 30_000)
+			const timeout = timers.setTimeout(() => reject(new Error('inspector attach timed out waiting for worker ready')), 30_000)
+			this.readyResolve = (value) => {
+				timers.clearTimeout(timeout)
+				resolve(value)
+			}
+			this.readyReject = (error) => {
+				timers.clearTimeout(timeout)
+				reject(error)
+			}
 		})
 		this.inspectorUrl = ready.wsUrl
-		log.debug('debug', () => `inspector: worker ready at ${this.inspectorUrl}`)
+		console.info(`Debugger listening on ${this.inspectorUrl}`)
+		console.info(`Visit chrome://inspect to connect to the debugger.`)
 
 		// Hooks must be live before the entry module is loaded.
 		hooks.installAll()
@@ -127,8 +142,14 @@ export class Inspector {
 		if (this.breakOnStart || this.waitForClient) {
 			console.warn('Waiting for DevTools client...')
 			await new Promise<void>((resolve) => {
-				this.connectedResolve = resolve
-				timers.setTimeout(() => resolve(), 30_000)
+				const timeout = timers.setTimeout(() => {
+					this.connectedResolve = null
+					resolve()
+				}, 30_000)
+				this.connectedResolve = () => {
+					timers.clearTimeout(timeout)
+					resolve()
+				}
 			})
 			if (this.breakOnStart) {
 				try {
@@ -141,7 +162,6 @@ export class Inspector {
 	}
 
 	async detach(): Promise<void> {
-		log.debug('debug', () => 'inspector.detach')
 		try {
 			native.stop()
 		} catch {
@@ -164,7 +184,6 @@ export class Inspector {
 	 * (that can deadlock in a signal handler); os.exit() reaps all threads.
 	 */
 	forceStop(): void {
-		log.debug('debug', () => 'inspector.forceStop')
 		try {
 			native.stop()
 		} catch {

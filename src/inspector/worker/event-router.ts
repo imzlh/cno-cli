@@ -16,6 +16,7 @@ import type {
 	BindingCalledPayload,
 	FetchInterceptPayload,
 	NetFetchEvent,
+	NetServeEvent,
 	NetWSEvent,
 } from '../shared/wire'
 import type { PausedEvent } from '../shared/cdp'
@@ -63,12 +64,28 @@ export function createEventRouter(deps: EventRouterDeps): (event: WorkerEvent, p
 			}
 			case WorkerEvent.Console: {
 				const payload = params as ConsolePayload
-				consoleDomain.onConsole(payload.method, payload.args)
+				consoleDomain.onConsole(payload.method, payload.args, payload.timestamp, payload.callFrames)
+
+				// Construct CDP stackTrace
+				let stackTrace: { callFrames: Array<Record<string, unknown>> } | undefined
+				if (payload.callFrames && payload.callFrames.length > 0) {
+					stackTrace = {
+						callFrames: payload.callFrames.map(f => ({
+							functionName: f.functionName,
+							scriptId: f.scriptId,
+							url: f.url,
+							lineNumber: f.lineNumber,
+							columnNumber: f.columnNumber,
+						}))
+					}
+				}
+
 				emit('Runtime.consoleAPICalled', {
 					type: payload.method,
 					args: payload.args,
 					executionContextId: 1,
-					timestamp: Date.now() / 1000,
+					timestamp: payload.timestamp,
+					stackTrace,
 				})
 				break
 			}
@@ -88,6 +105,10 @@ export function createEventRouter(deps: EventRouterDeps): (event: WorkerEvent, p
 			}
 			case WorkerEvent.NetWs: {
 				networkDomain.onWSEvent(params as NetWSEvent)
+				break
+			}
+			case WorkerEvent.NetServe: {
+				networkDomain.onServeEvent(params as NetServeEvent)
 				break
 			}
 			case WorkerEvent.FetchIntercept: {

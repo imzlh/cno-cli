@@ -75,7 +75,7 @@ set(CJS_BLOB_C "${_BLOB_C}" CACHE INTERNAL
 
 # ── circu.js ──────────────────────────────────────────────────────────────────
 set(CJS_USE_SYMBOL_INTERNAL ON CACHE BOOL "" FORCE)
-set(ENABLE_ASAN ON CACHE BOOL "" FORCE)
+set(ENABLE_ASAN OFF CACHE BOOL "" FORCE)
 add_subdirectory(circu.js)
 if(TARGET cjsc)
     set_target_properties(cjsc PROPERTIES EXCLUDE_FROM_ALL FALSE)

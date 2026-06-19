@@ -66,6 +66,11 @@ export class Serializer {
 		const desc = description ?? describeObject(value, sub, classNameOf(value));
 		const preview: ObjectPreview = { type: 'object', subtype: sub, description: desc, overflow: false, properties: [] };
 
+		if (sub === 'error') {
+			appendErrorPreview(preview, value);
+			return preview;
+		}
+
 		if (sub === 'map' || sub === 'set') {
 			preview.entries = [];
 			let n = 0;
@@ -198,12 +203,25 @@ function describeObject(value: unknown, subtype: RemoteObjectSubtype | undefined
 	try {
 		if (subtype === 'array') return `${className}(${(value as unknown[]).length})`;
 		if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) return `${className}(${(value as ArrayBufferView).byteLength})`;
-		if (subtype === 'error') { const e = value as Error; return e.stack || `${e.name}: ${e.message}`; }
+		if (subtype === 'error') return describeError(value as Error, className);
 		if (subtype === 'regexp') return String(value);
 		if (subtype === 'date') return (value as Date).toString();
 		if (subtype === 'map' || subtype === 'set') return `${className}(${(value as { size: number }).size})`;
 	} catch {}
 	return className;
+}
+
+function describeError(error: Error, className: string): string {
+	const title = errorTitle(error, className);
+	const stack = typeof error.stack === 'string' ? error.stack.trim() : '';
+	if (!stack) return title;
+	return stack.startsWith(title) ? stack : `${title}\n${stack}`;
+}
+
+function errorTitle(error: Error, className: string): string {
+	const name = safeString(error.name || className || 'Error');
+	const message = typeof error.message === 'string' ? error.message : safeString(error.message);
+	return message ? `${name}: ${message}` : name;
 }
 
 function previewProp(name: string, v: unknown): PropertyPreview {
@@ -223,4 +241,35 @@ function abbreviate(v: unknown, subtype?: RemoteObjectSubtype): string {
 		if (subtype === 'array') return `Array(${(v as unknown[]).length})`;
 		return classNameOf(v);
 	} catch { return 'Object'; }
+}
+
+function appendErrorPreview(preview: ObjectPreview, value: unknown): void {
+	const error = value as Error & { cause?: unknown };
+	const props: PropertyPreview[] = [];
+	props.push({ name: 'name', type: 'string', value: safeString(error.name || 'Error') });
+	if (typeof error.message === 'string' && error.message) {
+		props.push({ name: 'message', type: 'string', value: truncatePreviewString(error.message) });
+	}
+	if (typeof error.stack === 'string' && error.stack) {
+		props.push({ name: 'stack', type: 'string', value: truncatePreviewString(error.stack) });
+	}
+	if ('cause' in error && error.cause !== undefined) {
+		const cause = error.cause;
+		if (cause === null) {
+			props.push({ name: 'cause', type: 'object', subtype: 'null', value: 'null' });
+		} else if (typeof cause === 'object') {
+			const subtype = objectSubtype(cause);
+			props.push({ name: 'cause', type: 'object', subtype, value: abbreviate(cause, subtype) });
+		} else if (typeof cause === 'function') {
+			props.push({ name: 'cause', type: 'function', value: '' });
+		} else {
+			props.push({ name: 'cause', type: typeof cause as RemoteObjectType, value: truncatePreviewString(safeString(cause)) });
+		}
+	}
+	preview.properties = props.slice(0, MAX_PREVIEW_PROPS);
+	preview.overflow = props.length > MAX_PREVIEW_PROPS;
+}
+
+function truncatePreviewString(value: string): string {
+	return value.length > MAX_STR ? value.slice(0, MAX_STR) + '...' : value;
 }

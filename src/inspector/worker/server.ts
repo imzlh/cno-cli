@@ -25,6 +25,7 @@ export interface ServerOptions {
 
 export interface ServerHandle {
 	wsUrl: string
+	close: () => void
 }
 
 export function startServer(opts: ServerOptions): Promise<ServerHandle> {
@@ -99,5 +100,5 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 
 	server.listen()
 	void server.acceptLoop()
-	return Promise.resolve({ wsUrl })
+	return Promise.resolve({ wsUrl, close: () => server.close() })
 }

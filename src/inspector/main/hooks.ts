@@ -11,24 +11,35 @@ import {
 	setFetchHook,
 	setWebSocketHook,
 	setFetchInterceptHook,
+	setServeHook,
 	type FetchRequestInfo,
 	type FetchResponseInfo,
 	type FetchDataInfo,
 	type FetchFinishedInfo,
+	type ServeRequestInfo,
+	type ServeResponseInfo,
+	type ServeDataInfo,
+	type ServeFinishedInfo,
 	type InterceptResult,
 } from '../../../cno/src/utils/network-hooks'
 import {
 	NetFetchKind,
+	NetServeKind,
 	NetWSKind,
 	WorkerEvent,
 	type BindingCalledPayload,
 	type ConsolePayload,
+	type ConsoleCallFrame,
 	type FetchInterceptPayload,
 	type LoadPayload,
 	type NetFetchData,
 	type NetFetchDone,
 	type NetFetchReq,
 	type NetFetchRes,
+	type NetServeData,
+	type NetServeDone,
+	type NetServeReq,
+	type NetServeRes,
 	type NetWSClosed,
 	type NetWSCreated,
 	type NetWSFrame,
@@ -37,9 +48,13 @@ import {
 } from '../shared/wire'
 import type { MainEndpoint } from '../transport/main-endpoint'
 import type { Serializer } from './remote-object'
+import type { ModuleInfo } from '../../../cts/src/types'
+import { native } from '../shared/native'
+import { isUserFile } from '../shared/user-files'
 
 const engine = import.meta.use('engine')
 const fs = import.meta.use('fs')
+const console = import.meta.use('console')
 
 type LoadCapableGlobal = {
 	addEventListener?: (type: string, cb: () => void, opts?: { once?: boolean }) => void
@@ -50,11 +65,12 @@ const kOrigin = Symbol('console.origin')
 export class Hooks {
 	private readonly pendingIntercepts = new Map<string, (result: InterceptResult | null) => void>()
 	private readonly installedBindings = new Set<string>()
+	private readonly scriptSourcePaths = new Map<string, string>()
 	private scriptHookInstalled = false
 	private consoleOriginals: Record<string, (...a: unknown[]) => void> | null = null
 
 	/** Set by installScript(); run.ts wires this into runtime.addInitHook(). */
-	scriptInitHook: ((specPath: string) => void) | null = null
+	scriptInitHook: ((specPath: string, info: ModuleInfo) => void) | null = null
 
 	constructor(private readonly endpoint: MainEndpoint, private readonly serializer: Serializer) {}
 
@@ -69,22 +85,35 @@ export class Hooks {
 	private installScript(): void {
 		if (this.scriptHookInstalled) return
 		this.scriptHookInstalled = true
-		this.scriptInitHook = (specPath: string) => {
-			// DevTools groups scripts by domain, so a path needs a URL scheme.
-			// [A-Za-z] avoids matching Windows drive letters (D:) as a scheme.
-			const url = /^[A-Za-z]{2,}:/.test(specPath) ? specPath : `file:///${specPath.replace(/\\/g, '/').replace(/^\//, '')}`
+		this.scriptInitHook = (specPath: string, info: ModuleInfo) => {
+			const sourcePath = info.localPath || specPath
+			this.scriptSourcePaths.set(specPath, sourcePath)
+			const url = devtoolsScriptUrl(specPath, sourcePath)
 			let length = 0
 			let endLine = 0
 			try {
-				const buf = fs.readFile(specPath)
+				const buf = fs.readFile(sourcePath)
 				length = buf.byteLength
 				const str = engine.decodeString(buf)
 				endLine = (str.match(/\n/g) ?? []).length
 			} catch {
 				/* unreadable source \u2014 report zero length */
 			}
-			this.safeEmit(WorkerEvent.ScriptParsed, { scriptId: specPath, url, length, endLine } satisfies ScriptParsedPayload)
+			this.safeEmit(WorkerEvent.ScriptParsed, { scriptId: specPath, url, sourcePath, length, endLine } satisfies ScriptParsedPayload)
 		}
+	}
+
+	scriptSourcePath(scriptId: string): string {
+		return this.scriptSourcePaths.get(scriptId) ?? scriptId
+	}
+
+	private scriptFrameLocation(file: string): { scriptId: string; url: string } {
+		for (const [specPath, sourcePath] of this.scriptSourcePaths) {
+			if (sameScriptPath(file, specPath) || sameScriptPath(file, sourcePath)) {
+				return { scriptId: specPath, url: devtoolsScriptUrl(specPath, sourcePath) }
+			}
+		}
+		return { scriptId: file, url: devtoolsScriptUrl(file, file) }
 	}
 
 	//  network 
@@ -99,6 +128,8 @@ private installNetwork(): void {
 					method: i.method,
 					headers: i.headers,
 					postData: i.postData ?? undefined,
+					callFrames: i.callFrames,
+					resourceType: i.resourceType,
 				} satisfies NetFetchReq),
 			onResponse: (i: FetchResponseInfo) =>
 				this.safeEmit(WorkerEvent.NetFetch, {
@@ -109,6 +140,7 @@ private installNetwork(): void {
 					status: i.status,
 					headers: i.headers,
 					requestHeaders: i.requestHeaders,
+					resourceType: i.resourceType,
 					connection: i.connection,
 				} satisfies NetFetchRes),
 			onData: (i: FetchDataInfo) =>
@@ -130,12 +162,54 @@ private installNetwork(): void {
 				} satisfies NetFetchDone),
 		})
 
+		setServeHook({
+			onRequest: (i: ServeRequestInfo) =>
+				this.safeEmit(WorkerEvent.NetServe, {
+					ev: NetServeKind.Req,
+					requestId: i.requestId,
+					timestamp: i.timestamp,
+					url: i.url,
+					method: i.method,
+					headers: i.headers,
+					postData: i.postData ?? undefined,
+					callFrames: i.callFrames,
+				} satisfies NetServeReq),
+			onResponse: (i: ServeResponseInfo) =>
+				this.safeEmit(WorkerEvent.NetServe, {
+					ev: NetServeKind.Res,
+					requestId: i.requestId,
+					timestamp: i.timestamp,
+					url: i.url,
+					status: i.status,
+					statusText: i.statusText,
+					headers: i.headers,
+				} satisfies NetServeRes),
+			onData: (i: ServeDataInfo) =>
+				this.safeEmit(WorkerEvent.NetServe, {
+					ev: NetServeKind.Data,
+					requestId: i.requestId,
+					timestamp: i.timestamp,
+					data: i.data,
+					byteLength: i.data.byteLength,
+				} satisfies NetServeData),
+			onFinished: (i: ServeFinishedInfo) =>
+				this.safeEmit(WorkerEvent.NetServe, {
+					ev: NetServeKind.Done,
+					requestId: i.requestId,
+					timestamp: i.timestamp,
+					success: i.success,
+					errorText: i.errorText,
+				} satisfies NetServeDone),
+		})
+
 		setWebSocketHook({
 			onCreated: (i) =>
 				this.safeEmit(WorkerEvent.NetWs, {
 					ev: NetWSKind.Created,
 					requestId: i.requestId,
 					url: i.url,
+					requestHeaders: i.requestHeaders,
+					callFrames: i.callFrames,
 					timestamp: i.timestamp,
 				} satisfies NetWSCreated),
 			onHandshake: (i) =>
@@ -230,13 +304,42 @@ private installNetwork(): void {
 			// CDP uses 'warning' not 'warn'.
 			const cdpType = method === 'warn' ? 'warning' : method
 			con[method] = (...args: unknown[]) => {
+				const callFrames = this.captureConsoleCallFrames()
 				orig.apply(globalThis.console, args)
 				try {
 					const serialized = args.map(a => this.serializer.serialize(a, 'console', { preview: true }))
-					this.safeEmit(WorkerEvent.Console, { method: cdpType, args: serialized } satisfies ConsolePayload)
+
+					this.safeEmit(WorkerEvent.Console, {
+						method: cdpType,
+						args: serialized,
+						timestamp: Date.now(),
+						callFrames: callFrames.length > 0 ? callFrames : undefined,
+					} satisfies ConsolePayload)
 				} catch { /* ignore serialization errors */ }
 			}
 		}
+	}
+
+	private captureConsoleCallFrames(): ConsoleCallFrame[] {
+		const callFrames: ConsoleCallFrame[] = []
+		try {
+			const depth = native.getStackDepth()
+			for (let level = 2; level < depth && callFrames.length < 32; level++) {
+				const info = native.getFrameInfo(level)
+				if (!info) continue
+				const fname = info.func?.name || ''
+				if (!isUserFile(info.file)) continue
+				const loc = this.scriptFrameLocation(info.file)
+				callFrames.push({
+					functionName: fname,
+					scriptId: loc.scriptId,
+					url: loc.url,
+					lineNumber: Math.max(0, info.line - 1),
+					columnNumber: Math.max(0, info.column - 1),
+				})
+			}
+		} catch { /* ignore frame inspection errors */ }
+		return callFrames
 	}
 
 	//  bindings
@@ -268,6 +371,7 @@ private installNetwork(): void {
 		for (const resolve of this.pendingIntercepts.values()) resolve(null)
 		this.pendingIntercepts.clear()
 		this.installedBindings.clear()
+		this.scriptSourcePaths.clear()
 		this.scriptHookInstalled = false
 		this.scriptInitHook = null
 		if (this.consoleOriginals) {
@@ -292,6 +396,11 @@ private installNetwork(): void {
 		} catch {
 			/* ignore */
 		}
+		try {
+			setServeHook(null)
+		} catch {
+			/* ignore */
+		}
 	}
 
 	private safeEmit(ev: WorkerEvent, params: unknown): void {
@@ -301,4 +410,44 @@ private installNetwork(): void {
 			/* worker gone */
 		}
 	}
+}
+
+function devtoolsScriptUrl(specPath: string, sourcePath: string): string {
+	if (specPath.startsWith('http://') || specPath.startsWith('https://')) return specPath
+	if (specPath.startsWith('jsr:')) return jsrDevtoolsUrl(specPath)
+	if (specPath.startsWith('npm:')) return npmDevtoolsUrl(specPath)
+	if (/^[A-Za-z]{2,}:/.test(specPath)) return `cno://modules/${encodePath(specPath)}`
+	return fileUrl(sourcePath)
+}
+
+function jsrDevtoolsUrl(specPath: string): string {
+	const m = specPath.match(/^jsr:@([^/]+)\/([^@/]+)@([^/]+)\/?(.*)$/)
+	if (!m) return `https://jsr.io/${encodePath(specPath.slice(4))}`
+	const [, scope, name, version, path = ''] = m
+	return `https://jsr.io/@${scope}/${name}/${version}${path ? `/${path}` : ''}`
+}
+
+function npmDevtoolsUrl(specPath: string): string {
+	const rest = specPath.slice(4).replace(/^\/+/, '')
+	return `npm://registry/${encodePath(rest)}`
+}
+
+function fileUrl(path: string): string {
+	const normalized = path.replace(/\\/g, '/').replace(/^\//, '')
+	return `file:///${normalized}`
+}
+
+function sameScriptPath(a: string, b: string): boolean {
+	return a === b || normalizeScriptPath(a) === normalizeScriptPath(b)
+}
+
+function normalizeScriptPath(path: string): string {
+	let normalized = path.replace(/\\/g, '/')
+	if (normalized.startsWith('file:///')) normalized = normalized.slice('file:///'.length)
+	if (/^[A-Za-z]:/.test(normalized)) return normalized[0]!.toUpperCase() + normalized.slice(1)
+	return normalized
+}
+
+function encodePath(path: string): string {
+	return path.split('/').map(encodeURIComponent).join('/')
 }

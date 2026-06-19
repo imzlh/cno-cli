@@ -32,6 +32,8 @@ export interface RpcHandlerDeps {
 	onReady: (params: RpcParams['ready']) => void
 	/** Called when a DevTools front-end connects (true) or disconnects (false). */
 	onConnectedChange: (connected: boolean) => void
+	/** Called when the debug worker reports a fatal startup/runtime error. */
+	onWorkerError: (params: RpcParams['workerError']) => void
 }
 
 export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps): void {
@@ -47,11 +49,15 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 			deps.onConnectedChange(q.connected)
 			return {}
 		},
+		workerError: (q) => {
+			deps.onWorkerError(q)
+			return {}
+		},
 
 		// ── source ──────────────────────────────────────────────────
 		getScriptSource: (q) => {
 			try {
-				return { scriptSource: engine.decodeString(fs.readFile(q.scriptId)) }
+				return { scriptSource: engine.decodeString(fs.readFile(hooks.scriptSourcePath(q.scriptId))) }
 			} catch {
 				return { scriptSource: '' }
 			}

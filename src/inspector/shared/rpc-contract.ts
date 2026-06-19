@@ -26,6 +26,7 @@ export interface RpcParams {
 	// lifecycle (pipe)
 	ready: { wsUrl?: string }
 	setConnected: { connected: boolean }
+	workerError: { message: string; stack?: string; phase?: string }
 
 	// inspect (pipe while running, channel while paused)
 	getScriptSource: { scriptId: string }
@@ -97,6 +98,7 @@ export type RpcTransport = 'inspect' | 'lifecycle' | 'control'
 export const RPC_TRANSPORT: Record<RpcMethod, RpcTransport> = {
 	ready: 'lifecycle',
 	setConnected: 'lifecycle',
+	workerError: 'lifecycle',
 
 	getScriptSource: 'inspect',
 	evaluate: 'inspect',

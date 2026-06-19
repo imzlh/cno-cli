@@ -6,6 +6,7 @@ import { version } from '../../version';
 import { CnoRepl } from './runner';
 import { uname } from '../../../cts/src/utils';
 import { Inspector } from '../../inspector';
+import { parseInspectFlags } from '../inspect';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
@@ -103,22 +104,12 @@ export async function runRepl(flags: Record<string, string | boolean>): Promise<
 }
 
 async function startInspector(flags: Record<string, string | boolean>): Promise<any | null> {
-    const hasInspect     = 'inspect'      in flags;
-    const hasInspectBrk  = 'inspect-brk'  in flags;
-    const hasInspectWait = 'inspect-wait' in flags;
-    if (!hasInspect && !hasInspectBrk && !hasInspectWait) return null;
-
-    const raw = hasInspectBrk  ? flags['inspect-brk']
-              : hasInspectWait ? flags['inspect-wait']
-              :                  flags['inspect'];
-    const port = (typeof raw === 'string' && raw !== 'true') ? (parseInt(raw, 10) || 9229) : 9229;
+    const inspect = parseInspectFlags(flags, true);
+    if (!inspect) return null;
 
     // In REPL mode, --inspect-brk degrades to --inspect-wait:
     // there is no "first line" to break on in an interactive session.
-    const waitForClient = hasInspectBrk || hasInspectWait;
-    const dbg = new Inspector({ port, waitForClient, entryFile: 'repl' });
+    const dbg = new Inspector({ port: inspect.port, waitForClient: inspect.waitForClient, entryFile: 'repl' });
     await dbg.attach();
-    console.info(`Debugger listening on ${dbg.inspectorUrl}`);
-    console.info(`Visit chrome://inspect to connect to the debugger.`);
     return dbg;
 }

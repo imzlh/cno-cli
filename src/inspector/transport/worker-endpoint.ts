@@ -17,8 +17,6 @@ import { ChannelClient } from './channel-rpc';
 import { isControlMethod, transportOf, type RpcMethod, type RpcParams } from '../shared/rpc-contract';
 import type { DebugChannelWorker, StepCode } from '../shared/native';
 import type { WorkerEvent } from '../shared/wire';
-import { log } from '../../../cts/src/utils/log';
-
 type Pipe = CModuleWorker.MessagePipe;
 
 export class WorkerEndpoint {
@@ -46,7 +44,6 @@ export class WorkerEndpoint {
 			return Promise.resolve({})
 		}
 		const transport = transportOf(method)
-		log.debug('debug', () => `endpoint.call: ${method} paused=${this.paused} transport=${transport}`);
 		if (transport === 'lifecycle') return this.pipe.call(method, params)
 		return this.paused ? this.channel.send(method, params) : this.pipe.call(method, params);
 	}

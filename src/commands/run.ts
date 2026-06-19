@@ -6,15 +6,20 @@ import { entryAndDir } from '../utils';
 import { preExitHooks } from '../main';
 import type { ConfigOptions } from '../../cts/src/types';
 import { Inspector } from '../inspector';
+import { parseInspectFlags } from './inspect';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
+const timers = import.meta.use('timers');
 
 interface RunOpts {
     file: string;
     args: string[];
     flags: Record<string, string | boolean>;
 }
+
+const INSPECTOR_DETACH_GRACE_MS = 250;
+const INSPECTOR_DETACH_POLL_MS = 25;
 
 function flagsToConfig(flags: Record<string, string | boolean>): Partial<ConfigOptions> {
     const c: Partial<ConfigOptions> = {};
@@ -48,7 +53,7 @@ export async function runFile(opts: RunOpts): Promise<void> {
 
     // CDP debug session MUST attach before createRuntime so our engine.onModule
     // wrapper is in place before CTS's hookEngine() installs its handler.
-    const inspect = parseInspectPort(opts.flags);
+    const inspect = parseInspectFlags(opts.flags);
     let dbg: any = null;
     if (inspect) {
         dbg = new Inspector({
@@ -58,10 +63,8 @@ export async function runFile(opts: RunOpts): Promise<void> {
             waitForClient: inspect.waitForClient,
         });
 
-        await dbg.attach();
-        console.info(`Debugger listening on ${dbg.inspectorUrl}`);
-        console.info(`Visit chrome://inspect to connect to the debugger.`);
-    }
+		await dbg.attach();
+	}
 
     // Register forceStop so Ctrl+C can unblock the main thread when it is
     // frozen inside serviceWhilePaused() → dc.waitRequest().
@@ -84,41 +87,38 @@ export async function runFile(opts: RunOpts): Promise<void> {
         }
     }
 
+    const baselineRefHandles = typeof os.refHandleCount === 'function' ? os.refHandleCount() : 0;
+
     try {
         const mod = await runtime.loadEntry(entry, {});
         await mod.eval();
     } catch (e) {
         fatal(e, entry);
-    } finally {
+    }
+
+    // A long-running program (HTTP server, listener, timer, etc.) may schedule
+    // its first ref'd handle a tick or two AFTER top-level evaluation resolves.
+    // Give those async startups a short grace window before deciding this is a
+    // short script and tearing down the inspector.
+    if (dbg && await shouldDetachInspector(baselineRefHandles)) {
         if (forceStopHook) {
             const idx = preExitHooks.indexOf(forceStopHook);
             if (idx !== -1) preExitHooks.splice(idx, 1);
         }
-        await dbg?.detach();
+        await dbg.detach();
     }
-
-    // Release pre-cache resources (connection pools, handler caches) only
-    // AFTER the entry module has fully evaluated and all dynamic imports have
-    // settled.  Releasing earlier would invalidate handler state that in-flight
-    // async imports still rely on, causing use-after-free when GC runs.
-    resources.release();
 
     runtime.flushLock();
 }
 
-function parseInspectPort(flags: Record<string, string | boolean>): { port: number; breakOnStart: boolean; waitForClient: boolean } | null {
-    const hasInspect     = 'inspect' in flags;
-    const hasInspectBrk  = 'inspect-brk' in flags;
-    const hasInspectWait = 'inspect-wait' in flags;
-    if (!hasInspect && !hasInspectBrk && !hasInspectWait) return null;
-    const breakOnStart  = hasInspectBrk;
-    const waitForClient = hasInspectWait;
-    const raw = hasInspectBrk  ? flags['inspect-brk']
-              : hasInspectWait ? flags['inspect-wait']
-              :                  flags['inspect'];
-    if (typeof raw === 'string' && raw !== 'true') {
-        const port = parseInt(raw, 10) || 9229;
-        return { port, breakOnStart, waitForClient };
+async function shouldDetachInspector(baselineRefHandles: number): Promise<boolean> {
+    if (typeof os.refHandleCount !== 'function') return false;
+    if (os.refHandleCount() > baselineRefHandles) return false;
+
+    const deadline = Date.now() + INSPECTOR_DETACH_GRACE_MS;
+    while (Date.now() < deadline) {
+        await new Promise<void>((resolve) => timers.setTimeout(resolve, INSPECTOR_DETACH_POLL_MS));
+        if (os.refHandleCount() > baselineRefHandles) return false;
     }
-    return { port: 9229, breakOnStart, waitForClient };
+    return os.refHandleCount() <= baselineRefHandles;
 }

@@ -33,11 +33,50 @@ interface DebugWorkerData {
 	__cno_debug_worker: true
 }
 
+type WorkerErrorReport = {
+	message: string
+	stack?: string
+	phase?: string
+}
+
 function toEntryUrl(entryFile?: string): string {
 	if (!entryFile) return 'about:blank'
 	const normalized = entryFile.replace(/\\/g, '/').replace(/^\//, '')
 	return normalized[0] == '/' ? `file://${normalized}` : `file:///${normalized}`
 }
+
+function reportWorkerError(report: WorkerErrorReport): void {
+	try {
+		const workerData = worker.workerData as DebugWorkerData
+		const dc: DebugChannelWorker = native.getDebugChannel(workerData.channelHandle)
+		if (!worker.pipe) return
+		const endpoint = new WorkerEndpoint(worker.pipe, dc)
+		void endpoint.call('workerError', report)
+	} catch {
+		// Ignore secondary reporting failures; preserving the original error matters more.
+	}
+}
+
+globalThis.addEventListener?.('error', (event) => {
+	const errEvent = event as ErrorEvent
+	const error = errEvent.error instanceof Error ? errEvent.error : undefined
+	reportWorkerError({
+		message: errEvent.message || error?.message || 'Unknown worker error',
+		stack: error?.stack,
+		phase: 'global error',
+	})
+})
+
+globalThis.addEventListener?.('unhandledrejection', (event) => {
+	const rejection = event as PromiseRejectionEvent
+	const reason = rejection.reason
+	const error = reason instanceof Error ? reason : new Error(String(reason))
+	reportWorkerError({
+		message: error.message,
+		stack: error.stack,
+		phase: 'unhandledrejection',
+	})
+})
 
 export function bootstrapDebugWorker(): void {
 	const { pipe } = worker
@@ -86,9 +125,29 @@ export function bootstrapDebugWorker(): void {
 				runtimeDomain,
 				pageDomain,
 			}),
-	}).then(({ wsUrl }) => {
+	}).then((handle) => {
+		const { wsUrl } = handle
+		globalThis.addEventListener?.('exit', () => handle.close?.(), { once: true })
 		void endpoint.call('ready', { wsUrl })
+	}).catch((error) => {
+		const err = error instanceof Error ? error : new Error(String(error))
+		reportWorkerError({
+			message: err.message,
+			stack: err.stack,
+			phase: 'startServer',
+		})
+		throw err
 	})
 }
 
-bootstrapDebugWorker()
+try {
+	bootstrapDebugWorker()
+} catch (error) {
+	const err = error instanceof Error ? error : new Error(String(error))
+	reportWorkerError({
+		message: err.message,
+		stack: err.stack,
+		phase: 'bootstrap',
+	})
+	throw err
+}

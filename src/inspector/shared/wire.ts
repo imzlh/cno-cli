@@ -37,6 +37,7 @@ export enum WorkerEvent {
 	NetFetch,
 	NetWs,
 	FetchIntercept,
+	NetServe,
 }
 
 /** Sub-type tag carried inside a NetFetch event payload. */
@@ -60,6 +61,7 @@ export enum NetWSKind {
 export interface ScriptParsedPayload {
 	scriptId: string
 	url: string
+	sourcePath?: string
 	length: number
 	endLine: number
 }
@@ -67,9 +69,19 @@ export interface ScriptParsedPayload {
 /** A console argument is just a main-thread-minted RemoteObject. */
 export type ConsoleArg = RemoteObject
 
+export interface ConsoleCallFrame {
+	functionName: string
+	scriptId: string
+	url: string
+	lineNumber: number
+	columnNumber: number
+}
+
 export interface ConsolePayload {
 	method: string
 	args: ConsoleArg[]
+	timestamp: number
+	callFrames?: ConsoleCallFrame[]
 }
 
 export interface LoadPayload {
@@ -119,6 +131,13 @@ export interface FetchTiming {
 	redirectCount?: number
 	/** CURLINFO_REDIRECT_URL — redirect target URL. */
 	redirectUrl?: string
+	requestHeadersText?: string
+	responseHeadersText?: string
+	debugStart?: number
+	headerOutStart?: number
+	dataOutStart?: number
+	headerInStart?: number
+	dataInStart?: number
 }
 
 export interface FetchConnection {
@@ -138,6 +157,8 @@ export interface NetFetchReq {
 	headers: Record<string, string>
 	status?: number
 	postData?: Uint8Array
+	callFrames?: ConsoleCallFrame[]
+	resourceType?: 'Fetch' | 'XHR'
 }
 
 export interface NetFetchRes {
@@ -148,6 +169,7 @@ export interface NetFetchRes {
 	status: number
 	headers: Record<string, string>
 	requestHeaders?: Record<string, string>
+	resourceType?: 'Fetch' | 'XHR'
 	connection?: FetchConnection
 }
 
@@ -170,11 +192,59 @@ export interface NetFetchDone {
 
 export type NetFetchEvent = NetFetchReq | NetFetchRes | NetFetchData | NetFetchDone
 
+export enum NetServeKind {
+	Req = 0,
+	Res = 1,
+	Data = 2,
+	Done = 3,
+}
+
+export interface NetServeReq {
+	ev: NetServeKind.Req
+	requestId: string
+	timestamp: number
+	url: string
+	method: string
+	headers: Record<string, string>
+	postData?: Uint8Array
+	callFrames?: ConsoleCallFrame[]
+}
+
+export interface NetServeRes {
+	ev: NetServeKind.Res
+	requestId: string
+	timestamp: number
+	url: string
+	status: number
+	statusText?: string
+	headers: Record<string, string>
+}
+
+export interface NetServeData {
+	ev: NetServeKind.Data
+	requestId: string
+	timestamp: number
+	data: Uint8Array
+	byteLength: number
+}
+
+export interface NetServeDone {
+	ev: NetServeKind.Done
+	requestId: string
+	timestamp: number
+	success: boolean
+	errorText?: string
+}
+
+export type NetServeEvent = NetServeReq | NetServeRes | NetServeData | NetServeDone
+
 // network: websocket and fetch events
 export interface NetWSCreated {
 	ev: NetWSKind.Created
 	requestId: string
 	url: string
+	requestHeaders?: Array<[string, string]>
+	callFrames?: ConsoleCallFrame[]
 	timestamp: number
 }
 
