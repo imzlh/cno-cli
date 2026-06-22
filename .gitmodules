@@ -12,7 +12,7 @@
 	url = https://github.com/imzlh/cno-ext-quic
 [submodule "http"]
 	path = http
-	url = https://github.com/imzlh/cno-exthttp
+	url = https://github.com/imzlh/cno-stdhttp
 [submodule "ext-oxc"]
 	path = ext-oxc
 	url = https://github.com/imzlh/cjs-ext-oxc

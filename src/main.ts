@@ -80,21 +80,10 @@ async function listTasks(): Promise<void> {
 let cleanupLocks: (() => void) | null = null;
 let cleanupLocksFast: (() => void) | null = null;
 let cleanupStarted = false;
-const signalHandlers: CModuleSignals.SignalHandler[] = [];
-
-/**
- * Synchronous hooks run at the very start of a fast (signal) exit.
- * Register debug-session forceStop here so the main thread can escape
- * a blocked waitRequest() before os.exit() is called.
- */
-export const preExitHooks: Array<() => void> = [];
 
 function runProcessCleanup(fast = false): void {
     if (cleanupStarted) return;
     cleanupStarted = true;
-    if (fast) {
-        for (const fn of preExitHooks) { try { fn(); } catch {} }
-    }
     try { (fast ? cleanupLocksFast : cleanupLocks)?.(); }
     catch (e) { log.debug('cleanup', () => `lock cleanup failed: ${e}`); }
     if (fast) return;
@@ -102,42 +91,17 @@ function runProcessCleanup(fast = false): void {
     catch (e) { log.debug('cleanup', () => `resource cleanup failed: ${e}`); }
 }
 
-async function installProcessCleanup(withSigint: boolean): Promise<void> {
+async function installProcessCleanup(): Promise<void> {
     if (!cleanupLocks) {
         const { LockStore } = await import('../cts/src/lock');
         cleanupLocks = () => LockStore.closeAll();
         cleanupLocksFast = () => LockStore.closeAllFast();
     }
-    if (signalHandlers.length) return;
-
-    const signals = import.meta.use('signals') as typeof CModuleSignals;
-    const install = (name: keyof typeof signals.signals, exitCode: number) => {
-        if (name === 'SIGINT' && !withSigint) return;
-        const sig = signals.signals[name];
-        if (typeof sig !== 'number') return;
-        try {
-            const handler = signals.signal(sig, () => {
-                for (const h of signalHandlers) {
-                    try { h.close(); } catch {}
-                }
-                runProcessCleanup(true);
-                os.exit(exitCode);
-            });
-            signalHandlers.push(handler);
-        } catch (e) {
-            log.debug('cleanup', () => `cannot listen ${name}: ${e}`);
-        }
-    };
-
-    install('SIGHUP', 129);
-    install('SIGINT', 130);
-    install('SIGTERM', 143);
 }
 
 async function dispatch(): Promise<void> {
     const cli = warnUnknownFlags(parseArgv(readArgv()));
-    const isBareRepl = cli.cmd === null && cli.positional.length === 0;
-    await installProcessCleanup(cli.cmd !== 'repl' && !isBareRepl);
+    await installProcessCleanup();
 
     switch (cli.cmd) {
         case 'help':

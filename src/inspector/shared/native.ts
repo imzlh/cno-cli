@@ -18,10 +18,12 @@ export const native = import.meta.use('debug');
 export const BreakReason = {
 	Breakpoint: native.BREAKPOINT,
 	Exception: native.EXCEPTION,
-	/** `debugger;` statement OR a worker-requested pause. */
+	/** `debugger;` statement (JS_DEBUG_TRACE_DEBUGGER_STMT). */
 	Debugger: native.DEBUGGER,
 	/** A step (into/over/out) finished one line. */
 	Step: native.STEP,
+	/** Explicit pause via dc.interrupt() (Debugger.pause CDP command). */
+	Interrupt: native.INTERRUPT,
 } as const;
 
 /**
@@ -38,6 +40,21 @@ export const Step = {
 /** A concrete step code value (0–3). */
 export type StepCode = (typeof Step)[keyof typeof Step];
 
+export const ExceptionBreakMode = {
+	None: native.EXCEPTION_NONE,
+	Caught: native.EXCEPTION_CAUGHT,
+	Uncaught: native.EXCEPTION_UNCAUGHT,
+	All: native.EXCEPTION_ALL,
+} as const;
+
+export type ExceptionBreakModeCode = (typeof ExceptionBreakMode)[keyof typeof ExceptionBreakMode];
+
+export const DebugState = {
+	Idle: native.STATE_IDLE,
+	Running: native.STATE_RUNNING,
+	Paused: native.STATE_PAUSED,
+} as const;
+
 /** Kinds returned by DebugChannelWorker.recv() (main → worker queue). */
 export const ChannelRecv = {
 	Event: native.RES_EVENT,
@@ -53,7 +70,15 @@ export const ChannelReq = {
 // ── Derived native value types (kept in lock-step with the C API) ──────────────
 
 /** One entry of native.getLocalVariables(level). */
-export type LocalVariable = ReturnType<typeof native.getLocalVariables>[number];
+export interface LocalVariable {
+	name: string
+	value: unknown
+	isArg: boolean
+	isClosure: boolean
+	/** True when the variable is in the temporal dead zone (let/const before its declaration). */
+	isUninitialized?: boolean
+	scopeLevel: number
+}
 
 /** Non-null result of native.getFrameInfo(level). */
 export type FrameInfo = NonNullable<ReturnType<typeof native.getFrameInfo>>;

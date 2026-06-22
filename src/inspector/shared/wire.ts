@@ -148,8 +148,11 @@ export interface FetchConnection {
 	downloadSize?: number
 }
 
+export type NetworkSource = 'fetch' | 'serve'
+
 export interface NetFetchReq {
 	ev: NetFetchKind.Req
+	source: 'fetch'
 	requestId: string
 	timestamp: number
 	url: string
@@ -163,6 +166,7 @@ export interface NetFetchReq {
 
 export interface NetFetchRes {
 	ev: NetFetchKind.Res
+	source: 'fetch'
 	requestId: string
 	timestamp: number
 	url?: string
@@ -175,6 +179,7 @@ export interface NetFetchRes {
 
 export interface NetFetchData {
 	ev: NetFetchKind.Data
+	source: 'fetch'
 	requestId: string
 	timestamp: number
 	data: Uint8Array
@@ -183,11 +188,16 @@ export interface NetFetchData {
 
 export interface NetFetchDone {
 	ev: NetFetchKind.Done
+	source: 'fetch'
 	requestId: string
 	timestamp: number
 	success: boolean
 	errorText?: string
 	connection?: FetchConnection
+	/** Accumulated response body (main-thread buffered). Undefined if no data received. */
+	body?: Uint8Array[]
+	/** Total byte length of all body chunks. */
+	totalBytes?: number
 }
 
 export type NetFetchEvent = NetFetchReq | NetFetchRes | NetFetchData | NetFetchDone
@@ -201,6 +211,7 @@ export enum NetServeKind {
 
 export interface NetServeReq {
 	ev: NetServeKind.Req
+	source: 'serve'
 	requestId: string
 	timestamp: number
 	url: string
@@ -212,6 +223,7 @@ export interface NetServeReq {
 
 export interface NetServeRes {
 	ev: NetServeKind.Res
+	source: 'serve'
 	requestId: string
 	timestamp: number
 	url: string
@@ -222,6 +234,7 @@ export interface NetServeRes {
 
 export interface NetServeData {
 	ev: NetServeKind.Data
+	source: 'serve'
 	requestId: string
 	timestamp: number
 	data: Uint8Array
@@ -230,10 +243,15 @@ export interface NetServeData {
 
 export interface NetServeDone {
 	ev: NetServeKind.Done
+	source: 'serve'
 	requestId: string
 	timestamp: number
 	success: boolean
 	errorText?: string
+	/** Accumulated response body (main-thread buffered). Undefined if no data received. */
+	body?: Uint8Array[]
+	/** Total byte length of all body chunks. */
+	totalBytes?: number
 }
 
 export type NetServeEvent = NetServeReq | NetServeRes | NetServeData | NetServeDone
@@ -241,6 +259,7 @@ export type NetServeEvent = NetServeReq | NetServeRes | NetServeData | NetServeD
 // network: websocket and fetch events
 export interface NetWSCreated {
 	ev: NetWSKind.Created
+	source: NetworkSource
 	requestId: string
 	url: string
 	requestHeaders?: Array<[string, string]>
@@ -250,6 +269,7 @@ export interface NetWSCreated {
 
 export interface NetWSHandshake {
 	ev: NetWSKind.Handshake
+	source: NetworkSource
 	requestId: string
 	status: number
 	headers: Array<[string, string]>
@@ -258,6 +278,7 @@ export interface NetWSHandshake {
 
 export interface NetWSFrame {
 	ev: NetWSKind.Recv | NetWSKind.Sent
+	source: NetworkSource
 	requestId: string
 	opcode: number
 	masked: boolean
@@ -268,6 +289,7 @@ export interface NetWSFrame {
 
 export interface NetWSClosed {
 	ev: NetWSKind.Closed
+	source: NetworkSource
 	requestId: string
 	code?: number
 	reason?: string

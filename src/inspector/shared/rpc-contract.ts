@@ -21,6 +21,8 @@
 import type { RpcCallArgument } from './cdp'
 import type { InterceptResult } from '../../../cno/src/utils/network-hooks'
 
+export type PauseOnExceptionsState = 'none' | 'caught' | 'uncaught' | 'all'
+
 // ── parameter shapes (one entry per method) ────────────────────────────────
 export interface RpcParams {
 	// lifecycle (pipe)
@@ -85,7 +87,7 @@ export interface RpcParams {
 	removeBreakpoint: { url: string; line: number }
 	clearBreakpoints: Record<string, never>
 	setBreakpointsActive: { active: boolean }
-	setExceptionBreakpoint: { enabled: boolean }
+	setExceptionBreakpoint: { state: PauseOnExceptionsState }
 	requestPause: Record<string, never>
 }
 

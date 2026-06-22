@@ -1,14 +1,15 @@
 {
   "name": "cno-cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Deno-compatible TypeScript runtime CLI on circu.js (cno binary)",
   "main": "src/main.ts",
   "type": "module",
   "scripts": {
     "type-check": "tsc --noEmit",
     "bundle": "node scripts/bundle.mjs release",
-    "bundle:dev": "node scripts/bundle.mjs dev",
     "bundle:min": "node scripts/bundle.mjs min",
+    "configure": "cmake -B build -DCMAKE_BUILD_TYPE=Release .",
+    "build": "cmake -B build",
     "dev": "cts src/main.ts"
   },
   "keywords": [

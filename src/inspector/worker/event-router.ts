@@ -9,6 +9,7 @@
  */
 
 import { WorkerEvent } from '../shared/wire'
+import { consoleAPICalledType, buildConsoleStackTrace } from '../shared/console-utils'
 import type {
 	ScriptParsedPayload,
 	ConsolePayload,
@@ -66,26 +67,12 @@ export function createEventRouter(deps: EventRouterDeps): (event: WorkerEvent, p
 				const payload = params as ConsolePayload
 				consoleDomain.onConsole(payload.method, payload.args, payload.timestamp, payload.callFrames)
 
-				// Construct CDP stackTrace
-				let stackTrace: { callFrames: Array<Record<string, unknown>> } | undefined
-				if (payload.callFrames && payload.callFrames.length > 0) {
-					stackTrace = {
-						callFrames: payload.callFrames.map(f => ({
-							functionName: f.functionName,
-							scriptId: f.scriptId,
-							url: f.url,
-							lineNumber: f.lineNumber,
-							columnNumber: f.columnNumber,
-						}))
-					}
-				}
-
 				emit('Runtime.consoleAPICalled', {
-					type: payload.method,
+					type: consoleAPICalledType(payload.method),
 					args: payload.args,
 					executionContextId: 1,
 					timestamp: payload.timestamp,
-					stackTrace,
+					stackTrace: buildConsoleStackTrace(payload.callFrames),
 				})
 				break
 			}

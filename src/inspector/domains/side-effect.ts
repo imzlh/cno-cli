@@ -1,10 +1,20 @@
 /**
- * domains/side-effect.ts — conservative side-effect analysis for console eval.
+ * domains/side-effect.ts — side-effect analysis for console eval preview.
  *
- * DevTools previews expressions as you type (`throwOnSideEffect`). Every
- * function call and `new` expression is blocked unless the callee/constructor
- * is on the explicit allowlist below. Everything else (assignment, ++/--, delete,
- * throw, yield) is always blocked.
+ * DevTools previews expressions as you type (`throwOnSideEffect`). Uses a
+ * **blocklist** strategy: only known-dangerous operations are rejected.
+ *
+ * Always rejected (state mutation / control flow):
+ *   - assignment operators, ++/--, delete, throw, yield
+ *   - optional-chaining calls  ?.()
+ *   - import()
+ *
+ * Rejected by name (known-dangerous callees / constructors):
+ *   - eval, Function, setTimeout, setInterval, setImmediate, queueMicrotask, require
+ *   - new Worker / SharedWorker / Function
+ *
+ * Everything else — including console.log, instance methods, unknown
+ * constructors — is allowed so the preview is maximally useful.
  */
 
 import { parse } from '../../../cts/deps/sucrase/src/parser/index'
@@ -58,57 +68,18 @@ function extractCallee(tokens: Token[], src: string, parenLIdx: number): string 
 	return parts.join('.')
 }
 
-/** Constructors that do not cause observable side effects. */
-const PURE_CONSTRUCTORS = new Set([
-	'URL', 'URLSearchParams',
-	'Date', 'RegExp',
-	'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError', 'EvalError',
-	'Map', 'Set', 'WeakMap', 'WeakSet', 'WeakRef',
-	'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
-	'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array',
-	'BigInt64Array', 'BigUint64Array',
-	'ArrayBuffer', 'SharedArrayBuffer', 'DataView',
-	'TextEncoder', 'TextDecoder',
-	'Headers', 'FormData', 'Blob',
-	'Object', 'Array', 'String', 'Number', 'Boolean', 'Symbol', 'BigInt',
-	'Promise',
+/** Constructors known to cause observable side effects (threads, dynamic code). */
+const DANGEROUS_CONSTRUCTORS = new Set([
+	'Function',
+	'Worker', 'SharedWorker', 'ServiceWorker',
 ])
 
-/** Free functions and static methods that do not cause observable side effects. */
-const PURE_CALLEES = new Set([
-	// Global coercions / conversions
-	'String', 'Number', 'Boolean', 'BigInt', 'Symbol',
-	'parseInt', 'parseFloat', 'isNaN', 'isFinite',
-	'encodeURIComponent', 'decodeURIComponent', 'encodeURI', 'decodeURI',
-	'atob', 'btoa', 'structuredClone',
-	// JSON
-	'JSON.parse', 'JSON.stringify',
-	// Math
-	'Math.abs', 'Math.ceil', 'Math.floor', 'Math.round', 'Math.trunc', 'Math.sign',
-	'Math.max', 'Math.min', 'Math.pow', 'Math.sqrt', 'Math.cbrt', 'Math.hypot',
-	'Math.log', 'Math.log2', 'Math.log10', 'Math.exp', 'Math.expm1', 'Math.log1p',
-	'Math.sin', 'Math.cos', 'Math.tan', 'Math.asin', 'Math.acos', 'Math.atan', 'Math.atan2',
-	'Math.sinh', 'Math.cosh', 'Math.tanh', 'Math.asinh', 'Math.acosh', 'Math.atanh',
-	'Math.random', 'Math.fround', 'Math.clz32', 'Math.imul',
-	// Object
-	'Object.keys', 'Object.values', 'Object.entries', 'Object.fromEntries',
-	'Object.assign', 'Object.create', 'Object.freeze', 'Object.seal',
-	'Object.isFrozen', 'Object.isSealed', 'Object.is', 'Object.hasOwn',
-	'Object.getPrototypeOf', 'Object.getOwnPropertyNames',
-	'Object.getOwnPropertyDescriptor', 'Object.getOwnPropertyDescriptors',
-	'Object.getOwnPropertySymbols',
-	// Array
-	'Array.from', 'Array.isArray', 'Array.of',
-	// String
-	'String.fromCharCode', 'String.fromCodePoint', 'String.raw',
-	// Number
-	'Number.isNaN', 'Number.isFinite', 'Number.isInteger', 'Number.isSafeInteger',
-	'Number.parseInt', 'Number.parseFloat',
-	// Date
-	'Date.now', 'Date.parse', 'Date.UTC',
-	// Promise
-	'Promise.resolve', 'Promise.reject', 'Promise.all', 'Promise.allSettled',
-	'Promise.any', 'Promise.race',
+/** Free functions / static methods known to cause side effects or schedule code. */
+const DANGEROUS_CALLEES = new Set([
+	'eval',
+	'Function',
+	'setTimeout', 'setInterval', 'setImmediate', 'queueMicrotask',
+	'require',
 ])
 
 const CALL_CALLEE = new Set<number>([
@@ -132,49 +103,89 @@ export function containsAwait(expr: string): boolean {
 }
 
 export function isSideEffectFree(expr: string): boolean {
-	let tokens
+	let tokens: ReturnType<typeof parse>['tokens']
+	let src: string
+	let programMode = false
+
 	try {
-		tokens = parse(`(${expr})`, false, false, false).tokens
+		src = `(${expr})`
+		tokens = parse(src, false, false, false).tokens
 	} catch {
-		return false
+		// Expression parse failed — try as program (multi-statement code).
+		// This handles pasted code like `const x = 1; console.log(x)`.
+		try {
+			src = expr
+			tokens = parse(src, false, false, false).tokens
+			programMode = true
+		} catch {
+			return false
+		}
 	}
-	const src = `(${expr})`
+
+	// In program mode, `=` in declarations (`const x = 1`) is NOT a mutation.
+	// Track declaration state to skip the first `=` after const/let/var.
+	let inDecl = false
 
 	for (let i = 0; i < tokens.length; i++) {
 		const tok = tokens[i]
 		if (tok.isType) continue
 		const type = tok.type
 
+		// Hard-blocked: state mutation / control flow keywords
 		if (
 			type === TokenType._delete ||
 			type === TokenType._throw ||
 			type === TokenType._yield
 		) return false
-		if ((type & TokenType.IS_ASSIGN) !== 0) return false
 		if (type === TokenType.preIncDec || type === TokenType.postIncDec) return false
 
+		// Assignment operators: in program mode, skip the `=` that belongs
+		// to a variable declaration (const/let/var ... = expr).
+		if ((type & TokenType.IS_ASSIGN) !== 0) {
+			if (programMode && inDecl) {
+				inDecl = false // only skip the declaration's own `=`
+				continue
+			}
+			return false
+		}
+
+		// Track variable declarations (program mode only)
+		if (programMode) {
+			if (type === TokenType._const || type === TokenType._let || type === TokenType._var) {
+				inDecl = true
+			} else if (type === TokenType.semi || type === TokenType.braceR) {
+				inDecl = false
+			}
+		}
+
+		// import — both dynamic import() and static import statements are side effects
+		if (type === TokenType._import) return false
+
+		// new-expression: block only known-dangerous constructors
 		if (type === TokenType._new) {
 			const ctor = extractNewTarget(tokens, src, i)
-			if (!ctor || !PURE_CONSTRUCTORS.has(ctor)) return false
+			if (DANGEROUS_CONSTRUCTORS.has(ctor)) return false
 			continue
 		}
 
+		// Function call: block only known-dangerous callees
 		if (type === TokenType.parenL) {
 			let j = i - 1
 			while (j >= 0 && tokens[j].isType) j--
 			if (j < 0) continue
 			const prev = tokens[j]
+			// Optional chaining call ?.() — reject (uncertain null-side-effects)
 			if (prev.type === TokenType.questionDot) return false
 			if (CALL_CALLEE.has(prev.type)) {
 				if (prev.type === TokenType.name) {
-					// If the token directly before the constructor name is `_new`,
-					// this parenL belongs to a new-expression already vetted above.
+					// If the token before the name is `new`, this parenL belongs
+					// to a new-expression already vetted above — skip.
 					let k = j - 1
 					while (k >= 0 && tokens[k].isType) k--
 					if (k >= 0 && tokens[k].type === TokenType._new) continue
 				}
 				const callee = extractCallee(tokens, src, i)
-				if (!callee || !PURE_CALLEES.has(callee)) return false
+				if (callee && DANGEROUS_CALLEES.has(callee)) return false
 			}
 		}
 	}

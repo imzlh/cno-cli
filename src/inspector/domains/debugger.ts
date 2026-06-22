@@ -9,6 +9,7 @@
 import { Domain } from './base'
 import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
 import type { WorkerEndpoint } from '../transport/worker-endpoint'
+import type { PauseOnExceptionsState } from '../shared/rpc-contract'
 import type {
 	CallFrame,
 	PausedEvent,
@@ -41,6 +42,7 @@ export class DebuggerDomain extends Domain {
 	private enabled = false
 	private connected = false
 	private paused = false
+	private pauseOnExceptionsState: PauseOnExceptionsState = 'none'
 	private breakpointsActive = true
 	private nextBpId = 1
 	private knownScripts = new Map<string, KnownScript>()
@@ -77,7 +79,10 @@ export class DebuggerDomain extends Domain {
 				if (bp) await this.rpc.call('removeBreakpoint', { url: bp.url, line: bp.line })
 			}
 			this.cdpBreakpoints.clear()
-			await this.rpc.call('setExceptionBreakpoint', { enabled: false })
+			if (this.pauseOnExceptionsState !== 'none') {
+				this.pauseOnExceptionsState = 'none'
+				await this.rpc.call('setExceptionBreakpoint', { state: 'none' })
+			}
 			await this.rpc.call('releaseObjectGroup', { objectGroup: 'backtrace' })
 			return {}
 		})
@@ -134,8 +139,10 @@ export class DebuggerDomain extends Domain {
 		})
 
 		this.on('Debugger.setPauseOnExceptions', (p) => {
-			const state = this.str(p, 'state')
-			return this.rpc.call('setExceptionBreakpoint', { enabled: state !== 'none' })
+			const state = this.pauseOnExceptionsStateFrom(this.reqStr(p, 'state'))
+			if (this.pauseOnExceptionsState === state) return {}
+			this.pauseOnExceptionsState = state
+			return this.rpc.call('setExceptionBreakpoint', { state })
 		})
 
 		this.on('Debugger.getScriptSource', (p) => this.rpc.call('getScriptSource', { scriptId: this.reqStr(p, 'scriptId') }))
@@ -291,6 +298,25 @@ export class DebuggerDomain extends Domain {
 			if (bp.matchUrl === hitFile && bp.line === p.hitLine) hitBreakpoints.push(id)
 		}
 		const callFrames: CallFrame[] = p.callFrames ?? []
-		this.event('Debugger.paused', { callFrames, reason, hitBreakpoints, data: {} })
+		const payload: {
+			callFrames: CallFrame[]
+			reason: string
+			hitBreakpoints: string[]
+			data?: PausedEvent['data']
+		} = { callFrames, reason, hitBreakpoints }
+		if (p.data !== undefined) payload.data = p.data
+		this.event('Debugger.paused', payload)
+	}
+
+	private pauseOnExceptionsStateFrom(state: string): PauseOnExceptionsState {
+		switch (state) {
+			case 'none':
+			case 'caught':
+			case 'uncaught':
+			case 'all':
+				return state
+			default:
+				throw new Error(`Unsupported pause-on-exceptions state: ${state}`)
+		}
 	}
 }

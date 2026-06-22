@@ -71,9 +71,9 @@ function installLocal(srcBase: string, dstBase: string): void {
         const src = join(srcBase, rel);
         const dst = join(dstBase, rel);
         try {
-            const srcMtime = fs.stat(src).mtime;
+            const srcMtime = fs.stat(src).mtim;
             try {
-                if (fs.stat(dst).mtime >= srcMtime) { skip++; continue; }
+                if (fs.stat(dst).mtim >= srcMtime) { skip++; continue; }
             } catch {}
             copyFile(src, dst);
             try { fs.unlink(dst + '.jsc') } catch {}
@@ -83,7 +83,7 @@ function installLocal(srcBase: string, dstBase: string): void {
             console.error(`  FAIL  ${rel}: ${e?.message ?? e}`);
         }
     }
-    log.debug('oxc', () => `\nLocal install: ${copied} copied, ${skip} up-to-date`);
+    console.log(`Local install: ${copied} copied, ${skip} up-to-date`);
 }
 
 // ── Remote: fetch .ts files from GitHub → dstBase ───────────────────────────
@@ -149,6 +149,5 @@ export async function runSetup(_flags: Record<string, string | boolean>): Promis
         await installRemote(dstBase);
     }
 
-    log.debug('setup', () => `Node polyfills ready at: ${dstBase}`);
-    log.debug('setup', () => 'Run any script that uses node: imports — cts will compile on first use.');
+    console.log(`Node polyfills ready at: ${dstBase}`);
 }

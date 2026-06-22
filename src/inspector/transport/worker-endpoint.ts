@@ -15,6 +15,7 @@
 import { PipeClient } from './pipe-rpc';
 import { ChannelClient } from './channel-rpc';
 import { isControlMethod, transportOf, type RpcMethod, type RpcParams } from '../shared/rpc-contract';
+import { DebugState } from '../shared/native';
 import type { DebugChannelWorker, StepCode } from '../shared/native';
 import type { WorkerEvent } from '../shared/wire';
 type Pipe = CModuleWorker.MessagePipe;
@@ -56,7 +57,13 @@ export class WorkerEndpoint {
 	}
 
 	/** Whether the main thread is currently paused at a safepoint. */
-	isPaused(): boolean { return this.paused }
+	isPaused(): boolean {
+		try {
+			return this.channel.state() === DebugState.Paused
+		} catch {
+			return this.paused
+		}
+	}
 
 	/** Request a pause at the next safepoint (works while RUNNING). */
 	signalInterrupt(): void { this.channel.interrupt(); }

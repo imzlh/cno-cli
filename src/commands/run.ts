@@ -3,23 +3,18 @@ import { loadConfigFile } from '../../cts/src/config';
 import { fatal, formatError } from '../../cts/src/errors';
 import { resources } from '../../cts/src/resources';
 import { entryAndDir } from '../utils';
-import { preExitHooks } from '../main';
 import type { ConfigOptions } from '../../cts/src/types';
 import { Inspector } from '../inspector';
 import { parseInspectFlags } from './inspect';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
-const timers = import.meta.use('timers');
 
 interface RunOpts {
     file: string;
     args: string[];
     flags: Record<string, string | boolean>;
 }
-
-const INSPECTOR_DETACH_GRACE_MS = 250;
-const INSPECTOR_DETACH_POLL_MS = 25;
 
 function flagsToConfig(flags: Record<string, string | boolean>): Partial<ConfigOptions> {
     const c: Partial<ConfigOptions> = {};
@@ -66,11 +61,6 @@ export async function runFile(opts: RunOpts): Promise<void> {
 		await dbg.attach();
 	}
 
-    // Register forceStop so Ctrl+C can unblock the main thread when it is
-    // frozen inside serviceWhilePaused() → dc.waitRequest().
-    const forceStopHook = dbg ? () => (dbg as NonNullable<typeof dbg>).forceStop() : null;
-    if (forceStopHook) preExitHooks.push(forceStopHook);
-
     const runtime = createRuntime(cfg, dir);
 
     // Wire up CDP scriptParsed hook (installed by DebugSession.attach)
@@ -87,8 +77,6 @@ export async function runFile(opts: RunOpts): Promise<void> {
         }
     }
 
-    const baselineRefHandles = typeof os.refHandleCount === 'function' ? os.refHandleCount() : 0;
-
     try {
         const mod = await runtime.loadEntry(entry, {});
         await mod.eval();
@@ -96,29 +84,5 @@ export async function runFile(opts: RunOpts): Promise<void> {
         fatal(e, entry);
     }
 
-    // A long-running program (HTTP server, listener, timer, etc.) may schedule
-    // its first ref'd handle a tick or two AFTER top-level evaluation resolves.
-    // Give those async startups a short grace window before deciding this is a
-    // short script and tearing down the inspector.
-    if (dbg && await shouldDetachInspector(baselineRefHandles)) {
-        if (forceStopHook) {
-            const idx = preExitHooks.indexOf(forceStopHook);
-            if (idx !== -1) preExitHooks.splice(idx, 1);
-        }
-        await dbg.detach();
-    }
-
     runtime.flushLock();
-}
-
-async function shouldDetachInspector(baselineRefHandles: number): Promise<boolean> {
-    if (typeof os.refHandleCount !== 'function') return false;
-    if (os.refHandleCount() > baselineRefHandles) return false;
-
-    const deadline = Date.now() + INSPECTOR_DETACH_GRACE_MS;
-    while (Date.now() < deadline) {
-        await new Promise<void>((resolve) => timers.setTimeout(resolve, INSPECTOR_DETACH_POLL_MS));
-        if (os.refHandleCount() > baselineRefHandles) return false;
-    }
-    return os.refHandleCount() <= baselineRefHandles;
 }

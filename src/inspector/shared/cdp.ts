@@ -100,7 +100,7 @@ export interface CallFrame {
 	location: Location;
 	url: string;
 	scopeChain: Scope[];
-	this: RemoteObject;
+	this?: RemoteObject;
 	returnValue?: RemoteObject;
 }
 
@@ -136,6 +136,7 @@ export interface PausedEvent {
 	reason: string;
 	hitFilename: string;
 	hitLine: number;
+	data?: RemoteObject;
 }
 
 // ── CDP domain parameter shapes (DevTools → worker) ──────────────────
@@ -148,6 +149,8 @@ export interface RuntimeEvaluateParams {
 	returnByValue?: boolean
 	awaitPromise?: boolean
 	throwOnSideEffect?: boolean
+	replMode?: boolean
+	silent?: boolean
 }
 export interface RuntimeGetPropertiesParams {
 	objectId: string

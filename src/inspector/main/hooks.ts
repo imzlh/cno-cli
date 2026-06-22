@@ -8,10 +8,13 @@
  */
 
 import {
+	getFetchHook,
+	getServeHook,
 	setFetchHook,
 	setWebSocketHook,
 	setFetchInterceptHook,
 	setServeHook,
+	captureUserNetworkCallFrames,
 	type FetchRequestInfo,
 	type FetchResponseInfo,
 	type FetchDataInfo,
@@ -21,6 +24,7 @@ import {
 	type ServeDataInfo,
 	type ServeFinishedInfo,
 	type InterceptResult,
+	type NetworkCallFrame as HookNetworkCallFrame,
 } from '../../../cno/src/utils/network-hooks'
 import {
 	NetFetchKind,
@@ -32,11 +36,9 @@ import {
 	type ConsoleCallFrame,
 	type FetchInterceptPayload,
 	type LoadPayload,
-	type NetFetchData,
 	type NetFetchDone,
 	type NetFetchReq,
 	type NetFetchRes,
-	type NetServeData,
 	type NetServeDone,
 	type NetServeReq,
 	type NetServeRes,
@@ -55,6 +57,13 @@ import { isUserFile } from '../shared/user-files'
 const engine = import.meta.use('engine')
 const fs = import.meta.use('fs')
 const console = import.meta.use('console')
+const debug = import.meta.use('debug') as {
+	__cnoNetworkHooks?: {
+		getFetchHook: () => ReturnType<typeof getFetchHook>
+		getServeHook: () => ReturnType<typeof getServeHook>
+		captureCallFrames: () => HookNetworkCallFrame[] | undefined
+	}
+}
 
 type LoadCapableGlobal = {
 	addEventListener?: (type: string, cb: () => void, opts?: { once?: boolean }) => void
@@ -62,12 +71,19 @@ type LoadCapableGlobal = {
 
 const kOrigin = Symbol('console.origin')
 
+const MAX_BODY_BUFFER = 1024 * 1024 // 1 MiB per request
+
 export class Hooks {
 	private readonly pendingIntercepts = new Map<string, (result: InterceptResult | null) => void>()
 	private readonly installedBindings = new Set<string>()
 	private readonly scriptSourcePaths = new Map<string, string>()
+	// Body buffer accumulators — chunks are held here until the Done event fires,
+	// then flushed as part of the Done payload. This avoids per-chunk pipe writes
+	// (which carry large Uint8Array payloads and saturate the TCP socket buffer).
+	private readonly fetchBodyBuffers = new Map<string, { chunks: Uint8Array[]; total: number }>()
+	private readonly serveBodyBuffers = new Map<string, { chunks: Uint8Array[]; total: number }>()
 	private scriptHookInstalled = false
-	private consoleOriginals: Record<string, (...a: unknown[]) => void> | null = null
+	private consoleOriginals: Record<string, (...a: any[]) => void> | null = null
 
 	/** Set by installScript(); run.ts wires this into runtime.addInitHook(). */
 	scriptInitHook: ((specPath: string, info: ModuleInfo) => void) | null = null
@@ -81,7 +97,7 @@ export class Hooks {
 		this.installConsole()
 	}
 
-	// script
+	// ── script ──────────────────────────────────────────────────────
 	private installScript(): void {
 		if (this.scriptHookInstalled) return
 		this.scriptHookInstalled = true
@@ -93,11 +109,11 @@ export class Hooks {
 			let endLine = 0
 			try {
 				const buf = fs.readFile(sourcePath)
-				length = buf.byteLength
 				const str = engine.decodeString(buf)
+				length = str.length
 				endLine = (str.match(/\n/g) ?? []).length
 			} catch {
-				/* unreadable source \u2014 report zero length */
+				/* unreadable source — report zero length */
 			}
 			this.safeEmit(WorkerEvent.ScriptParsed, { scriptId: specPath, url, sourcePath, length, endLine } satisfies ScriptParsedPayload)
 		}
@@ -116,24 +132,49 @@ export class Hooks {
 		return { scriptId: file, url: devtoolsScriptUrl(file, file) }
 	}
 
-	//  network 
-private installNetwork(): void {
+	private normalizeNetworkCallFrames(callFrames?: HookNetworkCallFrame[]): ConsoleCallFrame[] | undefined {
+		if (!callFrames || callFrames.length === 0) return undefined
+		const normalized: ConsoleCallFrame[] = []
+		for (const frame of callFrames) {
+			if (!frame?.scriptId && !frame?.url) continue
+			const loc = this.scriptFrameLocation(frame.scriptId || frame.url)
+			normalized.push({
+				functionName: frame.functionName,
+				scriptId: loc.scriptId,
+				url: loc.url,
+				lineNumber: frame.lineNumber,
+				columnNumber: frame.columnNumber,
+			})
+			if (normalized.length >= 32) break
+		}
+		return normalized.length > 0 ? normalized : undefined
+	}
+
+	// ── network ─────────────────────────────────────────────────────
+	private installNetwork(): void {
+		Reflect.set(debug, '__cnoNetworkHooks', {
+			getFetchHook: () => getFetchHook(),
+			getServeHook: () => getServeHook(),
+			captureCallFrames: () => this.captureNetworkCallFrames(),
+		})
 		setFetchHook({
 			onRequest: (i: FetchRequestInfo) =>
 				this.safeEmit(WorkerEvent.NetFetch, {
 					ev: NetFetchKind.Req,
+					source: 'fetch',
 					requestId: i.requestId,
 					timestamp: i.timestamp,
 					url: i.url,
 					method: i.method,
 					headers: i.headers,
 					postData: i.postData ?? undefined,
-					callFrames: i.callFrames,
+					callFrames: this.normalizeNetworkCallFrames(i.callFrames),
 					resourceType: i.resourceType,
 				} satisfies NetFetchReq),
 			onResponse: (i: FetchResponseInfo) =>
 				this.safeEmit(WorkerEvent.NetFetch, {
 					ev: NetFetchKind.Res,
+					source: 'fetch',
 					requestId: i.requestId,
 					timestamp: i.timestamp,
 					url: i.url,
@@ -143,40 +184,54 @@ private installNetwork(): void {
 					resourceType: i.resourceType,
 					connection: i.connection,
 				} satisfies NetFetchRes),
-			onData: (i: FetchDataInfo) =>
-				this.safeEmit(WorkerEvent.NetFetch, {
-					ev: NetFetchKind.Data,
-					requestId: i.requestId,
-					timestamp: i.timestamp,
-					data: i.data,
-					byteLength: i.data.byteLength,
-				} satisfies NetFetchData),
-			onFinished: (i: FetchFinishedInfo) =>
+			onData: (i: FetchDataInfo) => {
+				// Buffer body chunks on the main thread — flushed with Done event
+				// to avoid saturating the pipe with per-chunk writes.
+				let buf = this.fetchBodyBuffers.get(i.requestId)
+				if (!buf) {
+					buf = { chunks: [], total: 0 }
+					this.fetchBodyBuffers.set(i.requestId, buf)
+				}
+				if (buf.total + i.data.byteLength <= MAX_BODY_BUFFER) {
+					buf.chunks.push(i.data)
+					buf.total += i.data.byteLength
+				}
+			},
+			onFinished: (i: FetchFinishedInfo) => {
+				// Flush accumulated body chunks with the Done event.
+				const buf = this.fetchBodyBuffers.get(i.requestId)
+				this.fetchBodyBuffers.delete(i.requestId)
 				this.safeEmit(WorkerEvent.NetFetch, {
 					ev: NetFetchKind.Done,
+					source: 'fetch',
 					requestId: i.requestId,
 					timestamp: i.timestamp,
 					success: i.success,
 					errorText: i.errorText,
 					connection: i.connection,
-				} satisfies NetFetchDone),
+					body: buf?.chunks,
+					totalBytes: buf?.total ?? 0,
+				} satisfies NetFetchDone)
+			},
 		})
 
 		setServeHook({
 			onRequest: (i: ServeRequestInfo) =>
 				this.safeEmit(WorkerEvent.NetServe, {
 					ev: NetServeKind.Req,
+					source: 'serve',
 					requestId: i.requestId,
 					timestamp: i.timestamp,
 					url: i.url,
 					method: i.method,
 					headers: i.headers,
 					postData: i.postData ?? undefined,
-					callFrames: i.callFrames,
+					callFrames: this.normalizeNetworkCallFrames(i.callFrames),
 				} satisfies NetServeReq),
 			onResponse: (i: ServeResponseInfo) =>
 				this.safeEmit(WorkerEvent.NetServe, {
 					ev: NetServeKind.Res,
+					source: 'serve',
 					requestId: i.requestId,
 					timestamp: i.timestamp,
 					url: i.url,
@@ -184,37 +239,50 @@ private installNetwork(): void {
 					statusText: i.statusText,
 					headers: i.headers,
 				} satisfies NetServeRes),
-			onData: (i: ServeDataInfo) =>
-				this.safeEmit(WorkerEvent.NetServe, {
-					ev: NetServeKind.Data,
-					requestId: i.requestId,
-					timestamp: i.timestamp,
-					data: i.data,
-					byteLength: i.data.byteLength,
-				} satisfies NetServeData),
-			onFinished: (i: ServeFinishedInfo) =>
+			onData: (i: ServeDataInfo) => {
+				// Buffer body chunks on the main thread — flushed with Done event.
+				let buf = this.serveBodyBuffers.get(i.requestId)
+				if (!buf) {
+					buf = { chunks: [], total: 0 }
+					this.serveBodyBuffers.set(i.requestId, buf)
+				}
+				if (buf.total + i.data.byteLength <= MAX_BODY_BUFFER) {
+					buf.chunks.push(i.data)
+					buf.total += i.data.byteLength
+				}
+			},
+			onFinished: (i: ServeFinishedInfo) => {
+				// Flush accumulated body chunks with the Done event.
+				const buf = this.serveBodyBuffers.get(i.requestId)
+				this.serveBodyBuffers.delete(i.requestId)
 				this.safeEmit(WorkerEvent.NetServe, {
 					ev: NetServeKind.Done,
+					source: 'serve',
 					requestId: i.requestId,
 					timestamp: i.timestamp,
 					success: i.success,
 					errorText: i.errorText,
-				} satisfies NetServeDone),
+					body: buf?.chunks,
+					totalBytes: buf?.total ?? 0,
+				} satisfies NetServeDone)
+			},
 		})
 
 		setWebSocketHook({
 			onCreated: (i) =>
 				this.safeEmit(WorkerEvent.NetWs, {
 					ev: NetWSKind.Created,
+					source: i.source,
 					requestId: i.requestId,
 					url: i.url,
 					requestHeaders: i.requestHeaders,
-					callFrames: i.callFrames,
+					callFrames: this.normalizeNetworkCallFrames(i.callFrames),
 					timestamp: i.timestamp,
 				} satisfies NetWSCreated),
 			onHandshake: (i) =>
 				this.safeEmit(WorkerEvent.NetWs, {
 					ev: NetWSKind.Handshake,
+					source: i.source,
 					requestId: i.requestId,
 					status: i.status,
 					headers: i.headers,
@@ -223,6 +291,7 @@ private installNetwork(): void {
 			onFrameReceived: (i) =>
 				this.safeEmit(WorkerEvent.NetWs, {
 					ev: NetWSKind.Recv,
+					source: i.source,
 					requestId: i.requestId,
 					opcode: i.opcode,
 					masked: i.masked,
@@ -233,6 +302,7 @@ private installNetwork(): void {
 			onFrameSent: (i) =>
 				this.safeEmit(WorkerEvent.NetWs, {
 					ev: NetWSKind.Sent,
+					source: i.source,
 					requestId: i.requestId,
 					opcode: i.opcode,
 					masked: i.masked,
@@ -243,6 +313,7 @@ private installNetwork(): void {
 			onClosed: (i) =>
 				this.safeEmit(WorkerEvent.NetWs, {
 					ev: NetWSKind.Closed,
+					source: i.source,
 					requestId: i.requestId,
 					code: i.code,
 					reason: i.reason,
@@ -268,6 +339,10 @@ private installNetwork(): void {
 		})
 	}
 
+	private captureNetworkCallFrames(): HookNetworkCallFrame[] | undefined {
+		return captureUserNetworkCallFrames()
+	}
+
 	/** Resolve a pending interception (called from the fetchInterceptResult RPC). */
 	resolveIntercept(requestId: string, result: InterceptResult | null): void {
 		const resolve = this.pendingIntercepts.get(requestId)
@@ -276,7 +351,7 @@ private installNetwork(): void {
 		resolve(result)
 	}
 
-	//  lifecycle 
+	// ── lifecycle ───────────────────────────────────────────────────
 	private installLifecycle(): void {
 		const add = (globalThis as LoadCapableGlobal).addEventListener
 		add?.(
@@ -286,11 +361,11 @@ private installNetwork(): void {
 		)
 	}
 
-	//  console
+	// ── console ─────────────────────────────────────────────────────
 	private installConsole(): void {
 		const con = globalThis.console;
-		const methods = ['log', 'warn', 'error', 'info', 'debug', 'dir', 'trace'] as const
-		const originals: Record<string, (...a: unknown[]) => void> = {}
+		const methods = ['log', 'warn', 'error', 'info', 'debug', 'dir', 'trace', 'table', 'assert', 'time', 'timeEnd', 'timeLog', 'count', 'countReset', 'group', 'groupEnd'] as const
+		const originals: Record<string, (...a: any[]) => void> = {}
 		for (const m of methods) {
 			if (typeof con[m] === 'function') originals[m] = con[m];
 		}
@@ -301,8 +376,6 @@ private installNetwork(): void {
 		for (const method of methods) {
 			const orig = originals[method]
 			if (!orig) continue
-			// CDP uses 'warning' not 'warn'.
-			const cdpType = method === 'warn' ? 'warning' : method
 			con[method] = (...args: unknown[]) => {
 				const callFrames = this.captureConsoleCallFrames()
 				orig.apply(globalThis.console, args)
@@ -310,7 +383,7 @@ private installNetwork(): void {
 					const serialized = args.map(a => this.serializer.serialize(a, 'console', { preview: true }))
 
 					this.safeEmit(WorkerEvent.Console, {
-						method: cdpType,
+						method,
 						args: serialized,
 						timestamp: Date.now(),
 						callFrames: callFrames.length > 0 ? callFrames : undefined,
@@ -342,7 +415,7 @@ private installNetwork(): void {
 		return callFrames
 	}
 
-	//  bindings
+	// ── bindings ────────────────────────────────────────────────────
 	installBinding(name: string): void {
 		if (!name || this.installedBindings.has(name)) return
 		this.installedBindings.add(name)
@@ -365,13 +438,15 @@ private installNetwork(): void {
 		}
 	}
 
-	//  teardown
+	// ── teardown ────────────────────────────────────────────────────
 	teardown(): void {
 		// Resolve all pending intercepts so native hooks don't hang.
 		for (const resolve of this.pendingIntercepts.values()) resolve(null)
 		this.pendingIntercepts.clear()
 		this.installedBindings.clear()
 		this.scriptSourcePaths.clear()
+		this.fetchBodyBuffers.clear()
+		this.serveBodyBuffers.clear()
 		this.scriptHookInstalled = false
 		this.scriptInitHook = null
 		if (this.consoleOriginals) {
@@ -398,6 +473,11 @@ private installNetwork(): void {
 		}
 		try {
 			setServeHook(null)
+		} catch {
+			/* ignore */
+		}
+		try {
+			Reflect.deleteProperty(debug, '__cnoNetworkHooks')
 		} catch {
 			/* ignore */
 		}

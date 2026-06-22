@@ -7,7 +7,7 @@
  * class wires the pieces together — endpoint (pipe + channel transports),
  * serializer/object-store, evaluator, network/script hooks, and the pause
  * controller — then exposes the small lifecycle contract that commands/run.ts
- * and the REPL consume: attach(), detach(), forceStop(), inspectorUrl and
+ * and the REPL consume: attach(), detach(), inspectorUrl and
  * scriptInitHook.
  */
 
@@ -93,6 +93,7 @@ export class Inspector {
 			serializer,
 			evaluator,
 			hooks,
+			pauseController: pause,
 			onReady: (q) => {
 				this.readyResolve?.({ wsUrl: q.wsUrl ?? `ws://127.0.0.1:${this.port}/ws/unknown` })
 				this.readyResolve = null
@@ -135,8 +136,8 @@ export class Inspector {
 
 		// onBreak runs at the next safepoint; the worker triggers it via dc.interrupt().
 		native.start(
-			(r: number, fp: string | undefined, fn: string | undefined, l: number, c: number) =>
-				pause.onBreak(r, fp ?? '', fn ?? '', l, c),
+			(r: number, fp: string | undefined, fn: string | undefined, l: number, c: number, thrown?: unknown) =>
+				pause.onBreak(r, fp ?? '', fn ?? '', l, c, thrown),
 		)
 
 		if (this.breakOnStart || this.waitForClient) {
@@ -179,9 +180,7 @@ export class Inspector {
 	}
 
 	/**
-	 * Synchronous force-stop for the SIGINT path: unsticks the main thread when
-	 * it is frozen inside the paused service loop. Never terminates the worker
-	 * (that can deadlock in a signal handler); os.exit() reaps all threads.
+	 * Synchronous force-stop for Ctrl+X path.
 	 */
 	forceStop(): void {
 		try {

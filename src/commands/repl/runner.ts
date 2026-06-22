@@ -384,6 +384,7 @@ export interface CnoReplOptions {
 export class CnoRepl {
     #history: string[] = [];
     #historyIndex = 0;
+    #historyDraft = '';
     #clipboard = '';
     #colorizer = new JSColorizer();
     #completer = new CompletionEngine();
@@ -397,6 +398,8 @@ export class CnoRepl {
     #pstate = '';
     #quoteFlag = false;
     #running = true;
+    #evaluating = false;
+    #lastEmptyCtrlCAt = 0;
 
     // Terminal
     #stdin: CModuleStreams.Pipe | CModuleStreams.Stream;
@@ -404,7 +407,8 @@ export class CnoRepl {
     #isatty: boolean = false;
     #termWidth = 80;
     #termCursorX = 0;   // cursor X after prompt (start of input area)
-    #inputRows = 0;     // how many rows below the prompt line the cursor currently is
+    #inputRows = 0;     // rendered rows below the prompt line
+    #cursorRow = 0;     // current cursor row below the prompt line
 
     // Configuration
     #config: {
@@ -443,6 +447,7 @@ export class CnoRepl {
             const stdin = this.#stdin = new streams.TTY(os.STDIN_FILENO, true);
             stdin.mode = streams.TTY_MODE_RAW_VT;
             this.#isatty = true;
+            this.#refreshTermWidth();
         } else {
             const pipe = new streams.Pipe();
             pipe.open(os.STDIN_FILENO);
@@ -490,7 +495,9 @@ export class CnoRepl {
         this.#cmd = '';
         this.#cursorPos = 0;
         this.#historyIndex = this.#history.length;
+        this.#historyDraft = '';
         this.#inputRows = 0;
+        this.#cursorRow = 0;
         // Start fresh on a new line — no matter where external output left the cursor
         this.#printPrompt();
         this.#flush();
@@ -558,10 +565,9 @@ export class CnoRepl {
         // Handle paste mode - accumulate everything until we see the end sequence
         if (this.#escState === 'paste') {
             this.#pasteBuffer += char;
-            // Check for paste end sequence \x1b[201~
-            if (this.#pasteBuffer.endsWith('\x1b[201~')) {
-                // Remove the end sequence and insert the content
-                const content = this.#pasteBuffer.slice(0, -7); // -7 for \x1b[201~
+            const pasteEnd = '\x1b[201~';
+            if (this.#pasteBuffer.endsWith(pasteEnd)) {
+                const content = this.#pasteBuffer.slice(0, -pasteEnd.length);
                 this.#escState = 'normal';
                 this.#inPasteMode = false;
                 // Insert the pasted content, stripping \r from Windows CRLF
@@ -658,8 +664,11 @@ export class CnoRepl {
                 if (this.#readlineResolver) {
                     const resolver = this.#readlineResolver;
                     this.#readlineResolver = null;
+                    this.#cancelCurrentInput('^C\n');
                     resolver(null);
                 }
+                break;
+            case 'continue':
                 break;
             case 'exit':
                 this.#running = false;
@@ -680,19 +689,9 @@ export class CnoRepl {
     #keyMap = new Map<string, KeyCommand>([
         ['\x01', () => { this.#cursorPos = 0; }],                    // ^A
         ['\x02', () => this.#moveCursor(-1)],                         // ^B
-        ['\x03', async () => {                                        // ^C
-            // Clear current input and multiline state
-            this.#cmd = '';
-            this.#cursorPos = 0;
-            this.#multilineExpr = '';
-            this.#pstate = '';
-            this.#braceLevel = 0;
-
-            if (this.#lastCommand === '\x03') {
-                return { type: 'exit' } as const;
-            }
-            await this.#print('\n' + COLOR.gray + '^C (again to exit)' + COLOR.reset + '\n');
-            return { type: 'cancel' } as const;
+        ['\x03', () => {                                        // ^C
+            this.handleCtrlC();
+            return { type: 'continue' } as const;
         }],
         ['\x04', async () => {                                        // ^D
             if (this.#cmd.length === 0) return { type: 'exit' } as const;
@@ -758,7 +757,10 @@ export class CnoRepl {
         this.#print('\n');
         this.#flush();
         this.#inputRows = 0;
-        this.#history.push(this.#cmd);
+        this.#cursorRow = 0;
+        if (this.#cmd.length && this.#history[this.#history.length - 1] !== this.#cmd) {
+            this.#history.push(this.#cmd);
+        }
         return { type: 'submit', value: this.#cmd } as const;
     }
 
@@ -805,7 +807,7 @@ export class CnoRepl {
     #prevHistory(): void {
         if (this.#historyIndex > 0) {
             if (this.#historyIndex === this.#history.length) {
-                this.#history.push(this.#cmd);
+                this.#historyDraft = this.#cmd;
             }
             this.#historyIndex--;
             this.#cmd = this.#history[this.#historyIndex] ?? '';
@@ -814,9 +816,11 @@ export class CnoRepl {
     }
 
     #nextHistory(): void {
-        if (this.#historyIndex < this.#history.length - 1) {
+        if (this.#historyIndex < this.#history.length) {
             this.#historyIndex++;
-            this.#cmd = this.#history[this.#historyIndex] ?? '';
+            this.#cmd = this.#historyIndex === this.#history.length
+                ? this.#historyDraft
+                : this.#history[this.#historyIndex] ?? '';
             this.#cursorPos = this.#cmd.length;
         }
     }
@@ -893,12 +897,13 @@ export class CnoRepl {
     // ==================== Display ====================
 
     #printPrompt(): void {
+        this.#refreshTermWidth();
         const timeStr = this.#config.showTime ? `${(Date.now() / 1000).toFixed(6)} ` : '';
         const prompt = this.#multilineExpr
-            ? ' '.repeat(this.#config.ps1.length) + this.#config.ps2
+            ? ' '.repeat(this.#displayWidth(this.#config.ps1)) + this.#config.ps2
             : timeStr + this.#config.ps1;
         this.#print(prompt);
-        this.#termCursorX = [...prompt].length % this.#termWidth;
+        this.#termCursorX = this.#displayWidth(prompt) % this.#termWidth;
     }
 
     #update(): void {
@@ -913,33 +918,64 @@ export class CnoRepl {
             this.#print(this.#cmd);
         }
 
-        // Clear from cursor to end of screen
         this.#print('\x1b[J');
 
-        // Calculate cursor position relative to prompt start
-        const cmdChars = [...this.#cmd.slice(0, this.#cursorPos)].length;
-        const absCol = this.#termCursorX + cmdChars;
+        const cursorCells = this.#displayWidth(this.#cmd.slice(0, this.#cursorPos));
+        const absCol = this.#termCursorX + cursorCells;
         const cursorRow = Math.floor(absCol / this.#termWidth);
         const cursorCol = absCol % this.#termWidth;
 
-        // Track total rows for next moveToStart
-        const totalChars = this.#termCursorX + [...this.#cmd].length;
-        this.#inputRows = Math.floor(totalChars / this.#termWidth);
+        const totalCells = this.#termCursorX + this.#displayWidth(this.#cmd);
+        this.#inputRows = Math.floor(totalCells / this.#termWidth);
+        this.#cursorRow = cursorRow;
 
-        // Move up from end of text to cursor row if needed
-        const endRow = this.#inputRows;
-        if (endRow > cursorRow) this.#print(`\x1b[${endRow - cursorRow}A`);
-        // Set column (1-based)
+        if (this.#inputRows > cursorRow) this.#print(`\x1b[${this.#inputRows - cursorRow}A`);
         this.#print(`\x1b[${cursorCol + 1}G`);
 
         this.#flush();
     }
 
     #moveToStart(): void {
-        if (this.#inputRows > 0) this.#print(`\x1b[${this.#inputRows}A`);
+        if (this.#cursorRow > 0) this.#print(`\x1b[${this.#cursorRow}A`);
         this.#print('\r\x1b[J');
         this.#inputRows = 0;
+        this.#cursorRow = 0;
         this.#printPrompt();
+    }
+
+    #refreshTermWidth(): void {
+        if (!this.#isatty) return;
+        try {
+            const out = this.#stdout as any;
+            const size = out.size ?? out.getWindowSize?.() ?? out.getwinsize?.();
+            const width = Array.isArray(size) ? size[0] : (size?.width ?? size?.columns);
+            if (Number.isInteger(width) && width > 0) this.#termWidth = width;
+        } catch {}
+    }
+
+    #displayWidth(str: string): number {
+        let width = 0;
+        for (const ch of str) {
+            const cp = ch.codePointAt(0)!;
+            if (cp === 0) continue;
+            if (cp < 32 || (cp >= 0x7f && cp < 0xa0)) continue;
+            width += this.#isWideCodePoint(cp) ? 2 : 1;
+        }
+        return width;
+    }
+
+    #isWideCodePoint(cp: number): boolean {
+        return cp >= 0x1100 && (
+            cp <= 0x115f || cp === 0x2329 || cp === 0x232a ||
+            (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+            (cp >= 0xac00 && cp <= 0xd7a3) ||
+            (cp >= 0xf900 && cp <= 0xfaff) ||
+            (cp >= 0xfe10 && cp <= 0xfe19) ||
+            (cp >= 0xfe30 && cp <= 0xfe6f) ||
+            (cp >= 0xff00 && cp <= 0xff60) ||
+            (cp >= 0xffe0 && cp <= 0xffe6) ||
+            (cp >= 0x1f300 && cp <= 0x1faff)
+        );
     }
 
     #printHighlighted(str: string, styles: TokenStyle[]): void {
@@ -1009,7 +1045,7 @@ export class CnoRepl {
             case 'x': this.#config.hexMode = true; return false;
             case 'd': this.#config.hexMode = false; return false;
             case 't': this.#config.showTime = !this.#config.showTime; return false;
-            case 'clear':
+            case 'c': case 'clear':
                 this.#print('\x1b[H\x1b[J');
                 this.#flush();
                 return false;
@@ -1032,6 +1068,7 @@ export class CnoRepl {
 
     async #evaluate(expr: string): Promise<void> {
         try {
+            this.#evaluating = true;
             let code: string;
             try {
                 code = this.#transform(expr);
@@ -1063,6 +1100,7 @@ export class CnoRepl {
         } catch (e) {
             this.#printError(e);
         } finally {
+            this.#evaluating = false;
             engine.gc.run();
         }
     }
@@ -1130,14 +1168,46 @@ export class CnoRepl {
     }
 
     handleCtrlC(): void {
+        if (this.#evaluating) {
+            this.#print('\n^C\n');
+            this.#flush();
+            this.cleanup();
+            os.exit(130);
+            return;
+        }
         if (this.#readlineResolver) {
-            this.#cmd = '';
-            this.#cursorPos = 0;
-            this.#writeSync(new Uint8Array([0x07]));  // bell
+            const hasInput = this.#cmd.length > 0 || this.#multilineExpr.length > 0;
+            const now = Date.now();
+            if (!hasInput && now - this.#lastEmptyCtrlCAt < 1000) {
+                this.#print('\n');
+                this.#flush();
+                this.cleanup();
+                os.exit(130);
+                return;
+            }
+            this.#lastEmptyCtrlCAt = hasInput ? 0 : now;
+
             const resolver = this.#readlineResolver;
             this.#readlineResolver = null;
+            this.#cancelCurrentInput(hasInput ? '^C\n' : '^C (again to exit)\n');
             resolver(null);
         }
+    }
+
+    #cancelCurrentInput(message: string): void {
+        const rowsToStart = Math.max(this.#cursorRow, this.#inputRows);
+        if (rowsToStart > 0) this.#print(`\x1b[${rowsToStart}A`);
+        this.#print('\r\x1b[J' + message);
+        this.#cmd = '';
+        this.#cursorPos = 0;
+        this.#multilineExpr = '';
+        this.#pstate = '';
+        this.#braceLevel = 0;
+        this.#historyIndex = this.#history.length;
+        this.#historyDraft = '';
+        this.#inputRows = 0;
+        this.#cursorRow = 0;
+        this.#flush();
     }
 
     exportHistory() {
@@ -1146,5 +1216,7 @@ export class CnoRepl {
 
     importHistory(history: string[]) {
         this.#history = history;
+        this.#historyIndex = this.#history.length;
+        this.#historyDraft = '';
     }
 }

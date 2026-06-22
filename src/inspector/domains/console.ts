@@ -10,6 +10,7 @@ import { Domain } from './base'
 import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
 import type { RemoteObject } from '../shared/cdp'
 import type { ConsoleCallFrame } from '../shared/wire'
+import { buildConsoleStackTrace } from '../shared/console-utils'
 
 const CDP_LEVEL: Record<string, string> = {
 	log: 'log', info: 'info', debug: 'debug', warn: 'warning', warning: 'warning',
@@ -65,18 +66,7 @@ export class ConsoleDomain extends Domain {
 		const url = topFrame?.url ?? ''
 
 		// Build CDP stackTrace (Console domain expects CallFrame[])
-		let stackTrace: { callFrames: Array<{ functionName: string; scriptId: string; url: string; lineNumber: number; columnNumber: number }> } | undefined
-		if (callFrames && callFrames.length > 0) {
-			stackTrace = {
-				callFrames: callFrames.map(f => ({
-					functionName: f.functionName,
-					scriptId: f.scriptId,
-					url: f.url,
-					lineNumber: f.lineNumber,
-					columnNumber: f.columnNumber,
-				}))
-			}
-		}
+		const stackTrace = buildConsoleStackTrace(callFrames)
 
 		this.event('Console.messageAdded', {
 			message: {

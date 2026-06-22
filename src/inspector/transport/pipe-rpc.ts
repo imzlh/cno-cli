@@ -33,6 +33,9 @@ export class PipeClient {
 
 	constructor(private pipe: Pipe) {
 		this.pipe.onmessage = (msg: unknown) => this.onMessage(msg as PipeMsg);
+		this.pipe.onmessageerror = (err: unknown) => {
+			console.error('[pipe-rpc] worker pipe error:', err);
+		};
 	}
 
 	call(method: RpcMethod, params: unknown): Promise<unknown> {
@@ -64,6 +67,9 @@ export class PipeServer {
 
 	constructor(private pipe: Pipe) {
 		this.pipe.onmessage = (msg: unknown) => this.onMessage(msg as PipeMsg);
+		this.pipe.onmessageerror = (err: unknown) => {
+			console.error('[pipe-rpc] main pipe error:', err);
+		};
 	}
 
 	/** Push an event to the worker. Fire-and-forget into the uv pipe buffer. */

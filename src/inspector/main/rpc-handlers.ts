@@ -17,6 +17,7 @@ import type { MainEndpoint } from '../transport/main-endpoint'
 import type { Serializer } from './remote-object'
 import type { Evaluator } from './evaluator'
 import type { Hooks } from './hooks'
+import type { PauseController } from './pause-controller'
 
 const engine = import.meta.use('engine')
 const fs = import.meta.use('fs')
@@ -28,6 +29,7 @@ export interface RpcHandlerDeps {
 	serializer: Serializer
 	evaluator: Evaluator
 	hooks: Hooks
+	pauseController: PauseController
 	/** Called when the worker reports the DevTools WS server is listening. */
 	onReady: (params: RpcParams['ready']) => void
 	/** Called when a DevTools front-end connects (true) or disconnects (false). */
@@ -73,8 +75,23 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 
 		// ── object inspection ───────────────────────────────────────
 		getProperties: (q) => {
-			const { result } = serializer.getProperties(q.objectId, q.ownProperties ?? true, q.objectGroup ?? 'runtime')
-			return { result, internalProperties: [] }
+			const group = q.objectGroup ?? 'runtime'
+			const { result } = serializer.getProperties(q.objectId, group)
+			const internalProperties: { name: string; value: unknown }[] = []
+			// Provide [[Prototype]] so DevTools can expand it recursively (V8-like).
+			try {
+				const obj = serializer.resolve(q.objectId)
+				if (obj != null && typeof obj === 'object') {
+					const proto = Object.getPrototypeOf(obj)
+					if (proto != null) {
+						internalProperties.push({
+							name: '[[Prototype]]',
+							value: serializer.serialize(proto, group, { preview: true }),
+						})
+					}
+				}
+			} catch {}
+			return { result, internalProperties }
 		},
 		releaseObject: (q) => {
 			serializer.release(q.objectId)
@@ -86,7 +103,8 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 		},
 		setVariableValue: (q) => {
 			const level = Number(q.callFrameId ?? 0) || 0
-			native.setVariable(EVAL_FRAME_OFFSET + level, q.variableName, evaluator.resolveArgument(q.newValue))
+			const scope = deps.pauseController.normalizeScope(String(q.callFrameId ?? '0'), q.scopeNumber ?? 0)
+			native.setVariable(EVAL_FRAME_OFFSET + level, q.variableName, evaluator.resolveArgument(q.newValue), scope)
 			return {}
 		},
 

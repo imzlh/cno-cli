@@ -23,14 +23,15 @@ import { isSideEffectFree } from './side-effect'
 
 function sideEffectException(): Record<string, unknown> {
 	const description = 'EvalError: Possible side-effect in debug-evaluate'
+	const exception = { type: 'object', subtype: 'error', className: 'EvalError', description }
 	return {
-		result: { type: 'undefined' },
+		result: exception,
 		exceptionDetails: {
-			text: description,
-			exceptionId: 0,
-			lineNumber: 0,
-			columnNumber: 0,
-			exception: { type: 'object', subtype: 'error', className: 'EvalError', description },
+			text: 'Uncaught',
+			exceptionId: 1,
+			lineNumber: -1,
+			columnNumber: -1,
+			exception,
 		},
 	}
 }
@@ -53,7 +54,7 @@ export class RuntimeDomain extends Domain {
 		this.on('Runtime.enable', () => {
 			this.enabled = true
 			this.event('Runtime.executionContextCreated', {
-				context: { id: 1, origin: '', name: 'cno', uniqueId: '1' },
+				context: { id: 1, origin: '', name: 'cno', uniqueId: '1', auxData: { isDefault: true } },
 			})
 			return {}
 		})

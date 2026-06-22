@@ -15,7 +15,7 @@
  * over the channel regardless of run state.
  */
 
-import { ChannelRecv, ChannelReq, Step, type StepCode } from '../shared/native';
+import { ChannelRecv, ChannelReq, ExceptionBreakMode, Step, type StepCode } from '../shared/native';
 import type { DebugChannelMain, DebugChannelWorker } from '../shared/native';
 import type { RpcMethod, RpcParams } from '../shared/rpc-contract';
 import type { WorkerEvent } from '../shared/wire';
@@ -30,6 +30,15 @@ export type SyncDispatch = (method: string, params: Record<string, unknown>) => 
 
 /** Shape of a reply payload carried back over the channel. */
 interface ReplyPayload { result?: unknown; error?: string }
+
+function exceptionBreakModeFromState(state: RpcParams['setExceptionBreakpoint']['state']): number {
+	switch (state) {
+		case 'none': return ExceptionBreakMode.None;
+		case 'caught': return ExceptionBreakMode.Caught;
+		case 'uncaught': return ExceptionBreakMode.Uncaught;
+		case 'all': return ExceptionBreakMode.All;
+	}
+}
 
 // ───────────────── Worker side ─────────────────
 export class ChannelClient {
@@ -70,7 +79,7 @@ export class ChannelClient {
 			}
 			case 'setExceptionBreakpoint': {
 				const p = params as RpcParams['setExceptionBreakpoint'];
-				this.dc.setExceptionBreakpoint(!!p.enabled);
+				this.dc.setExceptionBreakpoint(exceptionBreakModeFromState(p.state));
 				break;
 			}
 			case 'requestPause':
@@ -149,6 +158,9 @@ export class ChannelClient {
 
 	/** Request a pause at the next safepoint (works while RUNNING). */
 	interrupt(): void { try { this.dc.interrupt(); } catch {} }
+
+	/** Read the native run-state from the shared debug control block. */
+	state(): number { return this.dc.state() }
 
 	/** Resume the paused main thread, optionally stepping (a Step code). */
 	resume(step: StepCode): void { try { this.dc.resume(step); } catch {} }

@@ -23,15 +23,22 @@ import {
 	type NetServeEvent,
 	type NetWSEvent,
 	type FetchConnection,
+	type NetworkSource,
 } from '../shared/wire'
 
 const engine = import.meta.use('engine');
 const nativeCrypto = import.meta.use('crypto');
+const curl = import.meta.use('curl');
+const http = import.meta.use('http');
 
 const MAX_CACHED_BODIES = 200
 const MAX_BODY_BYTES = 1024 * 1024 // 1 MiB
-const FRAME_ID = 'cno-frame-1'
-const LOADER_ID = 'cno-loader-1'
+const MAX_CACHED_REQUEST_BODIES = 200
+const MAX_REQUEST_BODY_BYTES = 256 * 1024
+const FETCH_FRAME_ID = 'cno-fetch-frame-1'
+const FETCH_LOADER_ID = 'cno-fetch-loader-1'
+const SERVE_FRAME_ID = 'cno-serve-frame-1'
+const SERVE_LOADER_ID = 'cno-serve-loader-1'
 
 interface Cookie {
 	name: string
@@ -47,6 +54,7 @@ interface Cookie {
 }
 
 interface RequestMeta {
+	source: NetworkSource
 	url: string
 	method: string
 	requestHeaders: Record<string, string>
@@ -60,42 +68,43 @@ interface BodyEntry {
 	chunks: Uint8Array[]
 	total: number
 	truncated: boolean
+	mimeType?: string
+}
+
+interface WSRequestMeta {
+	source: NetworkSource
+	url: string
+	requestHeaders: Record<string, string>
+	requestHeadersText: string
 }
 
 function protocolFromVersion(version?: number): string {
 	switch (version) {
-		case 30: return 'h3'      // CURL_HTTP_VERSION_3
-		case 3: return 'h2'       // CURL_HTTP_VERSION_2
-		case 4: return 'h2'       // CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE
-		case 2: return 'http/1.1' // CURL_HTTP_VERSION_1_1
-		case 1: return 'http/1.0' // CURL_HTTP_VERSION_1_0
-		default: return 'fetch'
+		case curl.CURL_HTTP_VERSION_3: 		return 'h3'
+		case curl.CURL_HTTP_VERSION_2TLS:
+		case curl.CURL_HTTP_VERSION_2_0: 	return 'h2'
+		case curl.CURL_HTTP_VERSION_1_0: 	return 'http/1.0'
+		case curl.CURL_HTTP_VERSION_1_1:
+		default:							return 'http/1.1'
 	}
 }
 
-const STATUS_TEXT: Record<number, string> = {
-	200: 'OK', 201: 'Created', 204: 'No Content', 206: 'Partial Content',
-	301: 'Moved Permanently', 302: 'Found', 304: 'Not Modified', 307: 'Temporary Redirect', 308: 'Permanent Redirect',
-	400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 405: 'Method Not Allowed',
-	429: 'Too Many Requests', 500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable', 504: 'Gateway Timeout',
-}
-
 function statusText(status: number): string {
-	return STATUS_TEXT[status] ?? ''
-}
-
-function isInternalNetworkFrame(url: string, functionName: string): boolean {
-	const text = `${url} ${functionName}`
-	return url === '<core>' || functionName === '<core>' || /(?:webapi[\\/])?fetch\.ts|deno[\\/]08_serve\.ts|network-hooks\.ts|captureNetworkCallFrames|captureServeCallFrames|onRequest|Hooks\.installNetwork/.test(text)
+	return http.strstatus(status) ?? 'OK';
 }
 
 export class NetworkDomain extends Domain {
 	private enabled = false
 	private cookies: Cookie[] = []
 	private responseBodyCache = new Map<string, BodyEntry>()
+	private requestBodyCache = new Map<string, Uint8Array>()
 	private pendingBodies = new Map<string, BodyEntry>()
 	private reqStartTimes = new Map<string, number>()
 	private reqMeta = new Map<string, RequestMeta>()
+	private wsMeta = new Map<string, WSRequestMeta>()
+	/** Serve requestIds that are WS upgrades — suppress loadingFinished from HTTP side. */
+	private wsUpgradeRequests = new Set<string>()
+	private lastCleanupTime = 0
 
 	constructor(dispatcher: CDPDispatcher, event: EmitEvent) {
 		super(dispatcher, event)
@@ -114,6 +123,9 @@ export class NetworkDomain extends Domain {
 			this.reqMeta.clear()
 			this.pendingBodies.clear()
 			this.responseBodyCache.clear()
+			this.requestBodyCache.clear()
+			this.wsMeta.clear()
+			this.wsUpgradeRequests.clear()
 			return {}
 		})
 		this.on('Network.setUserAgentOverride', (p) => {
@@ -162,10 +174,13 @@ export class NetworkDomain extends Domain {
 		// Bodies.
 		this.on('Network.getResponseBody', (p) => {
 			const entry = this.responseBodyCache.get(this.reqStr(p, 'requestId'))
-			if (!entry) return { body: '', base64Encoded: true }
-			return { body: this.encodeBodyBase64(entry), base64Encoded: true }
+			if (!entry) return { body: '', base64Encoded: false }
+			return this.encodeBody(entry)
 		})
-		this.on('Network.getRequestPostData', () => ({ postData: '' }))
+		this.on('Network.getRequestPostData', (p) => {
+			const body = this.requestBodyCache.get(this.reqStr(p, 'requestId'))
+			return { postData: body ? engine.decodeString(body) : '' }
+		})
 	}
 
 	private makeCookie(p: Record<string, unknown>): Cookie {
@@ -193,8 +208,10 @@ export class NetworkDomain extends Domain {
 				const timestamp = data.timestamp
 				const initiator = this.buildInitiator(data.callFrames)
 				const resourceType = data.resourceType ?? 'Fetch'
+				this.cacheRequestBody(data.requestId, data.postData)
 				this.reqStartTimes.set(data.requestId, timestamp)
 				this.reqMeta.set(data.requestId, {
+					source: data.source,
 					url: data.url,
 					method: data.method,
 					requestHeaders: data.headers,
@@ -203,9 +220,10 @@ export class NetworkDomain extends Domain {
 					initiator,
 					resourceType,
 				})
+				const context = this.contextForSource(data.source)
 				this.event('Network.requestWillBeSent', {
 					requestId: data.requestId,
-					loaderId: LOADER_ID,
+					loaderId: context.loaderId,
 					documentURL: data.url,
 					request: {
 						url: data.url,
@@ -223,7 +241,7 @@ export class NetworkDomain extends Domain {
 					hasExtraInfo: true,
 					redirectHasExtraInfo: false,
 					type: resourceType,
-					frameId: FRAME_ID,
+					frameId: context.frameId,
 				})
 				break
 			}
@@ -250,12 +268,13 @@ export class NetworkDomain extends Domain {
 					connectTiming: { requestTime: start },
 					siteHasCookieInOtherPartition: false,
 				})
+				const context = this.contextForSource(data.source)
 				this.event('Network.responseReceived', {
 					requestId: data.requestId,
-					loaderId: LOADER_ID,
+					loaderId: context.loaderId,
 					timestamp,
 					type: resourceType,
-					frameId: FRAME_ID,
+					frameId: context.frameId,
 					hasExtraInfo: true,
 					response: {
 						url,
@@ -272,9 +291,9 @@ export class NetworkDomain extends Domain {
 						remotePort: conn?.remotePort ?? 0,
 						fromDiskCache: false,
 						fromServiceWorker: false,
-						encodedDataLength: t?.headerSize ?? 0,
+						encodedDataLength: 0,
 						protocol: protocolFromVersion(conn?.httpVersion),
-						securityState: this.securityState(t?.sslVerifyResult),
+						securityState: this.securityState(url, t?.sslVerifyResult),
 						timing: this.normalizeTiming(this.buildTiming(start, conn)),
 					},
 				})
@@ -293,7 +312,7 @@ export class NetworkDomain extends Domain {
 				const timestamp = data.timestamp
 				let entry = this.pendingBodies.get(data.requestId)
 				if (!entry) {
-					entry = { chunks: [], total: 0, truncated: false }
+					entry = { chunks: [], total: 0, truncated: false, mimeType: this.reqMeta.get(data.requestId)?.responseHeaders['content-type'] ?? this.reqMeta.get(data.requestId)?.responseHeaders['Content-Type'] }
 					this.pendingBodies.set(data.requestId, entry)
 				}
 				if (entry.total + data.byteLength <= MAX_BODY_BYTES) {
@@ -313,40 +332,43 @@ export class NetworkDomain extends Domain {
 			case NetFetchKind.Done: {
 				const timestamp = data.timestamp
 				const meta = this.reqMeta.get(data.requestId)
-				const entry = this.pendingBodies.get(data.requestId)
+				// Primary path: body arrives bundled in Done event (main-thread buffered).
+				// Fallback: legacy per-chunk pendingBodies (if Data events were sent).
+				const pendingEntry = this.pendingBodies.get(data.requestId)
 				this.pendingBodies.delete(data.requestId)
-				if (entry) {
+
+				let bodyEntry: BodyEntry | undefined
+				if (data.body && data.body.length > 0) {
+					bodyEntry = {
+						chunks: data.body,
+						total: data.totalBytes ?? 0,
+						truncated: false,
+						mimeType: meta?.responseHeaders['content-type']
+							?? meta?.responseHeaders['Content-Type'],
+					}
+				} else if (pendingEntry) {
+					bodyEntry = pendingEntry
+					if (!bodyEntry.mimeType && meta) {
+						bodyEntry.mimeType = meta.responseHeaders['content-type']
+							?? meta.responseHeaders['Content-Type']
+					}
+				}
+
+				if (bodyEntry) {
 					if (this.responseBodyCache.size >= MAX_CACHED_BODIES) {
 						const oldest = this.responseBodyCache.keys().next().value
 						if (oldest !== undefined) this.responseBodyCache.delete(oldest)
 					}
-					this.responseBodyCache.set(data.requestId, entry)
+					this.responseBodyCache.set(data.requestId, bodyEntry)
 				}
 				const conn = data.connection
 				if (data.success) {
 					this.event('Network.loadingFinished', {
 						requestId: data.requestId,
 						timestamp,
-						encodedDataLength: conn?.timing?.sizeDownload ?? conn?.downloadSize ?? entry?.total ?? 0,
+						encodedDataLength: conn?.timing?.sizeDownload ?? conn?.downloadSize ?? bodyEntry?.total ?? 0,
 						shouldReportCorbBlocking: false,
 					})
-					// Synthesize redirect events so DevTools shows the hop chain.
-					const redirects = conn?.timing?.redirectCount ?? 0
-					if (redirects > 0 && meta) {
-						const redirectUrl = conn?.timing?.redirectUrl ?? ''
-						this.event('Network.requestWillBeSent', {
-							requestId: `${data.requestId}:redirect:${redirects}`,
-							loaderId: LOADER_ID,
-							documentURL: redirectUrl,
-							request: { url: redirectUrl, method: 'GET', headers: {}, initialPriority: 'High', referrerPolicy: 'strict-origin-when-cross-origin', isLinkPreload: false },
-							timestamp,
-							wallTime: data.timestamp,
-							initiator: meta.initiator,
-							redirectResponse: { url: meta.url, status: meta.status, statusText: statusText(meta.status), headers: meta.responseHeaders, mimeType: conn?.timing?.contentType ?? '' },
-							type: meta.resourceType,
-							frameId: FRAME_ID,
-						})
-					}
 				} else {
 					this.event('Network.loadingFailed', {
 						requestId: data.requestId,
@@ -358,6 +380,7 @@ export class NetworkDomain extends Domain {
 				}
 				this.reqStartTimes.delete(data.requestId)
 				this.reqMeta.delete(data.requestId)
+				this.cleanupStaleEntries(timestamp)
 				break
 			}
 		}
@@ -369,103 +392,123 @@ export class NetworkDomain extends Domain {
 		switch (data.ev) {
 			case NetServeKind.Req: {
 				const timestamp = data.timestamp
-				const initiator = this.buildInitiator(data.callFrames)
+				const initiator = this.buildServeInitiator(data.callFrames)
+				const resourceType = this.classifyServeResourceType(data.url, data.method, data.headers)
+				this.cacheRequestBody(data.requestId, data.postData)
 				this.reqStartTimes.set(data.requestId, timestamp)
 				this.reqMeta.set(data.requestId, {
+					source: data.source,
 					url: data.url,
 					method: data.method,
 					requestHeaders: data.headers,
 					responseHeaders: {},
 					status: 0,
 					initiator,
-					resourceType: 'Other',
+					resourceType,
 				})
-				this.event('Network.requestWillBeSent', {
-					requestId: data.requestId,
-					loaderId: LOADER_ID,
-					documentURL: data.url,
-					request: {
-						url: data.url,
-						method: data.method,
+				// WebSocket upgrades: skip HTTP events — the WS hook will emit
+				// requestWillBeSent + webSocketCreated with the same requestId.
+				// Emitting here would create a phantom "pending" entry that never
+				// receives a responseReceived.
+				if (resourceType !== 'WebSocket') {
+					const context = this.contextForSource(data.source)
+					this.event('Network.requestWillBeSent', {
+						requestId: data.requestId,
+						loaderId: context.loaderId,
+						documentURL: data.url,
+						request: {
+							url: data.url,
+							method: data.method,
+							headers: data.headers,
+							hasPostData: data.postData != null,
+							postData: data.postData ? this.truncateUtf8(data.postData, 1024) : undefined,
+							initialPriority: 'High',
+							referrerPolicy: 'no-referrer',
+							isLinkPreload: false,
+						},
+						timestamp,
+						wallTime: data.timestamp,
+						initiator,
+						hasExtraInfo: true,
+						redirectHasExtraInfo: false,
+						type: resourceType,
+						frameId: context.frameId,
+					})
+					this.event('Network.requestWillBeSentExtraInfo', {
+						requestId: data.requestId,
+						associatedCookies: [],
 						headers: data.headers,
-						hasPostData: data.postData != null,
-						postData: data.postData ? this.truncateUtf8(data.postData, 1024) : undefined,
-						initialPriority: 'High',
-						referrerPolicy: 'no-referrer',
-						isLinkPreload: false,
-					},
-					timestamp,
-					wallTime: data.timestamp,
-					initiator,
-					hasExtraInfo: true,
-					redirectHasExtraInfo: false,
-					type: 'Other',
-					frameId: FRAME_ID,
-				})
-				this.event('Network.requestWillBeSentExtraInfo', {
-					requestId: data.requestId,
-					associatedCookies: [],
-					headers: data.headers,
-					connectTiming: { requestTime: timestamp },
-					siteHasCookieInOtherPartition: false,
-				})
+						connectTiming: { requestTime: timestamp },
+						siteHasCookieInOtherPartition: false,
+					})
+				}
 				break
 			}
 			case NetServeKind.Res: {
 				const timestamp = data.timestamp
 				const start = this.reqStartTimes.get(data.requestId) ?? timestamp
 				const meta = this.reqMeta.get(data.requestId)
+				const resourceType = this.classifyServeResourceType(data.url, meta?.method ?? 'GET', meta?.requestHeaders ?? {}, data.headers)
 				if (meta) {
 					meta.responseHeaders = data.headers
 					meta.status = data.status
+					meta.resourceType = resourceType
+				}
+				// Detect WebSocket upgrade — mark so HTTP lifecycle doesn't close the entry.
+				if (resourceType === 'WebSocket') {
+					this.wsUpgradeRequests.add(data.requestId)
 				}
 				const requestHeaders = meta?.requestHeaders ?? {}
 				const responseHeadersText = this.buildHeadersText(data.headers, data.status)
 				const requestHeadersText = this.buildRequestHeadersText(meta?.method ?? 'GET', data.url, requestHeaders)
-				this.event('Network.responseReceived', {
-					requestId: data.requestId,
-					loaderId: LOADER_ID,
-					timestamp,
-					type: 'Other',
-					frameId: FRAME_ID,
-					hasExtraInfo: true,
-					response: {
-						url: data.url,
-						status: data.status,
-						statusText: data.statusText ?? statusText(data.status),
+				const isWsUpgrade = this.wsUpgradeRequests.has(data.requestId)
+				if (!isWsUpgrade) {
+					const context = this.contextForSource(data.source)
+					this.event('Network.responseReceived', {
+						requestId: data.requestId,
+						loaderId: context.loaderId,
+						timestamp,
+						type: resourceType,
+						frameId: context.frameId,
+						hasExtraInfo: true,
+						response: {
+							url: data.url,
+							status: data.status,
+							statusText: data.statusText ?? statusText(data.status),
+							headers: data.headers,
+							headersText: responseHeadersText,
+							requestHeaders,
+							requestHeadersText,
+							mimeType: data.headers['content-type'] ?? data.headers['Content-Type'] ?? '',
+							connectionReused: false,
+							connectionId: 0,
+							remoteIPAddress: '',
+							remotePort: 0,
+							fromDiskCache: false,
+							fromServiceWorker: false,
+							encodedDataLength: 0,
+							protocol: 'http/1.1',
+							securityState: data.url.startsWith('https:') ? 'secure' : 'neutral',
+							timing: this.normalizeTiming(this.buildServeTiming(start, timestamp)),
+						},
+					})
+					this.event('Network.responseReceivedExtraInfo', {
+						requestId: data.requestId,
+						blockedCookies: [],
 						headers: data.headers,
 						headersText: responseHeadersText,
-						requestHeaders,
-						requestHeadersText,
-						mimeType: data.headers['content-type'] ?? data.headers['Content-Type'] ?? '',
-						connectionReused: false,
-						connectionId: 0,
-						remoteIPAddress: '',
-						remotePort: 0,
-						fromDiskCache: false,
-						fromServiceWorker: false,
-						encodedDataLength: 0,
-						protocol: 'http/1.1',
-						securityState: data.url.startsWith('https:') ? 'secure' : 'neutral',
-						timing: this.normalizeTiming(this.buildServeTiming(start, timestamp)),
-					},
-				})
-				this.event('Network.responseReceivedExtraInfo', {
-					requestId: data.requestId,
-					blockedCookies: [],
-					headers: data.headers,
-					headersText: responseHeadersText,
-					resourceIPAddressSpace: 'Unknown',
-					statusCode: data.status,
-					exemptedCookies: [],
-				})
+						resourceIPAddressSpace: 'Unknown',
+						statusCode: data.status,
+						exemptedCookies: [],
+					})
+				}
 				break
 			}
 			case NetServeKind.Data: {
 				const timestamp = data.timestamp
 				let entry = this.pendingBodies.get(data.requestId)
 				if (!entry) {
-					entry = { chunks: [], total: 0, truncated: false }
+					entry = { chunks: [], total: 0, truncated: false, mimeType: this.reqMeta.get(data.requestId)?.responseHeaders['content-type'] ?? this.reqMeta.get(data.requestId)?.responseHeaders['Content-Type'] }
 					this.pendingBodies.set(data.requestId, entry)
 				}
 				if (entry.total + data.byteLength <= MAX_BODY_BYTES) {
@@ -484,33 +527,65 @@ export class NetworkDomain extends Domain {
 			}
 			case NetServeKind.Done: {
 				const timestamp = data.timestamp
-				const entry = this.pendingBodies.get(data.requestId)
+				// Primary path: body arrives bundled in Done event (main-thread buffered).
+				// Fallback: legacy per-chunk pendingBodies (if Data events were sent).
+				const pendingEntry = this.pendingBodies.get(data.requestId)
 				this.pendingBodies.delete(data.requestId)
-				if (entry) {
+
+				let bodyEntry: BodyEntry | undefined
+				if (data.body && data.body.length > 0) {
+					const serveMeta = this.reqMeta.get(data.requestId)
+					bodyEntry = {
+						chunks: data.body,
+						total: data.totalBytes ?? 0,
+						truncated: false,
+						mimeType: serveMeta?.responseHeaders['content-type']
+							?? serveMeta?.responseHeaders['Content-Type'],
+					}
+				} else if (pendingEntry) {
+					bodyEntry = pendingEntry
+					if (!bodyEntry.mimeType) {
+						const serveMeta = this.reqMeta.get(data.requestId)
+						if (serveMeta) {
+							bodyEntry.mimeType = serveMeta.responseHeaders['content-type']
+								?? serveMeta.responseHeaders['Content-Type']
+						}
+					}
+				}
+
+				if (bodyEntry) {
 					if (this.responseBodyCache.size >= MAX_CACHED_BODIES) {
 						const oldest = this.responseBodyCache.keys().next().value
 						if (oldest !== undefined) this.responseBodyCache.delete(oldest)
 					}
-					this.responseBodyCache.set(data.requestId, entry)
+					this.responseBodyCache.set(data.requestId, bodyEntry)
 				}
-				if (data.success) {
+				const isWsUpgrade = this.wsUpgradeRequests.has(data.requestId)
+				if (isWsUpgrade) {
+					// WebSocket upgrade: keep the entry alive for WS lifecycle events.
+					// Don't emit loadingFinished — the WS Closed event will do it.
+					// Don't delete reqMeta — WS events still reference it.
+				} else if (data.success) {
 					this.event('Network.loadingFinished', {
 						requestId: data.requestId,
 						timestamp,
-						encodedDataLength: entry?.total ?? 0,
+						encodedDataLength: bodyEntry?.total ?? 0,
 						shouldReportCorbBlocking: false,
 					})
 				} else {
 					this.event('Network.loadingFailed', {
 						requestId: data.requestId,
 						timestamp,
-						type: 'Other',
+						type: this.reqMeta.get(data.requestId)?.resourceType ?? 'Other',
 						errorText: data.errorText ?? 'net::ERR_FAILED',
 						canceled: false,
 					})
 				}
-				this.reqStartTimes.delete(data.requestId)
-				this.reqMeta.delete(data.requestId)
+				if (!isWsUpgrade) {
+					this.reqStartTimes.delete(data.requestId)
+					this.reqMeta.delete(data.requestId)
+				}
+				this.cleanupStaleEntries(timestamp)
 				break
 			}
 		}
@@ -520,20 +595,29 @@ export class NetworkDomain extends Domain {
 		if (!this.enabled) return
 		switch (data.ev) {
 			case NetWSKind.Created:
+				const wsHeaders = data.requestHeaders ? this.headerEntriesToRecord(data.requestHeaders) : {}
+				this.wsMeta.set(data.requestId, {
+					source: data.source,
+					url: data.url,
+					requestHeaders: wsHeaders,
+					requestHeadersText: data.requestHeaders ? this.buildRequestHeadersText('GET', data.url, wsHeaders, data.source === 'fetch' ? 2 : undefined) : '',
+				})
+				this.reqStartTimes.set(data.requestId, data.timestamp)
 				this.event('Network.webSocketCreated', {
 					requestId: data.requestId,
 					url: data.url,
-					initiator: this.buildInitiator(data.callFrames),
+					initiator: this.buildInitiatorForSource(data.source, data.callFrames),
 				})
 				if (data.requestHeaders) {
-					const headers = this.headerEntriesToRecord(data.requestHeaders)
+					const meta = this.wsMeta.get(data.requestId)
+					const headers = meta?.requestHeaders ?? this.headerEntriesToRecord(data.requestHeaders)
 					this.event('Network.webSocketWillSendHandshakeRequest', {
 						requestId: data.requestId,
 						timestamp: data.timestamp,
 						wallTime: data.timestamp,
 						request: {
 							headers,
-							headersText: this.buildRequestHeadersText('GET', data.url, headers, 2),
+							headersText: meta?.requestHeadersText ?? this.buildRequestHeadersText('GET', data.url, headers, data.source === 'fetch' ? 2 : undefined),
 						},
 					})
 				}
@@ -541,7 +625,9 @@ export class NetworkDomain extends Domain {
 			case NetWSKind.Handshake: {
 				const timestamp = data.timestamp
 				const hdrs: Record<string, string> = {}
+				const meta = this.wsMeta.get(data.requestId)
 				for (const [k, v] of data.headers) hdrs[k] = v
+				const headersText = this.buildHeadersText(hdrs, data.status, data.source === 'fetch' ? 2 : undefined)
 				this.event('Network.webSocketHandshakeResponseReceived', {
 					requestId: data.requestId,
 					timestamp,
@@ -549,9 +635,9 @@ export class NetworkDomain extends Domain {
 						status: data.status,
 						statusText: statusText(data.status),
 						headers: hdrs,
-						headersText: this.headerBlock(hdrs),
-						requestHeaders: {},
-						requestHeadersText: '',
+						headersText,
+						requestHeaders: meta?.requestHeaders ?? {},
+						requestHeadersText: meta?.requestHeadersText ?? '',
 					},
 				})
 				break
@@ -575,9 +661,74 @@ export class NetworkDomain extends Domain {
 				break
 			}
 			case NetWSKind.Closed:
+				if (data.code != null && data.code !== 1000) {
+					this.event('Network.webSocketFrameError', {
+						requestId: data.requestId,
+						timestamp: data.timestamp,
+						errorMessage: data.reason ? `WebSocket closed (${data.code}): ${data.reason}` : `WebSocket closed (${data.code})`,
+					})
+				}
 				this.event('Network.webSocketClosed', { requestId: data.requestId, timestamp: data.timestamp })
+				// Clean up WS upgrade tracking.
+				if (this.wsUpgradeRequests.has(data.requestId)) {
+					this.wsUpgradeRequests.delete(data.requestId)
+					this.reqStartTimes.delete(data.requestId)
+					this.reqMeta.delete(data.requestId)
+				}
+				this.wsMeta.delete(data.requestId)
 				break
 		}
+	}
+
+	private classifyServeResourceType(
+		url: string,
+		method: string,
+		requestHeaders: Record<string, string>,
+		responseHeaders?: Record<string, string>,
+	): string {
+		const req = this.lowerCaseHeaders(requestHeaders)
+		const res = this.lowerCaseHeaders(responseHeaders ?? {})
+		const upgrade = req['upgrade'] ?? ''
+		if (upgrade.toLowerCase() === 'websocket') return 'WebSocket'
+		if ((res['upgrade'] ?? '').toLowerCase() === 'websocket') return 'WebSocket'
+		if (res['sec-websocket-accept']) return 'WebSocket'
+
+		const secFetchDest = (req['sec-fetch-dest'] ?? '').toLowerCase()
+		if (secFetchDest === 'document') return 'Document'
+		if (secFetchDest === 'style') return 'Stylesheet'
+		if (secFetchDest === 'script') return 'Script'
+		if (secFetchDest === 'image') return 'Image'
+		if (secFetchDest === 'font') return 'Font'
+		if (secFetchDest === 'video' || secFetchDest === 'audio') return 'Media'
+		if (secFetchDest === 'empty') return 'Other'
+
+		const accept = req['accept'] ?? ''
+		const mime = res['content-type'] ?? ''
+		const probe = `${accept};${mime};${url}`.toLowerCase()
+		if (/\btext\/html\b/.test(probe) || /\.(html?|xhtml)(?:[?#]|$)/.test(probe)) return 'Document'
+		if (/\btext\/css\b/.test(probe) || /\.css(?:[?#]|$)/.test(probe)) return 'Stylesheet'
+		if (/\b(?:application|text)\/(?:javascript|ecmascript)\b/.test(probe) || /\.(?:m?js|cjs|ts|mts|cts)(?:[?#]|$)/.test(probe)) return 'Script'
+		if (/\bimage\//.test(probe) || /\.(?:png|jpe?g|gif|webp|svg|ico|bmp|avif)(?:[?#]|$)/.test(probe)) return 'Image'
+		if (/\bfont\//.test(probe) || /\.(?:woff2?|ttf|otf|eot)(?:[?#]|$)/.test(probe)) return 'Font'
+		if (/\b(?:audio|video)\//.test(probe) || /\.(?:mp4|webm|mp3|wav|ogg|m4a|mov)(?:[?#]|$)/.test(probe)) return 'Media'
+		if (/\b(?:application\/json|application\/problem\+json|text\/json)\b/.test(probe)) return 'Other'
+		return 'Other'
+	}
+
+	private lowerCaseHeaders(headers: Record<string, string>): Record<string, string> {
+		const out: Record<string, string> = {}
+		for (const key of Object.keys(headers)) out[key.toLowerCase()] = headers[key]
+		return out
+	}
+
+	private cacheRequestBody(requestId: string, body?: Uint8Array): void {
+		if (!body || body.byteLength === 0) return
+		const slice = body.byteLength > MAX_REQUEST_BODY_BYTES ? body.subarray(0, MAX_REQUEST_BODY_BYTES) : body
+		if (this.requestBodyCache.size >= MAX_CACHED_REQUEST_BODIES) {
+			const oldest = this.requestBodyCache.keys().next().value
+			if (oldest !== undefined) this.requestBodyCache.delete(oldest)
+		}
+		this.requestBodyCache.set(requestId, new Uint8Array(slice))
 	}
 
 	private buildTiming(start: number, conn?: FetchConnection): Record<string, number> {
@@ -607,7 +758,10 @@ export class NetworkDomain extends Domain {
 
 		const sendStartMs = sslEndMs >= 0 ? sslEndMs : connEndMs >= 0 ? connEndMs : 0
 		const sendEndMs = phaseEnd(t.sendDuration)
-		if (sendEndMs >= 0) { out.sendStart = sendStartMs; out.sendEnd = sendEndMs }
+		if (sendEndMs >= 0) {
+			out.sendStart = sendStartMs
+			out.sendEnd = Math.max(sendStartMs, sendEndMs)
+		}
 		const headerOutMs = debugMs(t.headerOutStart)
 		if (headerOutMs >= 0) out.sendStart = headerOutMs
 		const dataOutMs = debugMs(t.dataOutStart)
@@ -628,7 +782,7 @@ export class NetworkDomain extends Domain {
 		if (t.totalTime != null) {
 			const contentEndMs = Math.round(t.totalTime * 1000)
 			out.receiveContentStart = recvStartMs >= 0 ? recvStartMs : sendEndMs >= 0 ? sendEndMs : 0
-			out.receiveContentEnd = contentEndMs
+			out.receiveContentEnd = Math.max(out.receiveContentStart, contentEndMs)
 		}
 		const dataInMs = debugMs(t.dataInStart)
 		if (dataInMs >= 0) out.receiveContentStart = dataInMs
@@ -651,30 +805,69 @@ export class NetworkDomain extends Domain {
 
 	private normalizeTiming(timing: Record<string, number>): Record<string, number> {
 		const out = { ...timing }
+		delete out.pushStart
+		delete out.pushEnd
 
-		// DevTools treats any truthy pushStart as HTTP/2 server push.
-		// CNO does not surface pushed resources here, so keep the push lane disabled.
-		out.pushStart = 0
-		out.pushEnd = 0
-
+		if (out.dnsEnd >= 0 && out.dnsStart < 0) out.dnsStart = 0
+		if (out.connectEnd >= 0) {
+			if (out.connectStart < 0) out.connectStart = out.dnsEnd >= 0 ? out.dnsEnd : 0
+			if (out.connectEnd < out.connectStart) out.connectEnd = out.connectStart
+		}
+		if (out.sslEnd >= 0) {
+			if (out.sslStart < 0) out.sslStart = out.connectEnd >= 0 ? out.connectEnd : out.connectStart >= 0 ? out.connectStart : 0
+			if (out.sslEnd < out.sslStart) out.sslEnd = out.sslStart
+		}
+		if (out.sendEnd >= 0) {
+			if (out.sendStart < 0) out.sendStart = out.sslEnd >= 0 ? out.sslEnd : out.connectEnd >= 0 ? out.connectEnd : 0
+			if (out.sendEnd < out.sendStart) out.sendEnd = out.sendStart
+		}
+		if (out.receiveHeadersStart >= 0 && out.sendEnd >= 0 && out.receiveHeadersStart < out.sendEnd) {
+			out.receiveHeadersStart = out.sendEnd
+		}
 		if (out.receiveHeadersEnd < 0 && out.receiveHeadersStart >= 0) out.receiveHeadersEnd = out.receiveHeadersStart
+		if (out.receiveHeadersEnd >= 0 && out.receiveHeadersStart >= 0 && out.receiveHeadersEnd < out.receiveHeadersStart) {
+			out.receiveHeadersEnd = out.receiveHeadersStart
+		}
 		if (out.receiveContentStart < 0 && out.receiveHeadersEnd >= 0) out.receiveContentStart = out.receiveHeadersEnd
+		if (out.receiveContentStart >= 0 && out.receiveHeadersEnd >= 0 && out.receiveContentStart < out.receiveHeadersEnd) {
+			out.receiveContentStart = out.receiveHeadersEnd
+		}
 		if (out.receiveContentEnd < 0 && out.receiveContentStart >= 0) out.receiveContentEnd = out.receiveContentStart
+		if (out.receiveContentEnd >= 0 && out.receiveContentStart >= 0 && out.receiveContentEnd < out.receiveContentStart) {
+			out.receiveContentEnd = out.receiveContentStart
+		}
 
 		return out
 	}
 
 	private buildInitiator(callFrames?: ConsoleCallFrame[]): Record<string, unknown> {
-		const frames = this.filterCallFrames(callFrames)
+		const frames = this.limitCallFrames(callFrames)
 		if (frames.length === 0) return { type: 'script' }
 		return { type: 'script', stack: { callFrames: frames } }
 	}
 
-	private filterCallFrames(callFrames?: ConsoleCallFrame[]): ConsoleCallFrame[] {
+	private buildServeInitiator(callFrames?: ConsoleCallFrame[]): Record<string, unknown> {
+		const frames = this.limitCallFrames(callFrames)
+		if (frames.length === 0) return { type: 'other' }
+		return { type: 'other', stack: { callFrames: frames } }
+	}
+
+	private buildInitiatorForSource(source: NetworkSource, callFrames?: ConsoleCallFrame[]): Record<string, unknown> {
+		return source === 'serve' ? this.buildServeInitiator(callFrames) : this.buildInitiator(callFrames)
+	}
+
+	private contextForSource(source: NetworkSource): { frameId: string; loaderId: string } {
+		if (source === 'serve') {
+			return { frameId: SERVE_FRAME_ID, loaderId: SERVE_LOADER_ID }
+		}
+		return { frameId: FETCH_FRAME_ID, loaderId: FETCH_LOADER_ID }
+	}
+
+	private limitCallFrames(callFrames?: ConsoleCallFrame[]): ConsoleCallFrame[] {
 		if (!callFrames) return []
 		const frames: ConsoleCallFrame[] = []
 		for (const frame of callFrames) {
-			if (!frame || isInternalNetworkFrame(frame.url, frame.functionName)) continue
+			if (!frame || (!frame.url && !frame.scriptId)) continue
 			frames.push(frame)
 			if (frames.length >= 32) break
 		}
@@ -728,14 +921,38 @@ export class NetworkDomain extends Domain {
 		return out + '\r\n'
 	}
 
-	private encodeBodyBase64(entry: BodyEntry): string {
+	private encodeBody(entry: BodyEntry): { body: string; base64Encoded: boolean } {
+		const body = this.mergeBody(entry)
+		if (this.shouldTreatAsText(entry.mimeType, body)) {
+			return { body: engine.decodeString(body), base64Encoded: false }
+		}
+		return { body: nativeCrypto.base64Encode(body), base64Encoded: true }
+	}
+
+	private mergeBody(entry: BodyEntry): Uint8Array {
 		const body = new Uint8Array(entry.total)
 		let offset = 0
 		for (const chunk of entry.chunks) {
 			body.set(chunk, offset)
 			offset += chunk.byteLength
 		}
-		return nativeCrypto.base64Encode(body)
+		return body
+	}
+
+	private shouldTreatAsText(mimeType: string | undefined, body: Uint8Array): boolean {
+		const mime = (mimeType ?? '').toLowerCase()
+		const charset = mime.match(/(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/)?.[1]?.toLowerCase()
+		if (charset && !/^(?:utf-?8|us-ascii|ascii)$/.test(charset)) return false
+		if (mime.startsWith('text/')) return true
+		if (/(?:^|\/)(json|xml|javascript|x-www-form-urlencoded)(?:$|[+;])/i.test(mime)) return true
+		const sampleLen = Math.min(body.byteLength, 64)
+		for (let i = 0; i < sampleLen; i++) {
+			const ch = body[i]!
+			if (ch === 0) return false
+			if (ch < 0x09) return false
+			if (ch > 0x0d && ch < 0x20) return false
+		}
+		return true
 	}
 
 	private truncateUtf8(bytes: Uint8Array, maxBytes: number): string {
@@ -751,9 +968,29 @@ export class NetworkDomain extends Domain {
 		return h >>> 0
 	}
 
-	private securityState(sslVerifyResult?: number): string {
-		if (sslVerifyResult == null) return 'neutral'
+	private securityState(url: string, sslVerifyResult?: number): string {
+		if (!url.startsWith('https:')) return 'neutral'
+		if (sslVerifyResult == null) return 'unknown'
 		return sslVerifyResult === 0 ? 'secure' : 'insecure'
+	}
+
+	/**
+	 * Evict orphaned entries from reqMeta / pendingBodies / reqStartTimes.
+	 * When Done events are lost (e.g. pipe saturation), these maps grow unbounded.
+	 * Clean up entries older than 120 s.  Runs at most once every 30 s.
+	 */
+	private cleanupStaleEntries(now: number): void {
+		if (now - this.lastCleanupTime < 30) return
+		this.lastCleanupTime = now
+		const cutoff = now - 120
+		for (const [id, start] of this.reqStartTimes) {
+			if (start < cutoff) {
+				this.reqStartTimes.delete(id)
+				this.reqMeta.delete(id)
+				this.pendingBodies.delete(id)
+				this.wsUpgradeRequests.delete(id)
+			}
+		}
 	}
 }
 
@@ -766,7 +1003,6 @@ const EMPTY_TIMING: Record<string, number> = {
 	sslStart: -1, sslEnd: -1,
 	workerStart: -1, workerReady: -1, workerFetchStart: -1, workerRespondWithSettled: -1,
 	sendStart: -1, sendEnd: -1,
-	pushStart: 0, pushEnd: 0,
 	receiveHeadersStart: -1, receiveHeadersEnd: -1,
 	receiveContentStart: -1, receiveContentEnd: -1,
 }

@@ -12,8 +12,6 @@ const os = import.meta.use('os');
 const console = import.meta.use('console');
 const fs = import.meta.use('fs');
 const engine = import.meta.use('engine');
-const signals = import.meta.use('signals');
-const timers = import.meta.use('timers');
 const asyncfs = import.meta.use('asyncfs');
 
 function homeDir(): string | null {
@@ -71,26 +69,7 @@ export async function runRepl(flags: Record<string, string | boolean>): Promise<
         } catch { /* no history yet */ }
     }
 
-    // 5. SIGINT handling — first ^C clears the line, second exits.
-    let exitRequested = false;
-    signals.signal(signals.signals.SIGINT, () => {
-        if (exitRequested) {
-            // Second Ctrl+C: save history and exit immediately
-            if (histPath) {
-                try {
-                    fs.writeFile(histPath, engine.encodeString(repl.exportHistory().join('\n')), 0o600);
-                } catch {}
-            }
-            repl.cleanup();
-            os.exit(130); // Standard exit code for SIGINT
-        }
-        exitRequested = true;
-        repl.handleCtrlC();
-        // Reset flag after a short delay
-        timers.setTimeout(() => { exitRequested = false; }, 1000);
-    });
-
-    // 6. Run, then persist history.
+    // 5. Run, then persist history.
     await repl.start();
     repl.cleanup();
     await dbg?.detach();

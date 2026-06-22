@@ -116,37 +116,26 @@ export class Serializer {
 		return preview;
 	}
 
-	getProperties(objectId: string, ownProperties: boolean, group = 'default'): GetPropertiesResponse {
+	getProperties(objectId: string, group = 'default'): GetPropertiesResponse {
 		const obj = this.resolve(objectId);
 		const out: PropertyDescriptor[] = [];
 		if (obj === undefined || obj === null) return { result: out };
-		const seen = new Set<string>();
-		let cur: object | null = obj as object;
-		let own = true;
-		while (cur != null) {
-			let names: string[];
-			try { names = Object.getOwnPropertyNames(cur); } catch { break; }
-			for (const name of names) {
-				if (out.length >= MAX_PROPS) break;
-				if (seen.has(name)) continue;
-				seen.add(name);
-				let d: PropertyDescriptorRaw | undefined;
-				try { d = Object.getOwnPropertyDescriptor(cur, name); } catch { continue; }
-				if (!d) continue;
-				const pd: PropertyDescriptor = { name, configurable: !!d.configurable, enumerable: !!d.enumerable, isOwn: own };
-				if ('value' in d) {
-					pd.value = this.serialize(d.value, group);
-					pd.writable = !!d.writable;
-				} else {
-					if (d.get) pd.get = this.serialize(d.get, group);
-					if (d.set) pd.set = this.serialize(d.set, group);
-				}
-				out.push(pd);
-			}
+		let names: string[];
+		try { names = Object.getOwnPropertyNames(obj); } catch { return { result: out }; }
+		for (const name of names) {
 			if (out.length >= MAX_PROPS) break;
-			if (ownProperties) break;
-			try { cur = Object.getPrototypeOf(cur) as object | null; } catch { break; }
-			own = false;
+			let d: PropertyDescriptorRaw | undefined;
+			try { d = Object.getOwnPropertyDescriptor(obj, name); } catch { continue; }
+			if (!d) continue;
+			const pd: PropertyDescriptor = { name, configurable: !!d.configurable, enumerable: !!d.enumerable, isOwn: true };
+			if ('value' in d) {
+				pd.value = this.serialize(d.value, group);
+				pd.writable = !!d.writable;
+			} else {
+				if (d.get) pd.get = this.serialize(d.get, group);
+				if (d.set) pd.set = this.serialize(d.set, group);
+			}
+			out.push(pd);
 		}
 		return { result: out };
 	}

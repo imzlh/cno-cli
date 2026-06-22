@@ -31,6 +31,7 @@ export class PageDomain extends Domain {
 	private entryUrl = 'about:blank'
 	private domContentFired = false
 	private loadFired = false
+	private frameNavigatedEmitted = false
 	private resources: Array<{ url: string }> = []
 
 	constructor(dispatcher: CDPDispatcher, event: EmitEvent) {
@@ -38,9 +39,10 @@ export class PageDomain extends Domain {
 
 		this.on('Page.enable', () => {
 			this.enabled = true
-			if (this.connected) {
+			if (this.connected && !this.frameNavigatedEmitted) {
 				const ts = Date.now() / 1000
 				this.event('Page.frameNavigated', { frame: this.makeFrame(), type: 'Navigation' })
+				this.frameNavigatedEmitted = true
 				if (this.domContentFired) {
 					this.event('Page.domContentEventFired', { timestamp: ts })
 					this.event('Page.lifecycleEvent', { frameId: FRAME_ID, loaderId: LOADER_ID, name: 'DOMContentLoaded', timestamp: ts })
@@ -106,6 +108,8 @@ export class PageDomain extends Domain {
 		if (entryUrl) this.entryUrl = entryUrl
 		this.connected = true
 		if (!this.enabled) return
+		if (this.frameNavigatedEmitted) return
+		this.frameNavigatedEmitted = true
 		const ts = Date.now() / 1000
 		this.event('Page.frameNavigated', { frame: this.makeFrame(), type: 'Navigation' })
 		if (!this.domContentFired) {
