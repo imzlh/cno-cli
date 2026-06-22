@@ -81,6 +81,7 @@ export interface RpcParams {
 	addBinding: { name: string }
 	removeBinding: { name: string }
 	fetchInterceptResult: { requestId: string; result: InterceptResult | null }
+	streamResourceContent: { requestId: string }
 
 	// control (channel; valid running or paused)
 	addBreakpoint: { url: string; line: number; col?: number }
@@ -117,6 +118,7 @@ export const RPC_TRANSPORT: Record<RpcMethod, RpcTransport> = {
 	addBinding: 'inspect',
 	removeBinding: 'inspect',
 	fetchInterceptResult: 'inspect',
+	streamResourceContent: 'inspect',
 
 	addBreakpoint: 'control',
 	removeBreakpoint: 'control',

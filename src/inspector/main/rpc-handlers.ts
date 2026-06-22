@@ -132,5 +132,9 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 			hooks.resolveIntercept(q.requestId, q.result)
 			return {}
 		},
+		streamResourceContent: (q) => {
+			hooks.enableStreamingForRequest(q.requestId)
+			return {}
+		},
 	})
 }

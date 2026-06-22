@@ -71,7 +71,13 @@ type LoadCapableGlobal = {
 
 const kOrigin = Symbol('console.origin')
 
-const MAX_BODY_BUFFER = 1024 * 1024 // 1 MiB per request
+const STREAM_BODY_THRESHOLD = 1024 * 1024 // 1 MiB per request
+
+interface BodyBufferState {
+	chunks: Uint8Array[]
+	total: number
+	streaming: boolean
+}
 
 export class Hooks {
 	private readonly pendingIntercepts = new Map<string, (result: InterceptResult | null) => void>()
@@ -80,8 +86,10 @@ export class Hooks {
 	// Body buffer accumulators — chunks are held here until the Done event fires,
 	// then flushed as part of the Done payload. This avoids per-chunk pipe writes
 	// (which carry large Uint8Array payloads and saturate the TCP socket buffer).
-	private readonly fetchBodyBuffers = new Map<string, { chunks: Uint8Array[]; total: number }>()
-	private readonly serveBodyBuffers = new Map<string, { chunks: Uint8Array[]; total: number }>()
+	private readonly fetchBodyBuffers = new Map<string, BodyBufferState>()
+	private readonly serveBodyBuffers = new Map<string, BodyBufferState>()
+	private readonly streamedFetchRequests = new Set<string>()
+	private readonly streamedServeRequests = new Set<string>()
 	private scriptHookInstalled = false
 	private consoleOriginals: Record<string, (...a: any[]) => void> | null = null
 
@@ -187,20 +195,13 @@ export class Hooks {
 			onData: (i: FetchDataInfo) => {
 				// Buffer body chunks on the main thread — flushed with Done event
 				// to avoid saturating the pipe with per-chunk writes.
-				let buf = this.fetchBodyBuffers.get(i.requestId)
-				if (!buf) {
-					buf = { chunks: [], total: 0 }
-					this.fetchBodyBuffers.set(i.requestId, buf)
-				}
-				if (buf.total + i.data.byteLength <= MAX_BODY_BUFFER) {
-					buf.chunks.push(i.data)
-					buf.total += i.data.byteLength
-				}
+				this.handleFetchBodyData(i)
 			},
 			onFinished: (i: FetchFinishedInfo) => {
 				// Flush accumulated body chunks with the Done event.
 				const buf = this.fetchBodyBuffers.get(i.requestId)
 				this.fetchBodyBuffers.delete(i.requestId)
+				this.streamedFetchRequests.delete(i.requestId)
 				this.safeEmit(WorkerEvent.NetFetch, {
 					ev: NetFetchKind.Done,
 					source: 'fetch',
@@ -241,20 +242,13 @@ export class Hooks {
 				} satisfies NetServeRes),
 			onData: (i: ServeDataInfo) => {
 				// Buffer body chunks on the main thread — flushed with Done event.
-				let buf = this.serveBodyBuffers.get(i.requestId)
-				if (!buf) {
-					buf = { chunks: [], total: 0 }
-					this.serveBodyBuffers.set(i.requestId, buf)
-				}
-				if (buf.total + i.data.byteLength <= MAX_BODY_BUFFER) {
-					buf.chunks.push(i.data)
-					buf.total += i.data.byteLength
-				}
+				this.handleServeBodyData(i)
 			},
 			onFinished: (i: ServeFinishedInfo) => {
 				// Flush accumulated body chunks with the Done event.
 				const buf = this.serveBodyBuffers.get(i.requestId)
 				this.serveBodyBuffers.delete(i.requestId)
+				this.streamedServeRequests.delete(i.requestId)
 				this.safeEmit(WorkerEvent.NetServe, {
 					ev: NetServeKind.Done,
 					source: 'serve',
@@ -349,6 +343,23 @@ export class Hooks {
 		if (!resolve) return
 		this.pendingIntercepts.delete(requestId)
 		resolve(result)
+	}
+
+	enableStreamingForRequest(requestId: string): void {
+		this.streamedFetchRequests.add(requestId)
+		this.streamedServeRequests.add(requestId)
+		const fetchState = this.fetchBodyBuffers.get(requestId)
+		if (fetchState) {
+			fetchState.streaming = true
+			fetchState.chunks = []
+			fetchState.total = 0
+		}
+		const serveState = this.serveBodyBuffers.get(requestId)
+		if (serveState) {
+			serveState.streaming = true
+			serveState.chunks = []
+			serveState.total = 0
+		}
 	}
 
 	// ── lifecycle ───────────────────────────────────────────────────
@@ -447,6 +458,8 @@ export class Hooks {
 		this.scriptSourcePaths.clear()
 		this.fetchBodyBuffers.clear()
 		this.serveBodyBuffers.clear()
+		this.streamedFetchRequests.clear()
+		this.streamedServeRequests.clear()
 		this.scriptHookInstalled = false
 		this.scriptInitHook = null
 		if (this.consoleOriginals) {
@@ -489,6 +502,80 @@ export class Hooks {
 		} catch {
 			/* worker gone */
 		}
+	}
+
+	private handleFetchBodyData(i: FetchDataInfo): void {
+		let buf = this.fetchBodyBuffers.get(i.requestId)
+		if (!buf) {
+			buf = { chunks: [], total: 0, streaming: this.streamedFetchRequests.has(i.requestId) }
+			this.fetchBodyBuffers.set(i.requestId, buf)
+		}
+		if (buf.streaming || this.streamedFetchRequests.has(i.requestId)) {
+			buf.streaming = true
+			this.safeEmit(WorkerEvent.NetFetch, {
+				ev: NetFetchKind.Data,
+				source: 'fetch',
+				requestId: i.requestId,
+				timestamp: i.timestamp,
+				data: i.data,
+				byteLength: i.data.byteLength,
+			})
+			return
+		}
+		if (buf.total + i.data.byteLength > STREAM_BODY_THRESHOLD) {
+			buf.streaming = true
+			buf.chunks = []
+			buf.total = 0
+			this.streamedFetchRequests.add(i.requestId)
+			this.safeEmit(WorkerEvent.NetFetch, {
+				ev: NetFetchKind.Data,
+				source: 'fetch',
+				requestId: i.requestId,
+				timestamp: i.timestamp,
+				data: i.data,
+				byteLength: i.data.byteLength,
+			})
+			return
+		}
+		buf.chunks.push(i.data)
+		buf.total += i.data.byteLength
+	}
+
+	private handleServeBodyData(i: ServeDataInfo): void {
+		let buf = this.serveBodyBuffers.get(i.requestId)
+		if (!buf) {
+			buf = { chunks: [], total: 0, streaming: this.streamedServeRequests.has(i.requestId) }
+			this.serveBodyBuffers.set(i.requestId, buf)
+		}
+		if (buf.streaming || this.streamedServeRequests.has(i.requestId)) {
+			buf.streaming = true
+			this.safeEmit(WorkerEvent.NetServe, {
+				ev: NetServeKind.Data,
+				source: 'serve',
+				requestId: i.requestId,
+				timestamp: i.timestamp,
+				data: i.data,
+				byteLength: i.data.byteLength,
+			})
+			return
+		}
+		if (buf.total + i.data.byteLength > STREAM_BODY_THRESHOLD) {
+			buf.streaming = true
+			buf.chunks = []
+			buf.total = 0
+			this.streamedServeRequests.add(i.requestId)
+			this.safeEmit(WorkerEvent.NetServe, {
+				ev: NetServeKind.Data,
+				source: 'serve',
+				requestId: i.requestId,
+				timestamp: i.timestamp,
+				data: i.data,
+				byteLength: i.data.byteLength,
+			})
+			return
+		}
+		buf.chunks.push(i.data)
+		buf.total += i.data.byteLength
 	}
 }
 

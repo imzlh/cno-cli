@@ -96,7 +96,7 @@ export function bootstrapDebugWorker(): void {
 	const runtimeDomain = new RuntimeDomain(dispatcher, emit, endpoint)
 	const consoleDomain = new ConsoleDomain(dispatcher, emit)
 	const pageDomain = new PageDomain(dispatcher, emit)
-	const networkDomain = new NetworkDomain(dispatcher, emit)
+	const networkDomain = new NetworkDomain(dispatcher, emit, endpoint)
 	const fetchDomain = new FetchDomain(dispatcher, emit, endpoint)
 	const targetDomain = new TargetDomain(dispatcher, emit)
 	targetDomain.setEntryUrl(entryUrl)

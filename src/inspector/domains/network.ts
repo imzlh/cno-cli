@@ -10,6 +10,7 @@
 
 import { Domain } from './base'
 import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
+import type { WorkerEndpoint } from '../transport/worker-endpoint'
 import {
 	setUserAgentOverride,
 	setExtraHTTPHeaders,
@@ -30,9 +31,11 @@ const engine = import.meta.use('engine');
 const nativeCrypto = import.meta.use('crypto');
 const curl = import.meta.use('curl');
 const http = import.meta.use('http');
+const os = import.meta.use('os');
 
 const MAX_CACHED_BODIES = 200
 const MAX_BODY_BYTES = 1024 * 1024 // 1 MiB
+const DEFAULT_MAX_CACHED_BODY_BYTES = 128 * 1024 * 1024 // 128 MiB
 const MAX_CACHED_REQUEST_BODIES = 200
 const MAX_REQUEST_BODY_BYTES = 256 * 1024
 const FETCH_FRAME_ID = 'cno-fetch-frame-1'
@@ -68,6 +71,7 @@ interface BodyEntry {
 	chunks: Uint8Array[]
 	total: number
 	truncated: boolean
+	streamed?: boolean
 	mimeType?: string
 }
 
@@ -97,8 +101,10 @@ export class NetworkDomain extends Domain {
 	private enabled = false
 	private cookies: Cookie[] = []
 	private responseBodyCache = new Map<string, BodyEntry>()
+	private responseBodyCacheBytes = 0
 	private requestBodyCache = new Map<string, Uint8Array>()
 	private pendingBodies = new Map<string, BodyEntry>()
+	private streamedBodies = new Set<string>()
 	private reqStartTimes = new Map<string, number>()
 	private reqMeta = new Map<string, RequestMeta>()
 	private wsMeta = new Map<string, WSRequestMeta>()
@@ -106,7 +112,7 @@ export class NetworkDomain extends Domain {
 	private wsUpgradeRequests = new Set<string>()
 	private lastCleanupTime = 0
 
-	constructor(dispatcher: CDPDispatcher, event: EmitEvent) {
+	constructor(dispatcher: CDPDispatcher, event: EmitEvent, private readonly rpc: WorkerEndpoint) {
 		super(dispatcher, event)
 		this.registerHandlers()
 	}
@@ -123,7 +129,9 @@ export class NetworkDomain extends Domain {
 			this.reqMeta.clear()
 			this.pendingBodies.clear()
 			this.responseBodyCache.clear()
+			this.responseBodyCacheBytes = 0
 			this.requestBodyCache.clear()
+			this.streamedBodies.clear()
 			this.wsMeta.clear()
 			this.wsUpgradeRequests.clear()
 			return {}
@@ -145,7 +153,19 @@ export class NetworkDomain extends Domain {
 		this.on('Network.clearAcceptedEncodingsOverride', () => ({}))
 		this.on('Network.setAttachDebugStack', () => ({}))
 		this.on('Network.replayXHR', () => ({}))
-		this.on('Network.streamResourceContent', () => ({ bufferedData: '' }))
+		this.on('Network.streamResourceContent', async (p) => {
+			const requestId = this.reqStr(p, 'requestId')
+			const pending = this.pendingBodies.get(requestId)
+			const bufferedData = pending ? nativeCrypto.base64Encode(this.mergeBody(pending)) : ''
+			if (pending) {
+				pending.streamed = true
+				pending.chunks = []
+				pending.total = 0
+			}
+			this.streamedBodies.add(requestId)
+			await this.rpc.call('streamResourceContent', { requestId })
+			return { bufferedData }
+		})
 		this.on('Network.searchInResponseBody', () => ({ result: [] }))
 
 		// Cookies.
@@ -315,18 +335,22 @@ export class NetworkDomain extends Domain {
 					entry = { chunks: [], total: 0, truncated: false, mimeType: this.reqMeta.get(data.requestId)?.responseHeaders['content-type'] ?? this.reqMeta.get(data.requestId)?.responseHeaders['Content-Type'] }
 					this.pendingBodies.set(data.requestId, entry)
 				}
-				if (entry.total + data.byteLength <= MAX_BODY_BYTES) {
+				if (!entry.streamed && entry.total + data.byteLength <= MAX_BODY_BYTES) {
 					entry.chunks.push(data.data)
 					entry.total += data.byteLength
 				} else {
 					entry.truncated = true
+					entry.streamed = true
+					this.streamedBodies.add(data.requestId)
 				}
-				this.event('Network.dataReceived', {
+				const params: Record<string, unknown> = {
 					requestId: data.requestId,
 					timestamp,
 					dataLength: data.byteLength,
 					encodedDataLength: data.byteLength,
-				})
+				}
+				if (this.streamedBodies.has(data.requestId)) params.data = nativeCrypto.base64Encode(data.data)
+				this.event('Network.dataReceived', params)
 				break
 			}
 			case NetFetchKind.Done: {
@@ -354,13 +378,7 @@ export class NetworkDomain extends Domain {
 					}
 				}
 
-				if (bodyEntry) {
-					if (this.responseBodyCache.size >= MAX_CACHED_BODIES) {
-						const oldest = this.responseBodyCache.keys().next().value
-						if (oldest !== undefined) this.responseBodyCache.delete(oldest)
-					}
-					this.responseBodyCache.set(data.requestId, bodyEntry)
-				}
+				if (bodyEntry && !bodyEntry.streamed && !bodyEntry.truncated) this.cacheResponseBody(data.requestId, bodyEntry)
 				const conn = data.connection
 				if (data.success) {
 					this.event('Network.loadingFinished', {
@@ -380,6 +398,7 @@ export class NetworkDomain extends Domain {
 				}
 				this.reqStartTimes.delete(data.requestId)
 				this.reqMeta.delete(data.requestId)
+				this.streamedBodies.delete(data.requestId)
 				this.cleanupStaleEntries(timestamp)
 				break
 			}
@@ -511,18 +530,22 @@ export class NetworkDomain extends Domain {
 					entry = { chunks: [], total: 0, truncated: false, mimeType: this.reqMeta.get(data.requestId)?.responseHeaders['content-type'] ?? this.reqMeta.get(data.requestId)?.responseHeaders['Content-Type'] }
 					this.pendingBodies.set(data.requestId, entry)
 				}
-				if (entry.total + data.byteLength <= MAX_BODY_BYTES) {
+				if (!entry.streamed && entry.total + data.byteLength <= MAX_BODY_BYTES) {
 					entry.chunks.push(data.data)
 					entry.total += data.byteLength
 				} else {
 					entry.truncated = true
+					entry.streamed = true
+					this.streamedBodies.add(data.requestId)
 				}
-				this.event('Network.dataReceived', {
+				const params: Record<string, unknown> = {
 					requestId: data.requestId,
 					timestamp,
 					dataLength: data.byteLength,
 					encodedDataLength: data.byteLength,
-				})
+				}
+				if (this.streamedBodies.has(data.requestId)) params.data = nativeCrypto.base64Encode(data.data)
+				this.event('Network.dataReceived', params)
 				break
 			}
 			case NetServeKind.Done: {
@@ -553,13 +576,7 @@ export class NetworkDomain extends Domain {
 					}
 				}
 
-				if (bodyEntry) {
-					if (this.responseBodyCache.size >= MAX_CACHED_BODIES) {
-						const oldest = this.responseBodyCache.keys().next().value
-						if (oldest !== undefined) this.responseBodyCache.delete(oldest)
-					}
-					this.responseBodyCache.set(data.requestId, bodyEntry)
-				}
+				if (bodyEntry && !bodyEntry.streamed && !bodyEntry.truncated) this.cacheResponseBody(data.requestId, bodyEntry)
 				const isWsUpgrade = this.wsUpgradeRequests.has(data.requestId)
 				if (isWsUpgrade) {
 					// WebSocket upgrade: keep the entry alive for WS lifecycle events.
@@ -585,6 +602,7 @@ export class NetworkDomain extends Domain {
 					this.reqStartTimes.delete(data.requestId)
 					this.reqMeta.delete(data.requestId)
 				}
+				this.streamedBodies.delete(data.requestId)
 				this.cleanupStaleEntries(timestamp)
 				break
 			}
@@ -729,6 +747,36 @@ export class NetworkDomain extends Domain {
 			if (oldest !== undefined) this.requestBodyCache.delete(oldest)
 		}
 		this.requestBodyCache.set(requestId, new Uint8Array(slice))
+	}
+
+	private cacheResponseBody(requestId: string, body: BodyEntry): void {
+		const maxBytes = this.maxCachedBodyBytes()
+		const existing = this.responseBodyCache.get(requestId)
+		if (existing) this.responseBodyCacheBytes -= existing.total
+		while (
+			(this.responseBodyCache.size >= MAX_CACHED_BODIES || this.responseBodyCacheBytes + body.total > maxBytes)
+			&& this.responseBodyCache.size > 0
+		) {
+			const oldest = this.responseBodyCache.keys().next().value
+			if (oldest === undefined) break
+			const removed = this.responseBodyCache.get(oldest)
+			if (removed) this.responseBodyCacheBytes -= removed.total
+			this.responseBodyCache.delete(oldest)
+		}
+		if (body.total > maxBytes) return
+		this.responseBodyCache.set(requestId, body)
+		this.responseBodyCacheBytes += body.total
+	}
+
+	private maxCachedBodyBytes(): number {
+		const raw = this.getenv('CNO_INSPECTOR_BODY_CACHE_MAX_BYTES')
+		if (!raw) return DEFAULT_MAX_CACHED_BODY_BYTES
+		const parsed = Number(raw)
+		return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_MAX_CACHED_BODY_BYTES
+	}
+
+	private getenv(name: string): string | undefined {
+		try { return os.getenv(name) ?? undefined } catch { return undefined }
 	}
 
 	private buildTiming(start: number, conn?: FetchConnection): Record<string, number> {
