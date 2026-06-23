@@ -49,7 +49,7 @@ ${C.bold('COMMON OPTIONS')}
   ${C.cyan('--no-http')}                  Disable http/https imports
   ${C.cyan('--no-jsr')}                   Disable jsr: imports
   ${C.cyan('--no-node')}                  Disable Node.js compatibility
-  ${C.cyan('--no-oxc')}                   Disable OXC native acceleration ${C.dim('(--no-swc also accepted)')}
+  ${C.cyan('--no-oxc')}                   Disable OXC native acceleration
   ${C.cyan('--silent')}, ${C.cyan('-q')}               Suppress download progress
   ${C.cyan('--memory-limit')} <size>      e.g. ${C.cyan('256MB')}, ${C.cyan('1GB')}
   ${C.cyan('--max-stack-size')} <n>       e.g. ${C.cyan('4MB')}
@@ -62,11 +62,10 @@ ${C.bold('DEBUGGER OPTIONS')}
   ${C.cyan('--inspect-wait')}${C.dim('[=host:port]')}  Start CDP inspector and wait for DevTools to connect
 
 ${C.bold('ENVIRONMENT')}
-  ${C.cyan('CNO_POLYFILL')}               Path to a cno polyfill bundle (overrides built-in)
   ${C.cyan('CNO_EXT_PATH')}               Directory of native extensions (default: <cno-dir>/ext)
   ${C.cyan('CTS_CACHE_DIR')}              Override cache directory
   ${C.cyan('CTS_SILENT')}                 Suppress output ${C.dim('(true/false)')}
-  ${C.cyan('CTS_NO_OXC')}                 Disable OXC acceleration ${C.dim('(true/false; CTS_NO_SWC also accepted)')}
-  ${C.cyan('DEBUG')}                      Debug categories: ${C.cyan('resolver, npm, jsr, lock, cjs, loader, config, stack, http, http.conn, http.fetch, *')}
+  ${C.cyan('CTS_NO_OXC')}                 Disable OXC acceleration ${C.dim('(true/false)')}
+  ${C.cyan('DEBUG')}                      Debug categories: ${C.cyan('resolver, npm, jsr, lock, cjs, loader, config, stack, http, http.conn, http.fetch, debug, *')}
     `.trim());
 }
