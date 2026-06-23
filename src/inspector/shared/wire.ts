@@ -10,7 +10,7 @@
  * and members are PascalCase to read as ordinary TS identifiers. Frame
  * `params`/`result` are `unknown`; consumers narrow via the payload interfaces
  * below (keyed off the event/sub-type tag) before touching any field.
- */
+ */ 
 
 import type { RpcMethod } from './rpc-contract'
 import type { RemoteObject } from './cdp'

@@ -7,7 +7,11 @@
  * RemoteObject lives in remote-object.ts.
  */
 
+import { getMemoryTier } from '../../../cno/src/utils/memory-tier'
+
 interface Entry { value: unknown; group: string }
+
+const MAX_STORE_SIZE = { low: 1000, normal: 3000, high: 10000 }[getMemoryTier()] ?? 3000
 
 export class ObjectStore {
 	private objSeq = 0;
@@ -15,6 +19,7 @@ export class ObjectStore {
 	private groups = new Map<string, Set<string>>();
 
 	add(value: unknown, group = 'default'): string {
+		if (this.store.size >= MAX_STORE_SIZE) this.evictOldest();
 		const id = `obj:${++this.objSeq}`;
 		this.store.set(id, { value, group });
 		let g = this.groups.get(group);
@@ -43,5 +48,10 @@ export class ObjectStore {
 		if (!ids) return;
 		for (const id of ids) this.store.delete(id);
 		this.groups.delete(group);
+	}
+
+	private evictOldest(): void {
+		const oldest = this.store.keys().next().value;
+		if (oldest !== undefined) this.release(oldest);
 	}
 }

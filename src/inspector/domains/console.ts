@@ -11,6 +11,7 @@ import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
 import type { RemoteObject } from '../shared/cdp'
 import type { ConsoleCallFrame } from '../shared/wire'
 import { buildConsoleStackTrace } from '../shared/console-utils'
+import { getMemoryTier } from '../../../cno/src/utils/memory-tier'
 
 const CDP_LEVEL: Record<string, string> = {
 	log: 'log', info: 'info', debug: 'debug', warn: 'warning', warning: 'warning',
@@ -19,7 +20,7 @@ const CDP_LEVEL: Record<string, string> = {
 	countReset: 'log', time: 'log', timeEnd: 'log', timeLog: 'log',
 }
 
-const MAX_BACKLOG = 500
+const MAX_BACKLOG = { low: 100, normal: 300, high: 500 }[getMemoryTier()] ?? 300
 
 interface ConsoleEntry {
 	method: string

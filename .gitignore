@@ -7,3 +7,5 @@ build/
 dist/
 cts.lock
 tests/
+*.lock
+example/

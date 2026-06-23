@@ -1,11 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(cno-cli LANGUAGES C)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+include(ExternalProject)
 
 option(CNO_BUNDLE_MINIFY  "Minify the JS bundle"                   OFF)
 option(CNO_EMBED_EXT_H2   "Statically embed HTTP/2 extension"      OFF)
 option(CNO_EMBED_EXT_QUIC "Statically embed QUIC extension"        OFF)
-set(CNO_HOST_CJSC  "" CACHE FILEPATH "Pre-built host cjsc (for cross-compile)")
+set(CJSC_PATH      "" CACHE FILEPATH "Pre-built host cjsc executable")
 set(CNO_EXT_DIR    "" CACHE PATH     "Pre-built native extensions dir (.so/.dll)")
 
 # ── Static extensions ─────────────────────────────────────────────────────────
@@ -75,9 +76,9 @@ set(CJS_BLOB_C "${_BLOB_C}" CACHE INTERNAL
 
 # ── circu.js ──────────────────────────────────────────────────────────────────
 set(CJS_USE_SYMBOL_INTERNAL ON CACHE BOOL "" FORCE)
-set(ENABLE_ASAN ON CACHE BOOL "" FORCE)
+set(ENABLE_ASAN OFF CACHE BOOL "" FORCE)
 add_subdirectory(circu.js)
-if(TARGET cjsc)
+if(TARGET cjsc AND NOT CMAKE_CROSSCOMPILING AND NOT CJSC_PATH)
     set_target_properties(cjsc PROPERTIES EXCLUDE_FROM_ALL FALSE)
 endif()
 
@@ -87,12 +88,60 @@ if(NOT PNPM_EXE)
     message(FATAL_ERROR "pnpm not found — install pnpm first.")
 endif()
 
-if(CNO_HOST_CJSC)
-    set(_CJSC_EXE "${CNO_HOST_CJSC}")
+if(CJSC_PATH)
+    if(NOT EXISTS "${CJSC_PATH}")
+        message(FATAL_ERROR "CJSC_PATH does not exist: ${CJSC_PATH}")
+    endif()
+    set(_CJSC_EXE "${CJSC_PATH}")
     set(_CJSC_DEP "")
 else()
-    set(_CJSC_EXE "$<TARGET_FILE:cjsc>")
-    set(_CJSC_DEP cjsc)
+    if(CMAKE_CROSSCOMPILING)
+        find_program(_CJSC_HOST_CC NAMES gcc clang cc)
+        find_program(_CJSC_HOST_NINJA NAMES ninja ninja-build)
+        if(_CJSC_HOST_CC AND _CJSC_HOST_NINJA)
+            set(_CJSC_HOST_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/host-cjsc")
+            set(_CJSC_HOST_BIN_DIR "${_CJSC_HOST_BUILD_DIR}/bin")
+            if(CMAKE_HOST_WIN32)
+                set(_CJSC_HOST_EXE "${_CJSC_HOST_BIN_DIR}/cjsc.exe")
+            else()
+                set(_CJSC_HOST_EXE "${_CJSC_HOST_BIN_DIR}/cjsc")
+            endif()
+            ExternalProject_Add(cno-host-cjsc
+                SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/circu.js"
+                BINARY_DIR "${_CJSC_HOST_BUILD_DIR}"
+                CMAKE_GENERATOR Ninja
+                CMAKE_CACHE_ARGS
+                    -DCMAKE_C_COMPILER:FILEPATH=${_CJSC_HOST_CC}
+                    -DCMAKE_BUILD_TYPE:STRING=Release
+                    -DENABLE_ASAN:BOOL=OFF
+                    -DBUILD_SHARED_LIBS:BOOL=OFF
+                    -DCMAKE_RUNTIME_OUTPUT_DIRECTORY:PATH=${_CJSC_HOST_BIN_DIR}
+                    -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY:PATH=${_CJSC_HOST_BUILD_DIR}/lib
+                    -DCMAKE_LIBRARY_OUTPUT_DIRECTORY:PATH=${_CJSC_HOST_BUILD_DIR}/lib
+                BUILD_COMMAND "${CMAKE_COMMAND}" --build "<BINARY_DIR>" --target cjsc
+                INSTALL_COMMAND ""
+                BUILD_BYPRODUCTS "${_CJSC_HOST_EXE}"
+            )
+            set(_CJSC_EXE "${_CJSC_HOST_EXE}")
+            set(_CJSC_DEP cno-host-cjsc)
+            message(STATUS "[cno] cross-compiling with host build: ${_CJSC_HOST_CC}")
+        else()
+            find_program(_CJSC_EXE NAMES cjsc)
+            if(_CJSC_EXE)
+                message(STATUS "[cno] cross-compiling with PATH cjsc: ${_CJSC_EXE}")
+                set(_CJSC_DEP "")
+            else()
+                message(FATAL_ERROR
+                    "Cross-compiling requires one of:\n"
+                    "  - -DCJSC_PATH=/abs/path/to/host/cjsc\n"
+                    "  - a host gcc/clang/cc plus Ninja to build cjsc from circu.js\n"
+                    "  - a cjsc executable in PATH")
+            endif()
+        endif()
+    else()
+        set(_CJSC_EXE "$<TARGET_FILE:cjsc>")
+        set(_CJSC_DEP cjsc)
+    endif()
 endif()
 
 # pnpm install
