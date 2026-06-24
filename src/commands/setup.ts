@@ -9,7 +9,6 @@
  * No pre-compilation needed — cts transforms on first import.
  */
 
-import { loadConfigFile } from '../../cts/src/config';
 import { fetchAsync } from '../../cno/src/webapi/fetch';
 import { normalize, dirname, join, systemPathSplit } from '../../cno/src/utils/path';
 import { log } from '../../cts/src/utils/log';
@@ -20,8 +19,20 @@ const console = import.meta.use('console');
 const fs     = import.meta.use('fs');
 const engine = import.meta.use('engine');
 
-const GITHUB_BASE = 'https://raw.githubusercontent.com/imzlh/cno/master/cno/src/node';
+const GITHUB_BASE = 'https://raw.githubusercontent.com/imzlh/cno/master/src/node';
 const GITHUB_TREE = 'https://api.github.com/repos/imzlh/cno/git/trees/master?recursive=1';
+
+function env(k: string): string | null { try { return os.getenv(k); } catch { return null; } }
+
+const HOME = os.homeDir || (os.platform === 'win32' ? (env('USERPROFILE') || '') : (env('HOME') || '/root'));
+
+function resolveCacheDir(flags: Record<string, string | boolean>): string {
+    const flag = flags['cache-dir'] || flags['cacheDir'];
+    if (typeof flag === 'string' && flag) return flag;
+    const envDir = env('CTS_CACHE_DIR');
+    if (envDir) return envDir;
+    return join(HOME, '.cts');
+}
 
 function mkdirp(dir: string): void {
     const normalized = normalize(dir);
@@ -86,47 +97,57 @@ function installLocal(srcBase: string, dstBase: string): void {
     console.log(`Local install: ${copied} copied, ${skip} up-to-date`);
 }
 
+async function batchRun<T>(items: T[], fn: (item: T) => Promise<void>, concurrency = 8): Promise<void> {
+    for (let i = 0; i < items.length; i += concurrency) {
+        await Promise.all(items.slice(i, i + concurrency).map(fn));
+    }
+}
+
 // ── Remote: fetch .ts files from GitHub → dstBase ───────────────────────────
 
 async function installRemote(dstBase: string): Promise<void> {
     log.debug('oxc', () => 'Fetching file list from GitHub...');
-    const treeJson = engine.decodeString(await fetchAsync(GITHUB_TREE).then(r => r.arrayBuffer()));
-    const tree: { tree: Array<{ path: string; type: string }> } = JSON.parse(treeJson);
+    const treeResp = await fetchAsync(GITHUB_TREE);
+    if (!treeResp.ok) throw new Error(`GitHub API error: ${treeResp.status}`);
+    const treeJson = engine.decodeString(await treeResp.arrayBuffer());
+    const tree: { tree?: Array<{ path: string; type: string }>; truncated?: boolean; message?: string } = JSON.parse(treeJson);
+
+    if (tree.message) throw new Error(`GitHub API: ${tree.message}`);
+    if (!tree.tree || tree.truncated) throw new Error('GitHub tree truncated or missing');
 
     const nodeFiles = tree.tree.filter(
-        n => n.type === 'blob' && n.path.startsWith('cno/src/node/') && n.path.endsWith('.ts')
+        n => n.type === 'blob' && n.path.startsWith('src/node/') && n.path.endsWith('.ts')
     );
     if (nodeFiles.length === 0) throw new Error('No node files found in GitHub tree');
-    log.debug('oxc', () => `Found ${nodeFiles.length} files, downloading...`);
+    log.debug('oxc', () => `Found ${nodeFiles.length} files, downloading in batches of 8...`);
 
     let ok = 0, fail = 0;
-    for (const entry of nodeFiles) {
-        const rel = entry.path.slice('cno/src/node/'.length);
+    await batchRun(nodeFiles, async (entry) => {
+        const rel = entry.path.slice('src/node/'.length);
         const dst = join(dstBase, rel);
         try {
+            log.debug('oxc', () => `  GET   ${rel}`);
             const data = await fetchAsync(GITHUB_BASE + '/' + rel);
             mkdirp(dirname(dst));
             fs.writeFile(dst, await data.arrayBuffer());
-            log.debug('oxc', () => `  GET   ${rel}`);
             ok++;
         } catch (e: any) {
             console.error(`  FAIL  ${rel}: ${e?.message ?? e}`);
             fail++;
         }
-    }
+    });
     log.debug('oxc', () => `\nRemote install: ${ok} downloaded, ${fail} failed`);
     if (fail > 0) throw new Error('Some files failed to download');
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
-export async function runSetup(_flags: Record<string, string | boolean>): Promise<void> {
-    // Resolve cacheDir the same way cts does
-    const cwd = os.cwd;
-    const cfg  = loadConfigFile(cwd);
-    const cacheDir = cfg.cacheDir ?? (join(os.homeDir, '.cts'));
+export async function runSetup(flags: Record<string, string | boolean>): Promise<void> {
+    const cacheDir = resolveCacheDir(flags);
     const dstBase  = join(cacheDir, 'node');
     mkdirp(dstBase);
+
+    const cwd = os.cwd;
 
     // Find local source tree
     const candidates = [

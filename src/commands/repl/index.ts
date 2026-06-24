@@ -28,7 +28,7 @@ export async function runRepl(flags: Record<string, string | boolean>): Promise<
     const dbg = await startInspector(flags);
 
     // 1. Initialize cts runtime (this sets up module loader, resolver, etc.)
-    const cwd = String(os.cwd).replace(/\\/g, '/');
+    const cwd = os.cwd.replace(/\\/g, '/');
     const cfg = loadConfigFile(cwd);
     const runtime = createRuntime(cfg, cwd);
 

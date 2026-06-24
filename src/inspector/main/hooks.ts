@@ -72,6 +72,7 @@ type LoadCapableGlobal = {
 
 const kOrigin = Symbol('console.origin')
 const { inspectorPreviewBodyBytes, maxPendingBodyBytes } = getTierLimits()
+const MAX_COMPLETED_BODIES = 50
 
 interface BodyBufferState {
 	chunks: Uint8Array[]
@@ -560,6 +561,7 @@ export class Hooks {
 			return state
 		})()
 		if (buf.total + i.data.byteLength > inspectorPreviewBodyBytes) {
+			this.evictOldestBody(this.completedFetchBodies)
 			this.completedFetchBodies.set(i.requestId, { data: this.mergeChunks(buf.chunks), createdAt: Date.now() })
 			this.droppedFetchBodyRequests.add(i.requestId)
 			this.fetchBodyBufferBytes = Math.max(0, this.fetchBodyBufferBytes - buf.total)
@@ -622,6 +624,7 @@ export class Hooks {
 			return state
 		})()
 		if (buf.total + i.data.byteLength > inspectorPreviewBodyBytes) {
+			this.evictOldestBody(this.completedServeBodies)
 			this.completedServeBodies.set(i.requestId, { data: this.mergeChunks(buf.chunks), createdAt: Date.now() })
 			this.droppedServeBodyRequests.add(i.requestId)
 			this.serveBodyBufferBytes = Math.max(0, this.serveBodyBufferBytes - buf.total)
@@ -679,6 +682,7 @@ export class Hooks {
 		this.droppedFetchBodyRequests.add(requestId)
 		const buf = this.fetchBodyBuffers.get(requestId)
 		if (buf && buf.chunks.length > 0) {
+			this.evictOldestBody(this.completedFetchBodies)
 			this.completedFetchBodies.set(requestId, { data: this.mergeChunks(buf.chunks), createdAt: Date.now() })
 		}
 		this.dropFetchBodyBuffer(requestId)
@@ -688,6 +692,7 @@ export class Hooks {
 		this.droppedServeBodyRequests.add(requestId)
 		const buf = this.serveBodyBuffers.get(requestId)
 		if (buf && buf.chunks.length > 0) {
+			this.evictOldestBody(this.completedServeBodies)
 			this.completedServeBodies.set(requestId, { data: this.mergeChunks(buf.chunks), createdAt: Date.now() })
 		}
 		this.dropServeBodyBuffer(requestId)
@@ -771,6 +776,13 @@ export class Hooks {
 		const copy = new Uint8Array(data.byteLength)
 		copy.set(data)
 		return copy
+	}
+
+	private evictOldestBody(map: Map<string, unknown>): void {
+		if (map.size >= MAX_COMPLETED_BODIES) {
+			const oldest = map.keys().next().value
+			if (oldest !== undefined) map.delete(oldest)
+		}
 	}
 }
 

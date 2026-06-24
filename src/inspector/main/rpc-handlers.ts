@@ -76,7 +76,10 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 		// ── object inspection ───────────────────────────────────────
 		getProperties: (q) => {
 			const group = q.objectGroup ?? 'runtime'
-			const { result } = serializer.getProperties(q.objectId, group)
+			let { result } = serializer.getProperties(q.objectId, group)
+			if (q.accessorPropertiesOnly) {
+				result = result.filter(p => p.get != null || p.set != null)
+			}
 			const internalProperties: { name: string; value: unknown }[] = []
 			// Provide [[Prototype]] so DevTools can expand it recursively (V8-like).
 			try {

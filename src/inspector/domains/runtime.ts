@@ -147,6 +147,7 @@ export class RuntimeDomain extends Domain {
 			})
 			return { result: { type: 'undefined' } }
 		})
+		// TODO: needs native heap traversal (JS_GetObjFromProto + GC mark walk).
 		this.on('Runtime.queryObjects', () => ({ objects: { type: 'object', subtype: 'array', description: 'Array(0)', objectId: undefined } }))
 		this.on('Runtime.terminateExecution', () => ({}))
 		this.on('Runtime.setMaxCallStackSizeToCapture', () => ({}))

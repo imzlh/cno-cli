@@ -42,6 +42,7 @@ const KNOWN_FLAGS = new Set<string>([
     'reload', 'r', 'precache',
     // misc
     'silent', 'q',
+    'system-proxy', 'skip-cert-verify',
     'memory-limit', 'max-stack-size',
     'inspect', 'inspect-brk', 'inspect-wait',
     // resource limits inherited from cts
@@ -126,7 +127,7 @@ export function parseArgv(argv: string[]): ParsedCli {
             continue;
         }
 
-        // --flag value | --flag (bool)
+        // --flag (bool) — values must use --flag=value syntax
         if (a.startsWith('--')) {
             const k = a.slice(2);
             // Treat --eval as a value flag synonym for the subcommand.
@@ -153,16 +154,8 @@ export function parseArgv(argv: string[]): ParsedCli {
                 }
                 continue;
             }
-            if (next !== undefined && !next.startsWith('-')) {
-                // Heuristic: value flags consume next token if it doesn't look like a flag.
-                // Booleans are still possible — pre-emptively grab the value; subcommand
-                // handlers can reinterpret if needed via the `raw` array.
-                flags[k] = next;
-                i += 2;
-            } else {
-                flags[k] = true;
-                i++;
-            }
+            flags[k] = true;
+            i++;
             continue;
         }
 

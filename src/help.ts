@@ -53,13 +53,19 @@ ${C.bold('COMMON OPTIONS')}
   ${C.cyan('--silent')}, ${C.cyan('-q')}               Suppress download progress
   ${C.cyan('--memory-limit')} <size>      e.g. ${C.cyan('256MB')}, ${C.cyan('1GB')}
   ${C.cyan('--max-stack-size')} <n>       e.g. ${C.cyan('4MB')}
-  ${C.cyan('--version')}, ${C.cyan('-v')}              Print version
-  ${C.cyan('--help')}, ${C.cyan('-h')}                 Print this message
+
+${C.bold('NETWORK')}
+  ${C.cyan('--system-proxy')}             Use system proxy ${C.dim('(Windows registry / env vars)')}
+  ${C.cyan('--skip-cert-verify')}         Disable TLS certificate verification
 
 ${C.bold('DEBUGGER OPTIONS')}
   ${C.cyan('--inspect')}${C.dim('[=host:port]')}       Start CDP inspector (default port: 9229)
   ${C.cyan('--inspect-brk')}${C.dim('[=host:port]')}   Start CDP inspector and break on first line
   ${C.cyan('--inspect-wait')}${C.dim('[=host:port]')}  Start CDP inspector and wait for DevTools to connect
+
+${C.bold('META')}
+  ${C.cyan('--version')}, ${C.cyan('-v')}              Print version
+  ${C.cyan('--help')}, ${C.cyan('-h')}                 Print this message
 
 ${C.bold('ENVIRONMENT')}
   ${C.cyan('CNO_EXT_PATH')}               Directory of native extensions (default: <cno-dir>/ext)

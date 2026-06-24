@@ -18,7 +18,7 @@ export async function runCache(file: string | undefined, flags: Record<string, s
         return;
     }
     const { entry } = entryAndDir(file);
-    const projectDir = String(os.cwd).replace(/\\/g, '/');
+    const projectDir = os.cwd.replace(/\\/g, '/');
     const fileCfg = loadConfigFile(projectDir);
     const cfg: Partial<ConfigOptions> = {
         ...fileCfg,

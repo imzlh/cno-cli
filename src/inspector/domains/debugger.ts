@@ -183,7 +183,23 @@ export class DebuggerDomain extends Domain {
 		this.on('Debugger.getStackTrace', () => ({ stackTrace: { callFrames: [] } }))
 		this.on('Debugger.restartFrame', () => ({ callFrames: [] }))
 		this.on('Debugger.setReturnValue', () => ({}))
-		this.on('Debugger.getPossibleBreakpoints', () => ({ locations: [] }))
+		this.on('Debugger.getPossibleBreakpoints', (p) => {
+			const start = p.start as { scriptId?: string; lineNumber?: number } | undefined
+			const end = p.end as { scriptId?: string; lineNumber?: number } | undefined
+			if (!start?.scriptId || start.lineNumber == null) return { locations: [] }
+			const script = this.knownScripts.get(start.scriptId)
+			if (!script) return { locations: [] }
+			const startLine = Math.max(0, start.lineNumber)
+			// CDP end is exclusive; if omitted, include all lines through the script end.
+			const endExclusive = end?.lineNumber != null
+				? Math.min(end.lineNumber, (script.endLine ?? startLine) + 1)
+				: (script.endLine ?? startLine) + 1
+			const locations: Array<{ scriptId: string; lineNumber: number }> = []
+			for (let line = startLine; line < endExclusive && locations.length < 1000; line++) {
+				locations.push({ scriptId: script.scriptId, lineNumber: line })
+			}
+			return { locations }
+		})
 	}
 
 	private doResume(step: StepCode): Record<string, never> {

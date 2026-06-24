@@ -18,8 +18,8 @@ export function entryAndDir(raw: string): { entry: string; dir: string } {
     if (hasProto || raw.startsWith('/') || winAbs) {
         entry = raw.replace(/\\/g, '/');
     } else {
-        const cwd = String(os.cwd).replace(/\\/g, '/');
+        const cwd = os.cwd.replace(/\\/g, '/');
         entry = normalizePath(joinPaths(cwd, raw.replace(/\\/g, '/')));
     }
-    return { entry, dir: hasProto ? (os.cwd as string) : dirname(entry) };
+    return { entry, dir: hasProto ? os.cwd : dirname(entry) };
 }

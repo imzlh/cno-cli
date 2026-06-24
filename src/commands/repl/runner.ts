@@ -330,16 +330,24 @@ class CompletionEngine {
             default:
                 if (this.#isWordChar(c)) {
                     const base = this.#getContextWord(line, pos);
-                    if (['true', 'false', 'null', 'this'].includes(base) || !Number.isNaN(+base)) {
-                        return new Function(base)();
+                    switch (base) {
+                        case 'true': return true;
+                        case 'false': return false;
+                        case 'null': return null;
+                        case 'this': return globalThis;
+                        case 'undefined': return undefined;
+                        case 'NaN': return NaN;
+                        case 'Infinity': return Infinity;
+                        default: break;
                     }
+                    if (!Number.isNaN(+base)) return +base;
                     // Check for regex flags
                     if (pos - base.length >= 2 && line[pos - base.length - 1] === '/') {
                         return new RegExp('', base);
                     }
                     const obj = this.#getContextObject(line, pos - base.length);
                     if (obj == null) return obj;
-                    return (obj as Record<string, unknown>)[base] ?? eval?.(base);
+                    return (obj as Record<string, unknown>)[base];
                 }
                 return {};
         }

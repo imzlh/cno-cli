@@ -138,7 +138,7 @@ export class ChannelClient {
 	private poll = (): void => {
 		const waitMs = this.active ? 1 : 20;
 		try { this.dc.waitRecv(waitMs); } catch {}
-		this.drainInbox();
+		try { this.drainInbox(); } catch {}
 		this.pollTimer = timers.setTimeout(this.poll, 0);
 	};
 

@@ -39,8 +39,10 @@ import { runTask, taskExists } from './commands/task';
 import { runRepl } from './commands/repl';
 import { runTest } from './commands/test';
 import { runSetup } from './commands/setup';
+import { startProxy, disableCertVerify, stopNetwork } from './network';
 
 import '../cno/src/main';       // import polyfill
+import { errMsg } from '../cts/src/utils';
 
 const fs = import.meta.use('fs');
 const console = import.meta.use('console');
@@ -59,7 +61,7 @@ function looksLikeFileTarget(raw: string): boolean {
     if (!isAbsolute(raw) && /^[a-z][a-z0-9+\-.]*:/i.test(raw)) return true;
     if (/\.(?:mjs|cjs|js|jsx|ts|tsx|json)$/i.test(raw)) return true;
 
-    const cwd = String(os.cwd).replace(/\\/g, '/');
+    const cwd = os.cwd.replace(/\\/g, '/');
     return fs.exists(raw) || fs.exists(joinPaths(cwd, normalized));
 }
 
@@ -101,8 +103,16 @@ async function installProcessCleanup(): Promise<void> {
 
 async function dispatch(): Promise<void> {
     const cli = warnUnknownFlags(parseArgv(readArgv()));
-    await installProcessCleanup();
 
+
+    // common setup
+    await installProcessCleanup();
+    if (cli.flags['system-proxy']) try { startProxy(); } catch (e) {
+        console.warn(`${C.warn('!')} Configure proxy failed: ${errMsg(e)}`);
+    }
+    if (cli.flags['skip-cert-verify']) disableCertVerify();
+
+    try {
     switch (cli.cmd) {
         case 'help':
             return showHelp();
@@ -145,12 +155,13 @@ async function dispatch(): Promise<void> {
             if (cli.cmd === 'run' && !looksLikeFileTarget(file) && taskExists(file)) {
                 return runTask([file, ...args]);
             }
-            return runFile({ file: file!, args, flags: cli.flags });
+            return runFile({ file: file, args, flags: cli.flags });
         }
         default:
             showHelp();
             os.exit(1);
     }
+    } finally { stopNetwork(); }
 }
 
 async function workerEntry(): Promise<void> {
