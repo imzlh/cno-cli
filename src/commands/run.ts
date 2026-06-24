@@ -6,6 +6,7 @@ import { entryAndDir } from '../utils';
 import type { ConfigOptions } from '../../cts/src/types';
 import { Inspector } from '../inspector';
 import { parseInspectFlags } from './inspect';
+import { setDenoArgs } from '../../cno/src/utils/args';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
@@ -78,6 +79,7 @@ export async function runFile(opts: RunOpts): Promise<void> {
     }
 
     try {
+        setDenoArgs(opts.args);
         const mod = await runtime.loadEntry(entry, {});
         await mod.eval();
     } catch (e) {

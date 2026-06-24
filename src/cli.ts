@@ -98,9 +98,15 @@ export function parseArgv(argv: string[]): ParsedCli {
 
     // First non-flag token decides the subcommand.
     let cmdDecided = false;
+    // After the script path (first positional after cmd) is found,
+    // stop parsing flags — remaining tokens are forwarded to the script.
+    let fileFound = false;
 
     while (i < argv.length) {
         const a = argv[i]!;
+
+        // Once the script file has been seen, collect everything as positional.
+        if (fileFound) { positional.push(a); i++; continue; }
 
         // -h / --help / -v / --version are subcommand-like aliases
         if (!cmdDecided && ALIASES[a]) {
@@ -180,10 +186,12 @@ export function parseArgv(argv: string[]): ParsedCli {
                 // Implicit `run` when first token is not a subcommand.
                 cmd = null;
                 positional.push(a);
+                fileFound = true;   // script path collected — stop parsing flags
             }
             cmdDecided = true;
         } else {
             positional.push(a);
+            if (!fileFound) fileFound = true;  // first positional after cmd = script file
         }
         i++;
     }
