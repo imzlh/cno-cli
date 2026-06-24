@@ -2,7 +2,7 @@
 
 ## Project Architecture Overview
 
-cno-cli is a Deno-compatible TypeScript CLI runtime built on circu.js. The project consists of **5 core submodules** forming a complete TypeScript runtime ecosystem:
+cno-cli is a Deno-compatible TypeScript CLI runtime built on circu.js. The project consists of **6 core submodules** forming a complete TypeScript runtime ecosystem:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -24,6 +24,12 @@ cno-cli is a Deno-compatible TypeScript CLI runtime built on circu.js. The proje
                     │  Core Runtime     │
                     │ (QuickJS+libuv)   │
                     └───────────────────┘
+
+CDP Inspector (Chrome DevTools Protocol):
+┌─────────────────────────────────────────────────────────────────┐
+│  DevTools (browser) ──WebSocket──▶ worker/server.ts             │
+│     ◀── CDP ──▶ domains/*  ◀──RPC──▶ transport/*  ◀──▶ native  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -67,6 +73,8 @@ cno-cli is a Deno-compatible TypeScript CLI runtime built on circu.js. The proje
 | `algorithm` | Utils | Sorting, binary search, encoding helpers |
 | `text` | Text | iconv-based encoding conversion |
 | `signals` | Signals | POSIX signal handling |
+| `curl` | HTTP client | libcurl-based HTTP client (used by fetch) |
+| `udp` | UDP | dgram/UDP socket support |
 
 ### Type Definitions
 - `circu.js/types/*.d.ts` — TypeScript definitions for all modules
@@ -139,7 +147,7 @@ interface CModuleEngine {
 |------|---------|----------------------|
 | `resolver.ts` | 3-level cache module resolver | `ModuleResolver` |
 | `loader.ts` | ESM/CJS module loader | `ModuleLoader` |
-| `transformer.ts` | TS/JSX → JS transform | `Transformer` (Sucrase) |
+| `transformer.ts` | TS/JSX → JS transform | `Transformer` (OXC native primary, Sucrase fallback) |
 | `cjs.ts` | CommonJS interop | `CjsLoader`, `mkRequire` |
 | `lock.ts` | Lock file management | `LockStore` |
 | `jsc.ts` | Bytecode cache | `JscCache` |
@@ -148,6 +156,13 @@ interface CModuleEngine {
 | `deps.ts` | Dependency scanner | `DepScanner`, `extractImports` |
 | `precompile.ts` | Worker-parallel compile | `PrecompileDriver` |
 | `pkg.ts` | package.json utils | `detectFormat`, `readPkg`, `resolveSubpath` |
+| `flow.ts` | Generator-based I/O flow | `runSync`, `runAsync`, `StepType` enum |
+| `oxc.ts` | Native OXC extension loader | `OxcTranspiler`, `tryLoadOxc` |
+| `task.ts` | deno.json/package.json task runner | `TaskRunner`, `BinResolver`, `loadTasks` |
+| `shell.ts` | Shell command parser | `parseShellCommand`, `resolveWinBinEntry` |
+| `wasm.ts` | WASM module loading | `buildWasmModule` |
+| `scan.ts` | Import extraction (Sucrase tokenizer) | `extractImports` |
+| `resources.ts` | Central resource lifecycle manager | `resources.register`, `resources.release` |
 
 ### Protocol Handlers (`cts/src/protocol/`)
 
@@ -159,6 +174,18 @@ interface CModuleEngine {
 | `jsr:` | `jsr.ts` | JSR (Deno registry) packages |
 | `node:` | `node.ts` | Node.js built-in modules |
 | `data:` | `data.ts` | Data URL (RFC 2397) |
+
+### Utils (`cts/src/utils/`)
+
+| File | Purpose | Key Exports |
+|------|---------|-------------|
+| `lru.ts` | Bounded LRU cache | `LRU` |
+| `io.ts` | File I/O helpers with LRU resolution cache | `readText`, `writeText`, `ensureDir` |
+| `path.ts` | Pure path utilities | `joinPaths`, `dirname`, `isAbsolute` |
+| `progress.ts` | Unified precache progress UI | `PrecacheProgress` |
+| `log.ts` | Structured debug logger (reads DEBUG env) | `log.debug`, `log.info` |
+| `misc.ts` | Hash, semver, tar.gz, JSONC, arg parsing | `hashString`, `unTarGz`, `parseArgs` |
+| `tier.ts` | Memory tier detection | `getMemoryTier` |
 
 ### Module Resolution Flow
 
@@ -218,13 +245,12 @@ class TypeScriptRuntime {
 }
 ```
 
-### Lock File Format (NDJSON v2)
+### Lock File Format (SQLite3)
 
-```
-// cts.lock v2
-{"s":"specPath","l":"localPath","f":"esm","k":"source"}
-{"q":"spec\0parent","v":"specPath"}
-```
+LockStore now uses SQLite3 (`cts.lock`) with tables:
+- `sources` — spec→specPath mapping (L1 cache)
+- `modules` — specPath→ModuleInfo (L2 cache)
+- `bins` — binary name→local path
 
 ### Config Loading Priority
 
@@ -259,13 +285,13 @@ class PrecompileDriver {
     async terminate(): Promise<void>;
 }
 
-// Phase 1: Worker-parallel Sucrase transform (string→string)
+// Phase 1: Worker-parallel OXC/Sucrase transform (string→string)
 // Phase 2: Main-thread QJS compile (Module + dump → bytecode)
 ```
 
 ### Transform Diagnostics Convention
 
-- `cts/src/transformer.ts` is the boundary that converts Sucrase parse failures into structured diagnostics.
+- `cts/src/transformer.ts` is the boundary that converts OXC/Sucrase parse failures into structured diagnostics.
 - When transform code has line and column information, throw `TransformError` from `cts/src/errors.ts` instead of flattening the error into a formatted string.
 - `TransformError` must carry `fileName`, `line`, and `column` so REPL, CLI, and future editors can render code frames without parsing human text.
 - Callers such as the REPL should treat transform diagnostics as structured data first, and only fall back to message parsing for backward compatibility.
@@ -285,7 +311,6 @@ cno/src/
 ├── main.ts           # Entry: imports webapi, deno, cno, node inject
 ├── webapi/           # Web API polyfills
 │   ├── index.ts      # Entry: injects global objects
-│   ├── fetch.ts      # fetch, Request, Response (maps to @cnojs/http)
 │   ├── url.ts        # URL, URLSearchParams
 │   ├── websocket.ts  # WebSocket
 │   ├── crypto.ts     # crypto.subtle (WebCrypto)
@@ -300,10 +325,22 @@ cno/src/
 │   ├── broadcast-channel.ts
 │   ├── intl.ts       # Intl (partial)
 │   ├── wasm.ts       # WebAssembly
-│   ├── navigator/    # navigator.userAgent, etc.
-│   └── console/      # console with formatting
+│   ├── basic.ts      # atob, btoa, queueMicrotask, structuredClone, timers
+│   ├── cache.ts      # CacheStorage / Cache API
+│   ├── location.ts   # location polyfill
+│   ├── sse.ts        # EventSource / SSE
+│   ├── webtransport.ts # WebTransport (QUIC)
+│   ├── console/      # console with formatting
+│   ├── fetch/        # fetch, Request, Response, XMLHttpRequest
+│   │   ├── index.ts
+│   │   ├── request.ts
+│   │   ├── response.ts
+│   │   ├── perform.ts  # curl-backed fetch implementation
+│   │   └── xhr.ts    # XMLHttpRequest
+│   └── navigator/    # navigator.userAgent, etc.
 ├── deno/             # Deno API
 │   ├── index.ts      # Deno global object
+│   ├── 00_permission.ts # Deno.Permissions polyfill
 │   ├── 01_errors.ts  # Deno.errors
 │   ├── 02_fs.ts      # Deno.readFile, writeFile, mkdir, etc.
 │   ├── 03_fopen.ts   # Deno.open, Deno.FsFile
@@ -312,7 +349,8 @@ cno/src/
 │   ├── 06_process.ts # Deno.Command
 │   ├── 07_http.ts    # Deno.HttpClient
 │   ├── 08_serve.ts   # Deno.serve
-│   ├── kv/           # Deno.Kv (unstable)
+│   ├── 09_cron.ts    # Deno.cron scheduling
+│   ├── kv/           # Deno.Kv (SQLite-backed, unstable)
 │   └── ffi/          # Deno.dlopen (unstable)
 ├── node/             # Node.js compatibility
 │   ├── fs/           # fs module
@@ -357,21 +395,38 @@ cno/src/
 │   ├── readline/     # readline module
 │   ├── repl/         # repl module
 │   ├── module/       # module module
+│   ├── buffer/       # buffer module (re-exports npm:buffer)
+│   ├── tty/          # tty module
+│   ├── ipc_channel/  # ipc_channel module
 │   └── _internal/    # Internal helpers
 │       ├── errno.ts  # ErrnoException conversion
-│       └── inject.ts # Node global injection
-└── cno/              # CNO-specific API
+│       ├── inject.ts # Node global injection
+│       ├── memory.ts # Node.js memory tier detection
+│       └── network-debug.ts # CDP Network helpers for Node http
+├── cno/              # CNO-specific API
     ├── index.ts      # CNO global object
     ├── engine.ts     # CNO.engine (serialize, evalModule)
     ├── pty.ts        # CNO.openpty (pseudo-terminal)
     ├── compress.ts   # CNO.compress, decompress
     ├── ssl.ts        # CNO SSL helpers
     └── llhttp.ts     # CNO llhttp bindings
+├── utils/            # Internal utilities
+│   ├── args.ts       # CLI argument management
+│   ├── assert.ts     # assert helper
+│   ├── http.ts       # shared HTTP/1.1 TCP connection utilities
+│   ├── malloc.ts     # buffer allocation helper
+│   ├── memory-tier.ts # memory tier detection (low/normal/high)
+│   ├── network-hooks.ts # CDP Network domain hooks (fetch/ws/serve)
+│   ├── path.ts       # path utilities (join, dirname, normalize)
+│   ├── platform.ts   # platform detection (isWindows, isMac, osShell)
+│   └── wrap.ts       # error wrapping (errno → Deno error classes)
+└── type/
+    └── lib.cno.d.ts  # CNO namespace type declarations
 ```
 
 ### WebAPI Polyfill Details
 
-**fetch.ts** — Maps WebAPI to @cnojs/http:
+**fetch/** — Maps WebAPI to @cnojs/http (split into request.ts, response.ts, perform.ts, xhr.ts):
 ```typescript
 class Request implements globalThis.Request {
     url: string;
@@ -413,7 +468,13 @@ globalThis.Deno = {
     execPath: () => string,
     noColor: boolean,
     memoryUsage: () => { rss, heapTotal, heapUsed, external },
+    systemMemoryInfo: () => { total, free, ... },
+    hostname: () => string,
+    loadavg: () => [number, number, number],
+    osRelease: () => string,
+    osUptime: () => number,
     permissions: { query, querySync, ... },
+    cron: (name, schedule, handler) => void,
     test: DenoTest,
     bench: DenoBench,
     // ...fs, net, http APIs loaded via separate imports
@@ -453,29 +514,26 @@ export const promises = {
 **Language**: TypeScript  
 **Purpose**: Low-level HTTP protocol implementation, NO WebAPI dependencies
 
-### Core Modules
+### Core Modules (`http/src/`)
 
 | File | Purpose |
 |------|---------|
 | `h1.ts` | HTTP/1.x protocol (request builder, response parser, keep-alive, chunked) |
-| `h2.ts` | HTTP/2 protocol (nghttp2 wrapper, multiplexed streams, HPACK) |
 | `socket.ts` | TcpSocket — TCP/SSL raw I/O |
-| `connection.ts` | Connection, ConnectionManager — connection pooling |
 | `dns-cache.ts` | DnsCache — DNS resolution with TTL caching |
 | `zlib.ts` | gzip/deflate compress/decompress |
 | `protocol.ts` | Protocol interface abstraction |
 | `server.ts` | Protocol-aware server (ALPN negotiation) |
-| `fetch.ts` | fetchBytes, fetchSync, fetchAsync |
+| `debug.ts` | Debug logging and hex dump |
+| `process.ts` | HTTP progress bar display |
 
 ### Design Principles
 - **NO WebAPI types**: Does not use URL, Headers, Request, Response
 - **Raw bytes + callbacks**: All I/O via `Uint8Array` and callbacks
-- **CNO wrapping**: `cno/src/webapi/fetch.ts` maps WebAPI to this layer
+- **CNO wrapping**: `cno/src/webapi/fetch/` maps WebAPI to this layer
 
-Current note: standard fetch requests are curl-backed. The raw connection pool
-is primarily for long-lived protocol transports such as SSE/WebSocket, and
-those callers should prefer the explicit `raw-connection` entry instead of
-treating `connection.ts` as the default fetch backend.
+Current note: standard fetch requests are curl-backed. The raw socket layer
+is primarily for long-lived protocol transports such as SSE/WebSocket.
 
 ### TcpSocket Details
 
@@ -495,41 +553,8 @@ class TcpSocket {
     async write(data: Uint8Array): Promise<void>;
     
     // SSL handshake
-    async connectTLS(hostname: string, sslContext?: CModuleSSL.Context): Promise<void>;
-    async acceptTLS(sslContext: CModuleSSL.Context): Promise<void>;
-}
-```
-
-### Connection Pooling
-
-```typescript
-interface ConnectionConfig {
-    hostname: string;
-    port: number;
-    protocol: "http:" | "https:";
-    timeout?: number;
-    keepAlive?: boolean;
-    keepAliveTimeout?: number;
-    maxSockets?: number;
-}
-
-class Connection implements ConnectionLike {
-    socket: CModuleStreams.TCP;
-    sslPipe: CModuleSSL.Pipe | null;
-    state: ConnectionState;
-    
-    connect(): void;
-    connectAsync(): Promise<void>;
-    write(data: Uint8Array): void;
-    writeAsync(data: Uint8Array): Promise<void>;
-    read(size?: number): Uint8Array | null;
-    readAsync(size?: number): Promise<Uint8Array | null>;
-    close(): void;
-}
-
-class ConnectionManager {
-    acquire(config: ConnectionConfig): Promise<Connection>;
-    release(conn: Connection): void;
+    async clientHandshake(hostname: string, sslContext?: CModuleSSL.Context): Promise<void>;
+    async serverHandshake(sslContext: CModuleSSL.Context): Promise<void>;
 }
 ```
 
@@ -546,34 +571,29 @@ class HttpRequestBuilder {
 }
 
 class HttpResponseParser {
+    onHeadersComplete: ((...) => void) | null;
+    onData: ((chunk: Uint8Array) => void) | null;
+    onComplete: (() => void) | null;
+    feed(data: Uint8Array): void;
+    getStatusCode(): number;
+    getHeaders(): string[];
+    getBodyChunks(): Uint8Array[];
     reset(): void;
-    execute(data: Uint8Array): { complete: boolean; response?: RawResponse };
+    isCompleted: boolean;
 }
 
-const h1: ProtocolClient & ProtocolServer;
+const h1: { client: ProtocolClient; server: ProtocolServer; version: string };
 ```
 
-### HTTP/2 Implementation
+### HTTP/2 (Native Extension)
 
+HTTP/2 is provided by the `ext-h2` native extension (`http/ext-h2/http2.d.ts`):
 ```typescript
-class H2Stream implements ProtocolStream {
-    id: number;
-    state: string;
-    
-    writeHead(data: RawRequest | RawResponse): Promise<void>;
-    write(data: Uint8Array): Promise<void>;
-    end(): void;
-}
-
-class H2Connection implements ProtocolConnection {
-    session: NgHttp2Session;
-    
-    request(req: RawRequest): Promise<H2Stream>;
-    close(): void;
-}
-
-const h2: ProtocolClient & ProtocolServer;
+// CModuleExternalHTTP2 namespace
+class Session { /* nghttp2 wrapper — HPACK, multiplexed streams */ }
+const constants: { /* NGHTTP2_* frame types, error codes */ }
 ```
+Statically linked via `CNO_EMBED_EXT_H2=ON` (requires nghttp2), or loaded from `ext/` at runtime.
 
 ### Protocol Interface
 
@@ -588,15 +608,23 @@ interface ProtocolServer {
 }
 
 interface ProtocolConnection {
-    request(req: RawRequest): Promise<ProtocolStream>;
+    receive(): void;
+    wantWrite(): void;
+    flush(): void;
+    createStream(): ProtocolStream;
+    on(event: string, handler: (...args: any[]) => void): void;
+    goaway(): void;
     close(): void;
+    destroy(): void;
 }
 
 interface ProtocolStream {
     writeHead(data: RawRequest | RawResponse): Promise<void>;
-    write(data: Uint8Array): Promise<void>;
+    writeData(data: Uint8Array): Promise<void>;
     end(): void;
-    onClose: Event<Error | null>;
+    readMessage(): Promise<RawRequest | RawResponse | null>;
+    abort(): void;
+    close(): void;
 }
 ```
 
@@ -622,6 +650,19 @@ interface ProtocolStream {
 
 ---
 
+## Module 6: ext-oxc — OXC Native Transpiler Extension
+
+**Location**: `ext-oxc/`
+**Language**: Rust (Cargo) + C (CMake glue)
+**Purpose**: Native OXC-based TS/JSX transpiler, loaded as `import.meta.register('oxc', extPath)`
+
+### Build
+- Built alongside main project by `build.sh` / `build.ps1`
+- Produces `swc.so` (Unix) or `swc.dll` (Windows)
+- `cts/src/oxc.ts` provides the TypeScript interface (`OxcTranspiler`)
+
+---
+
 ## Build System
 
 ### CMake Build Flow
@@ -644,10 +685,10 @@ cmake --build build
 | `CNO_RELEASE` | OFF | Release build (enable CJS_USE_SYMBOL_INTERNAL, strip) |
 | `CNO_BUNDLE_MINIFY` | OFF | Minify JS bundle |
 | `CNO_SKIP_PNPM` | OFF | Skip pnpm install |
-| `CNO_EMBED_EXT_H2` | ON | Statically link HTTP/2 extension |
+| `CNO_EMBED_EXT_H2` | OFF | Statically link HTTP/2 extension (requires nghttp2) |
 | `CNO_EMBED_EXT_QUIC` | OFF | Statically link QUIC extension |
+| `CJSC_PATH` | "" | Pre-built host cjsc executable |
 | `CNO_EXT_DIR` | "" | Pre-built extensions directory |
-| `CNO_HOST_CJSC` | "" | Pre-built host cjsc (for cross-compile) |
 
 ### Static Extension Embedding
 
@@ -671,24 +712,22 @@ build/stage/
 
 ### pnpm Workspace
 
-```yaml
-packages:
-  - '.'
-  - './cts'
-  - './cno'
-  - './http'
-  - './ext-quic'
-```
+No `pnpm-workspace.yaml` — workspace packages are resolved via `workspace:` protocol in `package.json` dependency fields:
+- `cno-cli` → `cts` (workspace:./cts), `@cnojs/http` (workspace:./http)
+- `cts` → `@cnojs/http` (workspace:../http), `@cnojs/quic` (workspace:../ext-quic)
 
 ### Package Dependencies
 
 ```
 cno-cli (root)
   ├── @cnojs/http (workspace:./http)
-  └── cts (workspace:./cts)
+  ├── cts (workspace:./cts)
+  └── node-buffer, ts-interface-checker
 
 cts
-  └── @cnojs/http (workspace:../http)
+  ├── @cnojs/http (workspace:../http)
+  ├── @cnojs/quic (workspace:../ext-quic)
+  └── sucrase, temporal-polyfill, urlpattern-polyfill, whatwg-url, ...
 
 cno
   ├── @cnojs/http (workspace:../http)
@@ -709,6 +748,7 @@ cno repl                    # Interactive REPL
 cno test [paths...]         # Run tests
 cno task [name]             # Run deno.json task
 cno cache <file>            # Pre-cache dependencies
+cno setup                   # Install Node.js polyfill files to cache
 cno --version               # Version
 cno --help                  # Help
 ```
@@ -739,7 +779,14 @@ cno --help                  # Help
 --unstable, --unstable-*, ...                   # Unstable features (ignored)
 --check, --no-check                             # Type checking (ignored)
 --import-map, --config                          # Config (cts uses own)
---inspect, --inspect-brk                        # Debug (ignored)
+```
+
+### Inspector Flags
+
+```bash
+--inspect[=host:]port   # Enable CDP inspector
+--inspect-brk[=port]    # Enable inspector, break on first line
+--inspect-wait[=port]   # Enable inspector, wait for client before running
 ```
 
 ---
@@ -776,6 +823,7 @@ cno --help                  # Help
 | `src/cli.ts` | Argument parsing (`parseArgv`) |
 | `src/help.ts` | Help/version display |
 | `src/bootstrap.ts` | Extension registration (`registerExtensions`) |
+| `src/network.ts` | Proxy configuration and TLS cert verification |
 | `src/version.ts` | Version string |
 
 ### Commands
@@ -789,6 +837,9 @@ cno --help                  # Help
 | `src/commands/test.ts` | `runTest` — test runner |
 | `src/commands/task.ts` | `runTask` — deno.json tasks |
 | `src/commands/cache.ts` | `runCache` — cache management |
+| `src/commands/setup.ts` | `runSetup` — install Node.js polyfill files |
+| `src/commands/inspect.ts` | `parseInspectFlags` — --inspect flag parser |
+| `src/commands/bin.ts` | `spawnBinary` — resolve and spawn node_modules binaries |
 
 ### Bundle Script
 
@@ -810,6 +861,29 @@ const SYMBOL_BANNER = {
     js: 'const __cno_use__=globalThis[Symbol.for("cjs.internal.use")],__cno_register__=globalThis[Symbol.for("cjs.internal.register")];',
 };
 ```
+
+### Inspector Subsystem (`src/inspector/`)
+
+Full Chrome DevTools Protocol (CDP) implementation enabling `--inspect` debugging.
+
+**Main thread** (`main/`): `Inspector` (composition root), `Evaluator` (expression eval),
+`Serializer` (RemoteObject), `ObjectStore` (obj:N refs), `PauseController` (onBreak handler),
+`Hooks` (script/lifecycle/console/network/binding bridges), `registerRpcHandlers`.
+
+**Worker thread** (`worker/`): `bootstrapDebugWorker` (composition root), `CDPDispatcher` (routes CDP commands),
+`CdpChannel` (WebSocket bridge), `createEventRouter` (WorkerEvent → domain dispatch), `startServer` (WS + `/json` discovery).
+
+**Transport** (`transport/`): `MainEndpoint` + `WorkerEndpoint` (RPC facades),
+`PipeClient`/`PipeServer` (async uv MessagePipe), `ChannelClient`/`ChannelServer` (sync native DebugChannel).
+
+**CDP Domains** (`domains/`): `DebuggerDomain` (breakpoints, pause/resume state machine),
+`RuntimeDomain` (evaluate, execution context, bindings), `ConsoleDomain` (buffered console messages),
+`NetworkDomain` (fetch/serve/WebSocket → CDP Network.*), `FetchDomain` (request interception),
+`PageDomain` (frame lifecycle), `TargetDomain` (target listing), `side-effect.ts` (safe eval analysis).
+
+**Shared** (`shared/`): `cdp.ts` (CDP type definitions), `wire.ts` (WorkerEvent/PipeMsg enums),
+`rpc-contract.ts` (RpcParams source of truth, transport routing), `native.ts` (debug module bindings),
+`user-files.ts` (isUserFile), `console-utils.ts` (consoleAPICalled helpers).
 
 ---
 
@@ -926,6 +1000,7 @@ On SyntaxError, writes to:
 1. Create `circu.js/src/mod_xxx.c`
 2. Implement `tjs__mod_xxx_init(JSContext*)`
 3. Register in `circu.js/src/modules.c`
+4. Add type definitions to `circu.js/types/`
 
 ### Adding WebAPI Polyfill (cno)
 
@@ -985,7 +1060,7 @@ A: Release enables `CJS_USE_SYMBOL_INTERNAL`, converts `import.meta.use` to Symb
 - `dnsCache` — TTL from DNS response
 
 ### Precompile
-- Worker-parallel Sucrase transform
+- Worker-parallel OXC (native) / Sucrase (fallback) transform
 - Main-thread QJS compile (C layer, fast)
 - Default workers: CPU cores (max 16)
 

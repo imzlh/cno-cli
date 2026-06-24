@@ -189,14 +189,14 @@ jobs:
       - name: Build cno
         shell: cmd
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
+          cmake -S . -B build -G "Visual Studio 18 2026" -A x64 ^
             -DCMAKE_BUILD_TYPE=Release ^
             -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake
           cmake --build build --config Release --parallel
       - name: Build ext-oxc
         shell: pwsh
         run: |
-          cmake -S ext-oxc -B ext-oxc\build -G "Visual Studio 17 2022" -A x64 `
+          cmake -S ext-oxc -B ext-oxc\build -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
             -DCNO_SRC_DIR="$PWD\circu.js\src" `
             -DQUICKJS_DIR="$PWD\circu.js\deps\quickjs" `
