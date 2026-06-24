@@ -163,6 +163,8 @@ interface CModuleEngine {
 | `wasm.ts` | WASM module loading | `buildWasmModule` |
 | `scan.ts` | Import extraction (Sucrase tokenizer) | `extractImports` |
 | `resources.ts` | Central resource lifecycle manager | `resources.register`, `resources.release` |
+| `types.ts` | Shared type definitions | `ModuleInfo`, `RuntimeConfig`, `ConfigOptions`, `PackageJson` |
+| `errors.ts` | Error formatting and diagnostics | `ErrorKind`, `TransformError`, `formatError`, `fatal` |
 
 ### Protocol Handlers (`cts/src/protocol/`)
 
@@ -186,6 +188,38 @@ interface CModuleEngine {
 | `log.ts` | Structured debug logger (reads DEBUG env) | `log.debug`, `log.info` |
 | `misc.ts` | Hash, semver, tar.gz, JSONC, arg parsing | `hashString`, `unTarGz`, `parseArgs` |
 | `tier.ts` | Memory tier detection | `getMemoryTier` |
+
+### Core Types (`cts/src/types.ts`)
+
+```typescript
+type ModuleFormat = 'esm' | 'cjs';
+type FileKind = 'ts' | 'tsx' | 'jsx' | 'js' | 'json' | 'wasm' | 'dts';
+
+interface ModuleInfo {
+    specPath: string;
+    localPath: string;
+    format: ModuleFormat;
+    kind: FileKind;
+    source: 'lock' | 'resolved' | 'cached';
+}
+
+interface RuntimeConfig {
+    cacheDir: string;
+    lockDir: string;
+    noLock: boolean;
+    frozen: boolean;
+    reload: boolean;
+    noHttp: boolean;
+    noJsr: boolean;
+    noNode: boolean;
+    silent: boolean;
+    disableCache: boolean;
+    memoryLimit?: number;
+    maxStackSize?: number;
+    polyfill?: string;
+    workers: number;
+}
+```
 
 ### Module Resolution Flow
 
@@ -336,8 +370,16 @@ cno/src/
 │   │   ├── request.ts
 │   │   ├── response.ts
 │   │   ├── perform.ts  # curl-backed fetch implementation
+│   │   ├── helpers.ts
 │   │   └── xhr.ts    # XMLHttpRequest
 │   └── navigator/    # navigator.userAgent, etc.
+│       ├── index.ts  # NavigatorImpl
+│       ├── core.ts   # NavigatorCoreImpl
+│       ├── connection.ts # NetworkInformation
+│       ├── permissions.ts # Permissions API
+│       ├── sockets.ts # Direct Sockets
+│       ├── storage.ts # StorageManager
+│       └── types.ts
 ├── deno/             # Deno API
 │   ├── index.ts      # Deno global object
 │   ├── 00_permission.ts # Deno.Permissions polyfill
@@ -351,12 +393,26 @@ cno/src/
 │   ├── 08_serve.ts   # Deno.serve
 │   ├── 09_cron.ts    # Deno.cron scheduling
 │   ├── kv/           # Deno.Kv (SQLite-backed, unstable)
+│   │   ├── index.ts  # Deno.openKv, KvError classes
+│   │   ├── types.ts  # KV type definitions
+│   │   ├── core.ts   # Kv core implementation
+│   │   ├── db.ts     # SQLite-backed storage
+│   │   ├── atomic.ts # AtomicOperation
+│   │   └── iterator.ts # KvListIterator
 │   └── ffi/          # Deno.dlopen (unstable)
+│       ├── index.ts  # dlopen, UnsafePointer, UnsafeCallback
+│       ├── types.ts  # FFI type definitions
+│       ├── pointer.ts # UnsafePointer/UnsafePointerView
+│       ├── callback.ts # UnsafeCallback
+│       └── library.ts # dlopen / DynamicLibraryImpl
 ├── node/             # Node.js compatibility
 │   ├── fs/           # fs module
 │   │   ├── mod.ts    # exports constants, sync, callbacks, promises
+│   │   ├── constants.ts
 │   │   ├── sync.ts   # fs.readFileSync, etc.
-│   │   ├── async.ts  # fs.readFile, etc. (cb style)
+│   │   ├── callbacks.ts # fs.readFile, etc. (cb style)
+│   │   ├── async.ts
+│   │   ├── _promises.ts
 │   │   ├── promises.ts # fs.promises.readFile, etc.
 │   │   └── utils.ts  # FileHandle, Stats conversion
 │   ├── path/         # path module
@@ -364,15 +420,25 @@ cno/src/
 │   ├── util/         # util module
 │   ├── events/       # events module
 │   ├── stream/       # stream module
+│   │   ├── mod.ts    # Readable, Writable, Duplex, Transform
+│   │   └── promises.ts
 │   ├── http/         # http, https modules
 │   │   ├── mod.ts    # http.createServer
 │   │   ├── server.ts # Server implementation
-│   │   └── client.ts # request, get
+│   │   ├── client.ts # request, get
+│   │   ├── constants.ts # STATUS_CODES, METHODS
+│   │   └── types.ts
 │   ├── https/        # https module
 │   ├── http2/        # http2 module
 │   ├── crypto/       # crypto module
+│   │   ├── mod.ts    # createHash, createHmac, cipheriv, etc.
+│   │   ├── helpers.ts
+│   │   ├── random.ts
+│   │   └── types.ts
 │   ├── zlib/         # zlib module
 │   ├── dns/          # dns module
+│   │   ├── mod.ts
+│   │   └── promises.ts
 │   ├── net/          # net module
 │   ├── dgram/        # dgram module
 │   ├── child_process/ # child_process module
@@ -393,6 +459,8 @@ cno/src/
 │   ├── diagnostics_channel/ # diagnostics_channel module
 │   ├── string_decoder/ # string_decoder module
 │   ├── readline/     # readline module
+│   │   ├── mod.ts
+│   │   └── promises.ts
 │   ├── repl/         # repl module
 │   ├── module/       # module module
 │   ├── buffer/       # buffer module (re-exports npm:buffer)
@@ -527,6 +595,13 @@ export const promises = {
 | `debug.ts` | Debug logging and hex dump |
 | `process.ts` | HTTP progress bar display |
 
+**Type declarations** (`http/types/`): 30 `.d.ts` files for circu.js native modules:
+`algorithm`, `asyncfs`, `console`, `crypto`, `curl`, `dns`, `engine`, `error`, `ffi`, `fs`, `fswatch`, `http`, `jsonc`, `os`, `process`, `signals`, `socket`, `sourcemap`, `sqlite3`, `ssl`, `streams`, `text`, `timers`, `udp`, `wasm`, `win32`, `worker`, `xml`, `zlib`.
+
+**HTTP/2 extension** (`http/ext-h2/`): `http2.d.ts` — nghttp2 `Session` wrapper types.
+
+**Utilities** (`http/utils/`): `assert.ts`.
+
 ### Design Principles
 - **NO WebAPI types**: Does not use URL, Headers, Request, Response
 - **Raw bytes + callbacks**: All I/O via `Uint8Array` and callbacks
@@ -632,9 +707,10 @@ interface ProtocolStream {
 
 ## Module 5: ext-quic (@cnojs/quic) — QUIC Extension
 
-**Location**: `ext-quic/`  
-**Language**: C (quicly + picotls) + TypeScript  
+**Location**: `ext-quic/` (git submodule)
+**Language**: C (quicly + picotls) + TypeScript type declarations
 **Purpose**: QUIC protocol native extension for WebTransport
+**Type declarations**: `index.d.ts`, `native.d.ts` (Socket, Connection, constants)
 
 ### Dependencies
 - **quicly**: QUIC protocol implementation
@@ -1064,10 +1140,10 @@ A: Release enables `CJS_USE_SYMBOL_INTERNAL`, converts `import.meta.use` to Symb
 - Main-thread QJS compile (C layer, fast)
 - Default workers: CPU cores (max 16)
 
-### Connection Pool
-- Keep-alive with configurable timeout
-- Max sockets per host
-- HTTP/2 multiplexing
+### Networking
+- HTTP/2 multiplexing via native extension
+- DNS caching with TTL
+- SSL session reuse
 
 ---
 
