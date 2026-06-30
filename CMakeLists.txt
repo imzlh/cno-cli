@@ -48,13 +48,17 @@ if(CNO_EMBED_EXT_QUIC)
     endif()
     find_package(OpenSSL REQUIRED)
     add_subdirectory("${_QUICLY}" "${CMAKE_BINARY_DIR}/quicly")
-    list(APPEND _EXT_LIBS quicly picotls-core picotls-openssl OpenSSL::SSL OpenSSL::Crypto)
+    list(APPEND _EXT_LIBS quicly OpenSSL::SSL OpenSSL::Crypto)
     _cno_add_ext("@cnojs/quic" "qc_ns_init" "false"
         "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic/native.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic")
     list(APPEND _EXT_INCS
         "${_QUICLY}/include"
-        "${_QUICLY}/deps/picotls/include")
+        "${_QUICLY}/deps/picotls/include"
+        "${_QUICLY}/deps/picotls/picotlsvs/picotls")
+    if(WIN32)
+        list(APPEND _EXT_INCS "${_QUICLY}/windows-compat/include")
+    endif()
     message(STATUS "[cno] embed ext-quic (in-tree quicly)")
 endif()
 
@@ -145,16 +149,17 @@ else()
 endif()
 
 # pnpm install
-set(_NM_STAMP "${CMAKE_CURRENT_BINARY_DIR}/.pnpm-installed")
-add_custom_command(
-    OUTPUT  "${_NM_STAMP}"
-    COMMAND "${PNPM_EXE}" install --frozen-lockfile=false
-    COMMAND "${CMAKE_COMMAND}" -E touch "${_NM_STAMP}"
-    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/package.json"
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "pnpm install"
-    VERBATIM)
-add_custom_target(cno-pnpm-install DEPENDS "${_NM_STAMP}")
+# here we comment out due to some unexpected warnings
+# set(_NM_STAMP "${CMAKE_CURRENT_BINARY_DIR}/.pnpm-installed")
+# add_custom_command(
+#     OUTPUT  "${_NM_STAMP}"
+#     COMMAND "${PNPM_EXE}" install --frozen-lockfile=false
+#     COMMAND "${CMAKE_COMMAND}" -E touch "${_NM_STAMP}"
+#     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/package.json"
+#     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+#     COMMENT "pnpm install"
+#     VERBATIM)
+# add_custom_target(cno-pnpm-install DEPENDS "${_NM_STAMP}")
 
 # esbuild bundle
 set(_BUNDLE_SCRIPT "bundle")
@@ -170,10 +175,16 @@ file(GLOB_RECURSE _CLI_SRCS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/cno/src/*.ts"
     "${CMAKE_CURRENT_SOURCE_DIR}/http/src/*.ts"
     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/*.mjs")
+set(_CLI_BUNDLE_DEPS
+    ${_CLI_SRCS}
+    "${CMAKE_CURRENT_SOURCE_DIR}/package.json")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pnpm-lock.yaml")
+    list(APPEND _CLI_BUNDLE_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/pnpm-lock.yaml")
+endif()
 add_custom_command(
     OUTPUT  "${_CLI_BUNDLE}"
     COMMAND "${PNPM_EXE}" run "${_BUNDLE_SCRIPT}"
-    DEPENDS ${_CLI_SRCS} cno-pnpm-install
+    DEPENDS ${_CLI_BUNDLE_DEPS}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "bundle → ${_CLI_BUNDLE}"
     VERBATIM)

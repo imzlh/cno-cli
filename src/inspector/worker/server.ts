@@ -19,6 +19,7 @@ const WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 
 export interface ServerOptions {
 	port: number
+	host?: string
 	entryUrl: string
 	onConnect: (ws: WebSocket) => void
 }
@@ -32,7 +33,8 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 	const { port, entryUrl, onConnect } = opts
 	const targetId = 'ws/' + nativeCrypto.randomUUID()
 	const wsPath = `/${targetId}`
-	const host = `127.0.0.1:${port}`
+	const hostname = opts.host || '127.0.0.1'
+	const host = `${hostname}:${port}`
 	const wsUrl = `ws://${host}${wsPath}`
 
 	async function respondJson(res: HttpResponse, value: unknown): Promise<void> {
@@ -96,7 +98,7 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 
 		await res.writeHead(404, 'Not Found', [['Content-Length', '0']])
 		await res.end()
-	}, { port })
+	}, { port, hostname })
 
 	server.listen()
 	void server.acceptLoop()

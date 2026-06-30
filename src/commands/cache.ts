@@ -1,6 +1,6 @@
-import { createRuntime } from '../../cts/src/runtime';
+import { createRuntime } from '../../cts/src/runtime/index';
 import { loadConfigFile } from '../../cts/src/config';
-import { joinPaths } from '../../cts/src/utils/path';
+import { joinPaths, cwd } from '../../cts/src/utils/path';
 import { stripJsonc } from '../../cts/src/utils/misc';
 import type { ConfigOptions } from '../../cts/src/types';
 import { C } from '../help';
@@ -18,12 +18,12 @@ export async function runCache(file: string | undefined, flags: Record<string, s
         return;
     }
     const { entry } = entryAndDir(file);
-    const projectDir = os.cwd.replace(/\\/g, '/');
+    const projectDir = cwd();
     const fileCfg = loadConfigFile(projectDir);
     const cfg: Partial<ConfigOptions> = {
         ...fileCfg,
         silent: flags['silent'] === true,
-        noLock: false,
+        disableLock: false,
         enableOxc: flags['no-oxc'] === true || flags['no-swc'] === true ? false : fileCfg.enableOxc,
         ignoreScripts: flags['ignore-scripts'] === true,
         cacheDir: typeof flags['cache-dir'] === 'string' ? flags['cache-dir'] as string : undefined,
@@ -52,7 +52,7 @@ async function runCacheNoArgs(flags: Record<string, string | boolean>): Promise<
     const cfg: Partial<ConfigOptions> = {
         ...fileCfg,
         silent: flags['silent'] === true,
-        noLock: false,
+        disableLock: false,
         enableOxc: flags['no-oxc'] === true || flags['no-swc'] === true ? false : fileCfg.enableOxc,
         ignoreScripts: flags['ignore-scripts'] === true,
         cacheDir: typeof flags['cache-dir'] === 'string' ? flags['cache-dir'] as string : undefined,
@@ -92,13 +92,14 @@ function collectSpecifiers(dir: string): Set<string> {
         // Don't break — also check package.json below
     }
 
-    // package.json dependencies / devDependencies
+    // package.json runtime dependencies. Dev dependencies can pull in very
+    // large toolchains (typescript/esbuild) and make no-arg cache impractical.
     const pkgP = joinPaths(dir, 'package.json');
     if (fs.exists(pkgP)) {
         let pkg: Record<string, any> | null = null;
         try { pkg = JSON.parse(engine.decodeString(fs.readFile(pkgP))); } catch {}
         if (pkg) {
-            for (const field of ['dependencies', 'devDependencies'] as const) {
+            for (const field of ['dependencies'] as const) {
                 const deps = pkg[field];
                 if (!deps || typeof deps !== 'object') continue;
                 for (const [name, version] of Object.entries(deps)) {

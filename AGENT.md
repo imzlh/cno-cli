@@ -34,6 +34,34 @@ CDP Inspector (Chrome DevTools Protocol):
 
 ---
 
+## Before You Begin
+THERE ARE SOME WARNINGS YOU SHOULD BE AWARE OF:
+ - You are supposed to use `import.meta.use()` to load modules.
+ - NEVER cast types uncausally, especially when using `import.meta.use()`.
+ - When using `os.getenv`, which will throws when the environment variable is not set.
+   Please trap the error using `try { ... } catch (e) { }` to avoid crashing.
+ - If speed and no accuracy is required, use `engine.encode/decodeString` instead.
+   Which is natively supported by QuickJS which is faster. (Only UTF8 decoding and encoding)
+ - Reduce using global variables, use `import.meta.use()` low-level api instead.
+   For example, `import.meta.use('text').Encoder` not `globalThis.TextEncoder`
+ - If you are compressing context, never forget to remind yourself to read me again after compressing.
+ - These warnings are edited by user, you should take into account more carefully.
+
+## Code Style Guide
+I prefer to use the following style for writing code:
+```ts
+/** top level comment, optional */
+import type {} from '';
+import * as xx from '';
+
+const fs = import.meta.use('fs');   // NO CASTING
+
+const {} = ...; // some pre-defined variables
+
+const fn1 = () => void 0;       // if function is short, use arrow function
+export default function () {}   // exports directly
+```
+
 ## Module 1: circu.js — Core Runtime
 
 **Location**: `circu.js/`  
@@ -41,7 +69,7 @@ CDP Inspector (Chrome DevTools Protocol):
 **Purpose**: Lightweight JavaScript runtime with ES2024+ engine and event loop
 
 ### Key Features
-- **QuickJS**: ES2024+ JS engine (modules, Promise, Proxy, BigInt, async generators)
+- **QuickJS**: ES2025+ JS engine (modules, Promise, Proxy, BigInt, async generators)
 - **libuv**: Event loop, async I/O, threads, networking (cross-platform)
 - **`import.meta.use()`**: Unique built-in module loading system (NOT standard `import`)
 - **Self-attaching bytecode**: Compiled JS bytecode can be appended to binary
@@ -55,7 +83,7 @@ CDP Inspector (Chrome DevTools Protocol):
 | `fswatch` | File watcher | inotify/FSEvents/ReadDirectoryChangesW |
 | `os` | OS info | `cwd`, `env`, `pid`, `ppid`, `homedir`, `tmpdir`, `uname`, `memoryUsage` |
 | `process` | Process mgmt | `spawn`, `exec`, `kill`, `wait` |
-| `engine` | Runtime API | `eval`, `serialize`, `deserialize`, `gc`, `Module`, `onModule` |
+| `engine` | Runtime API | `eval`, `serialize`, `deserialize`, `gc`, `Module`, `onModule`, `promise_hook` |
 | `crypto` | Cryptography | `md5`, `sha256`, `hmac`, `aes`, `rsa`, `ecdsa` |
 | `http` | HTTP parser | llhttp-based request/response parsing |
 | `ssl` | TLS/SSL | OpenSSL wrapper, `Context`, `Pipe` |
@@ -75,6 +103,9 @@ CDP Inspector (Chrome DevTools Protocol):
 | `signals` | Signals | POSIX signal handling |
 | `curl` | HTTP client | libcurl-based HTTP client (used by fetch) |
 | `udp` | UDP | dgram/UDP socket support |
+| `debug` | Debugging | Debugger support (used by CDP debugger) |
+| `win32` | Windows | Windows-specific APIs |
+| `nodeapi` | Native Layer | Node.js-compatible n-api bindings to use node native modules |
 
 ### Type Definitions
 - `circu.js/types/*.d.ts` — TypeScript definitions for all modules
@@ -85,206 +116,217 @@ CDP Inspector (Chrome DevTools Protocol):
 - `libcjs` — Static library (for embedding)
 
 ### Engine Module Details (`import.meta.use('engine')`)
-
-```typescript
-interface CModuleEngine {
-    versions: {
-        quickjs: string;
-        tjs: string;
-        uv: string;
-        openssl: string;
-        zlib: string;
-        sqlite3: string;
-        llhttp: string;
-    };
-    
-    gc: {
-        run(): void;
-        setThreshold(bytes: number): void;
-    };
-    
-    Module: {
-        new(code: string, filename: string): Module;
-        from(specPath: string, exports: object): Module;
-        create(specPath: string): Module;
-    };
-    
-    serialize(obj: any): Uint8Array;
-    deserialize(buf: Uint8Array): any;
-    
-    eval(code: string, filename?: string): Module;
-    waitIO<T>(p: Promise<T>): T;
-    
-    setMemoryLimit(bytes: number): void;
-    setMaxStackSize(bytes: number): void;
-    
-    onModule(hooks: {
-        resolve?(spec: string, parent: string, attrs?: Record<string, any>): string;
-        load?(specPath: string): Module;
-        init?(specPath: string, meta: Record<string, any>): void;
-        attrchk?(attrs: Record<string, any>): void;
-    }): void;
-    
-    onEvent(handler: (type: EventType, data: any) => boolean): void;
-    
-    EventType: {
-        PROMISE, UNHANDLED_REJECTION, JOB_EXCEPTION, EXIT, LOAD
-    };
-}
-```
+**Location**: `circu.js/types/engine.d.ts`
 
 ---
 
 ## Module 2: cts — TypeScript Loader
 
-**Location**: `cts/`  
-**Language**: TypeScript  
+**Location**: `cts/`
+**Language**: TypeScript
 **Purpose**: Module resolution, TS transformation, multi-protocol support
 
-### Core Components
+### Architecture (4-Layer Design)
 
-| File | Purpose | Key Classes/Functions |
-|------|---------|----------------------|
-| `resolver.ts` | 3-level cache module resolver | `ModuleResolver` |
-| `loader.ts` | ESM/CJS module loader | `ModuleLoader` |
-| `transformer.ts` | TS/JSX → JS transform | `Transformer` (OXC native primary, Sucrase fallback) |
-| `cjs.ts` | CommonJS interop | `CjsLoader`, `mkRequire` |
-| `lock.ts` | Lock file management | `LockStore` |
-| `jsc.ts` | Bytecode cache | `JscCache` |
-| `runtime.ts` | Main runtime | `TypeScriptRuntime`, `createRuntime` |
-| `config.ts` | Config loading | `createConfig`, `loadConfigFile` |
-| `deps.ts` | Dependency scanner | `DepScanner`, `extractImports` |
-| `precompile.ts` | Worker-parallel compile | `PrecompileDriver` |
-| `pkg.ts` | package.json utils | `detectFormat`, `readPkg`, `resolveSubpath` |
-| `flow.ts` | Generator-based I/O flow | `runSync`, `runAsync`, `StepType` enum |
-| `oxc.ts` | Native OXC extension loader | `OxcTranspiler`, `tryLoadOxc` |
-| `task.ts` | deno.json/package.json task runner | `TaskRunner`, `BinResolver`, `loadTasks` |
-| `shell.ts` | Shell command parser | `parseShellCommand`, `resolveWinBinEntry` |
-| `wasm.ts` | WASM module loading | `buildWasmModule` |
-| `scan.ts` | Import extraction (Sucrase tokenizer) | `extractImports` |
-| `resources.ts` | Central resource lifecycle manager | `resources.register`, `resources.release` |
-| `types.ts` | Shared type definitions | `ModuleInfo`, `RuntimeConfig`, `ConfigOptions`, `PackageJson` |
-| `errors.ts` | Error formatting and diagnostics | `ErrorKind`, `TransformError`, `formatError`, `fatal` |
+```
+require('foo')  ─→  api/
+import 'foo'    ─→  runtime/hooks.ts
+                      │
+                      ▼
+                  resolve/          Find files → ModuleInfo
+                      │
+                      ▼
+                  source/           Read + transform (format-agnostic)
+                      │
+                      ▼
+                  compile/          Compile + cache + CJS↔ESM bridge
+                      │
+                      ▼
+                  Module / exports
+```
 
-### Protocol Handlers (`cts/src/protocol/`)
+### Directory Structure
 
-| Protocol | File | Description |
-|----------|------|-------------|
-| `file://` | `file.ts` | Local filesystem |
-| `http://`/`https://` | `http.ts` | Remote modules with caching |
-| `npm:` | `npm.ts` | NPM package resolution |
-| `jsr:` | `jsr.ts` | JSR (Deno registry) packages |
-| `node:` | `node.ts` | Node.js built-in modules |
-| `data:` | `data.ts` | Data URL (RFC 2397) |
-
-### Utils (`cts/src/utils/`)
-
-| File | Purpose | Key Exports |
-|------|---------|-------------|
-| `lru.ts` | Bounded LRU cache | `LRU` |
-| `io.ts` | File I/O helpers with LRU resolution cache | `readText`, `writeText`, `ensureDir` |
-| `path.ts` | Pure path utilities | `joinPaths`, `dirname`, `isAbsolute` |
-| `progress.ts` | Unified precache progress UI | `PrecacheProgress` |
-| `log.ts` | Structured debug logger (reads DEBUG env) | `log.debug`, `log.info` |
-| `misc.ts` | Hash, semver, tar.gz, JSONC, arg parsing | `hashString`, `unTarGz`, `parseArgs` |
-| `tier.ts` | Memory tier detection | `getMemoryTier` |
+```
+cts/src/
+├── resolve/                    # Layer 1: find file paths
+│   ├── index.ts                # ModuleResolver (3-level cache: L1 source→spec, L2 spec→info, L3 dispatch)
+│   ├── builtins.ts             # BUILTINS Set + isBuiltinSpecifier()
+│   ├── pkg.ts                  # package.json exports/imports resolution
+│   └── protocols/              # Protocol handlers
+│       ├── base.ts             # ProtocolHandler interface + guessFileKind
+│       ├── file.ts             # file://
+│       ├── npm.ts              # npm: registry resolution
+│       ├── jsr.ts              # jsr: Deno registry
+│       ├── http.ts             # http:/https: remote modules
+│       ├── node.ts             # node: built-in polyfills
+│       └── data.ts             # data: URLs (RFC 2397)
+│
+├── source/                     # Layer 2: read files + transform (CJS/ESM agnostic)
+│   ├── index.ts                # readSource(), readSourceForCjs()
+│   ├── transform.ts            # Transformer (OXC native primary, Sucrase fallback)
+│   └── cache.ts                # JscCache L1(内存)+L2(磁盘) bytecode cache
+│
+├── compile/                    # Layer 3: compile + cache + bridge
+│   ├── index.ts                # ModuleCompiler facade (orchestrates ESM/CJS/WASM)
+│   ├── esm.ts                  # EsmCompiler: engine.Module compilation + esmCache + circular deps
+│   ├── cjs.ts                  # CjsLoader: CJS exec, mkRequire factory, requireEsm, loadBuiltin
+│   ├── wasm.ts                 # WasmCompiler: WASM loading + circular deps
+│   ├── bridge.ts               # CJS↔ESM bridge: bridgeCjsToEsm, loadEsmSync (promiseResult), installGlobalRequire
+│   └── builtins.ts             # (re-exports from resolve/builtins.ts)
+│
+├── api/                        # Layer 4: thin re-exports for external consumers
+│   └── index.ts                # Re-exports CjsModule, ModuleCompiler, bridge functions, BUILTINS
+│
+├── runtime/                    # Composition root: lifecycle + engine hooks
+│   ├── index.ts                # TypeScriptRuntime + createRuntime
+│   ├── hooks.ts                # engine.onModule (resolve/load/init/attrchk) + loadedModules dedup
+│   ├── meta.ts                 # import.meta population (url, filename, dirname, resolve)
+│   └── resources.ts            # ResourceManager class (instance-based, not singleton)
+│
+├── utils/                      # Shared utilities
+│   ├── index.ts                # Re-exports + uname/isWindows
+│   ├── bin.ts                  # Binary resolution
+│   ├── io.ts                   # File I/O with LRU resolution cache
+│   ├── log.ts                  # Structured debug logger
+│   ├── lru.ts                  # Bounded LRU cache
+│   ├── misc.ts                 # Hash, semver, tar.gz, JSONC, arg parsing
+│   ├── path.ts                 # Pure path utilities
+│   ├── progress.ts             # Precache progress UI
+│   └── tier.ts                 # Memory tier detection
+│
+├── types.ts                    # Shared types (ModuleInfo, RuntimeConfig, ConfigOptions, PackageJson)
+├── config.ts                   # Config loading (CLI + env + tsconfig + deno.json + package.json)
+├── deps.ts                     # DepScanner (BFS dependency scanning)
+├── errors.ts                   # ErrorKind, TransformError, formatError, fatal
+├── flow.ts                     # Generator-based I/O flow (runSync, runAsync, StepType)
+├── lock.ts                     # SQLite3 lock store (sources, modules, bins tables)
+├── oxc.ts                      # Native OXC extension loader
+├── precompile.ts               # Worker-parallel transform + main-thread QJS compile
+├── scan.ts                     # Import extraction (Sucrase tokenizer, used by workers)
+├── shell.ts                    # Shell command parser
+├── task.ts                     # deno.json/package.json task runner
+└── wasm.ts                     # buildWasmModule helper
+```
 
 ### Core Types (`cts/src/types.ts`)
 
 ```typescript
 type ModuleFormat = 'esm' | 'cjs';
-type FileKind = 'ts' | 'tsx' | 'jsx' | 'js' | 'json' | 'wasm' | 'dts';
+type FileKind = 'source' | 'json' | 'wasm' | 'binary' | 'text';
 
 interface ModuleInfo {
     specPath: string;
     localPath: string;
     format: ModuleFormat;
-    kind: FileKind;
-    source: 'lock' | 'resolved' | 'cached';
+    fileKind: FileKind;
 }
 
-interface RuntimeConfig {
-    cacheDir: string;
-    lockDir: string;
-    noLock: boolean;
-    frozen: boolean;
-    reload: boolean;
-    noHttp: boolean;
-    noJsr: boolean;
-    noNode: boolean;
-    silent: boolean;
-    disableCache: boolean;
-    memoryLimit?: number;
-    maxStackSize?: number;
+interface ConfigOptions {
+    cacheDir?: string;
+    enableHttp?: boolean;
+    enableJsr?: boolean;
+    enableNode?: boolean;
+    enableCache?: boolean;     // default: true (inverted from old disableCache)
+    enableOxc?: boolean;
+    silent?: boolean;
+    disableLock?: boolean;     // renamed from noLock
+    frozen?: boolean;
+    lockDir?: string;
     polyfill?: string;
-    workers: number;
+    // ... see types.ts for full list
 }
 ```
 
-### Module Resolution Flow
+### Module Resolution Flow (resolve/)
 
 ```
-1. L1 Cache: lock.sources["spec\0parent"] → specPath
+1. L1 Cache: lock.sources["mode\0spec\0parent"] → specPath
 2. L2 Cache: lock.modules[specPath] → ModuleInfo
 3. L3 Dispatch: protocol handler → download if needed
 ```
 
-### ModuleLoader Details
+### ModuleCompiler Details (compile/index.ts)
 
 ```typescript
-class ModuleLoader {
+class ModuleCompiler {
+    readonly esm: EsmCompiler;
+    readonly cjs: CjsLoader;
+    readonly wasm: WasmCompiler;
+
     constructor(resolver: ModuleResolver, cfg: RuntimeConfig);
-    
+
     load(info: ModuleInfo, meta?: Record<string, any>): Module;
     loadSource(code: string, info: ModuleInfo, meta?: Record<string, any>): Module;
     preRegister(localPath: string, parentPath: string): void;
-    
-    // Internal
-    private transformer: Transformer;
-    private cjs: CjsLoader;
-    private esmCache: Map<string, Module>;
-    private jsc: JscCache;
+    requireInternal(id: string, parentPath?: string): any;
 }
 ```
 
-### ESM/CJS Interop Rules
+### ESM/CJS Interop Rules (compile/bridge.ts)
 
 ```
 ESM imports CJS → module.exports becomes `default`; named keys also exported
 ESM imports CJS with __esModule=true → treat as transpiled ESM
-CJS requires ESM → synchronously extract via engine.waitIO
+CJS requires ESM → loadEsmSync via engine.promiseResult:
+  - throws → propagate (module error)
+  - returns null → throw "cannot require() async ESM"
+  - returns content → return mod.namespace (live reference, C++ native)
 CJS requires CJS → normal require() chain
 Circular CJS → return partial exports (Node.js behavior)
 ```
 
-### TypeScriptRuntime Details
+### TypeScriptRuntime Details (runtime/index.ts)
 
 ```typescript
 class TypeScriptRuntime {
     resolver: ModuleResolver;
-    loader: ModuleLoader;
+    compiler: ModuleCompiler;    // was `loader: ModuleLoader`
     config: RuntimeConfig;
-    
+    resources: ResourceManager;  // instance-based, not global singleton
+
     constructor(cfg: RuntimeConfig, entryDir?: string);
-    
+
     async precache(entrySpecPath: string, entryLocalPath: string): Promise<ScanResult>;
     async loadPolyfill(path: string): Promise<void>;
     async loadEntry(path: string, extra?: Record<string, any>): Promise<Module>;
-    
+
     registerNodeResolver(r: NodeBuiltinResolver): void;
     flushLock(): void;
-    
-    private hookEngine(): void;  // Register engine.onModule hooks
-    private fillMeta(meta: Record<string, any>, info: ModuleInfo): void;
+    cleanup(): void;
+}
+```
+
+### ResourceManager (runtime/resources.ts)
+
+Instance-based (not singleton). Each TypeScriptRuntime creates its own.
+Standard cleanups: connection pools, DNS cache, pkg cache, resolve cache.
+
+```typescript
+class ResourceManager {
+    register(fn: Cleanup): void;
+    release(): void;           // LIFO, idempotent
+    get released(): boolean;
 }
 ```
 
 ### Lock File Format (SQLite3)
 
-LockStore now uses SQLite3 (`cts.lock`) with tables:
+LockStore uses SQLite3 (`cts.lock`) with tables:
 - `sources` — spec→specPath mapping (L1 cache)
 - `modules` — specPath→ModuleInfo (L2 cache)
 - `bins` — binary name→local path
+
+### CJS→ESM Sync Loading (compile/bridge.ts)
+
+`loadEsmSync` uses `engine.promiseResult` with three outcomes:
+1. **Throws** → module evaluation failed → propagate as CJS require error
+2. **Returns null** → top-level await unresolved → throw "cannot require() async ESM"
+3. **Returns content** → success → return `mod.namespace` (live reference)
+
+IMPORTANT: Returns live namespace reference, NOT a shallow copy.
+Module is C++ native; `export()` bindings live in C++ memory.
+A shallow copy would create dangling pointers if the Module is GC'd.
 
 ### Config Loading Priority
 
@@ -297,35 +339,9 @@ LockStore now uses SQLite3 (`cts.lock`) with tables:
 6. Defaults (lowest)
 ```
 
-### Dependency Scanner
-
-```typescript
-class DepScanner {
-    constructor(resolver: ModuleResolver, cfg: RuntimeConfig, progress?: PrecacheProgress);
-    
-    async scan(entrySpecPath: string, entryLocalPath: string): Promise<ScanResult>;
-}
-
-// Uses Sucrase tokenizer for import extraction (no regex)
-function extractImports(source: string, isTs?: boolean): string[];
-```
-
-### Precompile (Worker-parallel)
-
-```typescript
-class PrecompileDriver {
-    constructor();
-    async precompile(modules: Array<{localPath: string}>, onProgress?: (done: number, total: number) => void): Promise<Map<string, Uint8Array>>;
-    async terminate(): Promise<void>;
-}
-
-// Phase 1: Worker-parallel OXC/Sucrase transform (string→string)
-// Phase 2: Main-thread QJS compile (Module + dump → bytecode)
-```
-
 ### Transform Diagnostics Convention
 
-- `cts/src/transformer.ts` is the boundary that converts OXC/Sucrase parse failures into structured diagnostics.
+- `cts/src/source/transform.ts` is the boundary that converts OXC/Sucrase parse failures into structured diagnostics.
 - When transform code has line and column information, throw `TransformError` from `cts/src/errors.ts` instead of flattening the error into a formatted string.
 - `TransformError` must carry `fileName`, `line`, and `column` so REPL, CLI, and future editors can render code frames without parsing human text.
 - Callers such as the REPL should treat transform diagnostics as structured data first, and only fall back to message parsing for backward compatibility.
@@ -479,7 +495,7 @@ cno/src/
     ├── ssl.ts        # CNO SSL helpers
     └── llhttp.ts     # CNO llhttp bindings
 ├── utils/            # Internal utilities
-│   ├── args.ts       # CLI argument management
+│   ├── args.ts       # CLI argument management, for deno and node polyfill
 │   ├── assert.ts     # assert helper
 │   ├── http.ts       # shared HTTP/1.1 TCP connection utilities
 │   ├── malloc.ts     # buffer allocation helper
@@ -967,7 +983,7 @@ Full Chrome DevTools Protocol (CDP) implementation enabling `--inspect` debuggin
 
 ### Naming Conventions
 - **camelCase**: Functions, methods, variables (`fetchBytes`, `onprogress`, `cachePath`)
-- **PascalCase**: Classes, interfaces, types (`ModuleLoader`, `TcpSocket`)
+- **PascalCase**: Classes, interfaces, types (`ModuleCompiler`, `TcpSocket`)
 - **UPPER_SNAKE_CASE**: Constants (`BUILTINS`, `ErrorKind`, `DEFAULT_HEADERS`)
 
 ### TypeScript Config
@@ -985,14 +1001,8 @@ const fs = import.meta.use('fs');
 const os = import.meta.use('os');
 const engine = import.meta.use('engine');
 ```
-
-### Symbol Mode (Release Build)
-
-```typescript
-// After bundling, import.meta.use is replaced
-const use = globalThis[Symbol.for('cjs.internal.use')];
-const fs = use('fs');
-```
+To reduce the binary size, we will convert them to symbols by esbuild any time.
+You should notice that build will NEVER check types, you should always use `pnpm run type-check` instead.
 
 ---
 
@@ -1010,6 +1020,7 @@ Deno.test("test name", async (t) => {
 Deno.test({ name: "ignored", ignore: true }, () => {});
 Deno.test({ name: "only", only: true }, () => {});
 ```
+Then, `cno test xxx.ts` will run all the tests.
 
 ### Test Runner
 `src/commands/test.ts`:
@@ -1087,42 +1098,22 @@ On SyntaxError, writes to:
 
 1. Create `cno/src/node/xxx/mod.ts` (exports)
 2. Create `cno/src/node/xxx/index.ts` (polyfill)
-3. Add to `BUILTINS` in `cts/src/cjs.ts`
+3. Add to `BUILTINS` in `cts/src/resolve/builtins.ts`
+**WARNING** NODE MODULES SHOULD NEVER IMPORT MODULES OUTSIDE OF `cno/src/node`
+IF YOU WANT TO USE, PLEASE USE `import.meta.use()` AS SHARED NAMESPACE TO DELIVER FN/VAR.
 
 ### Adding Protocol Handler (cts)
 
-1. Create `cts/src/protocol/xxx.ts`
+1. Create `cts/src/resolve/protocols/xxx.ts`
 2. Implement `ProtocolHandler` interface
-3. Register in `cts/src/resolver.ts`
+3. Register in `cts/src/resolve/index.ts`
 
-### Adding Native Extension
+### Adding Native Extension (unstable)
 
 1. Create `ext-xxx/native.c`
 2. Export `tjs_module_info`
 3. Add CMakeLists.txt
 4. Add to `EXTENSIONS` in `src/bootstrap.ts`
-
----
-
-## Common Issues
-
-### Q: Module not found
-A: Check protocol is enabled (`--no-http`, `--no-jsr`, `--no-node`)
-
-### Q: Lock file error
-A: Use `--no-lock` to disable, or `--frozen` for CI
-
-### Q: Memory limit exceeded
-A: Use `--memory-limit 512MB`
-
-### Q: Circular dependency
-A: CJS circular deps return partial exports (Node.js behavior)
-
-### Q: ESM/CJS interop issue
-A: Check `__esModule` flag on CJS module
-
-### Q: Release vs Dev build
-A: Release enables `CJS_USE_SYMBOL_INTERNAL`, converts `import.meta.use` to Symbol
 
 ---
 
@@ -1138,7 +1129,7 @@ A: Release enables `CJS_USE_SYMBOL_INTERNAL`, converts `import.meta.use` to Symb
 ### Precompile
 - Worker-parallel OXC (native) / Sucrase (fallback) transform
 - Main-thread QJS compile (C layer, fast)
-- Default workers: CPU cores (max 16)
+- Default workers: CPU cores (max 16, for big memory machines) and less
 
 ### Networking
 - HTTP/2 multiplexing via native extension

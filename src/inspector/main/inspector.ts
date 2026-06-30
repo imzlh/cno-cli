@@ -28,6 +28,7 @@ type WorkerErrorPayload = { message: string; stack?: string; phase?: string }
 
 export interface InspectorOptions {
 	port: number
+	host?: string
 	entryFile: string
 	breakOnStart?: boolean
 	waitForClient?: boolean
@@ -35,6 +36,7 @@ export interface InspectorOptions {
 
 export class Inspector {
 	private readonly port: number
+	private readonly host: string
 	private readonly entryFile: string
 	private readonly breakOnStart: boolean
 	private readonly waitForClient: boolean
@@ -54,12 +56,15 @@ export class Inspector {
 	private readyResolve: ((v: { wsUrl: string }) => void) | null = null
 	private readyReject: ((e: Error) => void) | null = null
 	private connectedResolve: (() => void) | null = null
+	private runtimeReady = false
+	private runtimeReadyResolve: (() => void) | null = null
 
 	/** Script-init hook; run.ts wires this into runtime.addInitHook() after attach. */
 	scriptInitHook?: (specPath: string, info: ModuleInfo) => void
 
 	constructor(opts: InspectorOptions) {
 		this.port = opts.port
+		this.host = opts.host ?? '127.0.0.1'
 		this.entryFile = opts.entryFile
 		this.breakOnStart = opts.breakOnStart ?? false
 		this.waitForClient = opts.waitForClient ?? false
@@ -73,6 +78,7 @@ export class Inspector {
 		this.worker = new worker.Worker({
 			__cno_debug_worker: true,
 			port: this.port,
+			host: this.host,
 			channelHandle: pair.handle,
 			entryFile: this.entryFile,
 		})
@@ -105,6 +111,15 @@ export class Inspector {
 					this.connectedResolve?.()
 					this.connectedResolve = null
 				}
+				if (!connected) {
+					this.runtimeReady = false
+					this.runtimeReadyResolve = null
+				}
+			},
+			onRuntimeReady: () => {
+				this.runtimeReady = true
+				this.runtimeReadyResolve?.()
+				this.runtimeReadyResolve = null
 			},
 			onWorkerError: (error: WorkerErrorPayload) => {
 				const phase = error.phase ? ` during ${error.phase}` : ''
@@ -142,16 +157,7 @@ export class Inspector {
 
 		if (this.breakOnStart || this.waitForClient) {
 			console.warn('Waiting for DevTools client...')
-			await new Promise<void>((resolve) => {
-				const timeout = timers.setTimeout(() => {
-					this.connectedResolve = null
-					resolve()
-				}, 30_000)
-				this.connectedResolve = () => {
-					timers.clearTimeout(timeout)
-					resolve()
-				}
-			})
+			await this.waitForConnection(30_000)
 			if (this.breakOnStart) {
 				try {
 					native.addBreakpoint(this.entryFile, 1)
@@ -159,7 +165,35 @@ export class Inspector {
 					/* entry not yet known to the debugger */
 				}
 			}
+			if (this.waitForClient) {
+				await this.waitForDebugger()
+			}
 		}
+	}
+
+	waitForConnection(timeoutMs?: number): Promise<void> {
+		if (this.connected) return Promise.resolve()
+		return new Promise<void>((resolve, reject) => {
+			let timeout: unknown = null
+			if (timeoutMs && timeoutMs > 0) {
+				timeout = timers.setTimeout(() => {
+					if (this.connectedResolve === onConnected) this.connectedResolve = null
+					reject(new Error('timed out waiting for DevTools client'))
+				}, timeoutMs)
+			}
+			const onConnected = (): void => {
+				if (timeout != null) timers.clearTimeout(timeout as number)
+				resolve()
+			}
+			this.connectedResolve = onConnected
+		})
+	}
+
+	waitForDebugger(): Promise<void> {
+		if (this.runtimeReady) return Promise.resolve()
+		return new Promise<void>((resolve) => {
+			this.runtimeReadyResolve = resolve
+		})
 	}
 
 	async detach(): Promise<void> {
@@ -208,5 +242,7 @@ export class Inspector {
 		this.readyReject = null
 		this.connectedResolve = null
 		this.connected = false
+		this.runtimeReady = false
+		this.runtimeReadyResolve = null
 	}
 }

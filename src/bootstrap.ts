@@ -54,8 +54,8 @@ export function resolveExtDir(): string | null {
 
 /** Name → relative filename within the ext directory. */
 const EXTENSIONS: Record<string, string> = {
-    '@cnojs/http/ext-h2': 'cno_nghttp2' + DLEXT,
-    '@cnojs/quic':        'cno_quicly'  + DLEXT,
+    // '@cnojs/http/ext-h2': 'cno_nghttp2' + DLEXT,
+    // '@cnojs/quic':        'cno_quicly'  + DLEXT,
 };
 
 /**

@@ -1,5 +1,6 @@
 const os = import.meta.use('os');
 const console = import.meta.use('console');
+import type { Args } from '../cno/src/utils/args';
 
 export type Subcommand =
     | 'run' | 'task' | 'eval' | 'cache' | 'repl'
@@ -14,8 +15,8 @@ export interface ParsedCli {
     positional: string[];
     /** Parsed flags, as a flat record. */
     flags: Record<string, string | boolean>;
-    /** Raw argv slice (for forwarding to subprocesses). */
-    raw: string[];
+    /** Raw argv shape for runtime argv reconstruction. */
+    rawArgs: Args;
 }
 
 const SUBCOMMANDS = new Set<string>([
@@ -38,7 +39,7 @@ const ALIASES: Record<string, string> = {
 const KNOWN_FLAGS = new Set<string>([
     // run / eval / cache
     'cache-dir', 'lock-dir', 'no-lock', 'frozen', 'disable-cache',
-    'no-http', 'no-jsr', 'no-node', 'no-swc', 'ignore-scripts',
+    'no-http', 'no-jsr', 'no-node', 'no-oxc', 'no-swc', 'ignore-scripts',
     'reload', 'r', 'precache',
     // misc
     'silent', 'q',
@@ -91,10 +92,11 @@ const DENO_NOOP_FLAGS = new Set<string>([
  *   cno --eval 'code'       → { cmd:'eval', positional:['code'] }
  */
 export function parseArgv(argv: string[]): ParsedCli {
-    const raw = argv.slice();
     const flags: Record<string, string | boolean> = {};
     let cmd: Subcommand = null;
     const positional: string[] = [];
+    const preCommandTokens: string[] = [];
+    const actionTokens: string[] = [];
     let i = 0;
 
     // First non-flag token decides the subcommand.
@@ -102,6 +104,12 @@ export function parseArgv(argv: string[]): ParsedCli {
     // After the script path (first positional after cmd) is found,
     // stop parsing flags — remaining tokens are forwarded to the script.
     let fileFound = false;
+
+    function pushRawTokens(...tokens: string[]): void {
+        if (fileFound) return;
+        if (!cmdDecided) preCommandTokens.push(...tokens);
+        else actionTokens.push(...tokens);
+    }
 
     while (i < argv.length) {
         const a = argv[i]!;
@@ -123,6 +131,7 @@ export function parseArgv(argv: string[]): ParsedCli {
             const k  = a.slice(2, eq);
             const v  = a.slice(eq + 1);
             flags[k] = v;
+            pushRawTokens(a);
             i++;
             continue;
         }
@@ -147,14 +156,17 @@ export function parseArgv(argv: string[]): ParsedCli {
             if (k === 'inspect' || k === 'inspect-brk' || k === 'inspect-wait') {
                 if (next !== undefined && /^(\d+|[a-z0-9.-]+:\d+)$/i.test(next)) {
                     flags[k] = next;
+                    pushRawTokens(a, next);
                     i += 2;
                 } else {
                     flags[k] = true;
+                    pushRawTokens(a);
                     i++;
                 }
                 continue;
             }
             flags[k] = true;
+            pushRawTokens(a);
             i++;
             continue;
         }
@@ -163,9 +175,10 @@ export function parseArgv(argv: string[]): ParsedCli {
         if (a.startsWith('-') && a.length > 1) {
             const k = a.slice(1);
             // -r is "reload"
-            if (k === 'r')      { flags['reload'] = true; i++; continue; }
-            if (k === 'q')      { flags['silent'] = true; i++; continue; }
-            if (k === 'A')      { flags['allow-all'] = true; i++; continue; }
+            if (k === 'r')      { flags['reload'] = true; pushRawTokens(a); i++; continue; }
+            if (k === 'q')      { flags['silent'] = true; pushRawTokens(a); i++; continue; }
+            if (k === 'A')      { flags['allow-all'] = true; pushRawTokens(a); i++; continue; }
+            pushRawTokens(a);
             flags[k] = true;
             i++;
             continue;
@@ -189,7 +202,16 @@ export function parseArgv(argv: string[]): ParsedCli {
         i++;
     }
 
-    return { cmd, positional, flags, raw };
+    const rawArgs: Args = {
+        binary: os.args[0],
+        internalArgs: cmd === null ? [] : preCommandTokens.slice(),
+        action: cmd ?? 'run',
+        actionArgs: cmd === null ? preCommandTokens.slice() : actionTokens.slice(),
+        entry: positional[0] ?? 'repl',
+        args: positional.length > 0 ? positional.slice(1) : [],
+    };
+
+    return { cmd, positional, flags, rawArgs };
 }
 
 /**

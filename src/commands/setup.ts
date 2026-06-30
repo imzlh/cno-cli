@@ -37,7 +37,8 @@ function resolveCacheDir(flags: Record<string, string | boolean>): string {
 function mkdirp(dir: string): void {
     const normalized = normalize(dir);
     const parts = normalized.split(/[/\\]/);
-    let cur = '';
+    const isAbs = normalized.startsWith('/') || /^[A-Za-z]:[/\\]/.test(normalized);
+    let cur = isAbs ? (normalized.startsWith('/') ? systemPathSplit : '') : '';
 
     for (const p of parts) {
         if (!p) continue;
@@ -47,7 +48,9 @@ function mkdirp(dir: string): void {
             continue;
         }
 
-        cur = cur ? (cur + systemPathSplit + p) : p;
+        cur = cur
+            ? (cur.endsWith(systemPathSplit) ? cur + p : cur + systemPathSplit + p)
+            : p;
         try { fs.mkdir(cur, 0o755); } catch { /* exists */ }
     }
 }
@@ -69,6 +72,26 @@ function walkTs(dir: string, prefix = ''): string[] {
         }
     } catch { /* not readable */ }
     return out;
+}
+
+function findLocalNodeSource(start: string): string | null {
+    let dir = normalize(start);
+    const seen = new Set<string>();
+
+    while (dir && !seen.has(dir)) {
+        seen.add(dir);
+        for (const rel of ['src/node', 'cno/src/node']) {
+            const candidate = join(dir, rel);
+            try {
+                if (fs.stat(candidate).isDirectory) return candidate;
+            } catch { /* not found */ }
+        }
+
+        const up = dirname(dir);
+        if (up === dir || up === '.') break;
+        dir = up;
+    }
+    return null;
 }
 
 // ── Local: copy .ts files from srcBase → dstBase ────────────────────────────
@@ -148,18 +171,7 @@ export async function runSetup(flags: Record<string, string | boolean>): Promise
     mkdirp(dstBase);
 
     const cwd = os.cwd;
-
-    // Find local source tree
-    const candidates = [
-        join(cwd, 'cno', 'src', 'node'),
-        join(cwd, 'src', 'node')
-    ];
-    let localSrc: string | null = null;
-    for (const c of candidates) {
-        try {
-            if (fs.stat(c).isDirectory) { localSrc = c; break; }
-        } catch { /* not found */ }
-    }
+    const localSrc = findLocalNodeSource(cwd);
 
     if (localSrc) {
         log.debug('setup', () => `Installing from local source: ${localSrc}`);

@@ -21,6 +21,7 @@ import type {
 import type { ScriptParsedPayload } from '../shared/wire'
 import { Step, type StepCode } from '../shared/native'
 import { log } from '../../../cts/src/utils/log'
+import { toPosixPath } from '../../../cts/src/utils/path'
 
 interface KnownScript {
 	scriptId: string
@@ -243,7 +244,7 @@ export class DebuggerDomain extends Domain {
 	}
 
 	private normalizePath(path: string): string {
-		const normalized = path.replace(/\\/g, '/')
+		const normalized = toPosixPath(path)
 		if (/^[A-Za-z]:/.test(normalized)) return normalized[0]!.toUpperCase() + normalized.slice(1)
 		return normalized
 	}

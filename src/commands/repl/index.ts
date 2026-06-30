@@ -1,11 +1,12 @@
-import { createRuntime } from '../../../cts/src/runtime';
+import { createRuntime } from '../../../cts/src/runtime/index';
 import { loadConfigFile } from '../../../cts/src/config';
-import { Transformer } from '../../../cts/src/transformer';
-import { joinPaths } from '../../../cts/src/utils/path';
+import { Transformer } from '../../../cts/src/source/transform';
+import { joinPaths, cwd } from '../../../cts/src/utils/path';
 import { version } from '../../version';
 import { CnoRepl } from './runner';
 import { uname } from '../../../cts/src/utils';
 import { Inspector } from '../../inspector';
+import { installInspectorBridge, uninstallInspectorBridge } from '../../inspector/bridge';
 import { parseInspectFlags } from '../inspect';
 
 const os = import.meta.use('os');
@@ -25,12 +26,18 @@ function homeDir(): string | null {
 
 export async function runRepl(flags: Record<string, string | boolean>): Promise<void> {
     // ---- CDP inspector ----
-    const dbg = await startInspector(flags);
+    let dbg = await startInspector(flags);
 
     // 1. Initialize cts runtime (this sets up module loader, resolver, etc.)
-    const cwd = os.cwd.replace(/\\/g, '/');
-    const cfg = loadConfigFile(cwd);
-    const runtime = createRuntime(cfg, cwd);
+    const cwdPath = cwd();
+    const cfg = loadConfigFile(cwdPath);
+    const runtime = createRuntime(cfg, cwdPath);
+    installInspectorBridge({
+        entryFile: 'repl',
+        addInitHook: (hook) => runtime.addInitHook(hook),
+        getCurrentInspector: () => dbg,
+        setCurrentInspector: (inspector) => { dbg = inspector; },
+    });
 
     // Wire up CDP scriptParsed hook
     if (dbg?.scriptInitHook) {
@@ -73,6 +80,7 @@ export async function runRepl(flags: Record<string, string | boolean>): Promise<
     await repl.start();
     repl.cleanup();
     await dbg?.detach();
+    uninstallInspectorBridge();
     if (histPath) {
         try {
             fs.writeFile(histPath, engine.encodeString(repl.exportHistory().join('\n')), 0o600);
@@ -88,7 +96,7 @@ async function startInspector(flags: Record<string, string | boolean>): Promise<
 
     // In REPL mode, --inspect-brk degrades to --inspect-wait:
     // there is no "first line" to break on in an interactive session.
-    const dbg = new Inspector({ port: inspect.port, waitForClient: inspect.waitForClient, entryFile: 'repl' });
+    const dbg = new Inspector({ port: inspect.port, host: inspect.host, waitForClient: inspect.waitForClient, entryFile: 'repl' });
     await dbg.attach();
     return dbg;
 }

@@ -1,7 +1,5 @@
 // src/utils.ts — shared CLI utilities
-import { dirname, normalizePath, isAbsolute, joinPaths } from '../cts/src/utils/path';
-
-const os = import.meta.use('os');
+import { dirname, normalizePath, isAbsolute, joinPaths, cwd, toPosixPath } from '../cts/src/utils/path';
 
 /**
  * Resolve a user-supplied file target into an absolute entry path and its
@@ -16,10 +14,9 @@ export function entryAndDir(raw: string): { entry: string; dir: string } {
     const hasProto = !winAbs && /^[a-z][a-z0-9+\-.]*:/i.test(raw) && !raw.startsWith('/');
     let entry: string;
     if (hasProto || raw.startsWith('/') || winAbs) {
-        entry = raw.replace(/\\/g, '/');
+        entry = toPosixPath(raw);
     } else {
-        const cwd = os.cwd.replace(/\\/g, '/');
-        entry = normalizePath(joinPaths(cwd, raw.replace(/\\/g, '/')));
+        entry = normalizePath(joinPaths(cwd(), toPosixPath(raw)));
     }
-    return { entry, dir: hasProto ? os.cwd : dirname(entry) };
+    return { entry, dir: hasProto ? cwd() : dirname(entry) };
 }

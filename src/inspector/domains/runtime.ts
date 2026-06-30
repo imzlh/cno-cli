@@ -62,7 +62,7 @@ export class RuntimeDomain extends Domain {
 			this.enabled = false
 			return this.rpc.call('releaseObjectGroup', { objectGroup: 'runtime' })
 		})
-		this.on('Runtime.runIfWaitingForDebugger', () => ({}))
+		this.on('Runtime.runIfWaitingForDebugger', () => this.rpc.call('runtimeReady', {}))
 		this.on('Runtime.discardConsoleEntries', () => ({}))
 
 		this.on('Runtime.evaluate', (p) => {

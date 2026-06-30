@@ -26,8 +26,10 @@
 import { isCompilerWorker, runCompilerWorker } from '../cts/src/precompile';
 import { fatal } from '../cts/src/errors';
 import { log } from '../cts/src/utils/log';
-import { isAbsolute, joinPaths } from '../cts/src/utils/path';
-import { resources } from '../cts/src/resources';
+import { isAbsolute, joinPaths, cwd, toPosixPath } from '../cts/src/utils/path';
+import { createResourceManager } from '../cts/src/runtime/resources';
+
+const processResources = createResourceManager();
 
 import { parseArgv, readArgv, warnUnknownFlags } from './cli';
 import { showHelp, showVersion, C } from './help';
@@ -40,8 +42,9 @@ import { runRepl } from './commands/repl';
 import { runTest } from './commands/test';
 import { runSetup } from './commands/setup';
 import { startProxy, disableCertVerify, stopNetwork } from './network';
+import type { Args } from '../cno/src/utils/args';
 
-import '../cno/src/main';       // import polyfill
+import '../cno/src/main';
 import { errMsg } from '../cts/src/utils';
 
 const fs = import.meta.use('fs');
@@ -56,13 +59,23 @@ function notImplemented(name: string): never {
 }
 
 function looksLikeFileTarget(raw: string): boolean {
-    const normalized = raw.replace(/\\/g, '/');
+    const normalized = toPosixPath(raw);
     if (raw.startsWith('.') || normalized.includes('/') || isAbsolute(raw)) return true;
     if (!isAbsolute(raw) && /^[a-z][a-z0-9+\-.]*:/i.test(raw)) return true;
     if (/\.(?:mjs|cjs|js|jsx|ts|tsx|json)$/i.test(raw)) return true;
 
-    const cwd = os.cwd.replace(/\\/g, '/');
-    return fs.exists(raw) || fs.exists(joinPaths(cwd, normalized));
+    return fs.exists(raw) || fs.exists(joinPaths(cwd(), normalized));
+}
+
+function makeRunArgs(file: string, args: string[] = []): Args {
+    return {
+        binary: os.args[0],
+        internalArgs: [],
+        action: 'run',
+        actionArgs: [],
+        entry: file,
+        args,
+    };
 }
 
 async function listTasks(): Promise<void> {
@@ -89,7 +102,7 @@ function runProcessCleanup(fast = false): void {
     try { (fast ? cleanupLocksFast : cleanupLocks)?.(); }
     catch (e) { log.debug('cleanup', () => `lock cleanup failed: ${e}`); }
     if (fast) return;
-    try { resources.release(); }
+    try { processResources.release(); }
     catch (e) { log.debug('cleanup', () => `resource cleanup failed: ${e}`); }
 }
 
@@ -112,8 +125,7 @@ async function dispatch(): Promise<void> {
     }
     if (cli.flags['skip-cert-verify']) disableCertVerify();
 
-    try {
-    switch (cli.cmd) {
+    try { switch (cli.cmd) {
         case 'help':
             return showHelp();
         case 'version':
@@ -155,13 +167,15 @@ async function dispatch(): Promise<void> {
             if (cli.cmd === 'run' && !looksLikeFileTarget(file) && taskExists(file)) {
                 return runTask([file, ...args]);
             }
-            return runFile({ file: file, args, flags: cli.flags });
+            return runFile({
+                file: file, args, flags: cli.flags,
+                rawArgs: cli.rawArgs,
+            });
         }
         default:
             showHelp();
             os.exit(1);
-    }
-    } finally { stopNetwork(); }
+    } } finally { stopNetwork(); }
 }
 
 async function workerEntry(): Promise<void> {
@@ -185,7 +199,8 @@ async function workerEntry(): Promise<void> {
     if (testEntry) {
         const pipe = worker.pipe!;
         try {
-            await runFile({ file: String(testEntry), args: [], flags: {} });
+            const file = String(testEntry);
+            await runFile({ file, args: [], flags: {}, rawArgs: makeRunArgs(file) });
             const passed = await startTest(String(testEntry), true, true);
             const failedTests = getFailedTests();
             pipe.postMessage({ passed, failedTests });
@@ -198,7 +213,8 @@ async function workerEntry(): Promise<void> {
     // Web Worker: new Worker(url) passes __cts_entry in workerData (see cno/src/webapi/worker.ts)
     const entry = worker.workerData?.__cts_entry;
     if (entry) {
-        return runFile({ file: String(entry), args: [], flags: {} });
+        const file = String(entry);
+        return runFile({ file, args: [], flags: {}, rawArgs: makeRunArgs(file) });
     }
 
     log.debug('cno', () => 'worker: unknown role, dispatching on argv');

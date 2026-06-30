@@ -28,10 +28,11 @@ export async function spawnBinary(binName: string, args: string[], env: Record<s
             }
             // Unix fallback
             try { await asyncfs.chmod(resolved.binPath, 0o755); } catch {}
+            return rawExec([resolved.binPath, ...args], mergedEnv, cwd);
         }
 
         // Run the JS entry through the same CLI path as user files.
-        return rawExec([os.exePath, 'run', resolved.entry, ...args], mergedEnv, cwd);
+        return rawExec([os.exePath, 'run', `--lock-dir=${cwd}`, resolved.entry, ...args], mergedEnv, cwd);
     } finally {
         lockStore.close();
     }

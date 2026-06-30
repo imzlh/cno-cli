@@ -795,10 +795,6 @@ export class NetworkDomain extends Domain {
 		this.responseBodyCacheBytes += body.total
 	}
 
-	private getenv(name: string): string | undefined {
-		try { return os.getenv(name) ?? undefined } catch { return undefined }
-	}
-
 	private buildTiming(start: number, conn?: FetchConnection): Record<string, number> {
 		// Use curl's absolute *End timestamps (seconds since epoch) and compute
 		// per-phase ms deltas.  Duration fields are cumulative from request start

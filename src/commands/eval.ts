@@ -1,8 +1,11 @@
-import { createRuntime } from '../../cts/src/runtime';
+import { createRuntime } from '../../cts/src/runtime/index';
 import { loadConfigFile } from '../../cts/src/config';
 import { fatal } from '../../cts/src/errors';
 import { joinPaths } from '../../cts/src/utils/path';
-import type { ConfigOptions, ModuleInfo } from '../../cts/src/types';
+import type { ConfigOptions } from '../../cts/src/types';
+import { Inspector } from '../inspector';
+import { installInspectorBridge, uninstallInspectorBridge } from '../inspector/bridge';
+import { parseInspectFlags } from './inspect';
 
 const os = import.meta.use('os');
 
@@ -19,23 +22,37 @@ export async function runEval(opts: EvalOpts): Promise<void> {
     const cfg: Partial<ConfigOptions> = {
         ...fileCfg,
         silent: opts.flags['silent'] === true,
-        noLock: opts.flags['no-lock'] === true,
+        disableLock: opts.flags['no-lock'] === true,
     };
+
+    const inspect = parseInspectFlags(opts.flags);
+    let dbg: Inspector | null = null;
+    if (inspect) {
+        dbg = new Inspector({
+            port: inspect.port,
+            host: inspect.host,
+            entryFile: evalPath,
+            breakOnStart: inspect.breakOnStart,
+            waitForClient: inspect.waitForClient,
+        });
+        await dbg.attach();
+    }
 
     const runtime = createRuntime(cfg, cwd);
-
-    const info: ModuleInfo = {
-        specPath:  evalPath,
-        localPath: evalPath,
-        format:    'esm',
-        fileKind:  'source',
-    };
+    installInspectorBridge({
+        entryFile: evalPath,
+        addInitHook: (hook) => runtime.addInitHook(hook),
+        getCurrentInspector: () => dbg,
+        setCurrentInspector: (inspector) => { dbg = inspector; },
+    });
 
     try {
-        const mod = runtime.loader.loadSource(opts.code, info, { main: true });
+        const mod = runtime.loadSourceEntry(opts.code, evalPath, { main: true });
         await mod.eval();
     } catch (e) {
         fatal(e, '<eval>');
+    } finally {
+        uninstallInspectorBridge();
     }
 
     runtime.flushLock();

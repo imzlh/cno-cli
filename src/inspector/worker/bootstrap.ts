@@ -11,6 +11,7 @@
  */
 
 import { native, type DebugChannelWorker } from '../shared/native'
+import { toPosixPath } from '../../../cts/src/utils/path'
 import { WorkerEndpoint } from '../transport/worker-endpoint'
 import { CDPDispatcher } from './dispatcher'
 import { CdpChannel, handleDevToolsConnection } from './connection'
@@ -28,6 +29,7 @@ const worker = import.meta.use('worker');
 
 interface DebugWorkerData {
 	port: number
+	host?: string
 	channelHandle: ArrayBuffer
 	entryFile?: string
 	__cno_debug_worker: true
@@ -41,7 +43,7 @@ type WorkerErrorReport = {
 
 function toEntryUrl(entryFile?: string): string {
 	if (!entryFile) return 'about:blank'
-	const normalized = entryFile.replace(/\\/g, '/').replace(/^\//, '')
+	const normalized = toPosixPath(entryFile).replace(/^\//, '')
 	return normalized[0] == '/' ? `file://${normalized}` : `file:///${normalized}`
 }
 
@@ -95,7 +97,7 @@ export function bootstrapDebugWorker(): void {
 	const debuggerDomain = new DebuggerDomain(dispatcher, emit, endpoint)
 	const runtimeDomain = new RuntimeDomain(dispatcher, emit, endpoint)
 	const consoleDomain = new ConsoleDomain(dispatcher, emit)
-	const pageDomain = new PageDomain(dispatcher, emit)
+	const pageDomain = new PageDomain(dispatcher, emit, endpoint)
 	const networkDomain = new NetworkDomain(dispatcher, emit, endpoint)
 	const fetchDomain = new FetchDomain(dispatcher, emit, endpoint)
 	const targetDomain = new TargetDomain(dispatcher, emit)
@@ -114,6 +116,7 @@ export function bootstrapDebugWorker(): void {
 
 	void startServer({
 		port: workerData.port,
+		host: workerData.host,
 		entryUrl,
 		onConnect: (ws) =>
 			handleDevToolsConnection(ws, {

@@ -51,6 +51,7 @@ import {
 import type { MainEndpoint } from '../transport/main-endpoint'
 import type { Serializer } from './remote-object'
 import type { ModuleInfo } from '../../../cts/src/types'
+import { toPosixPath } from '../../../cts/src/utils/path'
 import { native } from '../shared/native'
 import { isUserFile } from '../shared/user-files'
 import { getTierLimits } from '../../../cno/src/utils/memory-tier'
@@ -138,7 +139,15 @@ export class Hooks {
 	}
 
 	scriptSourcePath(scriptId: string): string {
-		return this.scriptSourcePaths.get(scriptId) ?? scriptId
+		const direct = this.scriptSourcePaths.get(scriptId)
+		if (direct) return direct
+		const normalized = normalizeScriptPath(scriptId)
+		for (const [specPath, sourcePath] of this.scriptSourcePaths) {
+			if (sameScriptPath(specPath, normalized) || sameScriptPath(sourcePath, normalized)) {
+				return sourcePath
+			}
+		}
+		return scriptId
 	}
 
 	private scriptFrameLocation(file: string): { scriptId: string; url: string } {
@@ -807,7 +816,7 @@ function npmDevtoolsUrl(specPath: string): string {
 }
 
 function fileUrl(path: string): string {
-	const normalized = path.replace(/\\/g, '/').replace(/^\//, '')
+	const normalized = toPosixPath(path).replace(/^\//, '')
 	return `file:///${normalized}`
 }
 
@@ -816,7 +825,7 @@ function sameScriptPath(a: string, b: string): boolean {
 }
 
 function normalizeScriptPath(path: string): string {
-	let normalized = path.replace(/\\/g, '/')
+	let normalized = toPosixPath(path)
 	if (normalized.startsWith('file:///')) normalized = normalized.slice('file:///'.length)
 	if (/^[A-Za-z]:/.test(normalized)) return normalized[0]!.toUpperCase() + normalized.slice(1)
 	return normalized

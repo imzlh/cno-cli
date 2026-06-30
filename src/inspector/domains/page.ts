@@ -9,6 +9,7 @@
 
 import { Domain } from './base'
 import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
+import type { WorkerEndpoint } from '../transport/worker-endpoint'
 
 const FRAME_ID = 'cno-frame-1'
 const LOADER_ID = 'cno-loader-1'
@@ -34,7 +35,7 @@ export class PageDomain extends Domain {
 	private frameNavigatedEmitted = false
 	private resources: Array<{ url: string }> = []
 
-	constructor(dispatcher: CDPDispatcher, event: EmitEvent) {
+	constructor(dispatcher: CDPDispatcher, event: EmitEvent, private readonly rpc: WorkerEndpoint) {
 		super(dispatcher, event)
 
 		this.on('Page.enable', () => {
@@ -72,6 +73,10 @@ export class PageDomain extends Domain {
 				})),
 			},
 		}))
+		this.on('Page.getResourceContent', (p) => {
+			const url = this.reqStr(p, 'url')
+			return this.rpc.call('getResourceContent', { url })
+		})
 		this.on('Page.getNavigationHistory', () => ({
 			currentIndex: 0,
 			entries: [{ id: 1, url: this.entryUrl, userTypedURL: this.entryUrl, title: 'cno', transitionType: 'typed' }],
@@ -108,15 +113,7 @@ export class PageDomain extends Domain {
 		if (entryUrl) this.entryUrl = entryUrl
 		this.connected = true
 		if (!this.enabled) return
-		if (this.frameNavigatedEmitted) return
-		this.frameNavigatedEmitted = true
-		const ts = Date.now() / 1000
-		this.event('Page.frameNavigated', { frame: this.makeFrame(), type: 'Navigation' })
-		if (!this.domContentFired) {
-			this.domContentFired = true
-			this.event('Page.domContentEventFired', { timestamp: ts })
-		}
-		if (this.loadFired) this.event('Page.loadEventFired', { timestamp: ts })
+		this.emitLifecycleReplay(Date.now() / 1000)
 	}
 
 	onScriptParsed(url: string): void {
@@ -136,6 +133,27 @@ export class PageDomain extends Domain {
 		if (!this.enabled) return
 		this.event('Page.domContentEventFired', { timestamp })
 		this.event('Page.lifecycleEvent', { frameId: FRAME_ID, loaderId: LOADER_ID, name: 'DOMContentLoaded', timestamp })
+	}
+
+	setConnected(connected: boolean): void {
+		this.connected = connected
+		if (!connected) {
+			this.frameNavigatedEmitted = false
+		}
+	}
+
+	private emitLifecycleReplay(timestamp: number): void {
+		this.frameNavigatedEmitted = true
+		this.event('Page.frameNavigated', { frame: this.makeFrame(), type: 'Navigation' })
+		if (!this.domContentFired) {
+			this.domContentFired = true
+		}
+		this.event('Page.domContentEventFired', { timestamp })
+		this.event('Page.lifecycleEvent', { frameId: FRAME_ID, loaderId: LOADER_ID, name: 'DOMContentLoaded', timestamp })
+		if (this.loadFired) {
+			this.event('Page.loadEventFired', { timestamp })
+			this.event('Page.lifecycleEvent', { frameId: FRAME_ID, loaderId: LOADER_ID, name: 'load', timestamp })
+		}
 	}
 
 	private makeFrame(): Frame {

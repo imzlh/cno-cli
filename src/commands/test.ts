@@ -1,4 +1,4 @@
-import { joinPaths, normalizePath, isAbsolute } from '../../cts/src/utils/path';
+import { joinPaths, normalizePath, isAbsolute, cwd, toPosixPath } from '../../cts/src/utils/path';
 import { C } from '../help';
 
 const os = import.meta.use('os');
@@ -31,13 +31,13 @@ function* walkSync(dir: string): Generator<string> {
 }
 
 function collectTests(rawPaths: string[]): string[] {
-    const cwd = normalizePath((os.cwd as string).replace(/\\/g, '/'));
+    const posixCwd = cwd();
     const roots = rawPaths.length
         ? rawPaths.map(p => {
-            const norm = p.replace(/\\/g, '/');
-            return isAbsolute(norm) ? norm : joinPaths(cwd, norm);
+            const norm = toPosixPath(p);
+            return isAbsolute(norm) ? norm : joinPaths(posixCwd, norm);
         })
-        : [cwd];
+        : [posixCwd];
 
     const out: string[] = [];
     for (const r of roots) {
@@ -78,7 +78,7 @@ function drain(ms: number): Promise<void> {
 }
 
 async function runOne(file: string): Promise<TestResult> {
-    const start = Date.now();
+    const start = performance.now();
     const w = new workerApi.Worker({ __cts_test: file });
     try {
         const msg = await new Promise<any>((resolve, reject) => {
@@ -89,9 +89,9 @@ async function runOne(file: string): Promise<TestResult> {
             name: t.name ?? String(t),
             error: t.error ? String(t.error) : undefined,
         }));
-        return { file, passed: msg?.passed === true, duration: Date.now() - start, error: msg?.error, failedTests };
+        return { file, passed: msg?.passed === true, duration: performance.now() - start, error: msg?.error, failedTests };
     } catch (e) {
-        return { file, passed: false, duration: Date.now() - start, error: e, failedTests: [] };
+        return { file, passed: false, duration: performance.now() - start, error: e, failedTests: [] };
     } finally {
         // Let the worker flush pending I/O before we pull the plug.
         try { await drain(50); } catch {}
@@ -150,10 +150,10 @@ export async function runTest(
         const label = r.passed
             ? C.green('PASS')
             : C.red('FAIL');
-        const ms = C.dim(`${r.duration}ms`);
+        const ms = C.dim(`${r.duration.toFixed(2)}ms`);
         // Show path relative to cwd
-        const cwd = normalizePath((os.cwd as string).replace(/\\/g, '/')) + '/';
-        const rel = r.file.startsWith(cwd) ? r.file.slice(cwd.length) : r.file;
+        const cwdPrefix = cwd() + '/';
+        const rel = r.file.startsWith(cwdPrefix) ? r.file.slice(cwdPrefix.length) : r.file;
         console.log(`  ${label}  ${rel}  ${ms}`);
         if (r.passed) passed++; else failed++;
         if (r.failedTests.length) allFailed.push({ file: rel, tests: r.failedTests });

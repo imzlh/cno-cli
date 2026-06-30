@@ -28,10 +28,12 @@ export interface RpcParams {
 	// lifecycle (pipe)
 	ready: { wsUrl?: string }
 	setConnected: { connected: boolean }
+	runtimeReady: Record<string, never>
 	workerError: { message: string; stack?: string; phase?: string }
 
 	// inspect (pipe while running, channel while paused)
 	getScriptSource: { scriptId: string }
+	getResourceContent: { url: string }
 	evaluate: {
 		expression: string
 		callFrameId?: string | number
@@ -101,9 +103,11 @@ export type RpcTransport = 'inspect' | 'lifecycle' | 'control'
 export const RPC_TRANSPORT: Record<RpcMethod, RpcTransport> = {
 	ready: 'lifecycle',
 	setConnected: 'lifecycle',
+	runtimeReady: 'lifecycle',
 	workerError: 'lifecycle',
 
 	getScriptSource: 'inspect',
+	getResourceContent: 'inspect',
 	evaluate: 'inspect',
 	getProperties: 'inspect',
 	callFunctionOn: 'inspect',

@@ -1,9 +1,9 @@
 /**
- * main/rpc-handlers.ts — registers every RPC method the worker may call on the
+ * main/rpc-handlers.ts - registers every RPC method the worker may call on the
  * main thread.
  *
  * These are the `inspect`- and `lifecycle`-transport methods (evaluate,
- * getProperties, …, ready, setConnected). `control`-transport methods
+ * getProperties, ready, setConnected). `control`-transport methods
  * (breakpoints, requestPause) are applied directly on the debug channel by the
  * worker endpoint and never reach here.
  *
@@ -11,7 +11,6 @@
  */
 
 import { native } from '../shared/native'
-import { isUserFile } from '../shared/user-files'
 import type { RpcParams } from '../shared/rpc-contract'
 import type { MainEndpoint } from '../transport/main-endpoint'
 import type { Serializer } from './remote-object'
@@ -30,11 +29,9 @@ export interface RpcHandlerDeps {
 	evaluator: Evaluator
 	hooks: Hooks
 	pauseController: PauseController
-	/** Called when the worker reports the DevTools WS server is listening. */
 	onReady: (params: RpcParams['ready']) => void
-	/** Called when a DevTools front-end connects (true) or disconnects (false). */
 	onConnectedChange: (connected: boolean) => void
-	/** Called when the debug worker reports a fatal startup/runtime error. */
+	onRuntimeReady: () => void
 	onWorkerError: (params: RpcParams['workerError']) => void
 }
 
@@ -42,7 +39,6 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 	const { serializer, evaluator, hooks } = deps
 
 	endpoint.registerMany({
-		// ── lifecycle ───────────────────────────────────────────────
 		ready: (q) => {
 			deps.onReady(q)
 			return {}
@@ -51,12 +47,15 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 			deps.onConnectedChange(q.connected)
 			return {}
 		},
+		runtimeReady: () => {
+			deps.onRuntimeReady()
+			return {}
+		},
 		workerError: (q) => {
 			deps.onWorkerError(q)
 			return {}
 		},
 
-		// ── source ──────────────────────────────────────────────────
 		getScriptSource: (q) => {
 			try {
 				return { scriptSource: engine.decodeString(fs.readFile(hooks.scriptSourcePath(q.scriptId))) }
@@ -64,8 +63,14 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 				return { scriptSource: '' }
 			}
 		},
+		getResourceContent: (q) => {
+			try {
+				return { content: engine.decodeString(fs.readFile(hooks.scriptSourcePath(q.url))), base64Encoded: false }
+			} catch {
+				return { content: '', base64Encoded: false }
+			}
+		},
 
-		// ── evaluation ──────────────────────────────────────────────
 		evaluate: (q) => q.paused ? evaluator.evaluateSync(q) : evaluator.evaluate(q),
 		callFunctionOn: (q) => q.paused ? evaluator.callFunctionOnSync(q) : evaluator.callFunctionOn(q),
 		awaitPromise: (q) => q.paused ? evaluator.awaitPromiseSync(q) : evaluator.awaitPromise(q),
@@ -73,7 +78,6 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 		runScript: (q) => q.paused ? evaluator.runScriptSync(q) : evaluator.runScript(q),
 		globalLexicalScopeNames: () => ({ names: Object.keys(engine.getGlobalLexVar()) }),
 
-		// ── object inspection ───────────────────────────────────────
 		getProperties: (q) => {
 			const group = q.objectGroup ?? 'runtime'
 			let { result } = serializer.getProperties(q.objectId, group)
@@ -81,7 +85,6 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 				result = result.filter(p => p.get != null || p.set != null)
 			}
 			const internalProperties: { name: string; value: unknown }[] = []
-			// Provide [[Prototype]] so DevTools can expand it recursively (V8-like).
 			try {
 				const obj = serializer.resolve(q.objectId)
 				if (obj != null && typeof obj === 'object') {
@@ -111,7 +114,6 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 			return {}
 		},
 
-		// ── runtime metrics ─────────────────────────────────────────
 		getHeapUsage: () => {
 			const m = os.memoryUsage() as unknown as Record<string, number>
 			return {
@@ -120,7 +122,6 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 			}
 		},
 
-		// ── bindings ─────────────────────────────────────────────────
 		addBinding: (q) => {
 			hooks.installBinding(q.name)
 			return {}
@@ -130,7 +131,6 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 			return {}
 		},
 
-		// ── fetch interception ──────────────────────────────────────
 		fetchInterceptResult: (q) => {
 			hooks.resolveIntercept(q.requestId, q.result)
 			return {}

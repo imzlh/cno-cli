@@ -5,6 +5,11 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "(Windows) 附加",
+            "type": "cppvsdbg",
+            "request": "attach",
+        },
+        {
             "name": "(gdb) 启动",
             "type": "cppdbg",
             "request": "launch",
@@ -33,8 +38,8 @@
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/stage/cno.exe",
-            "args": ["run", "${file}"],
-            // "args": ["run", "main.ts"],
+            // "args": ["run", "${file}"],
+            "args": ["run", "C:/Users/iz/.cts/npm/vite@8.1.0/bin/vite.js"],
             // "args": ["cache"],
             // "args": ["--inspect"],
             "stopAtEntry": false,

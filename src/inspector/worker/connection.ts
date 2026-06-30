@@ -62,6 +62,7 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 
 	debuggerDomain.setConnected(true)
 	runtimeDomain.setConnected(true)
+	pageDomain.setConnected(true)
 	pageDomain.onConnected(entryUrl)
 	void rpc.call('setConnected', { connected: true })
 
@@ -92,6 +93,7 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 		channel.clearSink(thisSend)
 		debuggerDomain.setConnected(false)
 		runtimeDomain.setConnected(false)
+		pageDomain.setConnected(false)
 		void rpc.call('setConnected', { connected: false })
 	}
 }

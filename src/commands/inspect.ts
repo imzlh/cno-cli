@@ -1,5 +1,6 @@
 export interface InspectOptions {
 	port: number
+	host: string
 	breakOnStart: boolean
 	waitForClient: boolean
 }
@@ -16,6 +17,7 @@ export function parseInspectFlags(flags: Record<string, string | boolean>, repl 
 
 	return {
 		port: parseInspectPort(raw),
+		host: parseInspectHost(raw),
 		breakOnStart: repl ? false : hasInspectBrk,
 		waitForClient: repl ? hasInspectBrk || hasInspectWait : hasInspectWait,
 	}
@@ -26,4 +28,16 @@ function parseInspectPort(raw: string | boolean | undefined): number {
 	const match = raw.match(/(?:^|:)(\d+)$/)
 	if (!match) return 9229
 	return Number(match[1]) || 9229
+}
+
+function parseInspectHost(raw: string | boolean | undefined): string {
+	if (typeof raw !== 'string' || raw === 'true') return '127.0.0.1'
+	const trimmed = raw.trim()
+	if (!trimmed) return '127.0.0.1'
+	const match = trimmed.match(/^(.*):(\d+)$/)
+	if (match) {
+		const host = match[1]?.trim()
+		return host || '127.0.0.1'
+	}
+	return '127.0.0.1'
 }
