@@ -35,6 +35,7 @@ export class Serializer {
 	add(value: unknown, group = 'default'): string { return this.store.add(value, group); }
 	resolve(objectId: string): unknown { return this.store.resolve(objectId); }
 	has(objectId: string): boolean { return this.store.has(objectId); }
+	groupOf(objectId: string): string | undefined { return this.store.groupOf(objectId); }
 	release(objectId: string): void { this.store.release(objectId); }
 	releaseGroup(group: string): void { this.store.releaseGroup(group); }
 

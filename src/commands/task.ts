@@ -1,15 +1,23 @@
-import { loadTasks } from '../../cts/src/task';
-import { LockStore } from '../../cts/src/lock';
-import { fatal } from '../../cts/src/errors';
+import { loadTasks, LockStore, fatal } from '../../cts/src/api';
 import { C } from '../help';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
 
-export async function runTask(args: string[]): Promise<void> {
+function forwardedInspectArgs(flags: Record<string, string | boolean>): string[] {
+    for (const key of ['inspect-brk', 'inspect-wait', 'inspect'] as const) {
+        const value = flags[key];
+        if (value === undefined || value === false) continue;
+        if (value === true || value === 'true') return [`--${key}`];
+        return [`--${key}=${value}`];
+    }
+    return [];
+}
+
+export async function runTask(args: string[], flags: Record<string, string | boolean> = {}): Promise<void> {
     const lockStore = new LockStore(os.cwd, true);
     try {
-        const result = loadTasks(os.cwd, lockStore);
+        const result = loadTasks(os.cwd, lockStore, { forwardedArgs: forwardedInspectArgs(flags) });
         if (!result) {
             fatal(new Error(
                 'Cannot find tasks everywhere. Please add some in package.json or deno.json'

@@ -1,0 +1,62 @@
+import { ok, strictEqual } from 'node:assert';
+import * as inspector from 'node:inspector';
+
+// --- 1. inspector.url() returns a string or undefined ----------------------
+
+Deno.test('inspector: url() returns string or undefined', () => {
+    const u = inspector.url();
+    ok(u === undefined || typeof u === 'string');
+});
+
+// --- 3. inspector.waitForDebugger is callable ------------------------------
+
+Deno.test('inspector: waitForDebugger is callable', () => {
+    try {
+        strictEqual(inspector.waitForDebugger(), undefined);
+    } catch (e) {
+        ok(e instanceof Error);
+        ok(/Inspector is not active|not available/i.test(e.message));
+    }
+});
+
+// --- 4. inspector.console is an object -------------------------------------
+
+Deno.test('inspector: console object exists', () => {
+    ok(inspector.console && typeof inspector.console === 'object');
+});
+
+// --- 5. inspector.Session is a class ---------------------------------------
+
+Deno.test('inspector: Session is a constructor', () => {
+    ok(typeof inspector.Session === 'function');
+});
+
+// --- 6. Session.post / on / connect / disconnect ---------------------------
+
+Deno.test('inspector: Session methods exist', () => {
+    const S = inspector.Session;
+    ok(typeof S.prototype.post === 'function');
+    ok(typeof S.prototype.connect === 'function');
+    ok(typeof S.prototype.disconnect === 'function');
+});
+
+// --- 7. inspector.open with wait=true returns a handle ---------------------
+
+Deno.test('inspector: open returns a handle with dispose', () => {
+    let handle: any;
+    try {
+        handle = inspector.open(0, '127.0.0.1', false);
+        if (handle !== undefined) {
+            ok(
+                typeof handle.dispose === 'function' ||
+                typeof handle[Symbol.dispose] === 'function'
+            );
+        }
+    } catch (e) {
+        ok(e instanceof Error);
+        ok(/not available|operation not permitted|permission|EACCES|EADDRINUSE/i.test(e.message));
+    } finally {
+        if (handle?.dispose) handle.dispose();
+        else if (handle?.[Symbol.dispose]) handle[Symbol.dispose]();
+    }
+});

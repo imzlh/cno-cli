@@ -183,6 +183,7 @@ export interface RuntimeAwaitPromiseParams {
 	objectId?: string
 	returnByValue?: boolean
 	generatePreview?: boolean
+	objectGroup?: string
 }
 
 // Debugger domain

@@ -36,6 +36,10 @@ export class ObjectStore {
 		return this.store.has(objectId);
 	}
 
+	groupOf(objectId: string): string | undefined {
+		return this.store.get(objectId)?.group;
+	}
+
 	release(objectId: string): void {
 		const e = this.store.get(objectId);
 		if (!e) return;

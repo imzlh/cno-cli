@@ -18,7 +18,7 @@ import { Evaluator } from './evaluator'
 import { Hooks } from './hooks'
 import { PauseController } from './pause-controller'
 import { registerRpcHandlers } from './rpc-handlers'
-import type { ModuleInfo } from '../../../cts/src/types'
+import type { ModuleInfo } from '../../../cts/src/api'
 
 const worker = import.meta.use('worker')
 const console = import.meta.use('console')

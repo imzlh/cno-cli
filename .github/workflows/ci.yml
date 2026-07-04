@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    branches: ['**']/home/iz/.cts/npm/NeteaseCloudMusicApi@4.32.0/server.js
     tags-ignore: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
 
@@ -42,8 +42,7 @@ jobs:
       - name: Build ext-oxc
         run: |
           cmake -S ext-oxc -B ext-oxc/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCNO_SRC_DIR="$PWD/circu.js/src" \
-            -DQUICKJS_DIR="$PWD/circu.js/deps/quickjs"
+            -DCJS_DIR="$PWD/circu.js"
           cmake --build ext-oxc/build --parallel
 
       - uses: actions/upload-artifact@v4
@@ -51,7 +50,7 @@ jobs:
           name: cno-linux-x64-test
           path: |
             build/stage/cno
-            ext-oxc/build/swc.so
+            ext-oxc/build/oxc.so
 
   build-mac-arm64:
     name: Test - macOS ARM64
@@ -83,8 +82,7 @@ jobs:
       - name: Build ext-oxc
         run: |
           cmake -S ext-oxc -B ext-oxc/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCNO_SRC_DIR="$PWD/circu.js/src" \
-            -DQUICKJS_DIR="$PWD/circu.js/deps/quickjs"
+            -DCJS_DIR="$PWD/circu.js"
           cmake --build ext-oxc/build --parallel
 
       - uses: actions/upload-artifact@v4
@@ -92,7 +90,7 @@ jobs:
           name: cno-mac-arm64-test
           path: |
             build/stage/cno
-            ext-oxc/build/swc.dylib
+            ext-oxc/build/oxc.dylib
 
   build-windows-x64:
     name: Test - Windows x86_64
@@ -141,8 +139,7 @@ jobs:
           $CnoLib = "build\circu.js\Release\cjs.lib"
           cmake -S ext-oxc -B ext-oxc\build -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCNO_SRC_DIR="$PWD\circu.js\src" `
-            -DQUICKJS_DIR="$PWD\circu.js\deps\quickjs" `
+            -DCJS_DIR="$PWD\circu.js" `
             -DCNO_IMPLIB="$PWD\$CnoLib"
           cmake --build ext-oxc\build --config Release --parallel
 
@@ -151,4 +148,4 @@ jobs:
           name: cno-windows-x64-test
           path: |
             build\stage\
-            ext-oxc\build\Release\swc.dll
+            ext-oxc\build\Release\oxc.dll

@@ -224,7 +224,7 @@ export class Evaluator {
 	}
 
 	async callFunctionOn(q: RpcParams['callFunctionOn']): Promise<EvaluateResponse> {
-		const group = q.objectGroup ?? 'runtime'
+		const group = q.objectGroup ?? this.groupFromObject(q.objectId) ?? 'runtime'
 		try {
 			const target = q.objectId ? this.serializer.resolve(q.objectId) : undefined
 			const args = (q.arguments ?? []).map((a) => this.resolveArgument(a))
@@ -240,7 +240,7 @@ export class Evaluator {
 	}
 
 	callFunctionOnSync(q: RpcParams['callFunctionOn']): EvaluateResponse {
-		const group = q.objectGroup ?? 'runtime'
+		const group = q.objectGroup ?? this.groupFromObject(q.objectId) ?? 'runtime'
 		try {
 			const target = q.objectId ? this.serializer.resolve(q.objectId) : undefined
 			const args = (q.arguments ?? []).map((a) => this.resolveArgument(a))
@@ -256,7 +256,7 @@ export class Evaluator {
 	}
 
 	async awaitPromise(q: RpcParams['awaitPromise']): Promise<EvaluateResponse> {
-		const group = q.objectGroup ?? 'runtime'
+		const group = q.objectGroup ?? this.groupFromObject(q.promiseObjectId) ?? 'runtime'
 		try {
 			const promise = this.serializer.resolve(q.promiseObjectId)
 			if (!isThenable(promise)) {
@@ -272,6 +272,10 @@ export class Evaluator {
 
 	awaitPromiseSync(q: RpcParams['awaitPromise']): EvaluateResponse {
 		return this.errorResult(new Error('Cannot await promise while paused'))
+	}
+
+	private groupFromObject(objectId?: string): string | undefined {
+		return objectId ? this.serializer.groupOf(objectId) : undefined
 	}
 
 	compileScript(q: RpcParams['compileScript']): CompileScriptResponse {

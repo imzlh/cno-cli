@@ -1,12 +1,9 @@
 const os = import.meta.use('os');
 const console = import.meta.use('console');
-import type { Args } from '../cno/src/utils/args';
+import { SUBCOMMANDS as SUBCOMMAND_LIST, type Args, type Subcommand as CnoSubcommand } from '../cno/src/utils/args';
 
-export type Subcommand =
-    | 'run' | 'task' | 'eval' | 'cache' | 'repl'
-    | 'fmt' | 'lint' | 'test' | 'upgrade' | 'setup'
-    | 'help' | 'version'
-    | null;
+/** A subcommand name, or null when the first non-flag token is a file path. */
+export type Subcommand = CnoSubcommand | null;
 
 export interface ParsedCli {
     /** Subcommand name, or null if the first non-flag token is a file path. */
@@ -19,17 +16,14 @@ export interface ParsedCli {
     rawArgs: Args;
 }
 
-const SUBCOMMANDS = new Set<string>([
-    'run', 'task', 'eval', 'cache', 'repl',
-    'fmt', 'lint', 'test', 'upgrade', 'setup',
-    'help', 'version',
-]);
+const SUBCOMMANDS = new Set<string>(SUBCOMMAND_LIST);
 
 const ALIASES: Record<string, string> = {
     '-h': 'help',
     '--help': 'help',
     '-v': 'version',
     '--version': 'version',
+    '-e': 'eval',
 };
 
 /**
@@ -39,7 +33,8 @@ const ALIASES: Record<string, string> = {
 const KNOWN_FLAGS = new Set<string>([
     // run / eval / cache
     'cache-dir', 'lock-dir', 'no-lock', 'frozen', 'disable-cache',
-    'no-http', 'no-jsr', 'no-node', 'no-oxc', 'no-swc', 'ignore-scripts',
+    'no-http', 'no-jsr', 'no-node', 'no-oxc', 'ignore-scripts',
+    'npm-mode',
     'reload', 'r', 'precache',
     // misc
     'silent', 'q',
@@ -90,7 +85,8 @@ const DENO_NOOP_FLAGS = new Set<string>([
  *   cno task build          → { cmd:'task', positional:['build'] }
  *   cno -h                  → { cmd:'help', positional:[] }
  *   cno --eval 'code'       → { cmd:'eval', positional:['code'] }
- */
+ *   cno -e 'code'           → { cmd:'eval', positional:['code'] }
+*/
 export function parseArgv(argv: string[]): ParsedCli {
     const flags: Record<string, string | boolean> = {};
     let cmd: Subcommand = null;
@@ -117,11 +113,16 @@ export function parseArgv(argv: string[]): ParsedCli {
         // Once the script file has been seen, collect everything as positional.
         if (fileFound) { positional.push(a); i++; continue; }
 
-        // -h / --help / -v / --version are subcommand-like aliases
+        // -h / --help / -v / --version / -e are subcommand-like aliases
         if (!cmdDecided && ALIASES[a]) {
             cmd = ALIASES[a] as Subcommand;
             cmdDecided = true;
-            i++;
+            if (cmd === 'eval' && argv[i + 1] !== undefined) {
+                positional.push(argv[i + 1]!);
+                i += 2;
+            } else {
+                i++;
+            }
             continue;
         }
 

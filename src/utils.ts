@@ -1,5 +1,5 @@
 // src/utils.ts — shared CLI utilities
-import { dirname, normalizePath, isAbsolute, joinPaths, cwd, toPosixPath } from '../cts/src/utils/path';
+import { dirname, normalizePath, isAbsolute, joinPaths, cwd, toPosixPath } from '../cts/src/api';
 
 /**
  * Resolve a user-supplied file target into an absolute entry path and its

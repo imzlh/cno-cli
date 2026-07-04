@@ -45,18 +45,26 @@ THERE ARE SOME WARNINGS YOU SHOULD BE AWARE OF:
  - Reduce using global variables, use `import.meta.use()` low-level api instead.
    For example, `import.meta.use('text').Encoder` not `globalThis.TextEncoder`
  - If you are compressing context, never forget to remind yourself to read me again after compressing.
+ - Before you edit that, please think whether rewrite or just make some patch
+   You can redesign 
+ - cts: Do not optimize the module specially. For example, optimized to treat `vite.config.js` to esm.
+ - cts: We assumed that cache in lock are correct, never try to add verify logic to cts source code.
+ - after modifing codes and files that mentioned here, you are supposed to change the content below.
+ - testing: if you only modified source in `cno/src/node/`(exclude `_internal/inject.ts`), only `cno setup` is required to refresh cache (don't forget to set cwd to the project!), or you should use `cmake -B build` to rebuild binary (TS will automately attach into the binary)
  - These warnings are edited by user, you should take into account more carefully.
 
 ## Code Style Guide
-I prefer to use the following style for writing code:
+This is my code style. Follow this, better us.
 ```ts
 /** top level comment, optional */
-import type {} from '';
+import type { a } from '';
 import * as xx from '';
 
 const fs = import.meta.use('fs');   // NO CASTING
 
-const {} = ...; // some pre-defined variables
+// 1~2 line to place comments is enough.
+// NEVER EXCEED 2 LINE WHEREEVER, WHENEVER
+const { b } = var_c; // some pre-defined variables
 
 const fn1 = () => void 0;       // if function is short, use arrow function
 export default function () {}   // exports directly
@@ -105,7 +113,7 @@ export default function () {}   // exports directly
 | `udp` | UDP | dgram/UDP socket support |
 | `debug` | Debugging | Debugger support (used by CDP debugger) |
 | `win32` | Windows | Windows-specific APIs |
-| `nodeapi` | Native Layer | Node.js-compatible n-api bindings to use node native modules |
+| `nodeapi` | Native Layer | Node.js-compatible n-api bindings for node native modules(.node) |
 
 ### Type Definitions
 - `circu.js/types/*.d.ts` — TypeScript definitions for all modules
@@ -153,6 +161,7 @@ cts/src/
 │   ├── index.ts                # ModuleResolver (3-level cache: L1 source→spec, L2 spec→info, L3 dispatch)
 │   ├── builtins.ts             # BUILTINS Set + isBuiltinSpecifier()
 │   ├── pkg.ts                  # package.json exports/imports resolution
+│   ├── linker.ts               # node_modules materialization (--npm-mode, see below)
 │   └── protocols/              # Protocol handlers
 │       ├── base.ts             # ProtocolHandler interface + guessFileKind
 │       ├── file.ts             # file://
@@ -171,12 +180,11 @@ cts/src/
 │   ├── index.ts                # ModuleCompiler facade (orchestrates ESM/CJS/WASM)
 │   ├── esm.ts                  # EsmCompiler: engine.Module compilation + esmCache + circular deps
 │   ├── cjs.ts                  # CjsLoader: CJS exec, mkRequire factory, requireEsm, loadBuiltin
-│   ├── wasm.ts                 # WasmCompiler: WASM loading + circular deps
+│   ├── wasm.ts                 # WasmCompiler + buildWasmModule: WASM loading + circular deps
 │   ├── bridge.ts               # CJS↔ESM bridge: bridgeCjsToEsm, loadEsmSync (promiseResult), installGlobalRequire
-│   └── builtins.ts             # (re-exports from resolve/builtins.ts)
 │
-├── api/                        # Layer 4: thin re-exports for external consumers
-│   └── index.ts                # Re-exports CjsModule, ModuleCompiler, bridge functions, BUILTINS
+├── api/                        # Layer 4: public API surface for external consumers (cno-cli)
+│   └── index.ts                # Re-exports createRuntime, config, path utils, errors, types, etc.
 │
 ├── runtime/                    # Composition root: lifecycle + engine hooks
 │   ├── index.ts                # TypeScriptRuntime + createRuntime
@@ -184,9 +192,10 @@ cts/src/
 │   ├── meta.ts                 # import.meta population (url, filename, dirname, resolve)
 │   └── resources.ts            # ResourceManager class (instance-based, not singleton)
 │
-├── utils/                      # Shared utilities
-│   ├── index.ts                # Re-exports + uname/isWindows
-│   ├── bin.ts                  # Binary resolution
+├── utils/                      # Shared utilities (barrel: utils/index.ts)
+│   ├── index.ts                # Re-exports all utils modules
+│   ├── platform.ts             # uname, isWindows (no deps, breaks circular)
+│   ├── bin.ts                  # Binary resolution, `exec` pnpm-liked runner
 │   ├── io.ts                   # File I/O with LRU resolution cache
 │   ├── log.ts                  # Structured debug logger
 │   ├── lru.ts                  # Bounded LRU cache
@@ -206,7 +215,6 @@ cts/src/
 ├── scan.ts                     # Import extraction (Sucrase tokenizer, used by workers)
 ├── shell.ts                    # Shell command parser
 ├── task.ts                     # deno.json/package.json task runner
-└── wasm.ts                     # buildWasmModule helper
 ```
 
 ### Core Types (`cts/src/types.ts`)
@@ -230,9 +238,10 @@ interface ConfigOptions {
     enableCache?: boolean;     // default: true (inverted from old disableCache)
     enableOxc?: boolean;
     silent?: boolean;
-    disableLock?: boolean;     // renamed from noLock
+    disableLock?: boolean;     // renamed from noLock — in-memory only
+    persistLock?: boolean;     // write cts.lock to disk (only `cno cache`)
     frozen?: boolean;
-    lockDir?: string;
+    lockDir?: string;          // override lock dir (default: project root, else cache dir)
     polyfill?: string;
     // ... see types.ts for full list
 }
@@ -245,6 +254,27 @@ interface ConfigOptions {
 2. L2 Cache: lock.modules[specPath] → ModuleInfo
 3. L3 Dispatch: protocol handler → download if needed
 ```
+
+### node_modules Materialization (`--npm-mode`, resolve/linker.ts)
+
+cts resolves npm packages directly against a flat content-addressed store
+(`<cacheDir>/npm/<name>@<version>/`) — no real `node_modules` is written to
+disk by default. Tools that do their own filesystem-based resolution (Vite,
+etc.) need one, so `cno cache` can optionally materialize it via
+`--npm-mode=<normal|soft|hard>` (default `normal` = current flat-only
+behavior, unchanged):
+- `soft` — directory-level symlinks/junctions into the flat store (Windows
+  uses `asyncfs.symlink(..., SymlinkType.JUNCTION)` to avoid needing admin
+  rights; junctions, unlike hard links, work cross-drive).
+- `hard` — per-file hard links into the store (falls back to a copy only
+  cross-volume), same idea as pnpm's store linking.
+
+Built from `DepScanner`'s resolved parent→child edges (`ScanResult.edges` in
+`deps.ts`), captured live during the scan rather than re-derived from semver
+after the fact — re-deriving could pick a different-but-valid version than
+what was actually resolved, breaking singleton-sensitive packages. Regenerated
+on every `cno cache` run (last-writer-wins, no diffing); the in-store
+`node_modules/` is shared across all projects using the same cache dir.
 
 ### ModuleCompiler Details (compile/index.ts)
 
@@ -270,8 +300,11 @@ ESM imports CJS → module.exports becomes `default`; named keys also exported
 ESM imports CJS with __esModule=true → treat as transpiled ESM
 CJS requires ESM → loadEsmSync via engine.promiseResult:
   - throws → propagate (module error)
-  - returns null → throw "cannot require() async ESM"
-  - returns content → return mod.namespace (live reference, C++ native)
+  - returns null → top-level await unresolved → throw "cannot require() async ESM"
+  - returns truthy → return mod.namespace (live reference, C++ native)
+  IMPORTANT: the null check must NOT be weakened by checking namespace size —
+  a module with sync exports AND top-level await returns null but has a
+  non-empty namespace; returning it causes a silent dead-lock.
 CJS requires CJS → normal require() chain
 Circular CJS → return partial exports (Node.js behavior)
 ```
@@ -293,7 +326,7 @@ class TypeScriptRuntime {
 
     registerNodeResolver(r: NodeBuiltinResolver): void;
     flushLock(): void;
-    cleanup(): void;
+    cleanup(): void;             // clears compiler + hooks dedup + resolver caches
 }
 ```
 
@@ -310,6 +343,56 @@ class ResourceManager {
 }
 ```
 
+### C Layer Single-Callback Constraint
+
+circu.js C layer registers most callbacks as **replacement** (not append):
+- `engine.onModule()` — only one set of resolve/load/init/attrchk hooks active
+- `engine.onEvent()` — only one event handler
+- `engine.promiseHook()` — only one promise hook
+
+Creating a second `TypeScriptRuntime` in the same process will **replace** the
+prior runtime's engine hooks and `globalThis.require` getter. The code logs a
+warning on re-install but does not prevent it. Workers have independent
+JSContexts so this constraint applies per-process, not per-worker.
+
+### C Layer Memory Allocator Rules
+
+- **`tjs__malloc`/`tjs__free`** — global, not tracked by QuickJS
+- **`js_malloc`/`js_free`** — per-runtime, tracked by `rt->malloc_state.malloc_size`
+
+Structs embedding a `uv_handle_t` (freed from `uv_close` cb, possibly after rt teardown) use `tjs__`.
+Pure JS-associated data (freed from finalizer / while ctx alive) uses `js_`.
+Mixing them causes `malloc_size underflow` at teardown.
+
+**`uv_queue_work` work callbacks must never touch `js_malloc`/`js_realloc`/`js_free`
+(or anything backed by them, e.g. a `DynBuf` from `tjs_dbuf_init`).** The work
+callback runs on a libuv threadpool thread, concurrently with the main thread —
+`rt->malloc_state` has no lock, so this is a silent data race, not a crash at
+the call site. It only surfaces later, non-deterministically, as `malloc_size
+underflow` at an unrelated free (often at final `JS_FreeRuntime`/GC teardown),
+because it corrupts the tracked byte counter rather than the heap itself.
+Symptoms that point here: crash reproduces on a normal build but disappears or
+never happens under gdb/ASan (both change scheduling/timing enough to dodge
+the race window) — confirm with ThreadSanitizer (`-fsanitize=thread`), which
+catches it on the first run. Fix: grow the buffer in the work callback with
+`tjs__malloc`/`tjs__realloc` (see `dbuf_init2(&buf, NULL, <tjs__realloc wrapper>)`),
+and give the resulting `ArrayBuffer`/`Uint8Array` a `tjs__free`-based finalizer
+instead of the default tracked one. Only the *after_work* callback (runs back
+on the main thread) may touch `js_*`/QuickJS APIs.
+
+### uv_run Discipline
+
+Never call `uv_run` outside `vm.c` (main loop) and `engine.waitIO()`.
+Close handles with `uv_close`; callbacks fire in `TJS_FreeRuntime` → `uv_loop_close`.
+`process.waitSync()` uses `waitpid(2)` directly (libuv tolerates ECHILD).
+
+### Worker Exit State
+
+`TJSWorker.wrt == NULL` does **not** by itself mean the worker thread is fully
+done. The worker clears `wrt` before returning because it still runs
+`TJS_FreeRuntime()` during teardown. Use an explicit exited/joined state when
+deciding whether the parent GC can free the worker-side bookkeeping structs.
+
 ### Lock File Format (SQLite3)
 
 LockStore uses SQLite3 (`cts.lock`) with tables:
@@ -317,16 +400,36 @@ LockStore uses SQLite3 (`cts.lock`) with tables:
 - `modules` — specPath→ModuleInfo (L2 cache)
 - `bins` — binary name→local path
 
+### Lock Location & Persistence (`resolveLockTarget` in runtime/index.ts)
+
+The lock is a resolution cache, not a per-directory artifact — so it is NOT
+written next to every script. `runtime/index.ts` decides its location and
+read/write mode from the command:
+
+| Case | Location | Mode |
+|------|----------|------|
+| `--lock-dir=<dir>` | that dir | writable under `cno cache`, else read-only |
+| `cno cache` (`cfg.persistLock`) | project root (`deno.json`/`deno.jsonc`/`package.json`, walked up from the entry dir); falls back to the cache dir when no project is found | **writable — the only command that persists `cts.lock`** |
+| `cno run` / `eval` / `repl` / `test` | project-root lock if one exists, else the cache dir | **read-only** — opens the file if present, otherwise a `:memory:` DB; never writes |
+| `--no-lock` (`cfg.disableLock`) | — | in-memory only |
+
+`persistLock` is a `ConfigOptions` flag set only by `cno cache`. Read-only
+stores no-op all writes (`flush`/`setModule`/…), so `runFile`'s `flushLock()`
+is harmless. The lightweight read-only `new LockStore(cwd, true)` stores in
+`main.ts`/`bin.ts`/`task.ts` (bin-cache lookups) are unaffected — they never
+wrote to disk.
+
 ### CJS→ESM Sync Loading (compile/bridge.ts)
 
 `loadEsmSync` uses `engine.promiseResult` with three outcomes:
 1. **Throws** → module evaluation failed → propagate as CJS require error
 2. **Returns null** → top-level await unresolved → throw "cannot require() async ESM"
-3. **Returns content** → success → return `mod.namespace` (live reference)
+3. **Returns truthy** → success → return `mod.namespace` (live reference)
 
 IMPORTANT: Returns live namespace reference, NOT a shallow copy.
 Module is C++ native; `export()` bindings live in C++ memory.
 A shallow copy would create dangling pointers if the Module is GC'd.
+The null check must NOT be weakened by checking namespace size.
 
 ### Config Loading Priority
 
@@ -750,7 +853,7 @@ interface ProtocolStream {
 
 ### Build
 - Built alongside main project by `build.sh` / `build.ps1`
-- Produces `swc.so` (Unix) or `swc.dll` (Windows)
+- Produces `oxc.so` (Unix) or `oxc.dll` (Windows)
 - `cts/src/oxc.ts` provides the TypeScript interface (`OxcTranspiler`)
 
 ---
@@ -806,7 +909,7 @@ build/stage/
 
 No `pnpm-workspace.yaml` — workspace packages are resolved via `workspace:` protocol in `package.json` dependency fields:
 - `cno-cli` → `cts` (workspace:./cts), `@cnojs/http` (workspace:./http)
-- `cts` → `@cnojs/http` (workspace:../http), `@cnojs/quic` (workspace:../ext-quic)
+- `cts` → `@cnojs/http` (workspace:../http)
 
 ### Package Dependencies
 
@@ -818,7 +921,6 @@ cno-cli (root)
 
 cts
   ├── @cnojs/http (workspace:../http)
-  ├── @cnojs/quic (workspace:../ext-quic)
   └── sucrase, temporal-polyfill, urlpattern-polyfill, whatwg-url, ...
 
 cno
@@ -848,9 +950,9 @@ cno --help                  # Help
 ### CLI Flags
 
 ```bash
---cache-dir <path>      # Cache directory (default: ~/.cts)
---lock-dir <path>       # Lock file directory
---no-lock               # Disable lock file
+--cache-dir=<path>      # Cache directory (default: ~/.cts)
+--lock-dir=<path>       # Override cts.lock dir (default: project root on `cno cache`, else cache dir)
+--no-lock               # Disable lock file (in-memory only)
 --frozen                # Fail if import not in lock
 --reload, -r            # Bypass module cache
 --precache              # Pre-cache dependencies
@@ -859,9 +961,10 @@ cno --help                  # Help
 --no-node               # Disable Node.js compat
 --silent, -q            # Silent mode
 --disable-cache         # Disable all caching
---memory-limit <size>   # e.g. 256MB, 1GB
---max-stack-size <size> # e.g. 4MB
---polyfill <path>       # Custom polyfill bundle
+--memory-limit=<size>   # e.g. 256MB, 1GB
+--max-stack-size=<size> # e.g. 4MB
+--polyfill=<path>       # Custom polyfill bundle
+--npm-mode=<normal|soft|hard>  # Materialize real node_modules (cno cache); see resolve/linker.ts
 ```
 
 ### Deno-compat No-op Flags
@@ -931,7 +1034,7 @@ cno --help                  # Help
 | `src/commands/cache.ts` | `runCache` — cache management |
 | `src/commands/setup.ts` | `runSetup` — install Node.js polyfill files |
 | `src/commands/inspect.ts` | `parseInspectFlags` — --inspect flag parser |
-| `src/commands/bin.ts` | `spawnBinary` — resolve and spawn node_modules binaries |
+| `src/commands/bin.ts` | `spawnBinary` — resolve and spawn node_modules binaries, pnpm-liked direct runner |
 
 ### Bundle Script
 
@@ -1130,6 +1233,8 @@ IF YOU WANT TO USE, PLEASE USE `import.meta.use()` AS SHARED NAMESPACE TO DELIVE
 - Worker-parallel OXC (native) / Sucrase (fallback) transform
 - Main-thread QJS compile (C layer, fast)
 - Default workers: CPU cores (max 16, for big memory machines) and less
+- Scan tasks have **no timeout** (lightweight sucrase tokenize); only transform has a 60s safety timeout
+- BFS `wake()` in `deps.ts` only fires on `enqueue` or `pending===0`, not on every `finally` — otherwise idle workers busy-loop
 
 ### Networking
 - HTTP/2 multiplexing via native extension

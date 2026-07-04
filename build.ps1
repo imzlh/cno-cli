@@ -22,8 +22,7 @@ if (-not (Test-Path $CnoLib)) {
 }
 
 cmake -S ext-oxc -B $OxcBuildDir -DCMAKE_BUILD_TYPE=Release `
-  -DCNO_SRC_DIR="$Root\circu.js\src" `
-  -DQUICKJS_DIR="$Root\circu.js\deps\quickjs" `
+  -DCJS_DIR="$Root\circu.js" `
   -DCNO_IMPLIB="$CnoLib"
 cmake --build $OxcBuildDir --config Release --parallel
 
@@ -33,16 +32,16 @@ New-Item -ItemType Directory -Force -Path "$DistDir\ext" | Out-Null
 Copy-Item "$BuildDir\stage\cno.exe" "$DistDir\cno.exe" -Force
 Copy-Item "$BuildDir\stage\qjs.dll" "$DistDir\qjs.dll" -Force
 
-# swc.dll can land in Release\ or directly in build dir depending on generator
-$SwcDll = @(
-    "$OxcBuildDir\Release\swc.dll",
-    "$OxcBuildDir\swc.dll"
+# oxc.dll can land in Release\ or directly in build dir depending on generator
+$OxcDll = @(
+    "$OxcBuildDir\Release\oxc.dll",
+    "$OxcBuildDir\oxc.dll"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-if ($SwcDll) {
-    Copy-Item $SwcDll "$DistDir\ext\swc.dll" -Force
+if ($OxcDll) {
+    Copy-Item $OxcDll "$DistDir\ext\oxc.dll" -Force
 } else {
-    Write-Warning "swc.dll not found — ext-oxc may have failed to build"
+    Write-Warning "oxc.dll not found — ext-oxc may have failed to build"
 }
 
 Write-Host ""

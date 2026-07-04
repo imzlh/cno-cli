@@ -140,7 +140,7 @@ export class RuntimeDomain extends Domain {
 			const promiseObjectId = q.promiseObjectId ?? q.objectId
 			if (promiseObjectId) return this.rpc.call('awaitPromise', {
 				promiseObjectId,
-				objectGroup: 'runtime',
+				objectGroup: q.objectGroup,
 				returnByValue: q.returnByValue,
 				generatePreview: q.generatePreview,
 				paused: this.rpc.isPaused(),

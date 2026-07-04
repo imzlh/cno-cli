@@ -58,6 +58,7 @@ export class WorkerEndpoint {
 
 	/** Whether the main thread is currently paused at a safepoint. */
 	isPaused(): boolean {
+		if (this.paused) return true
 		try {
 			return this.channel.state() === DebugState.Paused
 		} catch {

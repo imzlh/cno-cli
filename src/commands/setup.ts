@@ -11,7 +11,7 @@
 
 import { fetchAsync } from '../../cno/src/webapi/fetch';
 import { normalize, dirname, join, systemPathSplit } from '../../cno/src/utils/path';
-import { log } from '../../cts/src/utils/log';
+import { log } from '../../cts/src/api';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');

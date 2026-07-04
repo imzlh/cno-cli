@@ -20,8 +20,11 @@ import type {
 } from '../shared/cdp'
 import type { ScriptParsedPayload } from '../shared/wire'
 import { Step, type StepCode } from '../shared/native'
-import { log } from '../../../cts/src/utils/log'
-import { toPosixPath } from '../../../cts/src/utils/path'
+import { log } from '../../../cts/src/api'
+import { toPosixPath } from '../../../cts/src/api'
+
+const timers = import.meta.use('timers')
+const INITIAL_PAUSE_SETTLE_MS = 50
 
 interface KnownScript {
 	scriptId: string
@@ -49,6 +52,9 @@ export class DebuggerDomain extends Domain {
 	private knownScripts = new Map<string, KnownScript>()
 	private cdpBreakpoints = new Map<string, CdpBreakpoint>()
 	private pendingScriptEvents: KnownScript[] = []
+	private pendingPausedEvent: PausedEvent | null = null
+	private pendingPausedTimer: number | null = null
+	private lastScriptParsedAt = 0
 
 	constructor(
 		dispatcher: CDPDispatcher,
@@ -71,10 +77,12 @@ export class DebuggerDomain extends Domain {
 			} else {
 				for (const script of this.knownScripts.values()) this.emitScriptParsed(script)
 			}
+			this.flushPendingPausedSoon()
 			return { debuggerId: 'cno-debugger-1' }
 		})
 		this.on('Debugger.disable', async () => {
 			this.enabled = false
+			this.clearPendingPaused()
 			for (const id of this.cdpBreakpoints.keys()) {
 				const bp = this.cdpBreakpoints.get(id)
 				if (bp) await this.rpc.call('removeBreakpoint', { url: bp.url, line: bp.line })
@@ -203,12 +211,18 @@ export class DebuggerDomain extends Domain {
 		})
 	}
 
-	private doResume(step: StepCode): Record<string, never> {
+	private async doResume(step: StepCode): Promise<Record<string, never>> {
 		if (!this.paused) return {}
-		this.paused = false
-		this.rpc.setPaused(false)
-		this.rpc.beginResume(step)
-		if (this.connected) this.event('Debugger.resumed', {})
+		this.clearPendingPaused()
+		try {
+			await this.rpc.call('releaseObjectGroup', { objectGroup: 'backtrace' })
+		} catch {}
+		finally {
+			this.paused = false
+			this.rpc.setPaused(false)
+			this.rpc.beginResume(step)
+			if (this.connected) this.event('Debugger.resumed', {})
+		}
 		return {}
 	}
 
@@ -261,7 +275,8 @@ export class DebuggerDomain extends Domain {
 
 	setConnected(connected: boolean): void {
 		this.connected = connected
-		if (!connected && this.paused) this.doResume(Step.None)
+		if (!connected && this.paused) void this.doResume(Step.None)
+		if (!connected) this.clearPendingPaused()
 	}
 
 	onScriptParsed(data: ScriptParsedPayload): void {
@@ -283,6 +298,7 @@ export class DebuggerDomain extends Domain {
 	}
 
 	private emitScriptParsed(script: KnownScript): void {
+		this.lastScriptParsedAt = Date.now()
 		this.event('Debugger.scriptParsed', {
 			scriptId: script.scriptId,
 			url: script.url,
@@ -308,6 +324,15 @@ export class DebuggerDomain extends Domain {
 		}
 		this.paused = true
 		this.rpc.setPaused(true)
+		if (!this.enabled) {
+			this.pendingPausedEvent = p
+			return
+		}
+		this.pendingPausedEvent = p
+		this.flushPendingPausedSoon()
+	}
+
+	private emitPaused(p: PausedEvent): void {
 		const reason = p.reason ?? 'other'
 		const hitBreakpoints: string[] = []
 		const hitFile = this.normalizeUrl(p.hitFilename)
@@ -323,6 +348,31 @@ export class DebuggerDomain extends Domain {
 		} = { callFrames, reason, hitBreakpoints }
 		if (p.data !== undefined) payload.data = p.data
 		this.event('Debugger.paused', payload)
+	}
+
+	private flushPendingPausedSoon(): void {
+		if (!this.pendingPausedEvent || !this.connected || !this.enabled || this.pendingPausedTimer != null) return
+		const waitMs = Math.max(0, INITIAL_PAUSE_SETTLE_MS - (Date.now() - this.lastScriptParsedAt))
+		if (waitMs === 0) {
+			const pending = this.pendingPausedEvent
+			this.pendingPausedEvent = null
+			this.emitPaused(pending)
+			return
+		}
+		this.pendingPausedTimer = timers.setTimeout(() => {
+			this.pendingPausedTimer = null
+			const pending = this.pendingPausedEvent
+			this.pendingPausedEvent = null
+			if (!pending || !this.connected || !this.enabled || !this.paused) return
+			this.emitPaused(pending)
+		}, waitMs)
+	}
+
+	private clearPendingPaused(): void {
+		this.pendingPausedEvent = null
+		if (this.pendingPausedTimer == null) return
+		timers.clearTimeout(this.pendingPausedTimer)
+		this.pendingPausedTimer = null
 	}
 
 	private pauseOnExceptionsStateFrom(state: string): PauseOnExceptionsState {

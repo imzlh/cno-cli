@@ -79,7 +79,7 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 		globalLexicalScopeNames: () => ({ names: Object.keys(engine.getGlobalLexVar()) }),
 
 		getProperties: (q) => {
-			const group = q.objectGroup ?? 'runtime'
+			const group = q.objectGroup ?? serializer.groupOf(q.objectId) ?? 'runtime'
 			let { result } = serializer.getProperties(q.objectId, group)
 			if (q.accessorPropertiesOnly) {
 				result = result.filter(p => p.get != null || p.set != null)

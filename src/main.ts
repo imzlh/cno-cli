@@ -23,11 +23,7 @@
  * THE SOFTWARE.
  */
 
-import { isCompilerWorker, runCompilerWorker } from '../cts/src/precompile';
-import { fatal } from '../cts/src/errors';
-import { log } from '../cts/src/utils/log';
-import { isAbsolute, joinPaths, cwd, toPosixPath } from '../cts/src/utils/path';
-import { createResourceManager } from '../cts/src/runtime/resources';
+import { isParseWorker, runParseWorker, fatal, log, isAbsolute, joinPaths, cwd, toPosixPath, createResourceManager, errMsg } from '../cts/src/api';
 
 const processResources = createResourceManager();
 
@@ -39,13 +35,14 @@ import { runEval } from './commands/eval';
 import { runCache } from './commands/cache';
 import { runTask, taskExists } from './commands/task';
 import { runRepl } from './commands/repl';
-import { runTest } from './commands/test';
+import { runTest, TEST_CHILD_FLAG } from './commands/test';
 import { runSetup } from './commands/setup';
+import { spawnBinary } from './commands/bin';
 import { startProxy, disableCertVerify, stopNetwork } from './network';
 import type { Args } from '../cno/src/utils/args';
+import setArgs from '../cno/src/utils/args';
 
 import '../cno/src/main';
-import { errMsg } from '../cts/src/utils';
 
 const fs = import.meta.use('fs');
 const console = import.meta.use('console');
@@ -78,9 +75,28 @@ function makeRunArgs(file: string, args: string[] = []): Args {
     };
 }
 
+function isEvalEntry(entry: string): boolean {
+    return entry.startsWith('eval:');
+}
+
+async function runEntry(
+    entry: string,
+    args: string[],
+    flags: Record<string, string | boolean>,
+    rawArgs: Args,
+): Promise<void> {
+    if (isEvalEntry(entry)) {
+        return runEval({ code: entry.slice(5), flags });
+    }
+
+    return runFile({
+        file: entry, args, flags,
+        rawArgs,
+    });
+}
+
 async function listTasks(): Promise<void> {
-    const { loadTasks } = await import('../cts/src/task');
-    const { LockStore } = await import('../cts/src/lock');
+    const { loadTasks, LockStore } = await import('../cts/src/api');
     const store = new LockStore(os.cwd, true);
     const result = loadTasks(os.cwd, store);
     store.close();
@@ -108,7 +124,7 @@ function runProcessCleanup(fast = false): void {
 
 async function installProcessCleanup(): Promise<void> {
     if (!cleanupLocks) {
-        const { LockStore } = await import('../cts/src/lock');
+        const { LockStore } = await import('../cts/src/api');
         cleanupLocks = () => LockStore.closeAll();
         cleanupLocksFast = () => LockStore.closeAllFast();
     }
@@ -117,6 +133,10 @@ async function installProcessCleanup(): Promise<void> {
 async function dispatch(): Promise<void> {
     const cli = warnUnknownFlags(parseArgv(readArgv()));
 
+    // Set runtime argv for EVERY command (eval/repl/task/test/cache/…), not just
+    // run — otherwise those paths fall back to the cno submodule's naive parser
+    // and Deno.args / process.argv come out wrong.
+    setArgs(cli.rawArgs);
 
     // common setup
     await installProcessCleanup();
@@ -142,6 +162,16 @@ async function dispatch(): Promise<void> {
             return runCache(cli.positional[0], cli.flags);
         case 'task':
             return runTask(cli.positional);
+        case 'exec': {
+            const [bin, ...args] = cli.positional;
+            if (!bin) {
+                console.error(`Usage: ${C.cyan('cno exec')} ${C.cyan('<command>')} [args…]`);
+                os.exit(1);
+            }
+            const code = await spawnBinary(bin, args, {}, os.cwd);
+            if (code !== 0) os.exit(code);
+            return;
+        }
         case 'repl':
             return runRepl(cli.flags);
         case 'test':
@@ -167,10 +197,7 @@ async function dispatch(): Promise<void> {
             if (cli.cmd === 'run' && !looksLikeFileTarget(file) && taskExists(file)) {
                 return runTask([file, ...args]);
             }
-            return runFile({
-                file: file, args, flags: cli.flags,
-                rawArgs: cli.rawArgs,
-            });
+            return runEntry(file, args, cli.flags, cli.rawArgs);
         }
         default:
             showHelp();
@@ -178,8 +205,48 @@ async function dispatch(): Promise<void> {
     } } finally { stopNetwork(); }
 }
 
+// Hidden sentinel: `cno test` spawns a real child process per test file
+// (see src/commands/test.ts) instead of a worker thread, so signal handling
+// (import.meta.use('signals')) works inside test files — it's unconditionally
+// null in a worker thread by native-layer design (process-wide, not per-thread).
+
+// Runs one test file and reports its result via `send` — shared by both the
+// worker-thread transport (workerEntry) and the child-process transport
+// (testChildEntry) so the two only differ in how the result gets back.
+async function runTestFileAndReport(file: string, send: (msg: any) => void): Promise<void> {
+    try {
+        await runFile({ file, args: [], flags: {}, rawArgs: makeRunArgs(file) });
+        // Use the module-level startTest / getFailedTests exports directly —
+        // Deno.__startTest is the external Deno-compat API and prints the
+        // "Failed tests:" summary as a side effect. We want the parent to
+        // aggregate and print a single clean summary, so we call the raw
+        // function and collect the failed list ourselves.
+        const { startTest, getFailedTests } = await import('../cno/src/deno/index');
+        const passed = await startTest(file, true, true);
+        send({ passed, failedTests: getFailedTests() });
+    } catch (e: any) {
+        send({ passed: false, error: String(e?.stack ?? e), failedTests: [] });
+    }
+}
+
+async function testChildEntry(file: string): Promise<void> {
+    const { IPCChannel } = await import('../cno/src/node/ipc_channel/mod');
+    const streams = import.meta.use('streams');
+    // fd 3 is where the native `process` module always hands a spawned child
+    // its IPC endpoint when ipc:true (see child_process/mod.ts's own use of
+    // this same convention).
+    const pipe = new (streams as any).Pipe();
+    pipe.open(3);
+    const channel = new IPCChannel(pipe);
+    try {
+        await runTestFileAndReport(file, (msg) => channel.send(msg));
+    } finally {
+        channel.close();
+    }
+}
+
 async function workerEntry(): Promise<void> {
-    if (isCompilerWorker()) return runCompilerWorker();
+    if (isParseWorker()) return runParseWorker();
 
     // Debug Worker
     if (worker.workerData?.__cno_debug_worker) {
@@ -187,26 +254,11 @@ async function workerEntry(): Promise<void> {
         return;
     }
 
-    const { startTest, getFailedTests } = await import('../cno/src/deno/index');
-
-    // Test worker: runTest passes __cts_test in workerData.
-    // Use the module-level startTest / getFailedTests exports directly —
-    // Deno.__startTest is the external Deno-compat API and prints the
-    // "Failed tests:" summary as a side effect. We want the main thread to
-    // aggregate and print a single clean summary, so we call the raw
-    // function and collect the failed list ourselves.
+    // Test worker: runTest passes __cts_test in workerData (see runTestFileAndReport).
     const testEntry = worker.workerData?.__cts_test;
     if (testEntry) {
         const pipe = worker.pipe!;
-        try {
-            const file = String(testEntry);
-            await runFile({ file, args: [], flags: {}, rawArgs: makeRunArgs(file) });
-            const passed = await startTest(String(testEntry), true, true);
-            const failedTests = getFailedTests();
-            pipe.postMessage({ passed, failedTests });
-        } catch (e: any) {
-            pipe.postMessage({ passed: false, error: String(e?.stack ?? e), failedTests: [] });
-        }
+        await runTestFileAndReport(String(testEntry), (msg) => pipe.postMessage(msg));
         return;
     }
 
@@ -214,7 +266,7 @@ async function workerEntry(): Promise<void> {
     const entry = worker.workerData?.__cts_entry;
     if (entry) {
         const file = String(entry);
-        return runFile({ file, args: [], flags: {}, rawArgs: makeRunArgs(file) });
+        return runEntry(file, [], {}, makeRunArgs(file));
     }
 
     log.debug('cno', () => 'worker: unknown role, dispatching on argv');
@@ -226,7 +278,9 @@ try { registerExtensions(); } catch (e) { fatal(e, 'registerExtensions'); }
 
 async function mainEntry(): Promise<void> {
     try {
-        await (worker.isWorker ? workerEntry() : dispatch());
+        if (worker.isWorker) await workerEntry();
+        else if (os.args[1] === TEST_CHILD_FLAG) await testChildEntry(os.args[2]);
+        else await dispatch();
     } finally {
         runProcessCleanup();
     }

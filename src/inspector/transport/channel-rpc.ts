@@ -19,7 +19,7 @@ import { ChannelRecv, ChannelReq, ExceptionBreakMode, Step, type StepCode } from
 import type { DebugChannelMain, DebugChannelWorker } from '../shared/native';
 import type { RpcMethod, RpcParams } from '../shared/rpc-contract';
 import type { WorkerEvent } from '../shared/wire';
-import { log } from '../../../cts/src/utils/log';
+import { log } from '../../../cts/src/api';
 
 const timers = import.meta.use('timers');
 

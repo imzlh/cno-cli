@@ -1,8 +1,5 @@
-import { createRuntime } from '../../cts/src/runtime/index';
-import { loadConfigFile } from '../../cts/src/config';
-import { fatal } from '../../cts/src/errors';
-import { joinPaths } from '../../cts/src/utils/path';
-import type { ConfigOptions } from '../../cts/src/types';
+import { createRuntime, loadConfigFile, fatal, joinPaths } from '../../cts/src/api';
+import type { ConfigOptions } from '../../cts/src/api';
 import { Inspector } from '../inspector';
 import { installInspectorBridge, uninstallInspectorBridge } from '../inspector/bridge';
 import { parseInspectFlags } from './inspect';

@@ -1,10 +1,6 @@
-import { createRuntime } from '../../../cts/src/runtime/index';
-import { loadConfigFile } from '../../../cts/src/config';
-import { Transformer } from '../../../cts/src/source/transform';
-import { joinPaths, cwd } from '../../../cts/src/utils/path';
+import { createRuntime, loadConfigFile, Transformer, joinPaths, cwd, uname } from '../../../cts/src/api';
 import { version } from '../../version';
 import { CnoRepl } from './runner';
-import { uname } from '../../../cts/src/utils';
 import { Inspector } from '../../inspector';
 import { installInspectorBridge, uninstallInspectorBridge } from '../../inspector/bridge';
 import { parseInspectFlags } from '../inspect';

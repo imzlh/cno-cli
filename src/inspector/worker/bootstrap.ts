@@ -11,7 +11,7 @@
  */
 
 import { native, type DebugChannelWorker } from '../shared/native'
-import { toPosixPath } from '../../../cts/src/utils/path'
+import { toPosixPath } from '../../../cts/src/api'
 import { WorkerEndpoint } from '../transport/worker-endpoint'
 import { CDPDispatcher } from './dispatcher'
 import { CdpChannel, handleDevToolsConnection } from './connection'

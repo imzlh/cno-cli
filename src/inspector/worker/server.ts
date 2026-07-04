@@ -10,7 +10,7 @@
 
 import { Server, type HttpRequest, type HttpResponse } from '@cnojs/http/server'
 import { createWebSocketFromConnection } from '../../../cno/src/webapi/websocket'
-import { log } from '../../../cts/src/utils/log'
+import { log } from '../../../cts/src/api'
 
 const engine = import.meta.use('engine');
 const nativeCrypto = import.meta.use('crypto');
@@ -52,7 +52,7 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 		devtoolsFrontendUrl: `devtools://devtools/bundled/js_app.html?experiments=true&v8only=true&ws=${host}${wsPath}`,
 		id: targetId,
 		title: 'cno',
-		type: 'node',
+		type: 'page',
 		url: entryUrl,
 		webSocketDebuggerUrl: wsUrl,
 	}

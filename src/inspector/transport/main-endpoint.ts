@@ -14,7 +14,7 @@ import { ChannelServer } from './channel-rpc';
 import type { RpcMethod, RpcParams } from '../shared/rpc-contract';
 import type { DebugChannelMain, StepCode } from '../shared/native';
 import type { WorkerEvent } from '../shared/wire';
-import { log } from '../../../cts/src/utils/log';
+import { log } from '../../../cts/src/api';
 
 type Pipe = CModuleWorker.MessagePipe;
 

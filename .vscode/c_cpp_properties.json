@@ -16,6 +16,18 @@
             "intelliSenseMode": "windows-msvc-x64",
             "cStandard": "c23",
             "cppStandard": "c++23"
+        },
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/gcc",
+            "intelliSenseMode": "linux-gcc-x64",
+            "cStandard": "gnu23",
+            "cppStandard": "gnu++23",
+            "configurationProvider": "ms-vscode.cmake-tools"
         }
     ],
     "version": 4

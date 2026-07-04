@@ -1,8 +1,6 @@
-import { createRuntime } from '../../cts/src/runtime/index';
-import { loadConfigFile } from '../../cts/src/config';
-import { fatal, formatError } from '../../cts/src/errors';
+import { createRuntime, loadConfigFile, fatal, formatError } from '../../cts/src/api';
+import type { ConfigOptions } from '../../cts/src/api';
 import { entryAndDir } from '../utils';
-import type { ConfigOptions } from '../../cts/src/types';
 import { Inspector } from '../inspector';
 import { parseInspectFlags } from './inspect';
 import { installInspectorBridge, uninstallInspectorBridge } from '../inspector/bridge';
@@ -29,11 +27,11 @@ function flagsToConfig(flags: Record<string, string | boolean>): Partial<ConfigO
     if (b('no-http'))       c.enableHttp = false;
     if (b('no-jsr'))        c.enableJsr = false;
     if (b('no-node'))       c.enableNode = false;
-    if (b('no-oxc') || b('no-swc')) c.enableOxc = false;
+    if (b('no-oxc')) c.enableOxc = false;
     if (b('silent'))        c.silent = true;
     if (b('disable-cache')) c.enableCache = false;
     if (s('polyfill'))      c.polyfill = s('polyfill');
-    // postinstall scripts only run during `cno cache`, never during `cno run`
+    // Deferred npm lifecycle scripts only run during `cno cache`, never during `cno run`.
     c.ignoreScripts = true;
     return c;
 }

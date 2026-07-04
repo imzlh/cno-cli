@@ -151,10 +151,9 @@ jobs:
       - name: Build ext-oxc
         run: |
           cmake -S ext-oxc -B ext-oxc/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCNO_SRC_DIR="$PWD/circu.js/src" \
-            -DQUICKJS_DIR="$PWD/circu.js/deps/quickjs"
+            -DCJS_DIR="$PWD/circu.js"
           cmake --build ext-oxc/build --parallel
-          cp ext-oxc/build/swc.dylib build/stage/ext/swc.dylib
+          cp ext-oxc/build/oxc.dylib build/stage/ext/oxc.dylib
       - name: Package
         run: tar czf cno-macos-arm64.tar.gz -C build/stage .
       - uses: actions/upload-artifact@v4
@@ -196,11 +195,10 @@ jobs:
         run: |
           cmake -S ext-oxc -B ext-oxc\build -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCNO_SRC_DIR="$PWD\circu.js\src" `
-            -DQUICKJS_DIR="$PWD\circu.js\deps\quickjs" `
+            -DCJS_DIR="$PWD\circu.js" `
             -DCNO_IMPLIB="$PWD\build\circu.js\Release\cjs.lib"
           cmake --build ext-oxc\build --config Release --parallel
-          Copy-Item ext-oxc\build\Release\swc.dll build\stage\ext\swc.dll
+          Copy-Item ext-oxc\build\Release\oxc.dll build\stage\ext\oxc.dll
       - name: Package
         shell: pwsh
         run: Compress-Archive -Path build\stage\* -DestinationPath cno-windows-x64.zip

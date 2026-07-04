@@ -6,7 +6,7 @@
  */
 
 import { setCurlInitHook } from '../cno/src/utils/network-hooks';
-import { log } from '../cts/src/utils/log';
+import { log } from '../cts/src/api';
 
 const os    = import.meta.use('os');
 const curl  = import.meta.use('curl');

@@ -1,8 +1,6 @@
-// bin.ts — `cno run <binary>` entry point
+// bin.ts — `cno exec <binary>` entry point
 
-import { uname } from '../../cts/src/utils';
-import { LockStore } from '../../cts/src/lock';
-import { BinResolver } from '../../cts/src/task';
+import { uname, LockStore, BinResolver } from '../../cts/src/api';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
@@ -13,7 +11,7 @@ export async function spawnBinary(binName: string, args: string[], env: Record<s
     const lockStore = new LockStore(cwd, true);
     try {
         const resolver = new BinResolver(lockStore);
-        const resolved = resolver.resolve(binName, cwd);
+        const resolved = resolver.resolve(binName, cwd, { global: true });
         if (!resolved) {
             console.error(`[bin] Command '${binName}' not found in bin index or node_modules/.bin`);
             return 1;

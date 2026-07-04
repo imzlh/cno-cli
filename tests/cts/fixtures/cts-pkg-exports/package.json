@@ -1,0 +1,10 @@
+{
+  "name": "cts-pkg-exports",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./entry.js",
+    "./utils": "./utils.js",
+    "./nested/./deep": "./nested/deep.js"
+  }
+}

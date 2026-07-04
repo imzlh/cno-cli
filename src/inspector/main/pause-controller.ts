@@ -13,7 +13,7 @@ import type { CallFrame, PausedEvent, Scope } from '../shared/cdp'
 import { WorkerEvent } from '../shared/wire'
 import type { MainEndpoint } from '../transport/main-endpoint'
 import type { Serializer } from './remote-object'
-import { log } from '../../../cts/src/utils/log'
+import { log } from '../../../cts/src/api'
 
 const BACKTRACE_GROUP = 'backtrace'
 const EVAL_FRAME_OFFSET = 4

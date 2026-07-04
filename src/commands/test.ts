@@ -1,11 +1,16 @@
-import { joinPaths, normalizePath, isAbsolute, cwd, toPosixPath } from '../../cts/src/utils/path';
+import { joinPaths, normalizePath, isAbsolute, cwd, toPosixPath } from '../../cts/src/api';
+import { IPCChannel } from '../../cno/src/node/ipc_channel/mod';
 import { C } from '../help';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
-const workerApi = import.meta.use('worker');
+const process = import.meta.use('process');
 const fs = import.meta.use('fs');
-const timers = import.meta.use('timers');
+
+// Hidden argv sentinel that selects testChildEntry() in src/main.ts instead
+// of normal CLI dispatch — each test file runs as its own real child process
+// (not a worker thread) so signal handling works inside test files.
+export const TEST_CHILD_FLAG = '--__cno-test-child';
 
 // Matches: foo.test.ts, foo_test.ts, foo.test.js, foo_test.js (and .tsx/.jsx)
 const TEST_RE = /[._]test\.[jt]sx?$/;
@@ -67,35 +72,37 @@ interface TestResult {
     failedTests:  FailedTest[];
 }
 
-/**
- * Yield control long enough for the worker's pending timers / I/O to drain.
- * Without this, `terminate()` kills the worker while it's still flushing
- * console output or running async test teardown, which makes the whole
- * process abort after a few files.
- */
-function drain(ms: number): Promise<void> {
-    return new Promise(resolve => timers.setTimeout(resolve, ms));
-}
-
 async function runOne(file: string): Promise<TestResult> {
     const start = performance.now();
-    const w = new workerApi.Worker({ __cts_test: file });
+    const child = process.spawn([os.exePath, TEST_CHILD_FLAG, file], {
+        stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', ipc: true,
+    });
+    const channel = new IPCChannel(child.ipc!);
     try {
-        const msg = await new Promise<any>((resolve, reject) => {
-            w.messagePipe.onmessage = resolve;
-            w.messagePipe.onmessageerror = reject;
+        let received: any;
+        channel.once('message', (m: any) => { received = m; });
+        await new Promise<void>((resolve, reject) => {
+            channel.once('close', () => resolve());
+            channel.once('error', reject);
         });
-        const failedTests: FailedTest[] = (msg?.failedTests ?? []).map((t: any) => ({
+        // A pipe only reaches EOF/close after all previously-written bytes
+        // are delivered, so a message sent just before exit is guaranteed to
+        // have arrived here already — no need to race against child.wait().
+        if (received === undefined) {
+            const info = await child.wait();
+            throw new Error(`test worker exited (code=${info.exit_status}, signal=${info.term_signal ?? 'none'}) without reporting a result`);
+        }
+        const failedTests: FailedTest[] = (received.failedTests ?? []).map((t: any) => ({
             name: t.name ?? String(t),
             error: t.error ? String(t.error) : undefined,
         }));
-        return { file, passed: msg?.passed === true, duration: performance.now() - start, error: msg?.error, failedTests };
+        return { file, passed: received.passed === true, duration: performance.now() - start, error: received.error, failedTests };
     } catch (e) {
         return { file, passed: false, duration: performance.now() - start, error: e, failedTests: [] };
     } finally {
-        // Let the worker flush pending I/O before we pull the plug.
-        try { await drain(50); } catch {}
-        try { await w.terminate(); } catch {}
+        channel.close();
+        try { child.kill(); } catch {}
+        await child.wait().catch(() => {});
     }
 }
 
