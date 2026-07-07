@@ -10,10 +10,11 @@ import { log } from '../cts/src/api';
 
 const os    = import.meta.use('os');
 const curl  = import.meta.use('curl');
-const win32 = import.meta.use('win32')!;
+const win32 = import.meta.use('win32');
 
 const PROXY_PROTOCOLS = ['http', 'https', 'socks4', 'socks4a', 'socks5', 'socks5h'] as const;
 type ProxyType = typeof PROXY_PROTOCOLS[number];
+const PROXY_PROTOCOL_SET = new Set<string>(PROXY_PROTOCOLS);
 
 const REG_KEY = 'Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
 
@@ -30,14 +31,23 @@ let watcher: CModuleWin32.RegWatch | null = null;
 let skipCertVerify = false;
 
 function env(k: string): string | null {
-    try { return os.getenv(k); } catch { return null; }
+    try {
+        return os.getenv(k) ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function isProxyType(value: string): value is ProxyType {
+    return PROXY_PROTOCOL_SET.has(value);
 }
 
 function parseProxyUrl(raw: string): Omit<ProxyConfig, 'noProxy'> {
     let input = raw.trim();
     if (!/^(https?|socks[45][ah]?):\/\//i.test(input)) input = 'http://' + input;
     const u = new URL(input);
-    const proto = u.protocol.slice(0, -1) as ProxyType;
+    const proto = u.protocol.slice(0, -1);
+    if (!isProxyType(proto)) throw new TypeError(`Unsupported proxy protocol: ${proto}`);
     const user = u.username ? decodeURIComponent(u.username) : null;
     const pass = u.password ? decodeURIComponent(u.password) : null;
     u.username = '';
@@ -50,20 +60,24 @@ function readEnv(): void {
     config = raw ? { ...parseProxyUrl(raw), noProxy: env('NO_PROXY') } : null;
 }
 
-function readRegistry(): void {
+function readRegistry(registry: NonNullable<typeof win32>): void {
     try {
-        if (!win32.readRegistry(win32.HKCU, REG_KEY, 'ProxyEnable')) {
+        if (!registry.readRegistry(registry.HKCU, REG_KEY, 'ProxyEnable')) {
             config = null;
             return;
         }
-        const server = win32.readRegistry(win32.HKCU, REG_KEY, 'ProxyServer');
-        if (typeof server !== 'string' || !server) { config = null; return; }
+        const server = registry.readRegistry(registry.HKCU, REG_KEY, 'ProxyServer');
+        if (typeof server !== 'string' || !server) {
+            config = null;
+            return;
+        }
 
         let noProxy: string | null = null;
         try {
-            const bypass = win32.readRegistry(win32.HKCU, REG_KEY, 'ProxyOverride');
-            if (typeof bypass === 'string')
+            const bypass = registry.readRegistry(registry.HKCU, REG_KEY, 'ProxyOverride');
+            if (typeof bypass === 'string') {
                 noProxy = bypass.replace(/;/g, ',').replace(/<local>/g, 'localhost,127.0.0.1');
+            }
         } catch { /* ProxyOverride not present */ }
 
         config = { ...parseProxyUrl(server), noProxy };
@@ -84,13 +98,14 @@ function applyNetwork(handle: CModuleCURL.CURL): void {
 }
 
 export function startProxy(): void {
-    if (win32.HKCU !== undefined) {
-        readRegistry();
-        watcher = win32.watchRegistry(win32.HKCU, REG_KEY, readRegistry);
+    if (win32?.HKCU !== undefined) {
+        const registry = win32;
+        readRegistry(registry);
+        watcher = registry.watchRegistry(registry.HKCU, REG_KEY, () => readRegistry(registry));
     } else {
         readEnv();
     }
-    log.debug('http', () => `successful setup proxy bypass: ${config!.url}`)
+    log.debug('http', () => config ? `successful setup proxy bypass: ${config.url}` : 'proxy not configured')
     setCurlInitHook(applyNetwork);
 }
 

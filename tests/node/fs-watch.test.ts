@@ -80,6 +80,33 @@ Deno.test('fs.watch: FSWatcher.close fires close event', async () => {
     }
 });
 
+Deno.test('fs.watch: encoding buffer yields Buffer filename when provided', async () => {
+    await fsp.mkdir(WATCH_DIR, { recursive: true });
+    const target = path.join(WATCH_DIR, 'buffer-name.txt');
+    await fsp.writeFile(target, 'a');
+    try {
+        const seen = await new Promise<{ eventType: string; filename: Buffer | null }>((resolve, reject) => {
+            const watcher = fs.watch(target, { encoding: 'buffer' }, (eventType, filename) => {
+                watcher.close();
+                resolve({
+                    eventType,
+                    filename: filename ?? null,
+                });
+            });
+            watcher.once('error', reject);
+            setTimeout(() => reject(new Error('timeout')), 3000);
+            setTimeout(() => {
+                fsp.writeFile(target, 'b').catch(reject);
+            }, 150);
+        });
+        strictEqual(seen.eventType, 'change');
+        ok(seen.filename === null || Buffer.isBuffer(seen.filename));
+        if (seen.filename) strictEqual(seen.filename.toString(), 'buffer-name.txt');
+    } finally {
+        await fsp.rm(WATCH_DIR, { recursive: true, force: true });
+    }
+});
+
 // --- 5. fs.watchFile / unwatchFile -------------------------------------------
 
 Deno.test('fs.watchFile + unwatchFile', async () => {
@@ -88,7 +115,9 @@ Deno.test('fs.watchFile + unwatchFile', async () => {
     await fsp.writeFile(target, 'a');
 
     let changes = 0;
+    let sawStatsObjects = false;
     const listener = (curr: fs.Stats, prev: fs.Stats) => {
+        sawStatsObjects = curr instanceof fs.Stats && prev instanceof fs.Stats;
         if (curr.mtimeMs !== prev.mtimeMs) changes++;
     };
     fs.watchFile(target, { interval: 50 }, listener);
@@ -97,9 +126,10 @@ Deno.test('fs.watchFile + unwatchFile', async () => {
     await fsp.writeFile(target, 'b');
     await new Promise((r) => setTimeout(r, 200));
 
-    fs.unwatchFile(target, listener);
+    strictEqual(fs.unwatchFile(target, listener), undefined);
     await fsp.rm(WATCH_DIR, { recursive: true, force: true });
 
+    ok(sawStatsObjects, 'watchFile listener must receive fs.Stats objects');
     ok(changes >= 1, `watchFile must report >=1 change, got ${changes}`);
 });
 
@@ -109,7 +139,18 @@ Deno.test('fs.unwatchFile without prior watch is safe', async () => {
     await fsp.mkdir(WATCH_DIR, { recursive: true });
     const target = path.join(WATCH_DIR, 'wf2.txt');
     await fsp.writeFile(target, 'x');
-    // should not throw
-    fs.unwatchFile(target);
+    strictEqual(fs.unwatchFile(target), undefined);
     await fsp.rm(WATCH_DIR, { recursive: true, force: true });
+});
+
+Deno.test('fs.watch: ref/unref return the watcher itself', async () => {
+    await fsp.mkdir(WATCH_DIR, { recursive: true });
+    try {
+        const watcher = fs.watch(WATCH_DIR);
+        strictEqual(watcher.ref(), watcher);
+        strictEqual(watcher.unref(), watcher);
+        strictEqual(watcher.close(), undefined);
+    } finally {
+        await fsp.rm(WATCH_DIR, { recursive: true, force: true });
+    }
 });

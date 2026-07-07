@@ -10,8 +10,8 @@
  * close racing a fresh connection).
  */
 
-import type { CDPMessage } from '../shared/cdp'
-import type { EmitEvent, CDPDispatcher } from './dispatcher'
+import { isRecord, parseCDPMessage, type CDPMessage } from '../shared/cdp'
+import { CDPError, CdpErrorCode, formatCdpError, type EmitEvent, type CDPDispatcher, type CdpParams } from './dispatcher'
 import type { WorkerEndpoint } from '../transport/worker-endpoint'
 import type { DebuggerDomain } from '../domains/debugger'
 import type { RuntimeDomain } from '../domains/runtime'
@@ -40,7 +40,7 @@ export class CdpChannel {
 
 	/** Stable, bound emitter handed to every domain. */
 	readonly emit: EmitEvent = (method: string, params: unknown): void => {
-		this.send({ method, params: params as Record<string, unknown> })
+		this.send({ method, params: isRecord(params) ? params : {} })
 	}
 }
 
@@ -67,23 +67,39 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 	void rpc.call('setConnected', { connected: true })
 
 	ws.onmessage = (ev): void => {
+		if (!channel.isActive(thisSend)) return
 		const raw = typeof ev.data === 'string' ? ev.data : engine.decodeString(ev.data)
-		let message: CDPMessage
+		let message: CDPMessage | null
 		try {
-			message = JSON.parse(raw) as CDPMessage
+			message = parseCDPMessage(raw)
 		} catch {
+			thisSend({ id: null, error: { code: CdpErrorCode.ParseError, message: 'Invalid JSON' } })
+			return
+		}
+		if (!message) {
+			thisSend({ id: null, error: { code: CdpErrorCode.InvalidRequest, message: 'CDP message must be a JSON object' } })
 			return
 		}
 		const { id, method, params, sessionId } = message
-		if (id == null || !method) return
-		void dispatcher
-			.dispatch(method, (params ?? {}) as Record<string, unknown>)
-			.then((result) => {
-				thisSend({ id, result: (result ?? {}) as Record<string, unknown>, sessionId })
-			})
+		if (id == null) return
+		if (!method) {
+			thisSend({ id, error: { code: CdpErrorCode.InvalidRequest, message: 'CDP command method is required' }, sessionId })
+			return
+		}
+		let normalizedParams: CdpParams
+		try {
+			normalizedParams = normalizeParams(params)
+		} catch (error) {
+			thisSend({ id, error: formatCdpError(error), sessionId })
+			return
+		}
+			void dispatcher
+				.dispatch(method, normalizedParams)
+				.then((result) => {
+					thisSend({ id, result: result ?? {}, sessionId })
+				})
 			.catch((err: unknown) => {
-				const messageText = err instanceof Error ? err.message : String(err)
-				thisSend({ id, error: { code: -32000, message: messageText }, sessionId })
+				thisSend({ id, error: formatCdpError(err), sessionId })
 			})
 	}
 
@@ -96,4 +112,12 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 		pageDomain.setConnected(false)
 		void rpc.call('setConnected', { connected: false })
 	}
+}
+
+function normalizeParams(params: unknown): CdpParams {
+	if (params == null) return {}
+	if (!isRecord(params)) {
+		throw new CDPError(CdpErrorCode.InvalidParams, 'CDP params must be an object')
+	}
+	return params
 }

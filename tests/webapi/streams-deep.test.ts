@@ -1,4 +1,4 @@
-import { strictEqual, ok } from 'node:assert';
+import { deepStrictEqual, strictEqual, ok, rejects, throws } from 'node:assert';
 
 // ============================================================================
 // Web Streams — ReadableStream / WritableStream / TransformStream edge cases
@@ -56,6 +56,28 @@ Deno.test('ReadableStream: reader.cancel resolves pending read as done', async (
     const result = await p;
     strictEqual(result.done, true);
     strictEqual(result.value, undefined);
+});
+
+Deno.test('ReadableStream upstream: cancel passes reason to underlying source', async () => {
+    let cancelReason: unknown;
+    const rs = new ReadableStream({
+        start(c) { c.enqueue('queued'); },
+        cancel(reason) { cancelReason = reason; },
+    });
+    const r = rs.getReader();
+    await r.cancel('reader-cancel-reason');
+    strictEqual(cancelReason, 'reader-cancel-reason');
+    strictEqual((await r.read()).done, true);
+});
+
+Deno.test('ReadableStream upstream: releaseLock rejects pending read', async () => {
+    const rs = new ReadableStream({ start() {} });
+    const reader = rs.getReader();
+    const pending = reader.read();
+    reader.releaseLock();
+    await rejects(pending, TypeError);
+    const next = rs.getReader();
+    await next.cancel();
 });
 
 // --- 5. ReadableStream: pull is called lazily -----------------------------
@@ -128,6 +150,19 @@ Deno.test('WritableStream: abort resolves writer and rejects closed', async () =
     );
     await w.abort('boom');
     strictEqual(await closed, 'boom');
+});
+
+Deno.test('WritableStream upstream: abort forwards reason to underlying sink', async () => {
+    let abortReason: unknown;
+    const ws = new WritableStream({
+        abort(reason) {
+            abortReason = reason;
+        },
+    });
+    const writer = ws.getWriter();
+    await writer.abort('sink-abort-reason');
+    strictEqual(abortReason, 'sink-abort-reason');
+    await rejects(writer.write('after-abort'), 'sink-abort-reason');
 });
 
 // --- 10. TransformStream: transforms chunks -------------------------------
@@ -281,8 +316,111 @@ Deno.test('ReadableStream: releaseLock allows a new reader', async () => {
     r2.releaseLock();
 });
 
-// --- helper ---------------------------------------------------------------
+Deno.test('ReadableStream upstream: empty Uint8Array chunks are delivered as chunks', async () => {
+    const rs = new ReadableStream<Uint8Array>({
+        start(controller) {
+            controller.enqueue(new Uint8Array([1]));
+            controller.enqueue(new Uint8Array());
+            controller.enqueue(new Uint8Array([2]));
+            controller.close();
+        },
+    });
 
-function deepStrictEqual(a: unknown, b: unknown) {
-    strictEqual(JSON.stringify(a), JSON.stringify(b));
-}
+    const chunks: number[] = [];
+    const lengths: number[] = [];
+    for await (const chunk of rs) {
+        lengths.push(chunk.byteLength);
+        chunks.push(...chunk);
+    }
+
+    deepStrictEqual(lengths, [1, 0, 1]);
+    deepStrictEqual(chunks, [1, 2]);
+});
+
+Deno.test('ReadableStream.from: accepts sync and async iterables', async () => {
+    const from = (ReadableStream as typeof ReadableStream & {
+        from<T>(iterable: Iterable<T> | AsyncIterable<T>): ReadableStream<T>;
+    }).from;
+
+    const sync = from([1, 2, 3]);
+    const syncOut: number[] = [];
+    for await (const chunk of sync) syncOut.push(chunk);
+    deepStrictEqual(syncOut, [1, 2, 3]);
+
+    async function* source() {
+        yield 'a';
+        yield 'b';
+    }
+
+    const async = from(source());
+    const asyncOut: string[] = [];
+    for await (const chunk of async) asyncOut.push(chunk);
+    deepStrictEqual(asyncOut, ['a', 'b']);
+});
+
+Deno.test('ReadableStream.from upstream: cancel calls iterator return', async () => {
+    const from = (ReadableStream as typeof ReadableStream & {
+        from<T>(iterable: Iterable<T> | AsyncIterable<T>): ReadableStream<T>;
+    }).from;
+    let returned = false;
+    const source = {
+        [Symbol.iterator]() {
+            return {
+                next() {
+                    return { done: false, value: 'chunk' };
+                },
+                return() {
+                    returned = true;
+                    return { done: true, value: undefined };
+                },
+            };
+        },
+    };
+
+    const reader = from(source).getReader();
+    strictEqual((await reader.read()).value, 'chunk');
+    await reader.cancel('stop');
+    strictEqual(returned, true);
+});
+
+Deno.test('ReadableStream.from: rejects primitive inputs', () => {
+    const from = (ReadableStream as typeof ReadableStream & {
+        from<T>(iterable: Iterable<T> | AsyncIterable<T>): ReadableStream<T>;
+    }).from;
+
+    throws(() => from('string' as unknown as Iterable<string>), TypeError);
+    throws(() => from(1 as unknown as Iterable<number>), TypeError);
+    throws(() => from(null as unknown as Iterable<unknown>), TypeError);
+});
+
+Deno.test('CompressionStream: writable abort and readable cancel settle cleanly', async () => {
+    for (const format of ['gzip', 'deflate', 'deflate-raw'] as const) {
+        await new CompressionStream(format).writable.getWriter().abort();
+        await new CompressionStream(format).readable.getReader().cancel();
+    }
+});
+
+Deno.test('DecompressionStream: writable abort and readable cancel settle cleanly', async () => {
+    for (const format of ['gzip', 'deflate', 'deflate-raw'] as const) {
+        await new DecompressionStream(format).writable.getWriter().abort();
+        await new DecompressionStream(format).readable.getReader().cancel();
+    }
+});
+
+Deno.test('CompressionStream and DecompressionStream: gzip round-trip', async () => {
+    const compressor = new CompressionStream('gzip');
+    const decompressor = new DecompressionStream('gzip');
+    const readable = compressor.readable.pipeThrough(decompressor);
+    const writer = compressor.writable.getWriter();
+
+    await writer.write(new Uint8Array([1]));
+    await writer.close();
+
+    const chunks: number[] = [];
+    for await (const chunk of readable) chunks.push(...chunk);
+    deepStrictEqual(chunks, [1]);
+});
+
+Deno.test('DecompressionStream: invalid gzip is reported when writable closes', async () => {
+    await rejects(() => new DecompressionStream('gzip').writable.close(), TypeError);
+});

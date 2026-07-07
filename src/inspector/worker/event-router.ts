@@ -8,27 +8,27 @@
  * event tag before use — no `any`.
  */
 
-import { WorkerEvent } from '../shared/wire'
-import { consoleAPICalledType, buildConsoleStackTrace } from '../shared/console-utils'
+import type { ConsoleDomain } from '../domains/console'
+import type { DebuggerDomain } from '../domains/debugger'
+import type { FetchDomain } from '../domains/fetch'
+import type { NetworkDomain } from '../domains/network'
+import type { PageDomain } from '../domains/page'
+import type { RuntimeDomain } from '../domains/runtime'
+import type { PausedEvent } from '../shared/cdp'
+import { buildConsoleStackTrace, consoleAPICalledType } from '../shared/console-utils'
 import type {
-	ScriptParsedPayload,
-	ConsolePayload,
-	LoadPayload,
 	BindingCalledPayload,
+	ConsolePayload,
 	FetchInterceptPayload,
+	LoadPayload,
 	NetFetchEvent,
 	NetServeEvent,
 	NetWSEvent,
+	ScriptParsedPayload,
 } from '../shared/wire'
-import type { PausedEvent } from '../shared/cdp'
-import type { EmitEvent } from './dispatcher'
+import { WorkerEvent } from '../shared/wire'
 import type { WorkerEndpoint } from '../transport/worker-endpoint'
-import type { DebuggerDomain } from '../domains/debugger'
-import type { RuntimeDomain } from '../domains/runtime'
-import type { ConsoleDomain } from '../domains/console'
-import type { PageDomain } from '../domains/page'
-import type { NetworkDomain } from '../domains/network'
-import type { FetchDomain } from '../domains/fetch'
+import type { EmitEvent } from './dispatcher'
 
 export interface EventRouterDeps {
 	endpoint: WorkerEndpoint

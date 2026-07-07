@@ -1,8 +1,9 @@
-import { createRuntime, loadConfigFile, fatal, joinPaths } from '../../cts/src/api';
 import type { ConfigOptions } from '../../cts/src/api';
+import { createRuntime, fatal, joinPaths, loadConfigFile } from '../../cts/src/api';
 import { Inspector } from '../inspector';
 import { installInspectorBridge, uninstallInspectorBridge } from '../inspector/bridge';
 import { parseInspectFlags } from './inspect';
+import { applyNodeOptionConfig } from './node-options';
 
 const os = import.meta.use('os');
 
@@ -11,9 +12,27 @@ interface EvalOpts {
     flags: Record<string, string | boolean>;
 }
 
+function extFromFlags(flags: Record<string, string | boolean>): string {
+    const ext = flags.ext;
+    if (typeof ext !== 'string' || ext.length === 0) return 'ts';
+    return ext.startsWith('.') ? ext.slice(1) : ext;
+}
+
+function formatForExt(ext: string): 'esm' | 'cjs' {
+    return ext === 'cjs' || ext === 'cts' ? 'cjs' : 'esm';
+}
+
+function printableCode(code: string, format: 'esm' | 'cjs'): string {
+    return format === 'cjs'
+        ? `console.log(${code})`
+        : `console.log(await (${code}))`;
+}
+
 export async function runEval(opts: EvalOpts): Promise<void> {
-    const cwd      = os.cwd as string;
-    const evalPath = joinPaths(cwd, '<eval>.ts');
+    const cwd      = os.cwd;
+    const ext      = extFromFlags(opts.flags);
+    const format   = formatForExt(ext);
+    const evalPath = joinPaths(cwd, `<eval>.${ext}`);
     const fileCfg  = loadConfigFile(cwd);
 
     const cfg: Partial<ConfigOptions> = {
@@ -21,6 +40,7 @@ export async function runEval(opts: EvalOpts): Promise<void> {
         silent: opts.flags['silent'] === true,
         disableLock: opts.flags['no-lock'] === true,
     };
+    applyNodeOptionConfig(cfg, opts.flags);
 
     const inspect = parseInspectFlags(opts.flags);
     let dbg: Inspector | null = null;
@@ -44,7 +64,8 @@ export async function runEval(opts: EvalOpts): Promise<void> {
     });
 
     try {
-        const mod = runtime.loadSourceEntry(opts.code, evalPath, { main: true });
+        const code = opts.flags.print === true ? printableCode(opts.code, format) : opts.code;
+        const mod = runtime.loadSourceEntry(code, evalPath, { main: true }, { lang: ext, format });
         await mod.eval();
     } catch (e) {
         fatal(e, '<eval>');

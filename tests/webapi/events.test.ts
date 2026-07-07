@@ -1,4 +1,4 @@
-import { strictEqual, ok } from 'node:assert';
+import { deepStrictEqual, strictEqual, ok, throws } from 'node:assert';
 
 // ============================================================================
 // Event / EventTarget / CustomEvent
@@ -78,6 +78,39 @@ Deno.test('CustomEvent: carries detail', () => {
     strictEqual(e.detail.status, 'ok');
 });
 
+Deno.test('ErrorEvent upstream: defaults init fields and inspect shape', () => {
+    const defaultEvent = new ErrorEvent('error');
+    strictEqual(defaultEvent.type, 'error');
+    strictEqual(defaultEvent.bubbles, false);
+    strictEqual(defaultEvent.cancelable, false);
+    strictEqual(defaultEvent.composed, false);
+    strictEqual(defaultEvent.message, '');
+    strictEqual(defaultEvent.filename, '');
+    strictEqual(defaultEvent.lineno, 0);
+    strictEqual(defaultEvent.colno, 0);
+    strictEqual(defaultEvent.error, null);
+    strictEqual(Object.prototype.toString.call(defaultEvent), '[object ErrorEvent]');
+
+    const cause = new TypeError('boom');
+    const event = new ErrorEvent('worker-error', {
+        bubbles: true,
+        cancelable: true,
+        message: 'message',
+        filename: 'file.ts',
+        lineno: 12,
+        colno: 34,
+        error: cause,
+    });
+    strictEqual(event.bubbles, true);
+    strictEqual(event.cancelable, true);
+    strictEqual(event.message, 'message');
+    strictEqual(event.filename, 'file.ts');
+    strictEqual(event.lineno, 12);
+    strictEqual(event.colno, 34);
+    strictEqual(event.error, cause);
+    ok(Deno.inspect(event, { colors: false }).includes('ErrorEvent'));
+});
+
 // --- 8. Event static phase constants -------------------------------------
 
 Deno.test('Event phase constants', () => {
@@ -121,6 +154,82 @@ Deno.test('EventTarget: listeners fire in registration order', () => {
     deepStrictEqual(order, [1, 2, 3]);
 });
 
-function deepStrictEqual(a: unknown, b: unknown) {
-    strictEqual(JSON.stringify(a), JSON.stringify(b));
-}
+Deno.test('EventTarget upstream: dispatch sets target and currentTarget', () => {
+    const target = new EventTarget();
+    const event = new Event('targeted');
+    strictEqual(event.target, null);
+    strictEqual(event.currentTarget, null);
+
+    target.addEventListener('targeted', (dispatched) => {
+        strictEqual(dispatched, event);
+        strictEqual(dispatched.target, target);
+        strictEqual(dispatched.currentTarget, target);
+    });
+
+    strictEqual(target.dispatchEvent(event), true);
+    strictEqual(event.target, target);
+    strictEqual(event.currentTarget, null);
+});
+
+Deno.test('EventTarget upstream: object listeners and capture matching removal', () => {
+    const target = new EventTarget();
+    const event = new Event('object-listener');
+    let callCount = 0;
+    const listener = {
+        handleEvent(dispatched: Event) {
+            strictEqual(dispatched, event);
+            callCount++;
+        },
+    };
+
+    target.addEventListener('object-listener', listener, true);
+    target.dispatchEvent(event);
+    strictEqual(callCount, 1);
+
+    target.removeEventListener('object-listener', listener, false);
+    target.dispatchEvent(event);
+    strictEqual(callCount, 2);
+
+    target.removeEventListener('object-listener', listener, true);
+    target.dispatchEvent(event);
+    strictEqual(callCount, 2);
+});
+
+Deno.test('EventTarget upstream: dispatch uses a listener snapshot', () => {
+    const target = new EventTarget();
+    let callCount = 0;
+
+    target.addEventListener('snapshot', () => {
+        callCount++;
+        target.addEventListener('snapshot', () => {
+            callCount++;
+        });
+    });
+
+    target.dispatchEvent(new Event('snapshot'));
+    strictEqual(callCount, 1);
+    target.dispatchEvent(new Event('snapshot'));
+    strictEqual(callCount, 3);
+});
+
+Deno.test('EventTarget upstream: listener event type is stringified', () => {
+    const target = new EventTarget();
+    const type = { toString: () => 'stringified-type' };
+    let callCount = 0;
+    const listener = () => { callCount++; };
+
+    target.addEventListener(type as unknown as string, listener);
+    target.dispatchEvent(new Event('stringified-type'));
+    strictEqual(callCount, 1);
+
+    target.removeEventListener(type as unknown as string, listener);
+    target.dispatchEvent(new Event('stringified-type'));
+    strictEqual(callCount, 1);
+});
+
+Deno.test('EventTarget upstream: prototype methods reject invalid receivers', () => {
+    const receiver = {};
+    throws(() => EventTarget.prototype.addEventListener.call(receiver, 'test', null), TypeError);
+    throws(() => EventTarget.prototype.removeEventListener.call(receiver, 'test', null), TypeError);
+    throws(() => EventTarget.prototype.dispatchEvent.call(receiver, new Event('test')), TypeError);
+});

@@ -68,6 +68,7 @@ export interface RpcParams {
 		objectGroup?: string
 		paused?: boolean
 	}
+	queryObjects: { prototypeObjectId: string; objectGroup?: string }
 	setVariableValue: {
 		scopeNumber: number
 		variableName: string
@@ -112,6 +113,7 @@ export const RPC_TRANSPORT: Record<RpcMethod, RpcTransport> = {
 	getProperties: 'inspect',
 	callFunctionOn: 'inspect',
 	awaitPromise: 'inspect',
+	queryObjects: 'inspect',
 	setVariableValue: 'inspect',
 	compileScript: 'inspect',
 	runScript: 'inspect',
@@ -135,6 +137,11 @@ export const RPC_TRANSPORT: Record<RpcMethod, RpcTransport> = {
 /** Transport class for a method. */
 export function transportOf(method: RpcMethod): RpcTransport {
 	return RPC_TRANSPORT[method]
+}
+
+/** True when a string is one of the shared RPC method names. */
+export function isRpcMethod(method: string): method is RpcMethod {
+	return Object.prototype.hasOwnProperty.call(RPC_TRANSPORT, method)
 }
 
 /** True for control-class methods (breakpoints / stepping / pause). */

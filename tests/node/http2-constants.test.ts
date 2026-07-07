@@ -39,6 +39,39 @@ Deno.test('http2: HTTP2_HEADER_* pseudo-header constants are strings', () => {
     strictEqual(http2.constants.HTTP2_HEADER_PATH, ':path');
 });
 
+Deno.test('http2: common HTTP2_HEADER_* field-name constants are strings', () => {
+    strictEqual(http2.constants.HTTP2_HEADER_CONTENT_TYPE, 'content-type');
+    strictEqual(http2.constants.HTTP2_HEADER_CONTENT_LENGTH, 'content-length');
+});
+
+Deno.test('http2: HTTP2_METHOD_* constants expose common verbs', () => {
+    strictEqual(http2.constants.HTTP2_METHOD_GET, 'GET');
+    strictEqual(http2.constants.HTTP2_METHOD_POST, 'POST');
+});
+
+Deno.test('http2: HTTP_STATUS_* constants expose common status codes', () => {
+    strictEqual(http2.constants.HTTP_STATUS_OK, 200);
+    strictEqual(http2.constants.HTTP_STATUS_NOT_FOUND, 404);
+});
+
+Deno.test('http2: DEFAULT_SETTINGS_* constants match Node defaults', () => {
+    strictEqual(http2.constants.DEFAULT_SETTINGS_HEADER_TABLE_SIZE, 4096);
+    strictEqual(http2.constants.DEFAULT_SETTINGS_ENABLE_PUSH, 1);
+    strictEqual(http2.constants.DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE, 65535);
+});
+
+Deno.test('http2: session role constants match nghttp2', () => {
+    strictEqual(http2.constants.NGHTTP2_SESSION_SERVER, 0);
+    strictEqual(http2.constants.NGHTTP2_SESSION_CLIENT, 1);
+});
+
+Deno.test('http2: stream state constants match nghttp2', () => {
+    strictEqual(http2.constants.NGHTTP2_STREAM_STATE_IDLE, 1);
+    strictEqual(http2.constants.NGHTTP2_STREAM_STATE_OPEN, 2);
+    strictEqual(http2.constants.NGHTTP2_STREAM_STATE_HALF_CLOSED_REMOTE, 6);
+    strictEqual(http2.constants.NGHTTP2_STREAM_STATE_CLOSED, 7);
+});
+
 Deno.test('http2: createServer returns an http.Server', () => {
     const s = http2.createServer();
     ok(s, 'createServer must return a server');

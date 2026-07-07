@@ -1,5 +1,5 @@
 /**
- * domains/base.ts — shared base for every CDP domain that runs on the worker.
+ * shared base for every CDP domain that runs on the worker.
  *
  * A domain owns a slice of the protocol (Debugger.*, Runtime.*, …). It registers
  * its command handlers on the dispatcher and emits events through `event`. The
@@ -7,7 +7,7 @@
  * handler params stay `CdpParams` (never `any`).
  */
 
-import type { CDPDispatcher, CdpParams, CDPHandler, EmitEvent } from '../worker/dispatcher'
+import { CDPError, CdpErrorCode, type CDPDispatcher, type CdpParams, type CDPHandler, type EmitEvent } from '../worker/dispatcher'
 
 /** Emits a CDP event toward the front-end. */
 export type EventFn = EmitEvent
@@ -37,7 +37,7 @@ export abstract class Domain {
 	 */
 	protected reqStr(params: CdpParams, key: string): string {
 		const v = this.str(params, key)
-		if (v === undefined) throw new Error(`CDP param '${key}' is required`)
+		if (v === undefined) throw new CDPError(CdpErrorCode.InvalidParams, `CDP param '${key}' is required`)
 		return v
 	}
 
@@ -52,12 +52,20 @@ export abstract class Domain {
 		return typeof v === 'number' ? v : undefined
 	}
 
+	protected reqNonNegativeInt(params: CdpParams, key: string): number {
+		const v = this.num(params, key)
+		if (v === undefined || !Number.isInteger(v) || v < 0) {
+			throw new CDPError(CdpErrorCode.InvalidParams, `CDP param '${key}' must be a non-negative integer`)
+		}
+		return v
+	}
+
 	/**
 	 * Treat the raw CDP params as a typed structure. This is a safe narrowing
 	 * when the handler immediately accesses known fields — the alternative is
-	 * one `as unknown as` cast per handler, which is worse.
+	 * one cast per handler, which is worse.
 	 */
-	protected extract<T>(params: CdpParams): T {
-		return params as unknown as T
+	protected extract<T extends object>(params: CdpParams): T {
+		return params as T
 	}
 }

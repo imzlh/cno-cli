@@ -1,7 +1,22 @@
-import { strictEqual, ok, match } from 'node:assert';
+import { doesNotThrow, strictEqual, ok, match } from 'node:assert';
 import * as console_ from 'node:console';
 import { Console } from 'node:console';
+import process from 'node:process';
 import { Writable } from 'node:stream';
+import vm from 'node:vm';
+
+async function captureWarnings(fn: () => void): Promise<string[]> {
+    const warnings: string[] = [];
+    const onWarning = (warning: Error) => warnings.push(warning.message);
+    process.on('warning', onWarning);
+    try {
+        fn();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return warnings;
+    } finally {
+        process.off('warning', onWarning);
+    }
+}
 
 // --- 1. console.log/info/warn/error write to the right stream --------------
 
@@ -104,7 +119,7 @@ Deno.test('console: group/groupEnd indent', async () => {
     let out = '';
     const stdout = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
     const stderr = new Writable({ write(_c: Buffer, _e, cb) { cb(); } });
-    const c = new Console(stdout, stderr, false, 2);
+    const c = new Console({ stdout, stderr, ignoreErrors: false, groupIndentation: 2 });
     c.group('G');
     c.log('inside');
     c.groupEnd();
@@ -114,12 +129,95 @@ Deno.test('console: group/groupEnd indent', async () => {
     ok(out.includes('  inside'), 'group must indent by groupIndentation');
 });
 
+Deno.test('console: options object constructor honors nested groupIndentation', async () => {
+    let out = '';
+    const stdout = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
+    const stderr = new Writable({ write(_c: Buffer, _e, cb) { cb(); } });
+    const c = new Console({ stdout, stderr, groupIndentation: 4, colorMode: false });
+    c.group('G');
+    c.group('H');
+    c.log('x');
+    c.groupEnd();
+    c.groupEnd();
+    await new Promise((r) => setTimeout(r, 10));
+    ok(out.includes('        x'), 'nested groups must indent cumulatively');
+});
+
+Deno.test('console: groupCollapsed indents like group', async () => {
+    let out = '';
+    const stdout = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
+    const c = new Console({ stdout, stderr: stdout, groupIndentation: 2, colorMode: false });
+    c.groupCollapsed('G');
+    c.log('x');
+    c.groupEnd();
+    await new Promise((r) => setTimeout(r, 10));
+    strictEqual(out, 'G\n  x\n');
+});
+
+Deno.test('console: timeLog includes label and extra arguments', async () => {
+    let out = '';
+    const stdout = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
+    const c = new Console(stdout);
+    c.time('t');
+    c.timeLog('t', 'mid');
+    c.timeEnd('t');
+    await new Promise((r) => setTimeout(r, 10));
+    match(out, /t: \d+\.\d+ms mid/);
+    match(out, /t: \d+\.\d+ms/);
+});
+
 // --- 8. global console exists ---------------------------------------------
 
 Deno.test('global console exists', () => {
     ok(typeof console !== 'undefined');
     ok(typeof console.log === 'function');
     ok(typeof console.error === 'function');
+});
+
+Deno.test('console: namespace Console export matches named import', () => {
+    strictEqual(console_.Console, Console);
+});
+
+Deno.test('console: single-stream constructor routes error output to the same stream', async () => {
+    let out = '';
+    const stdout = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
+    const c = new Console(stdout);
+    c.error('e');
+    await new Promise((r) => setTimeout(r, 10));
+    strictEqual(out, 'e\n');
+});
+
+Deno.test('console: count without label uses default label', async () => {
+    let out = '';
+    const stdout = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
+    const c = new Console(stdout);
+    c.count();
+    c.count();
+    await new Promise((r) => setTimeout(r, 10));
+    strictEqual(out, 'default: 1\ndefault: 2\n');
+});
+
+Deno.test('console: countReset missing label emits process warning', async () => {
+    const stdout = new Writable({ write(_c: Buffer, _e, cb) { cb(); } });
+    const c = new Console(stdout);
+    const warnings = await captureWarnings(() => c.countReset('missing-count'));
+    ok(warnings.some((message) => message.includes("Count for 'missing-count' does not exist")));
+});
+
+Deno.test('console: duplicate time and missing time labels emit process warnings', async () => {
+    const stdout = new Writable({ write(_c: Buffer, _e, cb) { cb(); } });
+    const c = new Console(stdout);
+    const warnings = await captureWarnings(() => {
+        c.time('dup-time');
+        c.time('dup-time');
+        c.timeEnd('dup-time');
+        c.timeEnd('dup-time');
+        c.timeLog('missing-time-log');
+    });
+
+    ok(warnings.some((message) => message.includes("Label 'dup-time' already exists for console.time()")));
+    ok(warnings.some((message) => message.includes("No such label 'dup-time' for console.timeEnd()")));
+    ok(warnings.some((message) => message.includes("No such label 'missing-time-log' for console.timeLog()")));
 });
 
 // --- 9. Console with ignoreErrors does not throw --------------------------
@@ -134,4 +232,56 @@ Deno.test('console: ignoreErrors suppresses write errors', async () => {
     try { c.log('x'); } catch { threw = true; }
     await new Promise((r) => setTimeout(r, 10));
     ok(!threw, 'ignoreErrors must suppress write errors');
+});
+
+Deno.test('console: trace includes message and Trace prefix', async () => {
+    let out = '';
+    const stdout = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
+    const stderr = new Writable({ write(_c: Buffer, _e, cb) { cb(); } });
+    const c = new Console(stdout, stderr);
+    c.trace('marker');
+    await new Promise((r) => setTimeout(r, 10));
+    ok(out.includes('marker'));
+    ok(out.includes('Trace'));
+});
+
+Deno.test('console: clear writes terminal clear escape sequence', async () => {
+    let out = '';
+    const stdout = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
+    const stderr = new Writable({ write(_c: Buffer, _e, cb) { cb(); } });
+    const c = new Console(stdout, stderr);
+    c.clear();
+    await new Promise((r) => setTimeout(r, 10));
+    strictEqual(out, '\x1b[2J\x1b[0;0H\n');
+});
+
+Deno.test('console upstream: time and count methods tolerate missing labels', () => {
+    const stdout = new Writable({ write(_c: Buffer, _e, cb) { cb(); } });
+    const c = new Console(stdout);
+
+    doesNotThrow(() => c.time());
+    doesNotThrow(() => c.timeLog());
+    doesNotThrow(() => c.timeEnd());
+    doesNotThrow(() => c.count());
+    doesNotThrow(() => c.countReset());
+});
+
+Deno.test('console upstream: formats cross-realm built-in objects', async () => {
+    let out = '';
+    const stdout = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
+    const c = new Console({ stdout, stderr: stdout, colorMode: false });
+    const values = vm.runInNewContext(`[
+        new Map([["x", 1]]),
+        new Set(["a", "b"]),
+        new Date("2018-12-10T02:26:59.002Z"),
+        new Error("cross realm"),
+    ]`) as unknown[];
+
+    for (const value of values) c.log(value);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    ok(out.includes('Map(1) {x => 1}'));
+    ok(out.includes('Set(2) {a, b}'));
+    ok(out.includes('2018-12-10T02:26:59.002Z'));
+    ok(out.includes('Error: cross realm'));
 });

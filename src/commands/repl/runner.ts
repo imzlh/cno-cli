@@ -1,27 +1,3 @@
-/*
- * cno Read Eval Print Loop — adapted from circu.js/src/repl.ts
- *
- * Copyright (c) 2025~2026 iz
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
-
 const os = import.meta.use('os');
 const streams = import.meta.use('streams');
 const engine = import.meta.use('engine');
@@ -54,6 +30,25 @@ interface KeyCommand {
     (input: string): Promise<CommandResult | void> | CommandResult | void;
 }
 
+type TerminalSize =
+    | { width?: number; columns?: number }
+    | [number, number];
+
+interface ResizableOutput {
+    readonly size?: TerminalSize;
+    getWindowSize?: () => TerminalSize;
+    getwinsize?: () => TerminalSize;
+}
+
+function isResizableOutput(value: unknown): value is ResizableOutput {
+    if (value === null || typeof value !== 'object') return false;
+    return 'size' in value || 'getWindowSize' in value || 'getwinsize' in value;
+}
+
+interface EngineEvalResult {
+    value: unknown;
+}
+
 type CommandResult =
     | { type: 'continue' }
     | { type: 'submit'; value: string }
@@ -78,9 +73,9 @@ const STYLE_MAP: Record<TokenStyle, keyof typeof COLOR> = {
     function: 'brightYellow', type: 'brightMagenta', identifier: 'brightGreen',
     error: 'red', directive: 'gray'
 };
-function getenv(env: string) {
+function getenv(env: string): string | null {
     try {
-        return os.getenv(env);
+        return os.getenv(env) ?? null;
     } catch {
         return null;
     }
@@ -130,7 +125,8 @@ class JSColorizer {
         while (this.#index < this.#length) {
             this.#currentStyle = null;
             this.#start = this.#index;
-            const char = this.#str[this.#index++]!;
+            const char = this.#str[this.#index++];
+            if (char === undefined) break;
 
             switch (char) {
                 case ' ': case '\t': case '\r': case '\n': continue;
@@ -218,9 +214,16 @@ class JSColorizer {
         this.#pushState(delim);
         while (this.#index < this.#length) {
             const c = this.#str[this.#index++];
-            if (c === '\n' && delim !== '`') { this.#currentStyle = 'error'; continue; }
-            if (c === '\\') { if (this.#index < this.#length) this.#index++; }
-            else if (c === delim) { this.#popState(); break; }
+            if (c === '\n' && delim !== '`') {
+                this.#currentStyle = 'error';
+                continue;
+            }
+            if (c === '\\') {
+                if (this.#index < this.#length) this.#index++;
+            } else if (c === delim) {
+                this.#popState();
+                break;
+            }
         }
     }
 
@@ -229,9 +232,18 @@ class JSColorizer {
         this.#pushState('/');
         while (this.#index < this.#length) {
             const c = this.#str[this.#index++];
-            if (c === '\n') { this.#currentStyle = 'error'; continue; }
-            if (c === '\\') { if (this.#index < this.#length) this.#index++; continue; }
-            if (this.#lastState() === '[') { if (c === ']') this.#popState(); continue; }
+            if (c === '\n') {
+                this.#currentStyle = 'error';
+                continue;
+            }
+            if (c === '\\') {
+                if (this.#index < this.#length) this.#index++;
+                continue;
+            }
+            if (this.#lastState() === '[') {
+                if (c === ']') this.#popState();
+                continue;
+            }
             if (c === '[') {
                 this.#pushState('[');
                 if (this.#peek() === '[' || this.#peek() === ']') this.#index++;
@@ -239,7 +251,7 @@ class JSColorizer {
             }
             if (c === '/') {
                 this.#popState();
-                while (this.#index < this.#length && this.#isWordChar(this.#str[this.#index]!)) this.#index++;
+                while (this.#index < this.#length && this.#isWordChar(this.#str[this.#index] ?? '')) this.#index++;
                 break;
             }
         }
@@ -248,7 +260,8 @@ class JSColorizer {
     #parseNumber() {
         this.#currentStyle = 'number';
         while (this.#index < this.#length) {
-            const c = this.#str[this.#index]!;
+            const c = this.#str[this.#index];
+            if (c === undefined) break;
             if (this.#isWordChar(c) || c === '.' || c === '+' || c === '-') {
                 if (c === '.' && (this.#index === this.#length - 1 || this.#str[this.#index + 1] === '.')) break;
                 this.#index++;
@@ -259,7 +272,7 @@ class JSColorizer {
     #parseIdentifier() {
         if (this.#start > 0 && this.#str[this.#start - 1] === '.' && this.#braceLevel === 0) {
             this.#canBeRegex = true;
-            while (this.#index < this.#length && this.#isWordChar(this.#str[this.#index]!)) this.#index ++;
+            while (this.#index < this.#length && this.#isWordChar(this.#str[this.#index] ?? '')) this.#index ++;
 
             const word = this.#str.substring(this.#start, this.#index);
             if (JSColorizer.#DIRECTIVES.has(word)) {
@@ -271,7 +284,7 @@ class JSColorizer {
 
         // Check for keywords
         this.#canBeRegex = true;
-        while (this.#index < this.#length && this.#isWordChar(this.#str[this.#index]!)) this.#index++;
+        while (this.#index < this.#length && this.#isWordChar(this.#str[this.#index] ?? '')) this.#index++;
 
         const word = this.#str.substring(this.#start, this.#index);
         if (JSColorizer.#KEYWORDS.has(word)) {
@@ -311,12 +324,13 @@ class CompletionEngine {
 
     #getContextWord(line: string, pos: number): string {
         let s = '';
-        while (pos > 0 && this.#isWordChar(line[pos - 1]!)) s = line[--pos] + s;
+        while (pos > 0 && this.#isWordChar(line[pos - 1] ?? '')) s = line[--pos] + s;
         return s;
     }
 
     #getContextObject(line: string, pos: number): unknown {
-        if (pos <= 0 || ' ~!%^&*(-+={[|:;,<>?/'.includes(line[pos - 1]!)) return globalThis;
+        const prev = line[pos - 1];
+        if (pos <= 0 || prev === undefined || ' ~!%^&*(-+={[|:;,<>?/'.includes(prev)) return globalThis;
         if (line[pos - 1] !== '.') return undefined;
 
         pos--;
@@ -347,7 +361,7 @@ class CompletionEngine {
                     }
                     const obj = this.#getContextObject(line, pos - base.length);
                     if (obj == null) return obj;
-                    return (obj as Record<string, unknown>)[base];
+                    return Reflect.get(Object(obj), base);
                 }
                 return {};
         }
@@ -448,7 +462,7 @@ export class CnoRepl {
         } else {
             const pipe = new streams.Pipe();
             pipe.open(os.STDOUT_FILENO);
-            this.#stdout = pipe as unknown as CModuleStreams.Stream;
+            this.#stdout = pipe;
         }
 
         if (os.guessHandle(os.STDIN_FILENO) === 'tty') {
@@ -517,9 +531,25 @@ export class CnoRepl {
     // Pending async command queue — ensures onread callbacks are serialised
     #cmdQueue: Promise<void> = Promise.resolve();
 
+    #stopReadingQuietly(): void {
+        try {
+            this.#stdin.stopRead();
+        } catch {}
+    }
+
     async #readInput(): Promise<void> {
         this.#stdin.onread = (res: null | undefined | Uint8Array, err: undefined | CModuleError.Error) => {
             if (!res) {
+                if (!err) {
+                    this.#running = false;
+                    if (this.#readlineResolver) {
+                        const resolver = this.#readlineResolver;
+                        this.#readlineResolver = null;
+                        resolver(null);
+                    }
+                    this.#stopReadingQuietly();
+                    return;
+                }
                 console.error('Failed to read from console:', err ?? 'EOF');
                 this.cleanup();
                 os.exit(1);
@@ -527,8 +557,10 @@ export class CnoRepl {
             }
             const bytes = res.slice(); // copy before async gap
             this.#cmdQueue = this.#cmdQueue.then(async () => {
-                for (let i = 0; i < bytes.length && this.#running; i++)
-                    this.#handleByte(bytes[i]!);
+                for (let i = 0; i < bytes.length && this.#running; i++) {
+                    const byte = bytes[i];
+                    if (byte !== undefined) this.#handleByte(byte);
+                }
                 if (!this.#running) this.#stdin.stopRead();
             });
         };
@@ -684,7 +716,6 @@ export class CnoRepl {
                     this.#readlineResolver(null);
                 }
                 this.cleanup();
-                os.exit(0);
                 break;
             default:
                 this.#cursorPos = Math.max(0, Math.min(this.#cmd.length, this.#cursorPos));
@@ -807,7 +838,10 @@ export class CnoRepl {
         if (this.#cursorPos === 0 || this.#cmd.length < 2) return;
         const pos = this.#cursorPos === this.#cmd.length ? this.#cursorPos - 1 : this.#cursorPos;
         const chars = [...this.#cmd];
-        [chars[pos - 1], chars[pos]] = [chars[pos]!, chars[pos - 1]!];
+        const prev = chars[pos - 1];
+        const current = chars[pos];
+        if (prev === undefined || current === undefined) return;
+        [chars[pos - 1], chars[pos]] = [current, prev];
         this.#cmd = chars.join('');
         this.#cursorPos = pos + 1;
     }
@@ -842,11 +876,18 @@ export class CnoRepl {
         }
 
         // const word = this.#cmd.substring(this.#cursorPos - position, this.#cursorPos);
-        let common = completions[0]!;
+        const first = completions[0];
+        if (first === undefined) {
+            this.#alert();
+            return;
+        }
+        let common = first;
 
         for (let i = 1; i < completions.length; i++) {
+            const completion = completions[i];
+            if (completion === undefined) continue;
             let j = position;
-            while (j < common.length && j < completions[i]!.length && common[j] === completions[i]![j]) {
+            while (j < common.length && j < completion.length && common[j] === completion[j]) {
                 j++;
             }
             common = common.substring(0, j);
@@ -854,7 +895,8 @@ export class CnoRepl {
 
         if (common.length > position) {
             for (let i = position; i < common.length; i++) {
-                this.#insert(common[i]!);
+                const ch = common[i];
+                if (ch !== undefined) this.#insert(ch);
             }
             this.#lastCommand = '';
             return;
@@ -879,7 +921,8 @@ export class CnoRepl {
             for (let col = 0; col < cols; col++) {
                 const idx = col * rows + row;
                 if (idx < list.length) {
-                    const item = list[idx]!;
+                    const item = list[idx];
+                    if (item === undefined) continue;
                     line.push(col === cols - 1 ? item : item.padEnd(maxWidth));
                 }
             }
@@ -891,14 +934,14 @@ export class CnoRepl {
     }
 
     #skipWordForward(pos: number): number {
-        while (pos < this.#cmd.length && !this.#isWordChar(this.#cmd[pos]!)) pos++;
-        while (pos < this.#cmd.length && this.#isWordChar(this.#cmd[pos]!)) pos++;
+        while (pos < this.#cmd.length && !this.#isWordChar(this.#cmd[pos] ?? '')) pos++;
+        while (pos < this.#cmd.length && this.#isWordChar(this.#cmd[pos] ?? '')) pos++;
         return pos;
     }
 
     #skipWordBack(pos: number): number {
-        while (pos > 0 && !this.#isWordChar(this.#cmd[pos - 1]!)) pos--;
-        while (pos > 0 && this.#isWordChar(this.#cmd[pos - 1]!)) pos--;
+        while (pos > 0 && !this.#isWordChar(this.#cmd[pos - 1] ?? '')) pos--;
+        while (pos > 0 && this.#isWordChar(this.#cmd[pos - 1] ?? '')) pos--;
         return pos;
     }
 
@@ -954,17 +997,19 @@ export class CnoRepl {
     #refreshTermWidth(): void {
         if (!this.#isatty) return;
         try {
-            const out = this.#stdout as any;
+            if (!isResizableOutput(this.#stdout)) return;
+            const out = this.#stdout;
             const size = out.size ?? out.getWindowSize?.() ?? out.getwinsize?.();
             const width = Array.isArray(size) ? size[0] : (size?.width ?? size?.columns);
-            if (Number.isInteger(width) && width > 0) this.#termWidth = width;
+            if (typeof width === 'number' && Number.isInteger(width) && width > 0) this.#termWidth = width;
         } catch {}
     }
 
     #displayWidth(str: string): number {
         let width = 0;
         for (const ch of str) {
-            const cp = ch.codePointAt(0)!;
+            const cp = ch.codePointAt(0);
+            if (cp === undefined) continue;
             if (cp === 0) continue;
             if (cp < 32 || (cp >= 0x7f && cp < 0xa0)) continue;
             width += this.#isWideCodePoint(cp) ? 2 : 1;
@@ -995,7 +1040,8 @@ export class CnoRepl {
                 if (style !== 'default') this.#print(COLOR[STYLE_MAP[style]]);
                 currentStyle = style;
             }
-            this.#print(str[i]!);
+            const ch = str[i];
+            if (ch !== undefined) this.#print(ch);
         }
         if (currentStyle) this.#print(COLOR.reset);
     }
@@ -1060,12 +1106,10 @@ export class CnoRepl {
             case 'q':
                 this.#running = false;
                 this.cleanup();
-                os.exit(0); // avoid blocking
                 return false;
             case 'u':
                 rest = rest.trim();
-                // @ts-ignore
-                globalThis[rest] = import.meta.use(rest);
+                Reflect.set(globalThis, rest, import.meta.use(rest));
                 return false;
             default:
                 this.#print(`Unknown directive: .${cmd}\n`);
@@ -1084,7 +1128,7 @@ export class CnoRepl {
                 this.#printError(e);
                 return;
             }
-            const result = (await engine.eval<any>(code, '<eval>', engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)).value;
+            const result = (await engine.eval<EngineEvalResult>(code, '<eval>', engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)).value;
 
             if (this.#config.showTime) {
                 this.#config.showTime = false;
@@ -1103,8 +1147,7 @@ export class CnoRepl {
             this.#print(COLOR.reset + '\n');
             this.#flush();
 
-            // @ts-ignore
-            globalThis._ = result;
+            Reflect.set(globalThis, '_', result);
         } catch (e) {
             this.#printError(e);
         } finally {

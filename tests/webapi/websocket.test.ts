@@ -1,14 +1,13 @@
-import { strictEqual, ok, match } from 'node:assert';
-import * as http from 'node:http';
+import { deepStrictEqual, strictEqual, ok, throws } from 'node:assert';
+import type { Server as NetServer } from 'node:net';
+import { isLoopbackPermissionError } from '../_helpers/network.ts';
 
 // ============================================================================
 // WebSocket — state machine + echo over a real local server
 // ============================================================================
 
-function startWSServer(): Promise<{ server: http.Server; port: number }> {
-    return new Promise((resolve) => {
-        const server = http.createServer();
-        const sockServer = new (require('node:net').Server)();
+function startWSServer(): Promise<{ server: NetServer; port: number } | null> {
+    return new Promise((resolve, reject) => {
         // Use a minimal WS handshake via Node's built-in? We don't have 'ws'.
         // Instead, drive the WebSocket client against a raw TCP server that
         // performs the HTTP upgrade handshake manually.
@@ -36,6 +35,7 @@ function startWSServer(): Promise<{ server: http.Server; port: number }> {
                         fbuf = Buffer.concat([fbuf, d]);
                         // parse one frame
                         while (fbuf.length >= 2) {
+                            const opcode = fbuf[0] & 0x0f;
                             const masked = (fbuf[1] & 0x80) !== 0;
                             let len = fbuf[1] & 0x7f;
                             let offset = 2;
@@ -52,9 +52,9 @@ function startWSServer(): Promise<{ server: http.Server; port: number }> {
                                 }
                             }
                             fbuf = fbuf.slice(offset + len);
-                            // send echo frame (text, unmasked from server)
+                            // send echo frame with the original opcode (text or binary), unmasked from server.
                             const resp = Buffer.alloc(2 + len);
-                            resp[0] = 0x81; resp[1] = len;
+                            resp[0] = 0x80 | opcode; resp[1] = len;
                             payload.copy(resp, 2);
                             socket.write(resp);
                         }
@@ -62,10 +62,24 @@ function startWSServer(): Promise<{ server: http.Server; port: number }> {
                 }
             });
         });
-        srv.listen(0, '127.0.0.1', () => {
+        const onError = (error: Error) => {
+            srv.removeListener('listening', onListening);
+            if (isLoopbackPermissionError(error)) resolve(null);
+            else reject(error);
+        };
+        const onListening = () => {
+            srv.removeListener('error', onError);
             const addr = srv.address();
             resolve({ server: srv, port: typeof addr === 'object' && addr ? addr.port : 0 });
-        });
+        };
+        srv.once('error', onError);
+        try {
+            srv.listen(0, '127.0.0.1', onListening);
+        } catch (error) {
+            srv.removeListener('error', onError);
+            if (isLoopbackPermissionError(error)) resolve(null);
+            else reject(error);
+        }
     });
 }
 
@@ -84,8 +98,36 @@ Deno.test({ name: 'WebSocket: static readyState constants', timeout: 10000 }, ()
     strictEqual(WebSocket.CLOSED, 3);
 });
 
+Deno.test('WebSocket upstream: constructor rejects invalid URLs and duplicate protocols', () => {
+    throws(() => new WebSocket('foo://localhost:4242'), DOMException);
+    throws(() => new WebSocket('ws://localhost:4242/#'), DOMException);
+    throws(() => new WebSocket('ws://localhost:4242/#foo'), DOMException);
+    throws(() => new WebSocket('ws://localhost:4242', ['foo', 'foo']), DOMException);
+});
+
+Deno.test('WebSocket upstream: constructor accepts URL objects', () => {
+    const ws = new WebSocket(new URL('ws://127.0.0.1:1/path'));
+    try {
+        strictEqual(ws.url, 'ws://127.0.0.1:1/path');
+    } finally {
+        ws.close();
+    }
+});
+
+Deno.test('WebSocket upstream: close validates custom code and reason before sending', () => {
+    const ws = new WebSocket('ws://127.0.0.1:1/');
+    try {
+        throws(() => ws.close(1001), DOMException);
+        throws(() => ws.close(1000, ''.padEnd(124, 'o')), DOMException);
+    } finally {
+        ws.close();
+    }
+});
+
 Deno.test({ name: 'WebSocket: connects and reaches OPEN state', timeout: 10000 }, async () => {
-    const { server, port } = await startWSServer();
+    const started = await startWSServer();
+    if (!started) return;
+    const { server, port } = started;
     try {
         const ws = await wsConnect(`ws://127.0.0.1:${port}/`);
         strictEqual(ws.readyState, WebSocket.OPEN);
@@ -97,7 +139,9 @@ Deno.test({ name: 'WebSocket: connects and reaches OPEN state', timeout: 10000 }
 });
 
 Deno.test({ name: 'WebSocket: send/receive echo', timeout: 10000 }, async () => {
-    const { server, port } = await startWSServer();
+    const started = await startWSServer();
+    if (!started) return;
+    const { server, port } = started;
     try {
         const ws = await wsConnect(`ws://127.0.0.1:${port}/`);
         const reply = await new Promise<any>((resolve) => {
@@ -112,7 +156,9 @@ Deno.test({ name: 'WebSocket: send/receive echo', timeout: 10000 }, async () => 
 });
 
 Deno.test({ name: 'WebSocket: close fires onclose event', timeout: 10000 }, async () => {
-    const { server, port } = await startWSServer();
+    const started = await startWSServer();
+    if (!started) return;
+    const { server, port } = started;
     try {
         const ws = await wsConnect(`ws://127.0.0.1:${port}/`);
         const closeEv = await new Promise<any>((resolve) => {
@@ -128,7 +174,9 @@ Deno.test({ name: 'WebSocket: close fires onclose event', timeout: 10000 }, asyn
 });
 
 Deno.test({ name: 'WebSocket: bufferedAmount is a number', timeout: 10000 }, async () => {
-    const { server, port } = await startWSServer();
+    const started = await startWSServer();
+    if (!started) return;
+    const { server, port } = started;
     try {
         const ws = await wsConnect(`ws://127.0.0.1:${port}/`);
         ok(typeof ws.bufferedAmount === 'number');
@@ -139,7 +187,9 @@ Deno.test({ name: 'WebSocket: bufferedAmount is a number', timeout: 10000 }, asy
 });
 
 Deno.test({ name: 'WebSocket: binaryType get/set', timeout: 10000 }, async () => {
-    const { server, port } = await startWSServer();
+    const started = await startWSServer();
+    if (!started) return;
+    const { server, port } = started;
     try {
         const ws = await wsConnect(`ws://127.0.0.1:${port}/`);
         ws.binaryType = 'arraybuffer';
@@ -153,7 +203,9 @@ Deno.test({ name: 'WebSocket: binaryType get/set', timeout: 10000 }, async () =>
 });
 
 Deno.test({ name: 'WebSocket: addEventListener message works', timeout: 10000 }, async () => {
-    const { server, port } = await startWSServer();
+    const started = await startWSServer();
+    if (!started) return;
+    const { server, port } = started;
     try {
         const ws = await wsConnect(`ws://127.0.0.1:${port}/`);
         const reply = await new Promise<any>((resolve) => {
@@ -161,6 +213,50 @@ Deno.test({ name: 'WebSocket: addEventListener message works', timeout: 10000 },
             ws.send('via-add');
         });
         strictEqual(reply, 'via-add');
+        ws.close();
+    } finally {
+        server.close();
+    }
+});
+
+Deno.test({ name: 'WebSocket upstream: echoes Uint8Array as Blob by default', timeout: 10000 }, async () => {
+    const started = await startWSServer();
+    if (!started) return;
+    const { server, port } = started;
+    try {
+        const ws = await wsConnect(`ws://127.0.0.1:${port}/`);
+        strictEqual(ws.binaryType, 'blob');
+        const reply = await new Promise<Blob>((resolve) => {
+            ws.onmessage = (ev) => resolve(ev.data as Blob);
+            ws.send(new Uint8Array([102, 111, 111]));
+        });
+        ok(reply instanceof Blob);
+        strictEqual(await reply.text(), 'foo');
+        ws.close();
+    } finally {
+        server.close();
+    }
+});
+
+Deno.test({ name: 'WebSocket upstream: echoes Blob and ArrayBuffer as ArrayBuffer when requested', timeout: 10000 }, async () => {
+    const started = await startWSServer();
+    if (!started) return;
+    const { server, port } = started;
+    try {
+        const ws = await wsConnect(`ws://127.0.0.1:${port}/`);
+        ws.binaryType = 'arraybuffer';
+
+        const blobReply = await new Promise<ArrayBuffer>((resolve) => {
+            ws.onmessage = (ev) => resolve(ev.data as ArrayBuffer);
+            ws.send(new Blob(['foo']));
+        });
+        deepStrictEqual(new Uint8Array(blobReply), new Uint8Array([102, 111, 111]));
+
+        const arrayBufferReply = await new Promise<ArrayBuffer>((resolve) => {
+            ws.onmessage = (ev) => resolve(ev.data as ArrayBuffer);
+            ws.send(new Uint8Array([98, 97, 114]).buffer);
+        });
+        deepStrictEqual(new Uint8Array(arrayBufferReply), new Uint8Array([98, 97, 114]));
         ws.close();
     } finally {
         server.close();

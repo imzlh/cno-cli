@@ -23,26 +23,27 @@
  * THE SOFTWARE.
  */
 
-import { isParseWorker, runParseWorker, fatal, log, isAbsolute, joinPaths, cwd, toPosixPath, createResourceManager, errMsg } from '../cts/src/api';
+import { createResourceManager, cwd, errMsg, fatal, isAbsolute, isParseWorker, joinPaths, log, runParseWorker, toPosixPath } from '../cts/src/api';
+import type { ConfigOptions } from '../cts/src/api';
 
 const processResources = createResourceManager();
 
-import { parseArgv, readArgv, warnUnknownFlags } from './cli';
-import { showHelp, showVersion, C } from './help';
-import { registerExtensions } from './bootstrap';
-import { runFile } from './commands/run';
-import { runEval } from './commands/eval';
-import { runCache } from './commands/cache';
-import { runTask, taskExists } from './commands/task';
-import { runRepl } from './commands/repl';
-import { runTest, TEST_CHILD_FLAG } from './commands/test';
-import { runSetup } from './commands/setup';
-import { spawnBinary } from './commands/bin';
-import { startProxy, disableCertVerify, stopNetwork } from './network';
 import type { Args } from '../cno/src/utils/args';
 import setArgs from '../cno/src/utils/args';
+import { registerExtensions } from './bootstrap';
+import { parseArgv, readArgv, warnUnknownFlags } from './cli';
+import { spawnBinary } from './commands/bin';
+import { runCache } from './commands/cache';
+import { runEval } from './commands/eval';
+import { runRepl } from './commands/repl';
+import { runFile } from './commands/run';
+import { runSetup } from './commands/setup';
+import { printTaskList, runTask, taskExists } from './commands/task';
+import { parseTestChildFlags, runTest, TEST_CHILD_ENV, type TestChildMessage } from './commands/test';
+import { C, showHelp, showVersion } from './help';
+import { disableCertVerify, startProxy, stopNetwork } from './network';
 
-import '../cno/src/main';
+import '../cno/src/main';   // main polyfill(cno) entry
 
 const fs = import.meta.use('fs');
 const console = import.meta.use('console');
@@ -79,11 +80,52 @@ function isEvalEntry(entry: string): boolean {
     return entry.startsWith('eval:');
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return (typeof value === 'object' || typeof value === 'function') && value !== null;
+}
+
+function isNodeWorkerData(value: unknown): value is Record<string, unknown> {
+    return isRecord(value) && '__node_workerData' in value;
+}
+
+function isWorkerCloseError(value: unknown): boolean {
+    return (isRecord(value) && value.__cno_worker_close === true)
+        || (value instanceof Error && value.name === 'WorkerCloseError' && value.message === 'Worker closed');
+}
+
+function workerRuntimeConfig(value: unknown): Partial<ConfigOptions> | undefined {
+    if (!isRecord(value)) return undefined;
+    const cfg: Partial<ConfigOptions> = {};
+    if (typeof value.cacheDir === 'string') cfg.cacheDir = value.cacheDir;
+    if (typeof value.lockDir === 'string') cfg.lockDir = value.lockDir;
+    if (typeof value.polyfill === 'string') cfg.polyfill = value.polyfill;
+    if (typeof value.baseUrl === 'string') cfg.baseUrl = value.baseUrl;
+    for (const key of ['enableHttp', 'enableJsr', 'enableNode', 'enableCache', 'cachedOnly', 'enableOxc', 'frozen', 'disableLock', 'ignoreScripts'] as const) {
+        if (typeof value[key] === 'boolean') cfg[key] = value[key];
+    }
+    if (Array.isArray(value.conditions) && value.conditions.every((item) => typeof item === 'string')) {
+        cfg.conditions = value.conditions.slice();
+    }
+    return Object.keys(cfg).length > 0 ? cfg : undefined;
+}
+
+function nodeWorkerErrorInfo(error: unknown): { name: string; message: string; stack?: string } {
+    if (error instanceof Error) {
+        return {
+            name: error.name,
+            message: error.message,
+            stack: typeof error.stack === 'string' ? error.stack : undefined,
+        };
+    }
+    return { name: 'Error', message: String(error) };
+}
+
 async function runEntry(
     entry: string,
     args: string[],
     flags: Record<string, string | boolean>,
     rawArgs: Args,
+    config?: Partial<ConfigOptions>,
 ): Promise<void> {
     if (isEvalEntry(entry)) {
         return runEval({ code: entry.slice(5), flags });
@@ -92,20 +134,14 @@ async function runEntry(
     return runFile({
         file: entry, args, flags,
         rawArgs,
+        config,
     });
 }
 
-async function listTasks(): Promise<void> {
-    const { loadTasks, LockStore } = await import('../cts/src/api');
-    const store = new LockStore(os.cwd, true);
-    const result = loadTasks(os.cwd, store);
-    store.close();
-    if (!result) {
+function listTasks(flags: Record<string, string | boolean>): void {
+    if (!printTaskList(flags)) {
         console.log('  \x1b[2mNo tasks defined.\x1b[0m');
-        return;
     }
-    console.log(`${C.dim('Tasks from')} ${result.configPath}`);
-    result.runner.list();
 }
 
 let cleanupLocks: (() => void) | null = null;
@@ -140,12 +176,17 @@ async function dispatch(): Promise<void> {
 
     // common setup
     await installProcessCleanup();
-    if (cli.flags['system-proxy']) try { startProxy(); } catch (e) {
-        console.warn(`${C.warn('!')} Configure proxy failed: ${errMsg(e)}`);
+    if (cli.flags['system-proxy']) {
+        try {
+            startProxy();
+        } catch (e) {
+            console.warn(`${C.warn('!')} Configure proxy failed: ${errMsg(e)}`);
+        }
     }
     if (cli.flags['skip-cert-verify']) disableCertVerify();
 
-    try { switch (cli.cmd) {
+    try {
+        switch (cli.cmd) {
         case 'help':
             return showHelp();
         case 'version':
@@ -159,16 +200,18 @@ async function dispatch(): Promise<void> {
             return runEval({ code, flags: cli.flags });
         }
         case 'cache':
-            return runCache(cli.positional[0], cli.flags);
+            return runCache(cli.positional, cli.flags);
         case 'task':
-            return runTask(cli.positional);
+            return runTask(cli.positional, cli.flags);
         case 'exec': {
-            const [bin, ...args] = cli.positional;
+            const bin = cli.rawArgs.entry;
+            const args = cli.rawArgs.args;
             if (!bin) {
                 console.error(`Usage: ${C.cyan('cno exec')} ${C.cyan('<command>')} [args…]`);
                 os.exit(1);
             }
-            const code = await spawnBinary(bin, args, {}, os.cwd);
+            const cacheDir = typeof cli.flags['cache-dir'] === 'string' ? cli.flags['cache-dir'] : undefined;
+            const code = await spawnBinary(bin, args, {}, os.cwd, cacheDir);
             if (code !== 0) os.exit(code);
             return;
         }
@@ -191,18 +234,21 @@ async function dispatch(): Promise<void> {
             const [file, ...args] = cli.positional;
             if (!file) {
                 if (cli.cmd === null) return runRepl(cli.flags);
-                return listTasks();
+                return listTasks(cli.flags);
             }
-            if (file === 'task') return runTask(args);
-            if (cli.cmd === 'run' && !looksLikeFileTarget(file) && taskExists(file)) {
-                return runTask([file, ...args]);
+            if (file === 'task') return runTask(args, cli.flags);
+            if (cli.cmd === 'run' && !looksLikeFileTarget(file) && taskExists(file, cli.flags)) {
+                return runTask([file, ...args], cli.flags);
             }
             return runEntry(file, args, cli.flags, cli.rawArgs);
         }
         default:
             showHelp();
             os.exit(1);
-    } } finally { stopNetwork(); }
+        }
+    } finally {
+        stopNetwork();
+    }
 }
 
 // Hidden sentinel: `cno test` spawns a real child process per test file
@@ -213,33 +259,36 @@ async function dispatch(): Promise<void> {
 // Runs one test file and reports its result via `send` — shared by both the
 // worker-thread transport (workerEntry) and the child-process transport
 // (testChildEntry) so the two only differ in how the result gets back.
-async function runTestFileAndReport(file: string, send: (msg: any) => void): Promise<void> {
+async function runTestFileAndReport(file: string, flags: Record<string, string | boolean>, send: (msg: TestChildMessage) => void): Promise<void> {
     try {
-        await runFile({ file, args: [], flags: {}, rawArgs: makeRunArgs(file) });
+        await runFile({ file, args: [], flags, rawArgs: makeRunArgs(file) });
         // Use the module-level startTest / getFailedTests exports directly —
         // Deno.__startTest is the external Deno-compat API and prints the
         // "Failed tests:" summary as a side effect. We want the parent to
         // aggregate and print a single clean summary, so we call the raw
         // function and collect the failed list ourselves.
         const { startTest, getFailedTests } = await import('../cno/src/deno/index');
-        const passed = await startTest(file, true, true);
+        const passed = await startTest(file, true, true, {
+            filter: typeof flags.filter === 'string' ? flags.filter : undefined,
+            failFast: flags['fail-fast'] === true,
+        });
         send({ passed, failedTests: getFailedTests() });
-    } catch (e: any) {
-        send({ passed: false, error: String(e?.stack ?? e), failedTests: [] });
+    } catch (e) {
+        send({ passed: false, error: e instanceof Error ? String(e.stack ?? e.message) : String(e), failedTests: [] });
     }
 }
 
-async function testChildEntry(file: string): Promise<void> {
+async function testChildEntry(file: string, flags: Record<string, string | boolean>): Promise<void> {
     const { IPCChannel } = await import('../cno/src/node/ipc_channel/mod');
     const streams = import.meta.use('streams');
     // fd 3 is where the native `process` module always hands a spawned child
     // its IPC endpoint when ipc:true (see child_process/mod.ts's own use of
     // this same convention).
-    const pipe = new (streams as any).Pipe();
+    const pipe = new streams.Pipe();
     pipe.open(3);
     const channel = new IPCChannel(pipe);
     try {
-        await runTestFileAndReport(file, (msg) => channel.send(msg));
+        await runTestFileAndReport(file, flags, (msg) => channel.send(msg));
     } finally {
         channel.close();
     }
@@ -247,26 +296,35 @@ async function testChildEntry(file: string): Promise<void> {
 
 async function workerEntry(): Promise<void> {
     if (isParseWorker()) return runParseWorker();
+    const workerData = isRecord(worker.workerData) ? worker.workerData : undefined;
 
     // Debug Worker
-    if (worker.workerData?.__cno_debug_worker) {
+    if (workerData?.__cno_debug_worker) {
         await import('./inspector/worker/bootstrap');
         return;
     }
 
     // Test worker: runTest passes __cts_test in workerData (see runTestFileAndReport).
-    const testEntry = worker.workerData?.__cts_test;
+    const testEntry = workerData?.__cts_test;
     if (testEntry) {
-        const pipe = worker.pipe!;
-        await runTestFileAndReport(String(testEntry), (msg) => pipe.postMessage(msg));
+        const pipe = worker.pipe;
+        if (!pipe) throw new Error('test worker pipe was not created');
+        await runTestFileAndReport(String(testEntry), {}, (msg) => pipe.postMessage(msg));
         return;
     }
 
     // Web Worker: new Worker(url) passes __cts_entry in workerData (see cno/src/webapi/worker.ts)
-    const entry = worker.workerData?.__cts_entry;
+    const entry = workerData?.__cts_entry;
     if (entry) {
         const file = String(entry);
-        return runEntry(file, [], {}, makeRunArgs(file));
+        const isNodeWorker = isNodeWorkerData(workerData);
+        if (isNodeWorker) worker.pipe?.unref();
+        try {
+            await runEntry(file, [], {}, makeRunArgs(file), workerRuntimeConfig(workerData?.__cts_runtime_config));
+        } catch (e) {
+            if (!isWorkerCloseError(e)) throw e;
+        }
+        return;
     }
 
     log.debug('cno', () => 'worker: unknown role, dispatching on argv');
@@ -274,13 +332,31 @@ async function workerEntry(): Promise<void> {
 }
 
 // Register native .so extensions before anything tries to use them.
-try { registerExtensions(); } catch (e) { fatal(e, 'registerExtensions'); }
+try {
+    registerExtensions();
+} catch (e) {
+    fatal(e, 'registerExtensions');
+}
 
 async function mainEntry(): Promise<void> {
     try {
+        let isTestChild = false;
+        try { isTestChild = !!os.getenv(TEST_CHILD_ENV); } catch { /* not set */ }
+        if (isTestChild) os.unsetenv(TEST_CHILD_ENV); // must not leak to grandchildren
+
         if (worker.isWorker) await workerEntry();
-        else if (os.args[1] === TEST_CHILD_FLAG) await testChildEntry(os.args[2]);
-        else await dispatch();
+        else if (isTestChild) await testChildEntry(os.args[1], parseTestChildFlags(os.args.slice(2)));
+        else {
+            await dispatch();
+            let code: unknown;
+            try {
+                const proc = Reflect.get(globalThis, 'process');
+                code = isRecord(proc) ? Reflect.get(proc, 'exitCode') : undefined;
+            } catch {
+                code = undefined;
+            }
+            if (typeof code === 'number' && code !== 0) os.exit(code);
+        }
     } finally {
         runProcessCleanup();
     }
@@ -289,5 +365,10 @@ async function mainEntry(): Promise<void> {
 // start main app
 mainEntry().catch(e => {
     runProcessCleanup();
+    if (worker.isWorker && isWorkerCloseError(e)) return;
+    if (worker.isWorker && isNodeWorkerData(worker.workerData)) {
+        worker.pipe?.postMessage({ __cno_node_worker_error__: nodeWorkerErrorInfo(e) });
+        return;
+    }
     fatal(e);
 });

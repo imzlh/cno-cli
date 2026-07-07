@@ -20,6 +20,16 @@ import type { DebugChannelWorker, StepCode } from '../shared/native';
 import type { WorkerEvent } from '../shared/wire';
 type Pipe = CModuleWorker.MessagePipe;
 
+function emitWorkerEventQuietly(
+	sink: ((event: WorkerEvent, params: unknown) => void) | null,
+	event: WorkerEvent,
+	params: unknown
+): void {
+	try {
+		sink?.(event, params);
+	} catch {}
+}
+
 export class WorkerEndpoint {
 	private pipe: PipeClient;
 	private channel: ChannelClient;
@@ -31,11 +41,12 @@ export class WorkerEndpoint {
 	constructor(pipe: Pipe, dc: DebugChannelWorker) {
 		this.pipe = new PipeClient(pipe);
 		this.channel = new ChannelClient(dc);
-		this.pipe.onEvent = (event, params) => { try { this.onEvent?.(event, params); } catch {} };
+		this.pipe.onEvent = (event, params) => emitWorkerEventQuietly(this.onEvent, event, params);
+		this.channel.onEvent = (event, params) => emitWorkerEventQuietly(this.onEvent, event, params);
 	}
 
 	/** Invoke a main-thread handler (inspect) or apply a control op. */
-	call<M extends RpcMethod>(method: M, params: RpcParams[M] = {} as RpcParams[M]): Promise<unknown> {
+	call<M extends RpcMethod>(method: M, params: RpcParams[M]): Promise<unknown> {
 		if (isControlMethod(method)) {
 			try {
 				this.channel.applyControl(method, params)

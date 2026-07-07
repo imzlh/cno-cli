@@ -51,6 +51,7 @@ THERE ARE SOME WARNINGS YOU SHOULD BE AWARE OF:
  - cts: We assumed that cache in lock are correct, never try to add verify logic to cts source code.
  - after modifing codes and files that mentioned here, you are supposed to change the content below.
  - testing: if you only modified source in `cno/src/node/`(exclude `_internal/inject.ts`), only `cno setup` is required to refresh cache (don't forget to set cwd to the project!), or you should use `cmake -B build` to rebuild binary (TS will automately attach into the binary)
+ - runtime/native: keep Node-like host symbol exports for TJS/N-API addons, but isolate `Deno.dlopen` FFI libraries from host symbols on Linux with a separate loader namespace.
  - These warnings are edited by user, you should take into account more carefully.
 
 ## Code Style Guide
@@ -107,6 +108,7 @@ export default function () {}   // exports directly
 | `sourcemap` | SourceMap | Parse and query source maps |
 | `jsonc` | JSONC | Parse JSON with comments |
 | `algorithm` | Utils | Sorting, binary search, encoding helpers |
+| `bjson` | Stable binary JSON | Versioned value persistence codec |
 | `text` | Text | iconv-based encoding conversion |
 | `signals` | Signals | POSIX signal handling |
 | `curl` | HTTP client | libcurl-based HTTP client (used by fetch) |

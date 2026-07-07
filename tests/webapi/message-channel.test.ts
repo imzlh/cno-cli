@@ -25,6 +25,53 @@ Deno.test('webapi: MessagePort postMessage and onmessage', async () => {
     port2.close();
 });
 
+Deno.test('MessageChannel upstream: global ports can be transferred in event.ports', async () => {
+    const channel = new MessageChannel();
+    const transferChannel = new MessageChannel();
+    try {
+        const done = new Promise<void>((resolve) => {
+            channel.port2.onmessage = (event) => {
+                strictEqual(event.data, 'hello');
+                strictEqual(event.ports.length, 1);
+                ok(event.ports[0] instanceof MessagePort);
+                event.ports[0].close();
+                resolve();
+            };
+        });
+
+        channel.port1.postMessage('hello', [transferChannel.port1]);
+        await done;
+    } finally {
+        channel.port1.close();
+        channel.port2.close();
+        transferChannel.port2.close();
+    }
+});
+
+Deno.test('MessageChannel upstream: transferred port identity is shared between data and ports', async () => {
+    const channel = new MessageChannel();
+    const transferChannel = new MessageChannel();
+    try {
+        const done = new Promise<void>((resolve) => {
+            channel.port2.onmessage = (event) => {
+                const { port } = event.data;
+                strictEqual(event.ports.length, 1);
+                ok(event.ports[0] instanceof MessagePort);
+                strictEqual(event.ports[0], port);
+                event.ports[0].close();
+                resolve();
+            };
+        });
+
+        channel.port1.postMessage({ port: transferChannel.port1 }, [transferChannel.port1]);
+        await done;
+    } finally {
+        channel.port1.close();
+        channel.port2.close();
+        transferChannel.port2.close();
+    }
+});
+
 Deno.test('webapi: MessagePort postMessage with transfer', async () => {
     const { MessageChannel } = require('node:worker_threads');
     const { port1, port2 } = new MessageChannel();

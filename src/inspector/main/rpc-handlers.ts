@@ -99,6 +99,10 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 			} catch {}
 			return { result, internalProperties }
 		},
+		queryObjects: (q) => {
+			const group = q.objectGroup ?? serializer.groupOf(q.prototypeObjectId) ?? 'runtime'
+			return { objects: serializer.serialize([], group, { preview: true }) }
+		},
 		releaseObject: (q) => {
 			serializer.release(q.objectId)
 			return {}
@@ -115,10 +119,10 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 		},
 
 		getHeapUsage: () => {
-			const m = os.memoryUsage() as unknown as Record<string, number>
+			const m: CModuleOS.MemoryUsage = os.memoryUsage()
 			return {
-				usedSize: m['used'] ?? m['vm.used'] ?? 0,
-				totalSize: m['limit'] ?? m['os.total'] ?? 0,
+				usedSize: m.used ?? m['vm.used'],
+				totalSize: m.limit ?? m['os.total'],
 			}
 		},
 

@@ -23,6 +23,7 @@ import type {
 
 const MAX_PREVIEW_PROPS = 5;
 const MAX_STR = 100;
+type InspectableFunction = object & { name?: string };
 const MAX_PROPS = 500; // cap getProperties to avoid oversized WS frames
 
 /** Index access helper that never throws on primitives. */
@@ -48,7 +49,7 @@ export class Serializer {
 			case 'symbol':    return { type: 'symbol', description: safeString(value), objectId: this.add(value, group) };
 			case 'bigint':    return { type: 'bigint', unserializableValue: `${value}n`, description: `${value}n` };
 			case 'number':    return serializeNumber(value);
-			case 'function':  return { type: 'function', className: 'Function', description: safeFnString(value as Function), objectId: this.add(value, group) };
+			case 'function':  return { type: 'function', className: 'Function', description: safeFnString(value), objectId: this.add(value, group) };
 			default: break; // 'object'
 		}
 		if (value === null) return { type: 'object', subtype: 'null', value: null };
@@ -78,12 +79,18 @@ export class Serializer {
 			try {
 				if (sub === 'map') {
 					for (const [k, v] of value as Map<unknown, unknown>) {
-						if (n++ >= MAX_PREVIEW_PROPS) { preview.overflow = true; break; }
+						if (n++ >= MAX_PREVIEW_PROPS) {
+							preview.overflow = true;
+							break;
+						}
 						preview.entries.push({ key: this.buildPreview(k), value: this.buildPreview(v) });
 					}
 				} else {
 					for (const v of value as Set<unknown>) {
-						if (n++ >= MAX_PREVIEW_PROPS) { preview.overflow = true; break; }
+						if (n++ >= MAX_PREVIEW_PROPS) {
+							preview.overflow = true;
+							break;
+						}
 						preview.entries.push({ value: this.buildPreview(v) });
 					}
 				}
@@ -91,44 +98,41 @@ export class Serializer {
 			return preview;
 		}
 
-		let keys: string[] = [];
-		try { keys = Object.keys(value as object); } catch {}
-		/* Object.keys only returns own enumerable properties, but most
-		 * built-in objects (Response, Request, URL, etc.) store their
-		 * interesting properties as getters on the prototype. Walk one
-		 * level up the chain to surface those in the preview too. */
-		if (keys.length === 0) {
-			try {
-				const proto = Object.getPrototypeOf(value as object);
-				if (proto && proto !== Object.prototype) {
-					keys = Object.getOwnPropertyNames(proto).filter(
-						k => k !== 'constructor' && k !== '__proto__' && k !== 'prototype'
-					);
-				}
-			} catch {}
-		}
-		for (let i = 0; i < keys.length; i++) {
-			if (i >= MAX_PREVIEW_PROPS) { preview.overflow = true; break; }
-			const k = keys[i]!;
-			let v: unknown;
-			try { v = (value as Indexable)[k]; } catch { continue; }
-			preview.properties.push(previewProp(k, v));
-		}
-		return preview;
+			let keys: string[] = [];
+			if (!value || (typeof value !== 'object' && typeof value !== 'function')) return preview;
+			keys = safeObjectKeys(value);
+			/* Object.keys only returns own enumerable properties, but most
+			 * built-in objects (Response, Request, URL, etc.) store their
+			 * interesting properties as getters on the prototype. Walk one
+			 * level up the chain to surface those in the preview too. */
+			if (keys.length === 0) {
+				keys = safePrototypePropertyNames(value);
+			}
+				for (let i = 0; i < keys.length; i++) {
+					if (i >= MAX_PREVIEW_PROPS) {
+						preview.overflow = true;
+						break;
+					}
+					const k = keys[i];
+					if (k === undefined) continue;
+				const prop = safePropertyValue(value, k);
+				if (!prop.ok) continue;
+				const v = prop.value;
+				preview.properties.push(previewProp(k, v));
+			}
+			return preview;
 	}
 
 	getProperties(objectId: string, group = 'default'): GetPropertiesResponse {
-		const obj = this.resolve(objectId);
-		const out: PropertyDescriptor[] = [];
-		if (obj === undefined || obj === null) return { result: out };
-		let names: string[];
-		try { names = Object.getOwnPropertyNames(obj); } catch { return { result: out }; }
-		for (const name of names) {
-			if (out.length >= MAX_PROPS) break;
-			let d: PropertyDescriptorRaw | undefined;
-			try { d = Object.getOwnPropertyDescriptor(obj, name); } catch { continue; }
-			if (!d) continue;
-			const pd: PropertyDescriptor = { name, configurable: !!d.configurable, enumerable: !!d.enumerable, isOwn: true };
+			const obj = this.resolve(objectId);
+			const out: PropertyDescriptor[] = [];
+			if (obj === undefined || obj === null) return { result: out };
+			const names = safeOwnPropertyNames(obj);
+			for (const name of names) {
+				if (out.length >= MAX_PROPS) break;
+				const d = safeOwnPropertyDescriptor(obj, name);
+				if (!d) continue;
+				const pd: PropertyDescriptor = { name, configurable: !!d.configurable, enumerable: !!d.enumerable, isOwn: true };
 			if ('value' in d) {
 				pd.value = this.serialize(d.value, group);
 				pd.writable = !!d.writable;
@@ -154,10 +158,14 @@ function serializeNumber(value: number): RemoteObject {
 }
 
 function safeString(v: unknown): string {
-	try { return String(v); } catch { return '<unprintable>'; }
+	try {
+		return String(v);
+	} catch {
+		return '<unprintable>';
+	}
 }
 
-function safeFnString(fn: Function): string {
+function safeFnString(fn: InspectableFunction): string {
 	try {
 		const s = Function.prototype.toString.call(fn);
 		return s.length > 200 ? s.slice(0, 200) + '…' : s;
@@ -183,20 +191,80 @@ function objectSubtype(value: unknown): RemoteObjectSubtype | undefined {
 
 function classNameOf(value: unknown): string {
 	try {
-		const c = (value as { constructor?: { name?: string } })?.constructor?.name;
+		const ctor = value && (typeof value === 'object' || typeof value === 'function')
+			? Reflect.get(value, 'constructor')
+			: undefined;
+		const c = ctor && (typeof ctor === 'object' || typeof ctor === 'function')
+			? Reflect.get(ctor, 'name')
+			: undefined;
 		if (c) return c;
 	} catch {}
-	try { return Object.prototype.toString.call(value).slice(8, -1); } catch { return 'Object'; }
+	return safeClassTag(value);
+}
+
+function safeObjectKeys(value: object): string[] {
+	try {
+		return Object.keys(value);
+	} catch {
+		return [];
+	}
+}
+
+function safePrototypePropertyNames(value: object | Function): string[] {
+	try {
+		const proto = Object.getPrototypeOf(value);
+		if (!proto || proto === Object.prototype) return [];
+		return Object.getOwnPropertyNames(proto).filter(
+			k => k !== 'constructor' && k !== '__proto__' && k !== 'prototype'
+		);
+	} catch {
+		return [];
+	}
+}
+
+function safePropertyValue(value: object | Function, key: string): { ok: true; value: unknown } | { ok: false } {
+	try {
+		return { ok: true, value: (value as Indexable)[key] };
+	} catch {
+		return { ok: false };
+	}
+}
+
+function safeOwnPropertyNames(value: unknown): string[] {
+	try {
+		return Object.getOwnPropertyNames(value);
+	} catch {
+		return [];
+	}
+}
+
+function safeOwnPropertyDescriptor(value: unknown, name: string): PropertyDescriptorRaw | undefined {
+	try {
+		return Object.getOwnPropertyDescriptor(value, name);
+	} catch {
+		return undefined;
+	}
+}
+
+function safeClassTag(value: unknown): string {
+	try {
+		return Object.prototype.toString.call(value).slice(8, -1);
+	} catch {
+		return 'Object';
+	}
 }
 
 function describeObject(value: unknown, subtype: RemoteObjectSubtype | undefined, className: string): string {
 	try {
-		if (subtype === 'array') return `${className}(${(value as unknown[]).length})`;
-		if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) return `${className}(${(value as ArrayBufferView).byteLength})`;
-		if (subtype === 'error') return describeError(value as Error, className);
+		if (subtype === 'array' && Array.isArray(value)) return `${className}(${value.length})`;
+		if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) return `${className}(${value.byteLength})`;
+		if (subtype === 'error' && value instanceof Error) return describeError(value, className);
 		if (subtype === 'regexp') return String(value);
 		if (subtype === 'date') return (value as Date).toString();
-		if (subtype === 'map' || subtype === 'set') return `${className}(${(value as { size: number }).size})`;
+		if (subtype === 'map' || subtype === 'set') {
+			const size = value && typeof value === 'object' ? Reflect.get(value, 'size') : undefined;
+			return `${className}(${typeof size === 'number' ? size : 0})`;
+		}
 	} catch {}
 	return className;
 }
@@ -222,19 +290,20 @@ function previewProp(name: string, v: unknown): PropertyPreview {
 		return { name, type: 'object', subtype: sub, value: abbreviate(v, sub) };
 	}
 	if (t === 'function') return { name, type: 'function', value: '' };
-	if (t === 'string') { const s = v as string; return { name, type: 'string', value: s.length > MAX_STR ? s.slice(0, MAX_STR) + '…' : s }; }
+	if (typeof v === 'string') return { name, type: 'string', value: v.length > MAX_STR ? v.slice(0, MAX_STR) + '…' : v };
 	return { name, type: t as RemoteObjectType, value: safeString(v) };
 }
 
 function abbreviate(v: unknown, subtype?: RemoteObjectSubtype): string {
 	try {
-		if (subtype === 'array') return `Array(${(v as unknown[]).length})`;
+		if (subtype === 'array' && Array.isArray(v)) return `Array(${v.length})`;
 		return classNameOf(v);
 	} catch { return 'Object'; }
 }
 
 function appendErrorPreview(preview: ObjectPreview, value: unknown): void {
-	const error = value as Error & { cause?: unknown };
+	if (!(value instanceof Error)) return;
+	const error = value;
 	const props: PropertyPreview[] = [];
 	props.push({ name: 'name', type: 'string', value: safeString(error.name || 'Error') });
 	if (typeof error.message === 'string' && error.message) {
@@ -243,8 +312,8 @@ function appendErrorPreview(preview: ObjectPreview, value: unknown): void {
 	if (typeof error.stack === 'string' && error.stack) {
 		props.push({ name: 'stack', type: 'string', value: truncatePreviewString(error.stack) });
 	}
-	if ('cause' in error && error.cause !== undefined) {
-		const cause = error.cause;
+	const cause = Reflect.get(error, 'cause');
+	if (cause !== undefined) {
 		if (cause === null) {
 			props.push({ name: 'cause', type: 'object', subtype: 'null', value: 'null' });
 		} else if (typeof cause === 'object') {

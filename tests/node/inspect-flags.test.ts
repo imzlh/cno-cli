@@ -86,3 +86,28 @@ Deno.test('inspector: --inspect=true string is treated as bare flag', () => {
     strictEqual(o.port, 9229);
     strictEqual(o.host, '127.0.0.1');
 });
+
+Deno.test('inspector: empty host before colon falls back to 127.0.0.1', () => {
+    const o = parseInspectFlags({ inspect: ':9555' })!;
+    strictEqual(o.host, '127.0.0.1');
+    strictEqual(o.port, 9555);
+});
+
+Deno.test('inspector: host is trimmed around host:port syntax', () => {
+    const o = parseInspectFlags({ inspect: ' 0.0.0.0 :9444 ' })!;
+    strictEqual(o.host, '0.0.0.0');
+    strictEqual(o.port, 9444);
+});
+
+Deno.test('inspector: port 0 falls back to 9229', () => {
+    const o = parseInspectFlags({ inspect: '127.0.0.1:0' })!;
+    strictEqual(o.host, '127.0.0.1');
+    strictEqual(o.port, 9229);
+});
+
+Deno.test('inspector: inspect-wait takes precedence over inspect', () => {
+    const o = parseInspectFlags({ inspect: '9333', 'inspect-wait': '9444' })!;
+    strictEqual(o.waitForClient, true);
+    strictEqual(o.breakOnStart, false);
+    strictEqual(o.port, 9444);
+});

@@ -7,16 +7,18 @@
  * to resume — returning the requested step mode to the engine.
  */
 
-import { BreakReason, Step, native, type StepCode, type LocalVariable } from '../shared/native'
-import { isUserFile } from '../shared/user-files'
+import { log } from '../../../cts/src/api'
 import type { CallFrame, PausedEvent, Scope } from '../shared/cdp'
+import { BreakReason, Step, native, type LocalVariable, type StepCode } from '../shared/native'
+import { isUserFile } from '../shared/user-files'
 import { WorkerEvent } from '../shared/wire'
 import type { MainEndpoint } from '../transport/main-endpoint'
 import type { Serializer } from './remote-object'
-import { log } from '../../../cts/src/api'
 
 const BACKTRACE_GROUP = 'backtrace'
 const EVAL_FRAME_OFFSET = 4
+
+const createScopeObject = (): Record<string, unknown> => Object.create(null)
 
 interface TopFrame {
 	file: string
@@ -33,7 +35,7 @@ export class PauseController {
 		private readonly endpoint: MainEndpoint,
 		private readonly serializer: Serializer,
 		private readonly isConnected: () => boolean,
-	) {}
+	) { }
 
 	/** Native onBreak callback. Returns 0 to continue execution. */
 	onBreak(reason: number, file: string, func: string, line: number, column: number, thrown?: unknown): number {
@@ -51,7 +53,7 @@ export class PauseController {
 			try {
 				const frame = this.buildCallFrame(level, top, preferTopHint)
 				if (frame) callFrames.push(frame)
-			} catch {}
+			} catch { }
 		}
 
 		if (callFrames.length === 0) {
@@ -103,13 +105,13 @@ export class PauseController {
 		try {
 			thisVal = native.evalInFrame(level + EVAL_FRAME_OFFSET, 'this')
 			hasThisVal = true
-		} catch {}
+		} catch { }
 		try {
 			frameInfo = native.getFrameInfo(level + EVAL_FRAME_OFFSET)
-		} catch {}
+		} catch { }
 
-		const localObj = Object.create(null) as Record<string, unknown>
-		const closureObj = Object.create(null) as Record<string, unknown>
+		const localObj = createScopeObject()
+		const closureObj = createScopeObject()
 		let hasClosure = false
 		for (const v of locals) {
 			if (v.isUninitialized) continue  // TDZ: declared in bytecode but not yet reached at this PC

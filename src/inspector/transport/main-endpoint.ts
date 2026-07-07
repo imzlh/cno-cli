@@ -11,9 +11,10 @@
 
 import { PipeServer } from './pipe-rpc';
 import { ChannelServer } from './channel-rpc';
-import type { RpcMethod, RpcParams } from '../shared/rpc-contract';
+import { isRpcMethod, type RpcMethod, type RpcParams } from '../shared/rpc-contract';
+import { isRecord } from '../shared/cdp';
 import type { DebugChannelMain, StepCode } from '../shared/native';
-import type { WorkerEvent } from '../shared/wire';
+import { WorkerEvent } from '../shared/wire';
 import { log } from '../../../cts/src/api';
 
 type Pipe = CModuleWorker.MessagePipe;
@@ -44,14 +45,19 @@ export class MainEndpoint {
 	}
 
 	registerMany(table: RpcHandlerTable): void {
-		for (const key of Object.keys(table) as RpcMethod[]) {
+		for (const key of Object.keys(table)) {
+			if (!isRpcMethod(key)) continue;
 			const h = table[key];
 			if (h) this.handlers.set(key, h as ErasedHandler);
 		}
 	}
 
-	/** Push an event to the worker (rides the pipe even while paused). */
+	/** Push an event to the worker. Paused must use the synchronous channel. */
 	emit(event: WorkerEvent, params: unknown): void {
+		if (event === WorkerEvent.Paused) {
+			this.channelServer.emit(event, params);
+			return;
+		}
 		this.pipeServer.emit(event, params);
 	}
 
@@ -63,14 +69,14 @@ export class MainEndpoint {
 	private dispatchAsync(method: string, params: unknown): unknown | Promise<unknown> {
 		const h = this.handlers.get(method);
 		if (!h) throw new Error(`unknown rpc method: ${method}`);
-		return h((params ?? {}) as Record<string, unknown>);
+		return h(isRecord(params) ? params : {});
 	}
 
 	private dispatchSync(method: string, params: Record<string, unknown>): unknown {
 		const h = this.handlers.get(method);
 		if (!h) throw new Error(`unknown rpc method: ${method}`);
 		const r = h(params);
-		if (r && typeof (r as { then?: unknown }).then === 'function') {
+		if (r && (typeof r === 'object' || typeof r === 'function') && typeof Reflect.get(r, 'then') === 'function') {
 			throw new Error(`rpc method ${method} returned a Promise during pause (must be synchronous)`);
 		}
 		return r;

@@ -1,4 +1,4 @@
-import { strictEqual, ok, deepStrictEqual } from 'node:assert';
+import { strictEqual, ok, deepStrictEqual, throws } from 'node:assert';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -75,6 +75,104 @@ Deno.test('cjs: require.cache is populated', () => {
     ok(cache && typeof cache === 'object');
     const key = require.resolve('./fixtures/cjs-require-esm/vite.config.js');
     ok(cache[key] !== undefined, 'loaded module must appear in require.cache');
+});
+
+Deno.test('cjs: default exports object has Object.prototype like Node', () => {
+    const shape = require('./fixtures/cjs-exports-shape/exports-shape.cjs');
+    strictEqual(shape.hasObjectPrototype, true);
+    strictEqual(shape.constructorIsObject, true);
+});
+
+Deno.test('cjs upstream: ESM import of CJS preserves reserved export names', async () => {
+    const spec = './fixtures/cjs-exports-shape/module-exports-key.cjs';
+    const ns = await import(spec);
+    strictEqual(ns['module.exports'], 6);
+    strictEqual(ns.class, 'class');
+    strictEqual(ns.default['module.exports'], 6);
+});
+
+Deno.test('cjs upstream: ESM import of CJS preserves escaped whitespace export names', async () => {
+    const ns = await import('./fixtures/cjs-exports-shape/escaped-whitespace-keys.cjs');
+    strictEqual(ns['\nx'], 'test');
+    strictEqual(ns['\ty'], 'test');
+    strictEqual(ns['\rz'], 'test');
+    strictEqual(ns['"a'], 'test');
+    deepStrictEqual(ns.default, {
+        '\nx': 'test',
+        '\ty': 'test',
+        '\rz': 'test',
+        '"a': 'test',
+    });
+    deepStrictEqual(ns['module.exports'], ns.default);
+});
+
+Deno.test('cjs upstream: ESM import of CJS preserves non-identifier export names', async () => {
+    const ns = await import('./fixtures/cjs-exports-shape/invalid-name-exports.cjs');
+    strictEqual(ns['wow "double quotes"'], 'double quotes');
+    strictEqual(ns["another 'case'"], 'example');
+    strictEqual(ns['a \\ b'], 'a \\ b');
+    strictEqual(ns['name variable'], 'a');
+    strictEqual(ns['foo - bar'], 'foo - bar');
+    deepStrictEqual(ns.default, {
+        'wow "double quotes"': 'double quotes',
+        "another 'case'": 'example',
+        'a \\ b': 'a \\ b',
+        'name variable': 'a',
+        'foo - bar': 'foo - bar',
+    });
+    deepStrictEqual(ns['module.exports'], ns.default);
+});
+
+Deno.test('cjs upstream: ESM import of CJS module.exports object assignment exposes named keys', async () => {
+    const ns = await import('./fixtures/cjs-exports-shape/module-export-assignment.cjs');
+    strictEqual(ns.default.func(), 5);
+    strictEqual(ns.func(), 5);
+    deepStrictEqual(ns['module.exports'], ns.default);
+});
+
+Deno.test('cjs upstream: static named import from CJS sees bridged export names', async () => {
+    const ns = await import('./fixtures/cjs-exports-shape/static-import-module-export-assignment.mjs');
+    strictEqual(ns.defaultResult, 5);
+    strictEqual(ns.namedResult, 5);
+});
+
+Deno.test('cjs upstream: ESM import of primitive CJS module.exports keeps default only', async () => {
+    const ns = await import('./fixtures/cjs-exports-shape/module-export-number.cjs');
+    strictEqual(ns.default, 5);
+    strictEqual(ns['module.exports'], 5);
+    strictEqual('func' in ns, false);
+});
+
+Deno.test('cjs upstream: named CJS function export loses this context when called bare', async () => {
+    const defaultImport = (await import('./fixtures/cjs-exports-shape/this-in-exports.cjs')).default;
+    const namespaceImport = await import('./fixtures/cjs-exports-shape/this-in-exports.cjs');
+    const { getValue } = namespaceImport;
+
+    strictEqual(defaultImport.getValue(), 1);
+    strictEqual(namespaceImport.getValue(), 1);
+    throws(
+        () => getValue(),
+        TypeError,
+    );
+});
+
+Deno.test('cjs: new Function dynamic import resolves relative to current module', async () => {
+    const mod = require('./fixtures/cjs-dynamic-import-function/entry.cjs');
+    strictEqual(await mod.value, 42);
+});
+
+Deno.test('cjs: JSDoc import comments do not break Function.prototype exports', () => {
+    const call = require('./fixtures/cjs-jsdoc-import-function-prototype/function-call.cjs');
+    strictEqual(call, Function.prototype.call);
+});
+
+Deno.test('cjs upstream: require(esm) honors the module.exports named export', () => {
+    strictEqual(require('./fixtures/esm-module-exports/string.mjs'), 'value');
+    strictEqual(require('./fixtures/esm-module-exports/undefined.mjs'), undefined);
+
+    const add = require('./fixtures/esm-module-exports/mod1.cjs');
+    strictEqual(typeof add, 'function');
+    strictEqual(add(1, 2), 3);
 });
 
 // --- 8. require of missing module throws MODULE_NOT_FOUND ------------------

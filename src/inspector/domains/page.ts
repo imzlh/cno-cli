@@ -57,7 +57,6 @@ export class PageDomain extends Domain {
 		})
 		this.on('Page.disable', () => {
 			this.enabled = false
-			this.resources = []
 			return {}
 		})
 

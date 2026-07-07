@@ -36,6 +36,12 @@ Deno.test('tty: isatty on stdio fds returns boolean', () => {
     }
 });
 
+Deno.test('tty: isatty on stdio fds matches process stdio isTTY flags', () => {
+    strictEqual(tty.isatty(0), !!process.stdin?.isTTY);
+    strictEqual(tty.isatty(1), !!process.stdout?.isTTY);
+    strictEqual(tty.isatty(2), !!process.stderr?.isTTY);
+});
+
 // --- 4. ReadStream and WriteStream are exported ---------------------------
 
 Deno.test('tty: ReadStream and WriteStream exist', () => {
@@ -47,6 +53,7 @@ Deno.test('tty: ReadStream and WriteStream exist', () => {
 
 Deno.test('tty: ReadStream has setRawMode', () => {
     ok('setRawMode' in tty.ReadStream.prototype);
+    strictEqual((tty.ReadStream.prototype as typeof tty.ReadStream.prototype & { isTTY?: unknown }).isTTY, undefined);
 });
 
 // --- 6. WriteStream.prototype has cursorTo / clearLine / getWindowSize ---
@@ -55,16 +62,24 @@ Deno.test('tty: WriteStream has cursor/clear/window methods', () => {
     for (const m of ['cursorTo', 'clearLine', 'clearScreenDown', 'getWindowSize', 'columns', 'rows']) {
         ok(m in tty.WriteStream.prototype, `WriteStream must have ${m}`);
     }
+    strictEqual((tty.WriteStream.prototype as typeof tty.WriteStream.prototype & { isTTY?: unknown }).isTTY, true);
 });
 
 // --- 7. isatty throws on invalid fd ---------------------------------------
 
-Deno.test('tty: isatty on negative fd returns false or throws', () => {
-    let ok2 = true;
-    try {
-        tty.isatty(-1);
-    } catch {
-        ok2 = false; // acceptable
+Deno.test('tty: isatty on negative fd returns false', () => {
+    strictEqual(tty.isatty(-1), false);
+});
+
+Deno.test('tty: isatty returns false for invalid fd values', () => {
+    for (const value of [0.5, 1.3, 'abc', {}, [], null, undefined]) {
+        strictEqual(tty.isatty(value as number), false);
     }
-    ok(true); // smoke: no crash
+});
+
+Deno.test('tty: WriteStream prototype color helpers match upstream shape', () => {
+    strictEqual(tty.WriteStream.prototype.hasColors(), true);
+    strictEqual(tty.WriteStream.prototype.hasColors({}), true);
+    strictEqual(tty.WriteStream.prototype.hasColors(1), true);
+    ok([1, 4, 8, 24].includes(tty.WriteStream.prototype.getColorDepth()));
 });

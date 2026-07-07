@@ -15,11 +15,12 @@
  * over the channel regardless of run state.
  */
 
-import { ChannelRecv, ChannelReq, ExceptionBreakMode, Step, type StepCode } from '../shared/native';
-import type { DebugChannelMain, DebugChannelWorker } from '../shared/native';
-import type { RpcMethod, RpcParams } from '../shared/rpc-contract';
-import type { WorkerEvent } from '../shared/wire';
 import { log } from '../../../cts/src/api';
+import { isRecord } from '../shared/cdp';
+import type { DebugChannelMain, DebugChannelWorker } from '../shared/native';
+import { ChannelRecv, ChannelReq, ExceptionBreakMode, Step, type StepCode } from '../shared/native';
+import { isRpcMethod, type RpcMethod, type RpcParams } from '../shared/rpc-contract';
+import { WorkerEvent } from '../shared/wire';
 
 const timers = import.meta.use('timers');
 
@@ -31,6 +32,24 @@ export type SyncDispatch = (method: string, params: Record<string, unknown>) => 
 /** Shape of a reply payload carried back over the channel. */
 interface ReplyPayload { result?: unknown; error?: string }
 
+type ExceptionBreakpointState = RpcParams['setExceptionBreakpoint']['state'];
+
+function isWorkerEvent(value: unknown): value is WorkerEvent {
+	return typeof value === 'number' && WorkerEvent[value] !== undefined
+}
+
+function isExceptionBreakpointState(value: unknown): value is ExceptionBreakpointState {
+	return value === 'none' || value === 'caught' || value === 'uncaught' || value === 'all'
+}
+
+function toStepCode(value: unknown): StepCode {
+	const step = typeof value === 'number' ? value | 0 : Step.None
+	if (step === Step.Into) return Step.Into
+	if (step === Step.Over) return Step.Over
+	if (step === Step.Out) return Step.Out
+	return Step.None
+}
+
 function exceptionBreakModeFromState(state: RpcParams['setExceptionBreakpoint']['state']): number {
 	switch (state) {
 		case 'none': return ExceptionBreakMode.None;
@@ -38,6 +57,16 @@ function exceptionBreakModeFromState(state: RpcParams['setExceptionBreakpoint'][
 		case 'uncaught': return ExceptionBreakMode.Uncaught;
 		case 'all': return ExceptionBreakMode.All;
 	}
+}
+
+function emitEventQuietly(
+	sink: ((event: WorkerEvent, params: unknown) => void) | null,
+	event: WorkerEvent,
+	params: unknown
+): void {
+	try {
+		sink?.(event, params);
+	} catch {}
 }
 
 // ───────────────── Worker side ─────────────────
@@ -56,30 +85,36 @@ export class ChannelClient {
 
 	/** Control-class op: applied in C at a safepoint; valid RUNNING or PAUSED. */
 	applyControl(method: RpcMethod, params: unknown): void {
+		const record = isRecord(params) ? params : null
 		switch (method) {
 			case 'addBreakpoint': {
-				const p = params as RpcParams['addBreakpoint'];
-				log.debug('debug', () => `channel.control: addBreakpoint ${p.url}:${p.line}`);
-				this.dc.addBreakpoint(p.url, p.line, p.col ?? -1);
+				const url = record && typeof record.url === 'string' ? record.url : null
+				const line = record && typeof record.line === 'number' ? record.line : null
+				const col = record && typeof record.col === 'number' ? record.col : -1
+				if (url === null || line === null) break
+				log.debug('debug', () => `channel.control: addBreakpoint ${url}:${line}`);
+				this.dc.addBreakpoint(url, line, col);
 				break;
 			}
 			case 'removeBreakpoint': {
-				const p = params as RpcParams['removeBreakpoint'];
-				log.debug('debug', () => `channel.control: removeBreakpoint ${p.url}:${p.line}`);
-				this.dc.removeBreakpoint(p.url, p.line);
+				const url = record && typeof record.url === 'string' ? record.url : null
+				const line = record && typeof record.line === 'number' ? record.line : null
+				if (url === null || line === null) break
+				log.debug('debug', () => `channel.control: removeBreakpoint ${url}:${line}`);
+				this.dc.removeBreakpoint(url, line);
 				break;
 			}
 			case 'clearBreakpoints':
 				this.dc.clearBreakpoints();
 				break;
 			case 'setBreakpointsActive': {
-				const p = params as RpcParams['setBreakpointsActive'];
-				this.dc.setBreakpointsActive(!!p.active);
+				this.dc.setBreakpointsActive(!!record?.active);
 				break;
 			}
 			case 'setExceptionBreakpoint': {
-				const p = params as RpcParams['setExceptionBreakpoint'];
-				this.dc.setExceptionBreakpoint(exceptionBreakModeFromState(p.state));
+				const state = record?.state
+				if (!isExceptionBreakpointState(state)) break
+				this.dc.setExceptionBreakpoint(exceptionBreakModeFromState(state));
 				break;
 			}
 			case 'requestPause':
@@ -113,21 +148,42 @@ export class ChannelClient {
 
 	private drainInbox(): void {
 		for (;;) {
-			let m: ReturnType<DebugChannelWorker['recv']>;
-			try { m = this.dc.recv(); } catch { break; }
+			const m = this.recvQuietly();
 			if (!m) break;
 			if (m.kind === ChannelRecv.Reply) {
 				const p = this.pending.get(m.id);
 				if (p) {
 					this.pending.delete(m.id);
-					const resp = (m.payload ?? {}) as ReplyPayload;
-					if (resp.error) p.reject(new Error(resp.error));
-					else p.resolve(resp.result);
+					const payload = isRecord(m.payload) ? m.payload : {};
+					const error = payload.error;
+					if (typeof error === 'string' && error.length > 0) p.reject(new Error(error));
+					else p.resolve(payload.result);
 				}
 			} else if (m.kind === ChannelRecv.Event) {
-				try { this.onEvent?.(m.type as WorkerEvent, m.payload); } catch {}
+				if (!isWorkerEvent(m.type)) continue;
+				emitEventQuietly(this.onEvent, m.type, m.payload);
 			}
 		}
+	}
+
+	private recvQuietly(): ReturnType<DebugChannelWorker['recv']> | null {
+		try {
+			return this.dc.recv();
+		} catch {
+			return null;
+		}
+	}
+
+	private waitRecvQuietly(waitMs: number): void {
+		try {
+			this.dc.waitRecv(waitMs);
+		} catch {}
+	}
+
+	private drainInboxQuietly(): void {
+		try {
+			this.drainInbox();
+		} catch {}
 	}
 
 	/**
@@ -137,8 +193,8 @@ export class ChannelClient {
 	 */
 	private poll = (): void => {
 		const waitMs = this.active ? 1 : 20;
-		try { this.dc.waitRecv(waitMs); } catch {}
-		try { this.drainInbox(); } catch {}
+		this.waitRecvQuietly(waitMs);
+		this.drainInboxQuietly();
 		this.pollTimer = timers.setTimeout(this.poll, 0);
 	};
 
@@ -147,23 +203,31 @@ export class ChannelClient {
 		if (this.active === v) return;
 		this.active = v;
 		log.debug('debug', () => `channel.setActive: ${v} pending=${this.pending.size}`);
-		if (!v) {
-			// Drain final replies, then fail anything outstanding so no CDP command
-			// hangs across the resume boundary.
-			try { this.drainInbox(); } catch {}
-			for (const [, p] of this.pending) p.reject(new Error('Execution resumed'));
-			this.pending.clear();
+			if (!v) {
+				// Drain final replies, then fail anything outstanding so no CDP command
+				// hangs across the resume boundary.
+				this.drainInboxQuietly();
+				for (const [, p] of this.pending) p.reject(new Error('Execution resumed'));
+				this.pending.clear();
+			}
 		}
-	}
 
 	/** Request a pause at the next safepoint (works while RUNNING). */
-	interrupt(): void { try { this.dc.interrupt(); } catch {} }
+	interrupt(): void {
+		try {
+			this.dc.interrupt();
+		} catch {}
+	}
 
 	/** Read the native run-state from the shared debug control block. */
 	state(): number { return this.dc.state() }
 
 	/** Resume the paused main thread, optionally stepping (a Step code). */
-	resume(step: StepCode): void { try { this.dc.resume(step); } catch {} }
+	resume(step: StepCode): void {
+		try {
+			this.dc.resume(step);
+		} catch {}
+	}
 }
 
 // ───────────────── Main side ─────────────────
@@ -172,7 +236,19 @@ export class ChannelServer {
 
 	/** Push an event to the worker while the main thread is paused in onBreak. */
 	emit(event: WorkerEvent, params: unknown): void {
-		try { this.dc.notify(event, params); } catch {}
+		this.notifyQuietly(event, params);
+	}
+
+	private notifyQuietly(event: WorkerEvent, params: unknown): void {
+		try {
+			this.dc.notify(event, params);
+		} catch {}
+	}
+
+	private replyQuietly(id: number, resp: ReplyPayload): void {
+		try {
+			this.dc.reply(id, resp);
+		} catch {}
 	}
 
 	/**
@@ -182,7 +258,7 @@ export class ChannelServer {
 	 * surface here. Returns the requested step code when the worker resumes.
 	 */
 	service(dispatchSync: SyncDispatch): StepCode {
-		for (;;) {
+		while (true) {
 			let req: ReturnType<DebugChannelMain['waitRequest']>;
 			try { req = this.dc.waitRequest(); }
 			catch (e) {
@@ -191,28 +267,27 @@ export class ChannelServer {
 			}
 
 			if (req.kind === ChannelReq.Resume) {
-				const resumeReq = req as typeof req & { step: number };
-				log.debug('debug', () => `channel.service: resume step=${resumeReq.step}`);
-				return ((resumeReq.step | 0) || Step.None) as StepCode;
+				const step = Reflect.get(req, 'step');
+				log.debug('debug', () => `channel.service: resume step=${String(step)}`);
+				return toStepCode(step);
 			}
 
-			// req.kind === Inspect. Narrow the union so TypeScript knows which fields exist.
-			const inspectReq = req as Extract<typeof req, { kind: number; id: number; method: string; params: unknown }>;
-			const method = inspectReq.method;
-			const raw: unknown = inspectReq.params;
-			const params = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+			const id = Reflect.get(req, 'id');
+			const method = Reflect.get(req, 'method');
+			const raw = Reflect.get(req, 'params');
+			const params = isRecord(raw) ? raw : {};
 			let resp: ReplyPayload;
-			if (!method) {
-				log.debug('debug', () => `channel.service: inspect id=${inspectReq.id} has no method, req keys=${Object.keys(inspectReq).join(',')}`);
-				resp = { error: `missing method on inspect request (id=${inspectReq.id})` };
+			if (typeof id !== 'number' || typeof method !== 'string' || !isRpcMethod(method)) {
+				log.debug('debug', () => `channel.service: invalid inspect request, req keys=${Object.keys(req).join(',')}`);
+				resp = { error: `invalid inspect request` };
 			} else {
 				try { resp = { result: dispatchSync(method, params) }; }
 				catch (e) { resp = { error: e instanceof Error ? e.message : String(e) }; }
+				}
+				if (typeof id === 'number') {
+					this.replyQuietly(id, resp);
+				}
 			}
-			try { this.dc.reply(inspectReq.id, resp); } catch {}
-		}
 		return Step.None;
 	}
 }
-
-

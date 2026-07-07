@@ -1,4 +1,4 @@
-import { strictEqual, ok } from 'node:assert';
+import { deepStrictEqual, strictEqual, ok, throws } from 'node:assert';
 
 // ============================================================================
 // URL — WHATWG URL Standard edge cases
@@ -239,6 +239,52 @@ Deno.test('URL: setting port alone', () => {
     strictEqual(u.host, 'x.com:9999');
 });
 
+Deno.test('URL upstream: invalid and default ports follow WHATWG semantics', () => {
+    for (const input of [
+        `https://baz.qat:${2 ** 16}`,
+        'https://baz.qat:-32',
+        'https://baz.qat:deno',
+        'https://baz.qat:9land',
+        'https://baz.qat:10.5',
+    ]) {
+        throws(() => new URL(input), TypeError);
+    }
+
+    strictEqual(new URL('https://baz.qat:65535').port, '65535');
+    strictEqual(new URL('https://baz.qat:0').port, '0');
+
+    const invalidAssignment = new URL('https://deno.land:3000');
+    invalidAssignment.port = `${2 ** 16}`;
+    strictEqual(invalidAssignment.port, '3000');
+
+    const ftp = new URL('ftp://baz.qat:21');
+    strictEqual(ftp.port, '');
+    ftp.port = '3500';
+    strictEqual(ftp.port, '3500');
+    ftp.port = '21';
+    strictEqual(ftp.port, '');
+
+    const https = new URL('https://baz.qat:443');
+    strictEqual(https.port, '');
+    https.port = '3500';
+    strictEqual(https.port, '3500');
+    https.port = '443';
+    strictEqual(https.port, '');
+    https.protocol = 'http';
+    strictEqual(https.port, '');
+});
+
+Deno.test('URL upstream: URL object input is copied and port changes affect only receiver', () => {
+    const original = new URL('http://google.com/');
+    const copy = new URL(original as unknown as string);
+    copy.port = '123';
+    strictEqual(original.port, '');
+    strictEqual(copy.port, '123');
+
+    const nested = new URL(new URL('https://foo:bar@baz.qat:8000/qux/quux?foo=bar&baz=12#qat'));
+    strictEqual(nested.href, 'https://foo:bar@baz.qat:8000/qux/quux?foo=bar&baz=12#qat');
+});
+
 // --- 26. URL: credentials in origin for special schemes -------------------
 
 Deno.test('URL: origin does not include credentials', () => {
@@ -265,6 +311,33 @@ Deno.test('URL: href setter re-parses entire URL', () => {
     strictEqual(u.pathname, '/b');
     strictEqual(u.search, '?c=3');
     strictEqual(u.hash, '#d');
+});
+
+Deno.test('URL upstream: Deno.inspect preserves explicit empty query without exposing searchParams', () => {
+    const url = new URL('http://example.com/?');
+    strictEqual(url.href, 'http://example.com/?');
+    strictEqual(url.search, '');
+    strictEqual(
+        Deno.inspect(url, { colors: false }),
+        `URL {
+  href: "http://example.com/?",
+  origin: "http://example.com",
+  protocol: "http:",
+  username: "",
+  password: "",
+  host: "example.com",
+  hostname: "example.com",
+  port: "",
+  pathname: "/",
+  hash: "",
+  search: ""
+}`,
+    );
+
+    url.searchParams.append('remove', 'me');
+    strictEqual(url.href, 'http://example.com/?remove=me');
+    url.searchParams.delete('remove');
+    strictEqual(url.href, 'http://example.com/');
 });
 
 // --- helper ---------------------------------------------------------------

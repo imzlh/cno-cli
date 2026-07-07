@@ -13,6 +13,7 @@ import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
 import type { WorkerEndpoint } from '../transport/worker-endpoint'
 import type { FetchInterceptPayload } from '../shared/wire'
 import type { InterceptResult } from '../../../cno/src/utils/network-hooks'
+import { isRecord } from '../shared/cdp'
 import type {
 	FetchContinueRequestParams,
 	FetchFulfillRequestParams,
@@ -75,7 +76,7 @@ export class FetchDomain extends Domain {
 		this.on('Fetch.enable', (p) => {
 			this.enabled = true
 			this.handleAuthRequests = this.bool(p, 'handleAuthRequests')
-			const rawPatterns = (p.patterns ?? []) as Array<Record<string, unknown>>
+			const rawPatterns = Array.isArray(p.patterns) ? p.patterns.filter(isRecord) : []
 			this.patterns = rawPatterns.map((pat) => ({
 				urlRegex: globToRegex(typeof pat.urlPattern === 'string' ? pat.urlPattern : '*'),
 				resourceType: typeof pat.resourceType === 'string' ? pat.resourceType : undefined,
@@ -110,7 +111,7 @@ export class FetchDomain extends Domain {
 			this.settle(q.requestId, {
 				action: 'fulfill',
 				responseCode: q.responseCode,
-				responseHeaders: (q.responseHeaders ?? []).map((h) => [h.name, h.value] as [string, string]),
+				responseHeaders: (q.responseHeaders ?? []).map<[string, string]>((h) => [h.name, h.value]),
 				body,
 			})
 			return {}
@@ -185,7 +186,7 @@ export class FetchDomain extends Domain {
 	}
 
 	private encodeBase64(bytes: Uint8Array): string {
-		return nativeCrypto.base64Encode(bytes)
+		return nativeCrypto.base64Encode(new Uint8Array(bytes))
 	}
 
 	private decodeBase64(value: string): Uint8Array {

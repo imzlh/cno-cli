@@ -8,9 +8,9 @@
  * stays purely about transport.
  */
 
-import { Server, type HttpRequest, type HttpResponse } from '@cnojs/http/server'
-import { createWebSocketFromConnection } from '../../../cno/src/webapi/websocket'
-import { log } from '../../../cts/src/api'
+import { Server, type HttpRequest, type HttpResponse } from '@cnojs/http/server';
+import { createWebSocketFromConnection } from '../../../cno/src/webapi/websocket';
+import { log } from '../../../cts/src/api';
 
 const engine = import.meta.use('engine');
 const nativeCrypto = import.meta.use('crypto');

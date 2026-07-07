@@ -2,21 +2,19 @@ import { strictEqual, ok } from 'node:assert';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as stream from 'node:stream';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { decodeUtf8 } from '../_helpers/bytes.ts';
+import { withTempDir } from '../_helpers/temp.ts';
 
-const TMP = join(tmpdir(), `cno-node-fs-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
-
-function touch(name: string, content = 'data'): string {
-    const p = join(TMP, name);
+function touch(root: string, name: string, content = 'data'): string {
+    const p = join(root, name);
     fs.writeFileSync(p, content);
     return p;
 }
 
 Deno.test({ name: 'fs: sync read/write/stat/unlink round-trip', ignore: false }, () => {
-    fs.mkdirSync(TMP, { recursive: true });
-    try {
-        const p = touch('a.txt', 'hello');
+    return withTempDir('node-fs', (root) => {
+        const p = touch(root, 'a.txt', 'hello');
         const st = fs.statSync(p);
         ok(st.isFile());
         strictEqual(st.size, 5);
@@ -27,59 +25,51 @@ Deno.test({ name: 'fs: sync read/write/stat/unlink round-trip', ignore: false },
 
         fs.unlinkSync(p);
         ok(!fs.existsSync(p));
-    } finally {
-        fs.rmSync(TMP, { recursive: true, force: true });
-    }
+    });
 });
 
 Deno.test({ name: 'fs: promises API read/write/mkdir/rmdir/stat', timeout: 10000 }, async () => {
-    await fsp.mkdir(TMP, { recursive: true });
-    try {
-        const p = join(TMP, 'b.txt');
+    await withTempDir('node-fs', async (root) => {
+        const p = join(root, 'b.txt');
         await fsp.writeFile(p, 'promises');
         strictEqual(await fsp.readFile(p, 'utf8'), 'promises');
 
         const st = await fsp.stat(p);
         ok(st.isFile());
 
-        const nested = join(TMP, 'sub', 'deep');
+        const nested = join(root, 'sub', 'deep');
         await fsp.mkdir(nested, { recursive: true });
         ok((await fsp.stat(nested)).isDirectory());
 
-        await fsp.rm(TMP, { recursive: true, force: true });
+        await fsp.rm(root, { recursive: true, force: true });
         let gone = false;
         try { await fsp.stat(p); } catch { gone = true; }
         ok(gone, 'removed path must not stat');
-    } finally {
-        await fsp.rm(TMP, { recursive: true, force: true }).catch(() => {});
-    }
+    });
 });
 
 Deno.test({ name: 'fs: readdir returns entries and Dirent names', timeout: 10000 }, () => {
-    fs.mkdirSync(TMP, { recursive: true });
-    try {
-        touch('one.txt');
-        touch('two.txt');
-        fs.mkdirSync(join(TMP, 'dir'));
+    return withTempDir('node-fs', (root) => {
+        touch(root, 'one.txt');
+        touch(root, 'two.txt');
+        fs.mkdirSync(join(root, 'dir'));
 
-        const names = fs.readdirSync(TMP).sort();
+        const names = fs.readdirSync(root).sort();
         ok(names.includes('one.txt'));
         ok(names.includes('two.txt'));
         ok(names.includes('dir'));
 
-        const dirents = fs.readdirSync(TMP, { withFileTypes: true });
+        const dirents = fs.readdirSync(root, { withFileTypes: true });
         for (const d of dirents) ok(typeof d.name === 'string' && d.name.length > 0);
         ok(dirents.find((d) => d.name === 'dir')?.isDirectory());
         ok(dirents.find((d) => d.name === 'one.txt')?.isFile());
-    } finally {
-        fs.rmSync(TMP, { recursive: true, force: true });
-    }
+    });
 });
 
 Deno.test({ name: 'fs: readFile on missing path throws ENOENT', timeout: 10000 }, () => {
     let threw = false;
     try {
-        fs.readFileSync(join(TMP, 'does-not-exist', 'x.txt'));
+        fs.readFileSync(join(Deno.cwd(), 'does-not-exist', 'x.txt'));
     } catch (e: any) {
         threw = true;
         strictEqual(e.code, 'ENOENT');
@@ -88,9 +78,8 @@ Deno.test({ name: 'fs: readFile on missing path throws ENOENT', timeout: 10000 }
 });
 
 Deno.test({ name: 'fs: createReadStream pipes file content', timeout: 10000 }, async () => {
-    fs.mkdirSync(TMP, { recursive: true });
-    try {
-        const p = touch('stream.txt', 'stream-body');
+    await withTempDir('node-fs', async (root) => {
+        const p = touch(root, 'stream.txt', 'stream-body');
         const chunks: Buffer[] = [];
         await new Promise<void>((resolve, reject) => {
             const rs = fs.createReadStream(p);
@@ -98,16 +87,13 @@ Deno.test({ name: 'fs: createReadStream pipes file content', timeout: 10000 }, a
             rs.on('end', () => resolve());
             rs.on('error', reject);
         });
-        strictEqual(Buffer.concat(chunks).toString(), 'stream-body');
-    } finally {
-        fs.rmSync(TMP, { recursive: true, force: true });
-    }
+        strictEqual(decodeUtf8(Buffer.concat(chunks)), 'stream-body');
+    });
 });
 
 Deno.test({ name: 'fs: createWriteStream writes full content', timeout: 10000 }, async () => {
-    fs.mkdirSync(TMP, { recursive: true });
-    try {
-        const p = join(TMP, 'out.txt');
+    await withTempDir('node-fs', async (root) => {
+        const p = join(root, 'out.txt');
         await new Promise<void>((resolve, reject) => {
             const ws = fs.createWriteStream(p);
             ws.on('finish', () => resolve());
@@ -117,9 +103,7 @@ Deno.test({ name: 'fs: createWriteStream writes full content', timeout: 10000 },
             ws.end();
         });
         strictEqual(fs.readFileSync(p, 'utf8'), 'abcdef');
-    } finally {
-        fs.rmSync(TMP, { recursive: true, force: true });
-    }
+    });
 });
 
 // --- stream: pipeline + transform -----------------------------------------
@@ -128,7 +112,7 @@ Deno.test({ name: 'stream: pipeline pipes and resolves', timeout: 10000 }, async
     const src = stream.Readable.from(['abc', 'def']);
     let out = '';
     const dst = stream.Writable({
-        write(chunk: Buffer, _enc, cb) { out += chunk.toString(); cb(); },
+        write(chunk: Buffer, _enc, cb) { out += decodeUtf8(chunk); cb(); },
     });
     await new Promise<void>((resolve, reject) => {
         stream.pipeline(src, dst, (err) => (err ? reject(err) : resolve()));

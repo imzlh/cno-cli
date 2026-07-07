@@ -1,14 +1,3 @@
-/**
- * `cno setup` — install node built-in polyfills into cts cache.
- *
- * Strategy:
- *   1. If cno/src/node exists locally (dev tree or cwd), copy from there.
- *   2. Otherwise, fetch .ts files from GitHub (imzlh/cno) and write them.
- *
- * cts resolves `node:*` by looking for .ts files in cacheDir/node/.
- * No pre-compilation needed — cts transforms on first import.
- */
-
 import { fetchAsync } from '../../cno/src/webapi/fetch';
 import { normalize, dirname, join, systemPathSplit } from '../../cno/src/utils/path';
 import { log } from '../../cts/src/api';
@@ -22,7 +11,47 @@ const engine = import.meta.use('engine');
 const GITHUB_BASE = 'https://raw.githubusercontent.com/imzlh/cno/master/src/node';
 const GITHUB_TREE = 'https://api.github.com/repos/imzlh/cno/git/trees/master?recursive=1';
 
-function env(k: string): string | null { try { return os.getenv(k); } catch { return null; } }
+type GitHubTreeNode = { path: string; type: string };
+type GitHubTreeResponse = {
+    tree?: GitHubTreeNode[];
+    truncated?: boolean;
+    message?: string;
+};
+
+function env(k: string): string | null {
+    try {
+        return os.getenv(k) ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function unlinkQuietly(path: string): void {
+    try {
+        fs.unlink(path);
+    } catch {
+        // Missing or read-only stale bytecode should not fail setup copying.
+    }
+}
+
+function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
+    return value !== null && typeof value === 'object';
+}
+
+function parseGitHubTreeResponse(raw: string): GitHubTreeResponse {
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed)) throw new Error('GitHub tree response is not an object');
+    const rawTree = parsed.tree;
+    const tree = Array.isArray(rawTree)
+        ? rawTree.filter((item): item is GitHubTreeNode =>
+            isRecord(item) && typeof item.path === 'string' && typeof item.type === 'string')
+        : undefined;
+    return {
+        tree,
+        truncated: parsed.truncated === true,
+        message: typeof parsed.message === 'string' ? parsed.message : undefined,
+    };
+}
 
 const HOME = os.homeDir || (os.platform === 'win32' ? (env('USERPROFILE') || '') : (env('HOME') || '/root'));
 
@@ -51,7 +80,9 @@ function mkdirp(dir: string): void {
         cur = cur
             ? (cur.endsWith(systemPathSplit) ? cur + p : cur + systemPathSplit + p)
             : p;
-        try { fs.mkdir(cur, 0o755); } catch { /* exists */ }
+        try {
+            fs.mkdir(cur, 0o755);
+        } catch { /* exists */ }
     }
 }
 
@@ -63,7 +94,7 @@ function copyFile(src: string, dst: string): void {
 function walkTs(dir: string, prefix = ''): string[] {
     const out: string[] = [];
     try {
-        for (const name of fs.readdir(dir) as string[]) {
+        for (const name of fs.readdir(dir)) {
             const full = join(dir, name);
             const rel  = prefix ? join(prefix, name) : name;
             const st   = fs.stat(full);
@@ -72,6 +103,28 @@ function walkTs(dir: string, prefix = ''): string[] {
         }
     } catch { /* not readable */ }
     return out;
+}
+
+function isJscArtifact(name: string): boolean {
+    return name.endsWith('.jsc') || name.endsWith('.jsc.mt');
+}
+
+function clearJsc(dir: string): number {
+    let count = 0;
+    try {
+        for (const name of fs.readdir(dir)) {
+            const full = join(dir, name);
+            try {
+                const st = fs.stat(full);
+                if (st.isDirectory) count += clearJsc(full);
+                else if (isJscArtifact(name)) {
+                    fs.unlink(full);
+                    count++;
+                }
+            } catch {}
+        }
+    } catch {}
+    return count;
 }
 
 function findLocalNodeSource(start: string): string | null {
@@ -110,11 +163,11 @@ function installLocal(srcBase: string, dstBase: string): void {
                 if (fs.stat(dst).mtim >= srcMtime) { skip++; continue; }
             } catch {}
             copyFile(src, dst);
-            try { fs.unlink(dst + '.jsc') } catch {}
+            unlinkQuietly(dst + '.jsc');
             log.debug('oxc', () => `  COPY  ${rel}`);
             copied++;
-        } catch (e: any) {
-            console.error(`  FAIL  ${rel}: ${e?.message ?? e}`);
+        } catch (e) {
+            console.error(`  FAIL  ${rel}: ${e instanceof Error ? e.message : e}`);
         }
     }
     console.log(`Local install: ${copied} copied, ${skip} up-to-date`);
@@ -133,7 +186,7 @@ async function installRemote(dstBase: string): Promise<void> {
     const treeResp = await fetchAsync(GITHUB_TREE);
     if (!treeResp.ok) throw new Error(`GitHub API error: ${treeResp.status}`);
     const treeJson = engine.decodeString(await treeResp.arrayBuffer());
-    const tree: { tree?: Array<{ path: string; type: string }>; truncated?: boolean; message?: string } = JSON.parse(treeJson);
+    const tree = parseGitHubTreeResponse(treeJson);
 
     if (tree.message) throw new Error(`GitHub API: ${tree.message}`);
     if (!tree.tree || tree.truncated) throw new Error('GitHub tree truncated or missing');
@@ -154,8 +207,8 @@ async function installRemote(dstBase: string): Promise<void> {
             mkdirp(dirname(dst));
             fs.writeFile(dst, await data.arrayBuffer());
             ok++;
-        } catch (e: any) {
-            console.error(`  FAIL  ${rel}: ${e?.message ?? e}`);
+        } catch (e) {
+            console.error(`  FAIL  ${rel}: ${e instanceof Error ? e.message : e}`);
             fail++;
         }
     });
@@ -170,8 +223,7 @@ export async function runSetup(flags: Record<string, string | boolean>): Promise
     const dstBase  = join(cacheDir, 'node');
     mkdirp(dstBase);
 
-    const cwd = os.cwd;
-    const localSrc = findLocalNodeSource(cwd);
+    const localSrc = findLocalNodeSource(os.cwd);
 
     if (localSrc) {
         log.debug('setup', () => `Installing from local source: ${localSrc}`);
@@ -182,5 +234,7 @@ export async function runSetup(flags: Record<string, string | boolean>): Promise
         await installRemote(dstBase);
     }
 
+    const cleared = clearJsc(dstBase);
+    if (cleared > 0) log.debug('setup', () => `Cleared ${cleared} stale node polyfill bytecode files`);
     console.log(`Node polyfills ready at: ${dstBase}`);
 }

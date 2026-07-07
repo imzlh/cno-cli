@@ -20,16 +20,20 @@ import type {
 import type { RpcParams } from '../shared/rpc-contract'
 import type { Serializer } from './remote-object'
 
+type InspectorCallable = ((...args: unknown[]) => unknown) & { name?: string }
+type InspectableFunction = object & { name?: string }
+
 const engine = import.meta.use('engine')
+const nativeConsole = import.meta.use('console')
 const DEVTOOLS_EVAL_SLOT_PREFIX = '__cnoDevtoolsEvalResult__'
 let nextDevtoolsEvalSlot = 0
 
 function isThenable(v: unknown): v is PromiseLike<unknown> {
-	return typeof v === 'object' && v !== null && typeof (v as { then?: unknown }).then === 'function'
+	return typeof v === 'object' && v !== null && typeof Reflect.get(v, 'then') === 'function'
 }
 
 function unwrapEvalResult(v: unknown): unknown {
-	if (v && typeof v === 'object' && 'value' in v) return (v as { value: unknown }).value
+	if (v && typeof v === 'object' && 'value' in v) return Reflect.get(v, 'value')
 	return v
 }
 
@@ -76,7 +80,8 @@ function lastTopLevelStatementStart(source: string): number {
 	let escaped = false
 	let last = 0
 	for (let i = 0; i < source.length; i++) {
-		const ch = source[i]!
+		const ch = source[i]
+		if (ch === undefined) continue
 		const next = source[i + 1]
 		if (quote) {
 			if (escaped) { escaped = false; continue }
@@ -110,7 +115,8 @@ function lastTopLevelStatementStart(source: string): number {
 function nextTopLevelStatementStart(source: string, index: number): number {
 	let i = index
 	while (i < source.length) {
-		const ch = source[i]!
+		const ch = source[i]
+		if (ch === undefined) break
 		if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
 			i++
 			continue
@@ -142,7 +148,8 @@ function canSplitTopLevelStatement(source: string, newlineIndex: number, nextSta
 
 function previousSignificantChar(source: string, index: number): string | null {
 	for (let i = index; i >= 0; i--) {
-		const ch = source[i]!
+		const ch = source[i]
+		if (ch === undefined) continue
 		if (ch !== ' ' && ch !== '\t' && ch !== '\n' && ch !== '\r') return ch
 	}
 	return null
@@ -170,7 +177,7 @@ function byValue(val: unknown): RemoteObject {
 	if (typeof val === 'number') return serializeNumber(val)
 	if (typeof val === 'bigint') return { type: 'bigint', unserializableValue: `${val}n`, description: `${val}n` }
 	if (typeof val === 'symbol') return { type: 'symbol', description: safeString(val) }
-	if (typeof val === 'function') return { type: 'function', description: safeFnString(val as Function) }
+	if (typeof val === 'function') return { type: 'function', description: safeFnString(val) }
 	const t = typeof val
 	const type: RemoteObjectType = val === null ? 'object' : (t as RemoteObjectType)
 	return { type, value: jsonSafeValue(val) }
@@ -230,7 +237,7 @@ export class Evaluator {
 			const args = (q.arguments ?? []).map((a) => this.resolveArgument(a))
 			const fn = await evalWithCapturedCompletion(`(${q.functionDeclaration})`)
 			if (typeof fn !== 'function') throw new TypeError('callFunctionOn: declaration is not a function')
-			let val: unknown = (fn as Function).apply(target, args)
+			let val: unknown = Reflect.apply(fn as InspectorCallable, target, args)
 			if (isThenable(val)) val = await val
 			if (q.returnByValue) return { result: byValue(val) }
 			return { result: this.serializer.serialize(val, group, { preview: !!q.generatePreview }) }
@@ -247,7 +254,7 @@ export class Evaluator {
 			const factory = engine.eval<unknown>(`(${q.functionDeclaration})`, '<devtools>', engine.EVAL_NEW_BACKTRACE)
 			const fn = unwrapEvalResult(factory)
 			if (typeof fn !== 'function') throw new TypeError('callFunctionOn: declaration is not a function')
-			let val: unknown = (fn as Function).apply(target, args)
+			let val: unknown = Reflect.apply(fn as InspectorCallable, target, args)
 			if (q.returnByValue) return { result: byValue(val) }
 			return { result: this.serializer.serialize(val, group, { preview: !!q.generatePreview }) }
 		} catch (e) {
@@ -324,11 +331,11 @@ export class Evaluator {
 				} catch {
 					return undefined
 				}
+				}
+				// Unknown unserializable value — log and return undefined rather than silently swallowing.
+				try { nativeConsole.warn(`unknown unserializableValue: ${u}`) } catch { /* ignore */ }
+				return undefined
 			}
-			// Unknown unserializable value — log and return undefined rather than silently swallowing.
-			try { (import.meta.use('console') as { warn: (...a: unknown[]) => void }).warn(`unknown unserializableValue: ${u}`) } catch { /* ignore */ }
-			return undefined
-		}
 		return a.value
 	}
 
@@ -362,22 +369,26 @@ function jsonSafeValue(value: unknown): unknown {
 		if (Array.isArray(v)) return v.map((item) => {
 			const converted = convert(item)
 			return converted === undefined ? null : converted
-		})
-		const out: Record<string, unknown> = {}
-		for (const key of Object.keys(v)) {
-			const converted = convert((v as Record<string, unknown>)[key])
-			if (converted !== undefined) out[key] = converted
-		}
+			})
+			const out: Record<string, unknown> = {}
+			for (const key of Object.keys(v)) {
+				const converted = convert(Reflect.get(v, key))
+				if (converted !== undefined) out[key] = converted
+			}
 		return out
 	}
 	return convert(value)
 }
 
 function safeString(v: unknown): string {
-	try { return String(v) } catch { return '<unprintable>' }
+	try {
+		return String(v)
+	} catch {
+		return '<unprintable>'
+	}
 }
 
-function safeFnString(fn: Function): string {
+function safeFnString(fn: InspectableFunction): string {
 	try {
 		const s = Function.prototype.toString.call(fn)
 		return s.length > 200 ? s.slice(0, 200) + '...' : s
@@ -387,8 +398,8 @@ function safeFnString(fn: Function): string {
 }
 
 function compileError(e: unknown): ExceptionDetails {
-	const err = e as { message?: string } | undefined
-	const message = err?.message ?? String(e)
+	const rawMessage = e && (typeof e === 'object' || typeof e === 'function') ? Reflect.get(e, 'message') : undefined
+	const message = typeof rawMessage === 'string' ? rawMessage : String(e)
 	// Match common error formats: "at line:col", "SyntaxError at :line:col", "file:line:col"
 	const m = message.match(/:(\d+)(?::\d+)?(?:\s|$)/)
 	const lineNumber = m ? Number(m[1]) : 0

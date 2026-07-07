@@ -1,4 +1,4 @@
-import { strictEqual, ok, match } from 'node:assert';
+import { deepStrictEqual, strictEqual, ok, match } from 'node:assert';
 
 // ============================================================================
 // Intl — DateTimeFormat / NumberFormat / Collator / PluralRules / DisplayNames
@@ -173,10 +173,43 @@ Deno.test('Intl.ListFormat: formats list', () => {
     ok(typeof s === 'string' && s.includes('a') && s.includes('c'));
 });
 
+Deno.test('Intl upstream: ListFormat honors type style iterables and formatToParts', () => {
+    const conjunction = new Intl.ListFormat('en', {
+        style: 'long',
+        type: 'conjunction',
+    });
+    strictEqual(conjunction.format(['red', 'green', 'blue']), 'red, green, and blue');
+    strictEqual(conjunction.format(new Set(['red', 'green', 'blue'])), 'red, green, and blue');
+    deepStrictEqual(conjunction.resolvedOptions(), {
+        locale: 'en',
+        type: 'conjunction',
+        style: 'long',
+    });
+
+    const disjunction = new Intl.ListFormat('en', {
+        style: 'short',
+        type: 'disjunction',
+    });
+    deepStrictEqual(disjunction.formatToParts(['Rust', 'golang']), [
+        { type: 'element', value: 'Rust' },
+        { type: 'literal', value: ' or ' },
+        { type: 'element', value: 'golang' },
+    ]);
+    deepStrictEqual(disjunction.formatToParts(new Set(['Rust', 'golang'])), [
+        { type: 'element', value: 'Rust' },
+        { type: 'literal', value: ' or ' },
+        { type: 'element', value: 'golang' },
+    ]);
+});
+
 // --- getCanonicalLocales ---------------------------------------------------
 
 Deno.test('Intl.getCanonicalLocales normalizes', () => {
     const out = Intl.getCanonicalLocales('EN-us');
     ok(Array.isArray(out));
     ok(out[0] === 'en-US');
+});
+
+Deno.test('Intl upstream: v8BreakIterator is not exposed', () => {
+    strictEqual((Intl as typeof Intl & { v8BreakIterator?: unknown }).v8BreakIterator, undefined);
 });

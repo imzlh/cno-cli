@@ -1,81 +1,118 @@
 import { strictEqual, ok } from 'node:assert';
-import { WASI } from 'node:wasi';
+import wasiDefault, { WASI } from 'node:wasi';
 
-// --- 1. WASI is a constructor -----------------------------------------------
+const WASICtor = WASI as unknown as new (options?: Record<string, unknown>) => WASI;
 
 Deno.test('wasi: WASI is a constructor', () => {
     ok(typeof WASI === 'function');
+    strictEqual(wasiDefault.WASI, WASI);
 });
 
-// --- 2. WASI constructor accepts options ------------------------------------
-
-Deno.test('wasi: WASI constructor accepts options', () => {
-    let w: any;
+Deno.test('wasi: constructor without options throws ERR_INVALID_ARG_TYPE', () => {
+    let err: NodeJS.ErrnoException | null = null;
     try {
-        w = new WASI({});
-    } catch (e: any) {
-        // Some runtimes require a wasm module; construction with empty opts
-        // should either succeed or throw a clean error, not crash.
-        ok(typeof e.message === 'string');
+        new WASICtor();
+    } catch (error) {
+        err = error as NodeJS.ErrnoException;
     }
-    ok(w || true);
+    ok(err instanceof Error);
+    strictEqual(err?.code, 'ERR_INVALID_ARG_TYPE');
 });
 
-// --- 3. WASI.start is a function --------------------------------------------
-
-Deno.test('wasi: WASI.prototype.start is a function', () => {
-    ok(typeof WASI.prototype.start === 'function');
-});
-
-// --- 4. WASI.initialize is a function ---------------------------------------
-
-Deno.test('wasi: WASI.prototype.initialize is a function', () => {
-    ok(typeof WASI.prototype.initialize === 'function');
-});
-
-// --- 5. WASI.version getter -------------------------------------------------
-
-Deno.test('wasi: WASI.version is a string', () => {
-    const v = (WASI as any).version;
-    ok(v === undefined || typeof v === 'string');
-});
-
-// --- 6. WASI constructor with version option -------------------------------
-
-Deno.test('wasi: WASI constructor with version option', () => {
-    let w: any;
+Deno.test('wasi: constructor requires string version option', () => {
+    let err: NodeJS.ErrnoException | null = null;
     try {
-        w = new WASI({ version: 'preview1' });
-    } catch (e: any) {
-        ok(typeof e.message === 'string');
+        new WASICtor({});
+    } catch (error) {
+        err = error as NodeJS.ErrnoException;
     }
-    ok(w || true);
+    ok(err instanceof Error);
+    strictEqual(err?.code, 'ERR_INVALID_ARG_TYPE');
 });
 
-// --- 7. WASI.start with non-instance throws ---------------------------------
-
-Deno.test('wasi: WASI.start with invalid arg throws cleanly', () => {
-    let threw = false;
-    try {
-        const w = new WASI({});
-        w.start({} as any);
-    } catch (e: any) {
-        threw = true;
-        ok(typeof e.message === 'string');
-    }
-    ok(threw, 'start with non-instance must throw');
+Deno.test('wasi: constructor accepts preview1 and exposes wasiImport', () => {
+    const wasi = new WASICtor({ version: 'preview1' });
+    ok(typeof wasi.start === 'function');
+    ok(typeof wasi.initialize === 'function');
+    const wasiImport = Reflect.get(wasi, 'wasiImport') as Record<string, unknown> | undefined;
+    ok(wasiImport && typeof wasiImport === 'object');
+    strictEqual(typeof Reflect.get(wasiImport ?? {}, 'args_get'), 'function');
+    strictEqual(typeof Reflect.get(wasiImport ?? {}, 'environ_get'), 'function');
 });
 
-// --- 8. WASI.initialize with non-instance throws ----------------------------
+Deno.test('wasi: getImportObject exposes wasi_snapshot_preview1 bindings', () => {
+    const wasi = new WASICtor({ version: 'preview1' }) as WASI & {
+        getImportObject: () => Record<string, Record<string, unknown>>;
+    };
+    const imports = wasi.getImportObject();
+    ok(imports.wasi_snapshot_preview1 && typeof imports.wasi_snapshot_preview1 === 'object');
+    strictEqual(typeof imports.wasi_snapshot_preview1.fd_write, 'function');
+    strictEqual(typeof imports.wasi_snapshot_preview1.args_get, 'function');
+});
 
-Deno.test('wasi: WASI.initialize with invalid arg throws cleanly', () => {
-    let threw = false;
+Deno.test('wasi: getImports mirrors getImportObject namespace', () => {
+    const wasi = new WASICtor({ version: 'preview1' }) as WASI & {
+        getImports: () => Record<string, Record<string, unknown>>;
+    };
+    const imports = wasi.getImports();
+    ok(imports.wasi_snapshot_preview1 && typeof imports.wasi_snapshot_preview1 === 'object');
+    strictEqual(typeof imports.wasi_snapshot_preview1.environ_get, 'function');
+    strictEqual(typeof imports.wasi_snapshot_preview1.fd_read, 'function');
+});
+
+Deno.test('wasi: unsupported version throws ERR_INVALID_ARG_VALUE', () => {
+    let err: NodeJS.ErrnoException | null = null;
     try {
-        const w = new WASI({});
-        w.initialize({} as any);
-    } catch (e: any) {
-        threw = true;
-        ok(typeof e.message === 'string');
+        new WASICtor({ version: 'preview2' });
+    } catch (error) {
+        err = error as NodeJS.ErrnoException;
     }
-    ok(threw, 'initialize with non-instance must throw');
+    ok(err instanceof Error);
+    strictEqual(err?.code, 'ERR_INVALID_ARG_VALUE');
+});
+
+Deno.test('wasi: static version is undefined on current Node surface', () => {
+    strictEqual(Reflect.get(WASI, 'version'), undefined);
+});
+
+Deno.test('wasi: start with invalid instance throws ERR_INVALID_ARG_TYPE', () => {
+    const wasi = new WASICtor({ version: 'preview1' });
+    let err: NodeJS.ErrnoException | null = null;
+    try {
+        Reflect.apply(wasi.start, wasi, [{}]);
+    } catch (error) {
+        err = error as NodeJS.ErrnoException;
+    }
+    ok(err instanceof Error);
+    strictEqual(err?.code, 'ERR_INVALID_ARG_TYPE');
+});
+
+Deno.test('wasi: initialize with invalid instance throws ERR_INVALID_ARG_TYPE', () => {
+    const wasi = new WASICtor({ version: 'preview1' });
+    let err: NodeJS.ErrnoException | null = null;
+    try {
+        Reflect.apply(wasi.initialize, wasi, [{}]);
+    } catch (error) {
+        err = error as NodeJS.ErrnoException;
+    }
+    ok(err instanceof Error);
+    strictEqual(err?.code, 'ERR_INVALID_ARG_TYPE');
+});
+
+Deno.test('wasi: initialize after failed start reports already started', () => {
+    const wasi = new WASICtor({ version: 'preview1' });
+    try {
+        Reflect.apply(wasi.start, wasi, [{}]);
+    } catch {
+        // Start still marks the instance as started in Node.
+    }
+
+    let err: NodeJS.ErrnoException | null = null;
+    try {
+        Reflect.apply(wasi.initialize, wasi, [{}]);
+    } catch (error) {
+        err = error as NodeJS.ErrnoException;
+    }
+    ok(err instanceof Error);
+    strictEqual(err?.code, 'ERR_WASI_ALREADY_STARTED');
 });

@@ -1,4 +1,4 @@
-import { strictEqual, ok } from 'node:assert';
+import { strictEqual, ok, throws } from 'node:assert';
 
 // ============================================================================
 // Web API — Location
@@ -8,56 +8,38 @@ Deno.test('webapi: location exists on globalThis', () => {
     ok(typeof location === 'object');
 });
 
-Deno.test('webapi: location is URL instance', () => {
-    ok(location instanceof URL);
+Deno.test('webapi: location is Location instance', () => {
+    ok(location instanceof Location);
 });
 
-Deno.test('webapi: location.href is string', () => {
-    ok(typeof location.href === 'string');
+Deno.test('webapi: location exposes about:blank URL shape', () => {
+    strictEqual(location.href, 'about:blank');
+    strictEqual(location.origin, 'null');
+    strictEqual(location.protocol, 'about:');
+    strictEqual(location.host, '');
+    strictEqual(location.hostname, '');
+    strictEqual(location.port, '');
+    strictEqual(location.pathname, 'blank');
+    strictEqual(location.search, '');
+    strictEqual(location.hash, '');
 });
 
-Deno.test('webapi: location.protocol is string', () => {
-    ok(typeof location.protocol === 'string');
+Deno.test('webapi: location navigation methods throw', () => {
+    throws(() => location.assign('https://example.com'), /Not supported/);
+    throws(() => location.replace('https://example.com'), /Not supported/);
+    throws(() => location.reload(), /Not supported/);
 });
 
-Deno.test('webapi: location.host is string', () => {
-    ok(typeof location.host === 'string');
-});
-
-Deno.test('webapi: location.hostname is string', () => {
-    ok(typeof location.hostname === 'string');
-});
-
-Deno.test('webapi: location.port is string', () => {
-    ok(typeof location.port === 'string');
-});
-
-Deno.test('webapi: location.pathname is string', () => {
-    ok(typeof location.pathname === 'string');
-});
-
-Deno.test('webapi: location.search is string', () => {
-    ok(typeof location.search === 'string');
-});
-
-Deno.test('webapi: location.hash is string', () => {
-    ok(typeof location.hash === 'string');
-});
-
-Deno.test('webapi: location.assign throws', () => {
-    ok(() => location.assign('https://example.com')).throws();
-});
-
-Deno.test('webapi: location.replace throws', () => {
-    ok(() => location.replace('https://example.com')).throws();
-});
-
-Deno.test('webapi: location.reload throws', () => {
-    ok(() => location.reload()).throws();
+Deno.test('webapi: location setters throw instead of silently mutating', () => {
+    throws(() => { location.href = 'https://example.com'; }, /Not supported/);
+    throws(() => { location.protocol = 'https:'; }, /Not supported/);
+    throws(() => { location.hash = '#x'; }, /Not supported/);
 });
 
 Deno.test('webapi: location.ancestorOrigins is DOMStringList', () => {
     ok(location.ancestorOrigins !== undefined);
+    strictEqual(location.ancestorOrigins.length, 0);
+    strictEqual(location.ancestorOrigins.item(0), null);
 });
 
 Deno.test('webapi: location.toString returns href', () => {

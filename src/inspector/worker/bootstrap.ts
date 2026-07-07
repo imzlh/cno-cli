@@ -10,20 +10,21 @@
  * recognise this worker; it is set by the main-thread Inspector, not here.
  */
 
-import { native, type DebugChannelWorker } from '../shared/native'
 import { toPosixPath } from '../../../cts/src/api'
+import { ConsoleDomain } from '../domains/console'
+import { DebuggerDomain } from '../domains/debugger'
+import { FetchDomain } from '../domains/fetch'
+import { NetworkDomain } from '../domains/network'
+import { PageDomain } from '../domains/page'
+import { ProtocolDomain } from '../domains/protocol'
+import { RuntimeDomain } from '../domains/runtime'
+import { TargetDomain } from '../domains/target'
+import { native, type DebugChannelWorker } from '../shared/native'
 import { WorkerEndpoint } from '../transport/worker-endpoint'
-import { CDPDispatcher } from './dispatcher'
 import { CdpChannel, handleDevToolsConnection } from './connection'
+import { CDPDispatcher } from './dispatcher'
 import { createEventRouter } from './event-router'
 import { startServer } from './server'
-import { DebuggerDomain } from '../domains/debugger'
-import { RuntimeDomain } from '../domains/runtime'
-import { ConsoleDomain } from '../domains/console'
-import { PageDomain } from '../domains/page'
-import { NetworkDomain } from '../domains/network'
-import { FetchDomain } from '../domains/fetch'
-import { TargetDomain } from '../domains/target'
 
 const worker = import.meta.use('worker');
 
@@ -41,6 +42,30 @@ type WorkerErrorReport = {
 	phase?: string
 }
 
+function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
+	return (typeof value === 'object' || typeof value === 'function') && value !== null
+}
+
+function isDebugWorkerData(value: unknown): value is DebugWorkerData {
+	return isRecord(value)
+		&& value.__cno_debug_worker === true
+		&& typeof value.port === 'number'
+		&& value.channelHandle instanceof ArrayBuffer
+		&& (value.host === undefined || typeof value.host === 'string')
+		&& (value.entryFile === undefined || typeof value.entryFile === 'string')
+}
+
+function getDebugWorkerData(): DebugWorkerData {
+	if (!isDebugWorkerData(worker.workerData)) {
+		throw new Error('debug worker: invalid workerData')
+	}
+	return worker.workerData
+}
+
+function isPromiseRejectionEvent(value: Event): value is PromiseRejectionEvent {
+	return isRecord(value) && 'reason' in value && typeof value.preventDefault === 'function'
+}
+
 function toEntryUrl(entryFile?: string): string {
 	if (!entryFile) return 'about:blank'
 	const normalized = toPosixPath(entryFile).replace(/^\//, '')
@@ -49,7 +74,7 @@ function toEntryUrl(entryFile?: string): string {
 
 function reportWorkerError(report: WorkerErrorReport): void {
 	try {
-		const workerData = worker.workerData as DebugWorkerData
+		const workerData = getDebugWorkerData()
 		const dc: DebugChannelWorker = native.getDebugChannel(workerData.channelHandle)
 		if (!worker.pipe) return
 		const endpoint = new WorkerEndpoint(worker.pipe, dc)
@@ -60,18 +85,18 @@ function reportWorkerError(report: WorkerErrorReport): void {
 }
 
 globalThis.addEventListener?.('error', (event) => {
-	const errEvent = event as ErrorEvent
-	const error = errEvent.error instanceof Error ? errEvent.error : undefined
+	if (!(event instanceof ErrorEvent)) return
+	const error = event.error instanceof Error ? event.error : undefined
 	reportWorkerError({
-		message: errEvent.message || error?.message || 'Unknown worker error',
+		message: event.message || error?.message || 'Unknown worker error',
 		stack: error?.stack,
 		phase: 'global error',
 	})
 })
 
 globalThis.addEventListener?.('unhandledrejection', (event) => {
-	const rejection = event as PromiseRejectionEvent
-	const reason = rejection.reason
+	if (!isPromiseRejectionEvent(event)) return
+	const reason = event.reason
 	const error = reason instanceof Error ? reason : new Error(String(reason))
 	reportWorkerError({
 		message: error.message,
@@ -82,7 +107,7 @@ globalThis.addEventListener?.('unhandledrejection', (event) => {
 
 export function bootstrapDebugWorker(): void {
 	const { pipe } = worker
-	const workerData = worker.workerData as DebugWorkerData
+	const workerData = getDebugWorkerData()
 
 	const dc: DebugChannelWorker = native.getDebugChannel(workerData.channelHandle)
 	const entryUrl = toEntryUrl(workerData.entryFile)
@@ -101,6 +126,7 @@ export function bootstrapDebugWorker(): void {
 	const networkDomain = new NetworkDomain(dispatcher, emit, endpoint)
 	const fetchDomain = new FetchDomain(dispatcher, emit, endpoint)
 	const targetDomain = new TargetDomain(dispatcher, emit)
+	new ProtocolDomain(dispatcher, emit)
 	targetDomain.setEntryUrl(entryUrl)
 
 	endpoint.onEvent = createEventRouter({

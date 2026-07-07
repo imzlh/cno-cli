@@ -1,6 +1,41 @@
 import { strictEqual, ok, rejects } from 'node:assert';
+import { createReadStream } from 'node:fs';
 import { createServer, RequestListener } from 'node:http';
 import { AddressInfo } from 'node:net';
+import { decodeUtf8 } from '../_helpers/bytes.ts';
+import { isLoopbackPermissionError } from '../_helpers/network.ts';
+
+async function startServer(listener: RequestListener): Promise<{ server: ReturnType<typeof createServer>; port: number } | null> {
+    const server = createServer(listener);
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const onError = (error: Error) => {
+                server.removeListener('listening', onListening);
+                reject(error);
+            };
+            const onListening = () => {
+                server.removeListener('error', onError);
+                resolve();
+            };
+            server.once('error', onError);
+            try {
+                server.listen(0, '127.0.0.1', onListening);
+            } catch (error) {
+                server.removeListener('error', onError);
+                reject(error);
+            }
+        });
+    } catch (error) {
+        server.close();
+        if (isLoopbackPermissionError(error)) return null;
+        throw error;
+    }
+    return { server, port: (server.address() as AddressInfo).port };
+}
+
+function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
+    return new Promise((resolve) => server.close(() => resolve()));
+}
 
 // fetch: GET with body must error (RequestInit disallows body on GET/HEAD).
 Deno.test({ name: 'fetch: GET with body rejects', timeout: 10000 }, async () => {
@@ -24,37 +59,37 @@ Deno.test({ name: 'fetch: 204 response body is null and text() is empty', timeou
         res.statusCode = 204;
         res.end();
     };
-    const server = createServer(listener);
-    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-    const port = (server.address() as AddressInfo).port;
+    const started = await startServer(listener);
+    if (!started) return;
+    const { server, port } = started;
     try {
         const res = await fetch(`http://127.0.0.1:${port}/`);
         strictEqual(res.status, 204);
         strictEqual(res.body, null);
         strictEqual(await res.text(), '');
     } finally {
-        await new Promise<void>((r) => server.close(() => r()));
+        await closeServer(server);
     }
 });
 
 // fetch: json() on 204 rejects (empty body cannot be parsed).
 Deno.test({ name: 'fetch: json() on 204 rejects', timeout: 10000 }, async () => {
-    const server = createServer((_req, res) => { res.statusCode = 204; res.end(); });
-    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-    const port = (server.address() as AddressInfo).port;
+    const started = await startServer((_req, res) => { res.statusCode = 204; res.end(); });
+    if (!started) return;
+    const { server, port } = started;
     try {
         const res = await fetch(`http://127.0.0.1:${port}/`);
         await rejects(() => res.json(), 'json() on empty 204 must reject');
     } finally {
-        await new Promise<void>((r) => server.close(() => r()));
+        await closeServer(server);
     }
 });
 
 // fetch: response body can only be consumed once.
 Deno.test({ name: 'fetch: response body is single-use', timeout: 10000 }, async () => {
-    const server = createServer((_req, res) => { res.end('payload'); });
-    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-    const port = (server.address() as AddressInfo).port;
+    const started = await startServer((_req, res) => { res.end('payload'); });
+    if (!started) return;
+    const { server, port } = started;
     try {
         const res = await fetch(`http://127.0.0.1:${port}/`);
         strictEqual(await res.text(), 'payload');
@@ -62,42 +97,71 @@ Deno.test({ name: 'fetch: response body is single-use', timeout: 10000 }, async 
         try { await res.text(); } catch { threw = true; }
         ok(threw, 'second body consumption must throw');
     } finally {
-        await new Promise<void>((r) => server.close(() => r()));
+        await closeServer(server);
     }
 });
 
 // fetch: arrayBuffer decodes utf8 bytes faithfully.
 Deno.test({ name: 'fetch: arrayBuffer returns raw bytes', timeout: 10000 }, async () => {
-    const server = createServer((_req, res) => {
+    const started = await startServer((_req, res) => {
         res.setHeader('content-type', 'text/plain');
         res.end('café');
     });
-    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-    const port = (server.address() as AddressInfo).port;
+    if (!started) return;
+    const { server, port } = started;
     try {
         const res = await fetch(`http://127.0.0.1:${port}/`);
         const buf = await res.arrayBuffer();
-        strictEqual(new TextDecoder().decode(buf), 'café');
+        strictEqual(decodeUtf8(buf), 'café');
     } finally {
-        await new Promise<void>((r) => server.close(() => r()));
+        await closeServer(server);
+    }
+});
+
+Deno.test({ name: 'fetch upstream node: accepts fs ReadStream request bodies', timeout: 10000 }, async () => {
+    const file = Deno.makeTempFileSync({ prefix: 'cno-fetch-node-stream-', suffix: '.txt' });
+    const payload = 'node stream body\nsecond line';
+    Deno.writeTextFileSync(file, payload);
+
+    const started = await startServer((req, res) => {
+        let body = '';
+        req.setEncoding('utf8');
+        req.on('data', (chunk) => { body += chunk; });
+        req.on('end', () => res.end(body));
+    });
+    if (!started) {
+        Deno.removeSync(file);
+        return;
+    }
+
+    const { server, port } = started;
+    try {
+        const response = await fetch(`http://127.0.0.1:${port}/echo`, {
+            method: 'POST',
+            body: createReadStream(file) as unknown as BodyInit,
+        });
+        strictEqual(await response.text(), payload);
+    } finally {
+        await closeServer(server);
+        Deno.removeSync(file);
     }
 });
 
 // fetch: redirect by default follows (manual mode keeps opaque-redirect).
 Deno.test({ name: 'fetch: follows 302 redirect by default', timeout: 10000 }, async () => {
-    const server = createServer((req, res) => {
+    const started = await startServer((req, res) => {
         if (req.url === '/redir') { res.statusCode = 302; res.setHeader('location', '/final'); res.end(); return; }
         res.end('final-body');
     });
-    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-    const port = (server.address() as AddressInfo).port;
+    if (!started) return;
+    const { server, port } = started;
     try {
         const res = await fetch(`http://127.0.0.1:${port}/redir`);
         strictEqual(res.status, 200);
         strictEqual(res.url, `http://127.0.0.1:${port}/final`);
         strictEqual(await res.text(), 'final-body');
     } finally {
-        await new Promise<void>((r) => server.close(() => r()));
+        await closeServer(server);
     }
 });
 
@@ -151,9 +215,9 @@ Deno.test({ name: 'AbortSignal: abort() fires event and sets aborted', timeout: 
 
 Deno.test({ name: 'AbortSignal.timeout fires after ms', timeout: 10000 }, async () => {
     const s = AbortSignal.timeout(10);
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
         s.addEventListener('abort', () => resolve());
-        setTimeout(resolve, 2000);
+        setTimeout(() => reject(new Error('AbortSignal.timeout did not fire')), 250);
     });
     ok(s.aborted);
 });

@@ -53,9 +53,12 @@ export class ConsoleDomain extends Domain {
 	}
 
 	onConsole(method: string, args: RemoteObject[], timestamp: number, callFrames?: ConsoleCallFrame[]): void {
+		if (this.enabled) {
+			this.emitMessage(method, args, timestamp, callFrames)
+			return
+		}
 		if (this.backlog.length >= MAX_BACKLOG) this.backlog.shift()
 		this.backlog.push({ method, args, timestamp, callFrames })
-		if (this.enabled) this.emitMessage(method, args, timestamp, callFrames)
 	}
 
 	private emitMessage(method: string, args: RemoteObject[], timestamp: number, callFrames?: ConsoleCallFrame[]): void {

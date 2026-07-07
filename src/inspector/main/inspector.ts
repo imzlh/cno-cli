@@ -11,14 +11,14 @@
  * scriptInitHook.
  */
 
-import { native } from '../shared/native'
+import { errMsg, log, type ModuleInfo } from '../../../cts/src/api'
+import { type DebugChannelMain, native } from '../shared/native'
 import { MainEndpoint } from '../transport/main-endpoint'
-import { Serializer } from './remote-object'
 import { Evaluator } from './evaluator'
 import { Hooks } from './hooks'
 import { PauseController } from './pause-controller'
+import { Serializer } from './remote-object'
 import { registerRpcHandlers } from './rpc-handlers'
-import type { ModuleInfo } from '../../../cts/src/api'
 
 const worker = import.meta.use('worker')
 const console = import.meta.use('console')
@@ -41,7 +41,7 @@ export class Inspector {
 	private readonly breakOnStart: boolean
 	private readonly waitForClient: boolean
 
-	private dc: import('../shared/native').DebugChannelMain | null = null
+	private dc: DebugChannelMain | null = null
 	private worker: CModuleWorker.Worker | null = null
 	private endpoint: MainEndpoint | null = null
 	private serializer: Serializer | null = null
@@ -83,7 +83,7 @@ export class Inspector {
 			entryFile: this.entryFile,
 		})
 		this.worker.messagePipe.onmessageerror = (error: unknown) => {
-			console.error('[inspector] debug worker pipe error:', error)
+			log.error('inspector', () => 'debug worker pipe error:' + errMsg(error))
 		}
 
 		const endpoint = new MainEndpoint(this.worker.messagePipe, pair.dc)
@@ -123,8 +123,7 @@ export class Inspector {
 			},
 			onWorkerError: (error: WorkerErrorPayload) => {
 				const phase = error.phase ? ` during ${error.phase}` : ''
-				console.error(`[inspector] debug worker crashed${phase}: ${error.message}`)
-				if (error.stack) console.error(error.stack)
+				console.error('inspector', () => `debug worker crashed${phase}: ${errMsg(error)}`)
 			},
 		})
 		// Wait for the worker's WS server to report its URL via the ready RPC.
@@ -174,7 +173,7 @@ export class Inspector {
 	waitForConnection(timeoutMs?: number): Promise<void> {
 		if (this.connected) return Promise.resolve()
 		return new Promise<void>((resolve, reject) => {
-			let timeout: unknown = null
+			let timeout: ReturnType<typeof timers.setTimeout> | null = null
 			if (timeoutMs && timeoutMs > 0) {
 				timeout = timers.setTimeout(() => {
 					if (this.connectedResolve === onConnected) this.connectedResolve = null
@@ -182,7 +181,7 @@ export class Inspector {
 				}, timeoutMs)
 			}
 			const onConnected = (): void => {
-				if (timeout != null) timers.clearTimeout(timeout as number)
+				if (timeout != null) timers.clearTimeout(timeout)
 				resolve()
 			}
 			this.connectedResolve = onConnected

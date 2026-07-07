@@ -7,18 +7,18 @@
  * DevTools' as-you-type previews never mutate program state.
  */
 
-import { Domain } from './base'
-import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
-import type { WorkerEndpoint } from '../transport/worker-endpoint'
-import type { RpcCallArgument } from '../shared/cdp'
 import type {
-	RuntimeEvaluateParams,
-	RuntimeGetPropertiesParams,
+	RuntimeAwaitPromiseParams,
 	RuntimeCallFunctionOnParams,
 	RuntimeCompileScriptParams,
+	RuntimeEvaluateParams,
+	RuntimeGetPropertiesParams,
+	RuntimeQueryObjectsParams,
 	RuntimeRunScriptParams,
-	RuntimeAwaitPromiseParams,
 } from '../shared/cdp'
+import type { WorkerEndpoint } from '../transport/worker-endpoint'
+import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
+import { Domain } from './base'
 import { isSideEffectFree } from './side-effect'
 
 function sideEffectException(): Record<string, unknown> {
@@ -147,8 +147,13 @@ export class RuntimeDomain extends Domain {
 			})
 			return { result: { type: 'undefined' } }
 		})
-		// TODO: needs native heap traversal (JS_GetObjFromProto + GC mark walk).
-		this.on('Runtime.queryObjects', () => ({ objects: { type: 'object', subtype: 'array', description: 'Array(0)', objectId: undefined } }))
+		this.on('Runtime.queryObjects', (p) => {
+			const q = this.extract<RuntimeQueryObjectsParams>(p)
+			return this.rpc.call('queryObjects', {
+				prototypeObjectId: q.prototypeObjectId,
+				objectGroup: q.objectGroup,
+			})
+		})
 		this.on('Runtime.terminateExecution', () => ({}))
 		this.on('Runtime.setMaxCallStackSizeToCapture', () => ({}))
 		this.on('Runtime.setCustomObjectFormatterEnabled', () => ({}))

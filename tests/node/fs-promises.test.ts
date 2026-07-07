@@ -1,5 +1,5 @@
 import { strictEqual, ok } from 'node:assert';
-import * as fs from 'node:fs';
+import { Buffer } from 'node:buffer';
 import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,6 +29,19 @@ Deno.test('fsp: appendFile appends', async () => {
     }
 });
 
+Deno.test('fsp: writeFile accepts Uint8Array and readFile returns Buffer by default', async () => {
+    await fsp.mkdir(TMP, { recursive: true });
+    try {
+        const p = join(TMP, 'bytes.bin');
+        await fsp.writeFile(p, new Uint8Array([0x61, 0x62, 0x63]));
+        const data = await fsp.readFile(p);
+        ok(Buffer.isBuffer(data), 'readFile without encoding must return a Buffer');
+        strictEqual(data.toString('utf8'), 'abc');
+    } finally {
+        await fsp.rm(TMP, { recursive: true, force: true });
+    }
+});
+
 Deno.test('fsp: stat returns file info', async () => {
     await fsp.mkdir(TMP, { recursive: true });
     try {
@@ -51,6 +64,19 @@ Deno.test('fsp: lstat on symlink returns isSymbolicLink', async () => {
         await fsp.symlink(target, link);
         const st = await fsp.lstat(link);
         ok(st.isSymbolicLink(), 'lstat of symlink must report isSymbolicLink');
+    } finally {
+        await fsp.rm(TMP, { recursive: true, force: true });
+    }
+});
+
+Deno.test('fsp: readlink returns symlink target', async () => {
+    await fsp.mkdir(TMP, { recursive: true });
+    try {
+        const target = join(TMP, 'readlink-target.txt');
+        const link = join(TMP, 'readlink-link.txt');
+        await fsp.writeFile(target, 'target');
+        await fsp.symlink(target, link);
+        strictEqual(await fsp.readlink(link), target);
     } finally {
         await fsp.rm(TMP, { recursive: true, force: true });
     }
@@ -100,6 +126,10 @@ Deno.test('fsp: rm recursive removes tree', async () => {
     }
 });
 
+Deno.test('fsp: rm force ignores missing paths', async () => {
+    strictEqual(await fsp.rm(join(TMP, 'missing.txt'), { force: true }), undefined);
+});
+
 Deno.test('fsp: access succeeds for existing, throws for missing', async () => {
     await fsp.mkdir(TMP, { recursive: true });
     try {
@@ -126,6 +156,31 @@ Deno.test('fsp: rename moves file', async () => {
         try { await fsp.stat(a); } catch { gone = true; }
         ok(gone, 'old path must not exist after rename');
         strictEqual(await fsp.readFile(b, 'utf8'), 'content');
+    } finally {
+        await fsp.rm(TMP, { recursive: true, force: true });
+    }
+});
+
+Deno.test('fsp: copyFile copies file contents', async () => {
+    await fsp.mkdir(TMP, { recursive: true });
+    try {
+        const src = join(TMP, 'copy-src.txt');
+        const dst = join(TMP, 'copy-dst.txt');
+        await fsp.writeFile(src, 'copy-content');
+        await fsp.copyFile(src, dst);
+        strictEqual(await fsp.readFile(dst, 'utf8'), 'copy-content');
+    } finally {
+        await fsp.rm(TMP, { recursive: true, force: true });
+    }
+});
+
+Deno.test('fsp: truncate shortens an existing file', async () => {
+    await fsp.mkdir(TMP, { recursive: true });
+    try {
+        const p = join(TMP, 'truncate.txt');
+        await fsp.writeFile(p, 'abcdef');
+        await fsp.truncate(p, 3);
+        strictEqual(await fsp.readFile(p, 'utf8'), 'abc');
     } finally {
         await fsp.rm(TMP, { recursive: true, force: true });
     }

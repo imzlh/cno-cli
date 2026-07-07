@@ -36,9 +36,9 @@ export function installInspectorBridge(options: InspectorBridgeInstallOptions): 
 
 export function uninstallInspectorBridge(): void {
 	try {
-		delete (globalThis as Record<PropertyKey, unknown>)[INSPECTOR_BRIDGE]
+		Reflect.deleteProperty(globalThis, INSPECTOR_BRIDGE)
 	} catch {
-		(globalThis as Record<PropertyKey, unknown>)[INSPECTOR_BRIDGE] = undefined
+		Reflect.set(globalThis, INSPECTOR_BRIDGE, undefined)
 	}
 }
 

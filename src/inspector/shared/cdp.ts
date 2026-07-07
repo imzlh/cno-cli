@@ -22,12 +22,34 @@ export type RemoteObjectSubtype =
 
 /** A single CDP frame: either a command, a command reply, or an event. */
 export interface CDPMessage {
-	id?: number;
+	id?: number | null;
 	method?: string;
-	params?: Record<string, unknown>;
+	params?: unknown;
 	result?: unknown;
 	error?: { code: number; message: string };
 	sessionId?: string;
+}
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Parse a JSON CDP frame and copy only fields with the expected wire shape. */
+export function parseCDPMessage(raw: string): CDPMessage | null {
+	const value: unknown = JSON.parse(raw);
+	if (!isRecord(value)) return null;
+
+	const message: CDPMessage = {};
+	const id = value.id;
+	if (typeof id === 'number' || id === null) message.id = id;
+	if (typeof value.method === 'string') message.method = value.method;
+	if ('params' in value) message.params = value.params;
+	if ('result' in value) message.result = value.result;
+	if (typeof value.sessionId === 'string') message.sessionId = value.sessionId;
+	if (isRecord(value.error) && typeof value.error.code === 'number' && typeof value.error.message === 'string') {
+		message.error = { code: value.error.code, message: value.error.message };
+	}
+	return message;
 }
 
 export interface RemoteObject {
@@ -183,6 +205,10 @@ export interface RuntimeAwaitPromiseParams {
 	objectId?: string
 	returnByValue?: boolean
 	generatePreview?: boolean
+	objectGroup?: string
+}
+export interface RuntimeQueryObjectsParams {
+	prototypeObjectId: string
 	objectGroup?: string
 }
 

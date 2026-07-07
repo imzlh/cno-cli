@@ -25,7 +25,8 @@ export function parseInspectFlags(flags: Record<string, string | boolean>, repl 
 
 function parseInspectPort(raw: string | boolean | undefined): number {
 	if (typeof raw !== 'string' || raw === 'true') return 9229
-	const match = raw.match(/(?:^|:)(\d+)$/)
+	const trimmed = raw.trim()
+	const match = trimmed.match(/(?:^|:)\s*(\d+)$/)
 	if (!match) return 9229
 	return Number(match[1]) || 9229
 }

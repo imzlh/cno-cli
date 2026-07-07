@@ -1,4 +1,4 @@
-import { createRuntime, loadConfigFile, Transformer, joinPaths, cwd, uname } from '../../../cts/src/api';
+import { createRuntime, loadConfigFile, Transformer, joinPaths, cwd, uname, errMsg } from '../../../cts/src/api';
 import { version } from '../../version';
 import { CnoRepl } from './runner';
 import { Inspector } from '../../inspector';
@@ -11,10 +11,18 @@ const fs = import.meta.use('fs');
 const engine = import.meta.use('engine');
 const asyncfs = import.meta.use('asyncfs');
 
+function getEnv(name: string): string | null {
+    try {
+        return os.getenv(name) ?? null;
+    } catch {
+        return null;
+    }
+}
+
 function homeDir(): string | null {
     try {
         const win = uname.sysname.includes('Windows');
-        const v = os.getenv(win ? 'USERPROFILE' : 'HOME');
+        const v = getEnv(win ? 'USERPROFILE' : 'HOME');
         if (!v) return null;
         return fs.realpath(v);
     } catch { return null; }
@@ -81,12 +89,12 @@ export async function runRepl(flags: Record<string, string | boolean>): Promise<
         try {
             fs.writeFile(histPath, engine.encodeString(repl.exportHistory().join('\n')), 0o600);
         } catch (e) {
-            console.error(`cno: failed to write ${histPath}: ${(e as Error).message}`);
+            console.error(`cno: failed to write ${histPath}: ${errMsg(e)}`);
         }
     }
 }
 
-async function startInspector(flags: Record<string, string | boolean>): Promise<any | null> {
+async function startInspector(flags: Record<string, string | boolean>): Promise<Inspector | null> {
     const inspect = parseInspectFlags(flags, true);
     if (!inspect) return null;
 

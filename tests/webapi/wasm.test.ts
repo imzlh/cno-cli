@@ -1,4 +1,4 @@
-import { strictEqual, ok } from 'node:assert';
+import { rejects, strictEqual, ok } from 'node:assert';
 
 // ============================================================================
 // WebAssembly — Module/Instance/Memory/Table
@@ -107,6 +107,39 @@ Deno.test('WebAssembly: validate returns boolean', () => {
 Deno.test('WebAssembly: compileStreaming/instantiateStreaming exist', () => {
     ok(typeof WebAssembly.compileStreaming === 'function');
     ok(typeof WebAssembly.instantiateStreaming === 'function');
+});
+
+Deno.test('WebAssembly upstream: instantiateStreaming rejects non-Response byte source', async () => {
+    await rejects(
+        WebAssembly.instantiateStreaming(ADD_WASM as unknown as Promise<Response>),
+        TypeError,
+    );
+});
+
+Deno.test('WebAssembly upstream: streaming requires application/wasm content type', async () => {
+    await rejects(
+        WebAssembly.instantiateStreaming(new Response(ADD_WASM)),
+        TypeError,
+    );
+    await rejects(
+        WebAssembly.compileStreaming(Promise.resolve(new Response(ADD_WASM))),
+        TypeError,
+    );
+});
+
+Deno.test('WebAssembly upstream: compileStreaming and instantiateStreaming accept wasm responses', async () => {
+    const response = () => new Response(ADD_WASM, {
+        headers: { 'Content-Type': 'application/wasm; charset=utf-8' },
+    });
+
+    const module = await WebAssembly.compileStreaming(Promise.resolve(response()));
+    ok(module instanceof WebAssembly.Module);
+    const instance = await WebAssembly.instantiate(module);
+    strictEqual((instance.exports as { add(a: number, b: number): number }).add(6, 7), 13);
+
+    const streamed = await WebAssembly.instantiateStreaming(response());
+    strictEqual((streamed.instance.exports as { add(a: number, b: number): number }).add(8, 9), 17);
+    strictEqual(WebAssembly.Module.exports(streamed.module)[0]?.name, 'add');
 });
 
 Deno.test('WebAssembly: invalid bytes throw on compile', () => {

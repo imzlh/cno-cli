@@ -23,7 +23,10 @@ export class ObjectStore {
 		const id = `obj:${++this.objSeq}`;
 		this.store.set(id, { value, group });
 		let g = this.groups.get(group);
-		if (!g) { g = new Set<string>(); this.groups.set(group, g); }
+		if (!g) {
+			g = new Set<string>();
+			this.groups.set(group, g);
+		}
 		g.add(id);
 		return id;
 	}

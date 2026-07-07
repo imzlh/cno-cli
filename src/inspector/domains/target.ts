@@ -6,11 +6,20 @@
  * satisfied.
  */
 
+import { isRecord, parseCDPMessage, type CDPMessage } from '../shared/cdp'
+import {
+	CDPError,
+	CdpErrorCode,
+	formatCdpError,
+	type CDPDispatcher,
+	type CdpParams,
+	type EmitEvent,
+} from '../worker/dispatcher'
 import { Domain } from './base'
-import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
 
 const TARGET_ID = 'cno-debug-1'
 const SESSION_ID = 'cno-session-1'
+const TARGET_TYPE = 'page'
 
 interface TargetInfo {
 	targetId: string
@@ -53,7 +62,7 @@ export class TargetDomain extends Domain {
 		this.on('Target.createBrowserContext', () => ({ browserContextId: '' }))
 		this.on('Target.disposeBrowserContext', () => ({}))
 		this.on('Target.setRemoteLocations', () => ({}))
-		this.on('Target.sendMessageToTarget', () => ({}))
+		this.on('Target.sendMessageToTarget', (p) => this.sendMessageToTarget(p))
 		this.on('Target.exposeDevToolsProtocol', () => ({}))
 	}
 
@@ -61,10 +70,45 @@ export class TargetDomain extends Domain {
 		this.entryUrl = url
 	}
 
+	private async sendMessageToTarget(p: CdpParams): Promise<Record<string, never>> {
+		const sessionId = this.str(p, 'sessionId') ?? SESSION_ID
+		const raw = this.reqStr(p, 'message')
+		const response = await this.dispatchNestedMessage(raw)
+		if (response) {
+			this.event('Target.receivedMessageFromTarget', {
+				sessionId,
+				targetId: TARGET_ID,
+				message: JSON.stringify(response),
+			})
+		}
+		return {}
+	}
+
+	private async dispatchNestedMessage(raw: string): Promise<CDPMessage | null> {
+		let message: CDPMessage | null
+		try {
+			message = parseCDPMessage(raw)
+		} catch {
+			throw new CDPError(CdpErrorCode.InvalidParams, 'Target message must be valid JSON')
+		}
+		if (!message) throw new CDPError(CdpErrorCode.InvalidRequest, 'Target message must be a JSON object')
+		const { id, method, params } = message
+		if (id == null) return null
+		if (!method) {
+			return { id, error: { code: CdpErrorCode.InvalidRequest, message: 'CDP command method is required' } }
+			}
+			try {
+				const result = await this.dispatcher.dispatch(method, normalizeNestedParams(params))
+				return { id, result: result ?? {} }
+			} catch (error) {
+			return { id, error: formatCdpError(error) }
+		}
+	}
+
 	private makeTarget(attached = true): TargetInfo {
 		return {
 			targetId: TARGET_ID,
-			type: 'node',
+			type: TARGET_TYPE,
 			title: 'cno',
 			url: this.entryUrl,
 			attached,
@@ -72,4 +116,12 @@ export class TargetDomain extends Domain {
 			browserContextId: '',
 		}
 	}
+}
+
+function normalizeNestedParams(params: unknown): CdpParams {
+	if (params == null) return {}
+	if (!isRecord(params)) {
+		throw new CDPError(CdpErrorCode.InvalidParams, 'CDP params must be an object')
+	}
+	return params
 }

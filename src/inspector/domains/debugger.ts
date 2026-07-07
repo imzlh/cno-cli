@@ -6,22 +6,22 @@
  * DebugChannel), while source/eval queries go over the inspect transport.
  */
 
-import { Domain } from './base'
-import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
-import type { WorkerEndpoint } from '../transport/worker-endpoint'
-import type { PauseOnExceptionsState } from '../shared/rpc-contract'
+import { log, toPosixPath } from '../../../cts/src/api'
 import type {
 	CallFrame,
+	DebuggerEvaluateOnCallFrameParams,
+	DebuggerSetBreakpointParams,
+	DebuggerSetVariableValueParams,
 	PausedEvent,
 	SetBreakpointByUrlParams,
-	DebuggerEvaluateOnCallFrameParams,
-	DebuggerSetVariableValueParams,
-	DebuggerSetBreakpointParams,
 } from '../shared/cdp'
-import type { ScriptParsedPayload } from '../shared/wire'
+import { isRecord } from '../shared/cdp'
 import { Step, type StepCode } from '../shared/native'
-import { log } from '../../../cts/src/api'
-import { toPosixPath } from '../../../cts/src/api'
+import type { PauseOnExceptionsState } from '../shared/rpc-contract'
+import type { ScriptParsedPayload } from '../shared/wire'
+import type { WorkerEndpoint } from '../transport/worker-endpoint'
+import { CDPError, CdpErrorCode, type CDPDispatcher, type EmitEvent } from '../worker/dispatcher'
+import { Domain } from './base'
 
 const timers = import.meta.use('timers')
 const INITIAL_PAUSE_SETTLE_MS = 50
@@ -114,24 +114,26 @@ export class DebuggerDomain extends Domain {
 			const q = this.extract<SetBreakpointByUrlParams>(p)
 			const rawUrl = q.url ?? this.urlFromRegex(q.urlRegex)
 			if (!rawUrl) return { breakpointId: '', locations: [] }
+			const lineNumber = this.reqNonNegativeInt(p, 'lineNumber')
+			const columnNumber = optionalNonNegativeInt(q.columnNumber, 'columnNumber')
 			const resolved = this.resolveScriptPath(rawUrl)
 			const url = resolved.path
 			const breakpointId = `bp-${this.nextBpId++}`
-			const line = q.lineNumber + 1
-			const col = q.columnNumber != null && q.columnNumber > 0 ? q.columnNumber + 1 : undefined
+			const line = lineNumber + 1
+			const col = columnNumber != null && columnNumber > 0 ? columnNumber + 1 : undefined
 			this.cdpBreakpoints.set(breakpointId, { url, matchUrl: this.normalizeUrl(url), line, col })
 			if (this.breakpointsActive) void this.rpc.call('addBreakpoint', { url, line, col })
 			return {
 				breakpointId,
-				locations: [{ scriptId: resolved.scriptId, lineNumber: q.lineNumber, columnNumber: q.columnNumber ?? 0 }],
+				locations: [{ scriptId: resolved.scriptId, lineNumber, columnNumber: columnNumber ?? 0 }],
 			}
 		})
 		this.on('Debugger.setBreakpoint', (p) => {
 			const q = this.extract<DebuggerSetBreakpointParams>(p)
-			const loc = q.location
-			const url = this.normalizeUrl(loc.scriptId ?? '')
+			const loc = this.parseLocation(q.location)
+			const url = this.normalizeUrl(loc.scriptId)
 			const breakpointId = `bp-${this.nextBpId++}`
-			const line = (loc.lineNumber ?? 0) + 1
+			const line = loc.lineNumber + 1
 			const col = loc.columnNumber != null && loc.columnNumber > 0 ? loc.columnNumber + 1 : undefined
 			this.cdpBreakpoints.set(breakpointId, { url, matchUrl: this.normalizeUrl(url), line, col })
 			if (this.breakpointsActive) void this.rpc.call('addBreakpoint', { url, line, col })
@@ -193,15 +195,18 @@ export class DebuggerDomain extends Domain {
 		this.on('Debugger.restartFrame', () => ({ callFrames: [] }))
 		this.on('Debugger.setReturnValue', () => ({}))
 		this.on('Debugger.getPossibleBreakpoints', (p) => {
-			const start = p.start as { scriptId?: string; lineNumber?: number } | undefined
-			const end = p.end as { scriptId?: string; lineNumber?: number } | undefined
-			if (!start?.scriptId || start.lineNumber == null) return { locations: [] }
-			const script = this.knownScripts.get(start.scriptId)
+			const start = isRecord(p.start) ? p.start : undefined
+			const end = isRecord(p.end) ? p.end : undefined
+			const scriptId = typeof start?.scriptId === 'string' ? start.scriptId : undefined
+			const startLineNumber = typeof start?.lineNumber === 'number' ? start.lineNumber : undefined
+			if (!scriptId || startLineNumber == null) return { locations: [] }
+			const script = this.knownScripts.get(scriptId)
 			if (!script) return { locations: [] }
-			const startLine = Math.max(0, start.lineNumber)
+			const startLine = Math.max(0, startLineNumber)
 			// CDP end is exclusive; if omitted, include all lines through the script end.
-			const endExclusive = end?.lineNumber != null
-				? Math.min(end.lineNumber, (script.endLine ?? startLine) + 1)
+			const endLineNumber = typeof end?.lineNumber === 'number' ? end.lineNumber : undefined
+			const endExclusive = endLineNumber != null
+				? Math.min(endLineNumber, (script.endLine ?? startLine) + 1)
 				: (script.endLine ?? startLine) + 1
 			const locations: Array<{ scriptId: string; lineNumber: number }> = []
 			for (let line = startLine; line < endExclusive && locations.length < 1000; line++) {
@@ -211,13 +216,20 @@ export class DebuggerDomain extends Domain {
 		})
 	}
 
+	private async releaseBacktraceQuietly(): Promise<void> {
+		try {
+			await this.rpc.call('releaseObjectGroup', { objectGroup: 'backtrace' })
+		} catch {
+			// Resume must proceed even if the paused object group was already gone.
+		}
+	}
+
 	private async doResume(step: StepCode): Promise<Record<string, never>> {
 		if (!this.paused) return {}
 		this.clearPendingPaused()
 		try {
-			await this.rpc.call('releaseObjectGroup', { objectGroup: 'backtrace' })
-		} catch {}
-		finally {
+			await this.releaseBacktraceQuietly()
+		} finally {
 			this.paused = false
 			this.rpc.setPaused(false)
 			this.rpc.beginResume(step)
@@ -259,7 +271,8 @@ export class DebuggerDomain extends Domain {
 
 	private normalizePath(path: string): string {
 		const normalized = toPosixPath(path)
-		if (/^[A-Za-z]:/.test(normalized)) return normalized[0]!.toUpperCase() + normalized.slice(1)
+		const drive = normalized[0]
+		if (drive !== undefined && /^[A-Za-z]:/.test(normalized)) return drive.toUpperCase() + normalized.slice(1)
 		return normalized
 	}
 
@@ -271,6 +284,19 @@ export class DebuggerDomain extends Domain {
 			}
 		}
 		return { path: normalized, scriptId: normalized }
+	}
+
+	private parseLocation(location: unknown): { scriptId: string; lineNumber: number; columnNumber?: number } {
+		if (!isRecord(location)) {
+			throw new CDPError(CdpErrorCode.InvalidParams, "CDP param 'location' is required")
+		}
+		const scriptId = typeof location.scriptId === 'string' ? location.scriptId : undefined
+		if (!scriptId) throw new CDPError(CdpErrorCode.InvalidParams, "CDP param 'location.scriptId' is required")
+		return {
+			scriptId,
+			lineNumber: this.reqNonNegativeInt(location, 'lineNumber'),
+			columnNumber: optionalNonNegativeInt(location.columnNumber, 'location.columnNumber'),
+		}
 	}
 
 	setConnected(connected: boolean): void {
@@ -383,7 +409,15 @@ export class DebuggerDomain extends Domain {
 			case 'all':
 				return state
 			default:
-				throw new Error(`Unsupported pause-on-exceptions state: ${state}`)
+				throw new CDPError(CdpErrorCode.InvalidParams, `Unsupported pause-on-exceptions state: ${state}`)
 		}
 	}
+}
+
+function optionalNonNegativeInt(value: unknown, name: string): number | undefined {
+	if (value == null) return undefined
+	if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+		throw new CDPError(CdpErrorCode.InvalidParams, `CDP param '${name}' must be a non-negative integer`)
+	}
+	return value
 }

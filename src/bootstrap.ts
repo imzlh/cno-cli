@@ -1,15 +1,4 @@
-// Register native .so extensions with circu.js before any polyfill code runs.
-//
-// The cno polyfill itself is bundled into the cno binary (src/main.ts imports
-// '../cno/src/main'), so there is no external polyfill file to resolve.
-//
-// Extension lookup:
-//   - CNO_EXT_PATH env var
-//   - <binary_dir>/ext/
-// Each name → file mapping is hard-coded below. The .so must export
-// `tjs_module_info` (see circu.js/src/tjs.h DEF_MODULE).
-
-import { uname, joinPaths } from '../cts/src/api';
+import { uname, joinPaths, errMsg } from '../cts/src/api';
 
 const fs = import.meta.use('fs');
 const os = import.meta.use('os');
@@ -28,9 +17,17 @@ function tryFile(path: string): string | null {
 
 function binaryDir(): string {
     try {
-        return (os.exePath as string).replace(/[\\/][^\\/]+$/, '');
+        return os.exePath.replace(/[\\/][^\\/]+$/, '');
     } catch {
-        return os.cwd as string;
+        return os.cwd;
+    }
+}
+
+function getEnv(name: string): string | null {
+    try {
+        return os.getenv(name) ?? null;
+    } catch {
+        return null;
     }
 }
 
@@ -40,13 +37,14 @@ function binaryDir(): string {
  * fall back to whatever circu.js has statically linked.
  */
 export function resolveExtDir(): string | null {
-    try {
-        const v = os.getenv('CNO_EXT_PATH');
-        if (v) return v;
-    } catch {}
+    const envPath = getEnv('CNO_EXT_PATH');
+    if (envPath) return envPath;
+
     const dir = binaryDir();
     for (const c of [joinPaths(dir, 'ext'), joinPaths(dir, 'lib', 'ext')]) {
-        try { if (fs.exists(c) && fs.stat(c).isDirectory) return c; } catch {}
+        try {
+            if (fs.exists(c) && fs.stat(c).isDirectory) return c;
+        } catch {}
     }
     return null;
 }
@@ -74,7 +72,7 @@ export function registerExtensions(): void {
         if (!tryFile(p)) continue;
         try { import.meta.register(name, p); }
         catch (e) {
-            const msg = (e as Error).message || '';
+            const msg = errMsg(e);
             if (/built-in|already registered/i.test(msg)) continue;
             console.error(`cno: register('${name}') failed: ${msg}`);
         }

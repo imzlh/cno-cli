@@ -7,33 +7,38 @@
  * hook is exposed (not auto-installed) so run.ts can register it on the runtime.
  */
 
+import { getTierLimits } from '../../../cno/src/utils/memory-tier'
 import {
+	captureUserNetworkCallFrames,
 	getFetchHook,
 	getServeHook,
 	setFetchHook,
-	setWebSocketHook,
 	setFetchInterceptHook,
 	setServeHook,
-	captureUserNetworkCallFrames,
-	type FetchRequestInfo,
-	type FetchResponseInfo,
+	setWebSocketHook,
 	type FetchDataInfo,
 	type FetchFinishedInfo,
-	type ServeRequestInfo,
-	type ServeResponseInfo,
+	type FetchRequestInfo,
+	type FetchResponseInfo,
+	type NetworkCallFrame as HookNetworkCallFrame,
+	type InterceptResult,
 	type ServeDataInfo,
 	type ServeFinishedInfo,
-	type InterceptResult,
-	type NetworkCallFrame as HookNetworkCallFrame,
+	type ServeRequestInfo,
+	type ServeResponseInfo,
 } from '../../../cno/src/utils/network-hooks'
+import type { ModuleInfo } from '../../../cts/src/api'
+import { toPosixPath } from '../../../cts/src/api'
+import { native } from '../shared/native'
+import { isUserFile } from '../shared/user-files'
 import {
 	NetFetchKind,
 	NetServeKind,
 	NetWSKind,
 	WorkerEvent,
 	type BindingCalledPayload,
-	type ConsolePayload,
 	type ConsoleCallFrame,
+	type ConsolePayload,
 	type FetchInterceptPayload,
 	type LoadPayload,
 	type NetFetchDone,
@@ -50,26 +55,12 @@ import {
 } from '../shared/wire'
 import type { MainEndpoint } from '../transport/main-endpoint'
 import type { Serializer } from './remote-object'
-import type { ModuleInfo } from '../../../cts/src/api'
-import { toPosixPath } from '../../../cts/src/api'
-import { native } from '../shared/native'
-import { isUserFile } from '../shared/user-files'
-import { getTierLimits } from '../../../cno/src/utils/memory-tier'
 
 const engine = import.meta.use('engine')
 const fs = import.meta.use('fs')
 const os = import.meta.use('os')
-const debug = import.meta.use('debug') as {
-	__cnoNetworkHooks?: {
-		getFetchHook: () => ReturnType<typeof getFetchHook>
-		getServeHook: () => ReturnType<typeof getServeHook>
-		captureCallFrames: () => HookNetworkCallFrame[] | undefined
-	}
-}
+const debug = import.meta.use('debug')
 
-type LoadCapableGlobal = {
-	addEventListener?: (type: string, cb: () => void, opts?: { once?: boolean }) => void
-}
 
 const kOrigin = Symbol('console.origin')
 const { inspectorPreviewBodyBytes, maxPendingBodyBytes } = getTierLimits()
@@ -80,6 +71,8 @@ interface BodyBufferState {
 	total: number
 	createdAt: number
 }
+
+type ConsoleMethod = (...args: never[]) => void
 
 export class Hooks {
 	private readonly pendingIntercepts = new Map<string, (result: InterceptResult | null) => void>()
@@ -102,7 +95,7 @@ export class Hooks {
 	private readonly droppedFetchBodyRequests = new Set<string>()
 	private readonly droppedServeBodyRequests = new Set<string>()
 	private scriptHookInstalled = false
-	private consoleOriginals: Record<string, (...a: any[]) => void> | null = null
+	private consoleOriginals: Record<string, ConsoleMethod> | null = null
 
 	/** Set by installScript(); run.ts wires this into runtime.addInitHook(). */
 	scriptInitHook: ((specPath: string, info: ModuleInfo) => void) | null = null
@@ -391,21 +384,23 @@ export class Hooks {
 
 	// ── lifecycle ───────────────────────────────────────────────────
 	private installLifecycle(): void {
-		const add = (globalThis as LoadCapableGlobal).addEventListener
-		add?.(
+		const add = Reflect.get(globalThis, 'addEventListener')
+		if (typeof add !== 'function') return
+		Reflect.apply(add, globalThis, [
 			'load',
 			() => this.safeEmit(WorkerEvent.Load, { timestamp: Date.now() / 1000 } satisfies LoadPayload),
 			{ once: true },
-		)
+		])
 	}
 
 	// ── console ─────────────────────────────────────────────────────
 	private installConsole(): void {
 		const con = globalThis.console;
 		const methods = ['log', 'warn', 'error', 'info', 'debug', 'dir', 'trace', 'table', 'assert', 'time', 'timeEnd', 'timeLog', 'count', 'countReset', 'group', 'groupEnd'] as const
-		const originals: Record<string, (...a: any[]) => void> = {}
+		const originals: Record<string, ConsoleMethod> = {}
 		for (const m of methods) {
-			if (typeof con[m] === 'function') originals[m] = con[m];
+			const fn = con[m];
+			if (typeof fn === 'function') originals[m] = fn;
 		}
 		// Saved here so log.ts can bypass the hook for internal messages.
 		Reflect.set(con, kOrigin, originals);
@@ -416,7 +411,7 @@ export class Hooks {
 			if (!orig) continue
 			con[method] = (...args: unknown[]) => {
 				const callFrames = this.captureConsoleCallFrames()
-				orig.apply(globalThis.console, args)
+				Reflect.apply(orig, globalThis.console, args)
 				try {
 					const serialized = args.map(a => this.serializer.serialize(a, 'console', { preview: true }))
 
@@ -667,7 +662,11 @@ export class Hooks {
 
 	private maxPendingBodyBytes(): number {
 		let raw: string | undefined
-		try { raw = os.getenv('CNO_INSPECTOR_PENDING_BODY_MAX_BYTES') ?? undefined } catch { /* env var absent */ }
+		try {
+			raw = os.getenv('CNO_INSPECTOR_PENDING_BODY_MAX_BYTES') ?? undefined
+		} catch {
+			raw = undefined
+		}
 		if (!raw) return maxPendingBodyBytes
 		const parsed = Number(raw)
 		return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : maxPendingBodyBytes
@@ -772,7 +771,8 @@ export class Hooks {
 	}
 
 	private mergeChunks(chunks: Uint8Array[]): Uint8Array {
-		if (chunks.length === 1) return chunks[0]!
+		const first = chunks[0]
+		if (chunks.length === 1 && first !== undefined) return first
 		let total = 0
 		for (const c of chunks) total += c.byteLength
 		const merged = new Uint8Array(total)
@@ -827,7 +827,8 @@ function sameScriptPath(a: string, b: string): boolean {
 function normalizeScriptPath(path: string): string {
 	let normalized = toPosixPath(path)
 	if (normalized.startsWith('file:///')) normalized = normalized.slice('file:///'.length)
-	if (/^[A-Za-z]:/.test(normalized)) return normalized[0]!.toUpperCase() + normalized.slice(1)
+	const drive = normalized[0]
+	if (drive !== undefined && /^[A-Za-z]:/.test(normalized)) return drive.toUpperCase() + normalized.slice(1)
 	return normalized
 }
 

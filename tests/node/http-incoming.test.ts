@@ -1,5 +1,6 @@
 import { strictEqual, ok } from 'node:assert';
 import * as http from 'node:http';
+import type { OutgoingHttpHeaders, ServerResponse } from 'node:http';
 import * as net from 'node:net';
 
 function listen(server: http.Server, port = 0, host = '127.0.0.1'): Promise<void> {
@@ -77,6 +78,32 @@ Deno.test({ name: 'http: httpVersionMajor and httpVersionMinor reflect request v
             req.once('error', reject);
             req.end();
         });
+    } finally {
+        await close(server);
+    }
+});
+
+Deno.test({ name: 'http: requestTimeout zero disables first request timeout', timeout: 10000 }, async () => {
+    const server = http.createServer((_req, res) => {
+        res.end('ok');
+    });
+    server.requestTimeout = 0;
+    server.setTimeout(0);
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        const body = await new Promise<string>((resolve, reject) => {
+            let out = '';
+            const req = http.request(`http://127.0.0.1:${addr.port}/`, (res) => {
+                res.setEncoding('utf8');
+                res.on('data', (chunk: string) => { out += chunk; });
+                res.on('end', () => resolve(out));
+            });
+            req.once('error', reject);
+            req.end();
+        });
+        strictEqual(body, 'ok');
     } finally {
         await close(server);
     }
@@ -168,6 +195,36 @@ Deno.test({ name: 'http: server emits upgrade event on Connection: Upgrade', tim
     }
 });
 
+// --- 5b. server emits 'connect' for CONNECT tunnel ---------------------------
+
+Deno.test({ name: 'http: server emits connect event on CONNECT request', timeout: 10000 }, async () => {
+    const server = http.createServer();
+    let connected = false;
+    server.on('connect', (req, socket, head) => {
+        connected = true;
+        strictEqual(req.method, 'CONNECT');
+        strictEqual(req.url, '127.0.0.1:443');
+        ok(socket);
+        ok(head instanceof Uint8Array);
+        socket.end('HTTP/1.1 200 Connection Established\r\n\r\n');
+    });
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        const response = await sendRawHttpRequest(addr.port, [
+            'CONNECT 127.0.0.1:443 HTTP/1.1',
+            'Host: 127.0.0.1:443',
+            '',
+            '',
+        ]);
+        ok(response.includes('200 Connection Established'));
+        ok(connected, 'server must emit connect event');
+    } finally {
+        await close(server);
+    }
+});
+
 // --- 6. req.complete is true after body stream ends --------------------------
 
 Deno.test({ name: 'http: req.complete is true after body ends', timeout: 10000 }, async () => {
@@ -229,9 +286,8 @@ Deno.test({ name: 'http: POST body is readable via data/end events', timeout: 10
 Deno.test({ name: 'http: server emits clientError on malformed request', timeout: 10000 }, async () => {
     const server = http.createServer((_req, res) => res.end('ok'));
     let sawClientError = false;
-    server.on('clientError', err => {
+    server.on('clientError', () => {
         sawClientError = true;
-        console.warn(err, "Failed");
     });
     await listen(server);
     try {
@@ -248,6 +304,88 @@ Deno.test({ name: 'http: server emits clientError on malformed request', timeout
         await new Promise((r) => setTimeout(r, 50));
         ok(sawClientError, 'malformed request must trigger clientError');
     } finally {
+        await close(server);
+    }
+});
+
+Deno.test({ name: 'http upstream: ServerResponse can send wrapped Web Response bodies', timeout: 10000 }, async () => {
+    const GlobalResponse = globalThis.Response;
+    const responseCache = Symbol('responseCache');
+    const getResponseCache = Symbol('getResponseCache');
+
+    const buildOutgoingHttpHeaders = (headers: Headers | HeadersInit | null | undefined): OutgoingHttpHeaders => {
+        const out: OutgoingHttpHeaders = {};
+        const source = headers instanceof Headers ? headers : new Headers(headers ?? undefined);
+        const cookies: string[] = [];
+        for (const [key, value] of source) {
+            if (key === 'set-cookie') cookies.push(value);
+            else out[key] = value;
+        }
+        if (cookies.length) out['set-cookie'] = cookies;
+        out['content-type'] ??= 'text/plain; charset=UTF-8';
+        return out;
+    };
+
+    class WrappedResponse {
+        #body?: BodyInit | null;
+        #init?: ResponseInit;
+
+        constructor(body?: BodyInit | null, init?: ResponseInit) {
+            this.#body = body;
+            this.#init = init instanceof WrappedResponse
+                ? (init as WrappedResponse).#init
+                : init;
+        }
+
+        [getResponseCache](): Response {
+            const self = this as WrappedResponse & Record<PropertyKey, unknown>;
+            let cached = self[responseCache] as Response | undefined;
+            if (!cached) {
+                cached = new GlobalResponse(this.#body, this.#init);
+                self[responseCache] = cached;
+            }
+            return cached;
+        }
+    }
+
+    for (const key of ['body', 'bodyUsed', 'headers', 'ok', 'redirected', 'status', 'statusText', 'type', 'url'] as const) {
+        Object.defineProperty(WrappedResponse.prototype, key, {
+            get(this: WrappedResponse) {
+                return this[getResponseCache]()[key];
+            },
+        });
+    }
+    for (const key of ['arrayBuffer', 'blob', 'clone', 'formData', 'json', 'text'] as const) {
+        Object.defineProperty(WrappedResponse.prototype, key, {
+            value(this: WrappedResponse) {
+                const fn = this[getResponseCache]()[key] as () => unknown;
+                return fn.call(this[getResponseCache]());
+            },
+        });
+    }
+    Object.setPrototypeOf(WrappedResponse, GlobalResponse);
+    Object.setPrototypeOf(WrappedResponse.prototype, GlobalResponse.prototype);
+
+    const previousResponse = globalThis.Response;
+    Object.defineProperty(globalThis, 'Response', { value: WrappedResponse, configurable: true });
+    const server = http.createServer(async (_req, res: ServerResponse) => {
+        const response = new Response('Hello, world!');
+        const headers = buildOutgoingHttpHeaders(response.headers);
+        const body = await response.arrayBuffer();
+        headers['content-length'] = body.byteLength;
+        res.writeHead(response.status, headers);
+        res.end(new Uint8Array(body));
+    });
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        const response = await fetch(`http://127.0.0.1:${addr.port}`);
+        strictEqual(response.status, 200);
+        strictEqual(response.headers.get('content-type'), 'text/plain; charset=UTF-8');
+        strictEqual(await response.text(), 'Hello, world!');
+    } finally {
+        Object.defineProperty(globalThis, 'Response', { value: previousResponse, configurable: true });
         await close(server);
     }
 });

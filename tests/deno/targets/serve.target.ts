@@ -11,6 +11,16 @@ Deno.serve({ port: PORT, hostname: '127.0.0.1', onListen: ({ port }) => {
     if (url.pathname === '/json') return Response.json({ ok: true });
     if (url.pathname === '/echo') return new Response(req.body, { status: 200 });
     if (url.pathname === '/headers') return new Response(req.headers.get('x-foo') ?? '');
+    if (url.pathname === '/stream') {
+        return new Response(new ReadableStream({
+            start(controller) {
+                controller.enqueue(new TextEncoder().encode('stream-'));
+                controller.enqueue(new TextEncoder().encode('body'));
+                controller.close();
+            },
+        }));
+    }
+    if (url.pathname === '/bad') return 'not a response' as unknown as Response;
     return new Response('not found', { status: 404 });
 });
 // keep alive

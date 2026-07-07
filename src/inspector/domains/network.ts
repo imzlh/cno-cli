@@ -9,6 +9,7 @@
  */
 
 import { Domain } from './base'
+import { isRecord } from '../shared/cdp'
 import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
 import type { WorkerEndpoint } from '../transport/worker-endpoint'
 import {
@@ -127,17 +128,7 @@ export class NetworkDomain extends Domain {
 		})
 		this.on('Network.disable', () => {
 			this.enabled = false
-			this.cookies = []
-			this.reqStartTimes.clear()
-			this.reqMeta.clear()
-			this.pendingBodies.clear()
-			this.pendingBodyBytes = 0
-			this.responseBodyCache.clear()
-			this.responseBodyCacheBytes = 0
-			this.requestBodyCache.clear()
-			this.streamedBodies.clear()
-			this.wsMeta.clear()
-			this.wsUpgradeRequests.clear()
+			this.clearState()
 			return {}
 		})
 		this.on('Network.setUserAgentOverride', (p) => {
@@ -145,8 +136,7 @@ export class NetworkDomain extends Domain {
 			return {}
 		})
 		this.on('Network.setExtraHTTPHeaders', (p) => {
-			const headers = (p.headers ?? {}) as Record<string, string>
-			setExtraHTTPHeaders(headers)
+			setExtraHTTPHeaders(this.stringHeadersFromRecord(p.headers))
 			return {}
 		})
 		this.on('Network.canEmulateNetworkConditions', () => ({ result: false }))
@@ -165,7 +155,7 @@ export class NetworkDomain extends Domain {
 			// handler.  We return bufferedData from whatever the worker has
 			// accumulated so far as a best-effort snapshot.
 			const pending = this.pendingBodies.get(requestId)
-			const bufferedData = pending && pending.total > 0 ? nativeCrypto.base64Encode(this.mergeBody(pending)) : ''
+			const bufferedData = pending && pending.total > 0 ? nativeCrypto.base64Encode(new Uint8Array(this.mergeBody(pending))) : ''
 			this.enableLiveStreamingForRequest(requestId, false)
 			// Tell the main thread to start live-streaming subsequent chunks.
 			// The main thread will also flush its own buffered body in the
@@ -192,7 +182,7 @@ export class NetworkDomain extends Domain {
 			return { success: true }
 		})
 		this.on('Network.setCookies', (p) => {
-			const list = (p.cookies ?? []) as Array<Record<string, unknown>>
+			const list = Array.isArray(p.cookies) ? p.cookies.filter(isRecord) : []
 			for (const c of list) this.cookies.push(this.makeCookie(c))
 			return {}
 		})
@@ -210,6 +200,29 @@ export class NetworkDomain extends Domain {
 			const body = this.requestBodyCache.get(this.reqStr(p, 'requestId'))
 			return { postData: body ? engine.decodeString(body) : '' }
 		})
+	}
+
+	private clearState(): void {
+		this.cookies = []
+		this.reqStartTimes.clear()
+		this.reqMeta.clear()
+		this.pendingBodies.clear()
+		this.pendingBodyBytes = 0
+		this.responseBodyCache.clear()
+		this.responseBodyCacheBytes = 0
+		this.requestBodyCache.clear()
+		this.streamedBodies.clear()
+		this.wsMeta.clear()
+		this.wsUpgradeRequests.clear()
+	}
+
+	private stringHeadersFromRecord(value: unknown): Record<string, string> {
+		const rawHeaders = isRecord(value) ? value : {}
+		const headers: Record<string, string> = {}
+		for (const [name, rawValue] of Object.entries(rawHeaders)) {
+			if (typeof rawValue === 'string') headers[name] = rawValue
+		}
+		return headers
 	}
 
 	private makeCookie(p: Record<string, unknown>): Cookie {
@@ -313,7 +326,7 @@ export class NetworkDomain extends Domain {
 						headersText: responseHeadersText,
 						requestHeaders: actualRequestHeaders,
 						requestHeadersText,
-						mimeType: t?.contentType ?? data.headers['content-type'] ?? data.headers['Content-Type'] ?? '',
+						mimeType: t?.contentType ?? this.headerValue(data.headers, 'content-type') ?? '',
 						connectionReused: (t?.numConnects ?? 1) === 0,
 						connectionId: conn ? this.connectionId(conn) : 0,
 						remoteIPAddress: conn?.remoteIPAddress ?? '',
@@ -443,7 +456,7 @@ export class NetworkDomain extends Domain {
 							headersText: responseHeadersText,
 							requestHeaders,
 							requestHeadersText,
-							mimeType: data.headers['content-type'] ?? data.headers['Content-Type'] ?? '',
+							mimeType: this.headerValue(data.headers, 'content-type') ?? '',
 							connectionReused: false,
 							connectionId: 0,
 							remoteIPAddress: '',
@@ -577,7 +590,7 @@ export class NetworkDomain extends Domain {
 				total: 0,
 				truncated: false,
 				liveStreamed: this.streamedBodies.has(data.requestId),
-				mimeType: this.reqMeta.get(data.requestId)?.responseHeaders['content-type'] ?? this.reqMeta.get(data.requestId)?.responseHeaders['Content-Type'],
+				mimeType: this.headerValue(this.reqMeta.get(data.requestId)?.responseHeaders, 'content-type'),
 			}
 			this.pendingBodies.set(data.requestId, entry)
 		}
@@ -596,7 +609,7 @@ export class NetworkDomain extends Domain {
 			dataLength: data.byteLength,
 			encodedDataLength: data.byteLength,
 		}
-		if (this.streamedBodies.has(data.requestId)) params.data = nativeCrypto.base64Encode(data.data)
+		if (this.streamedBodies.has(data.requestId)) params.data = nativeCrypto.base64Encode(new Uint8Array(data.data))
 		this.event('Network.dataReceived', params)
 	}
 
@@ -610,21 +623,17 @@ export class NetworkDomain extends Domain {
 
 		let bodyEntry: BodyEntry | undefined
 		if (data.body && data.body.length > 0) {
-			let totalLen = 0
-			for (const chunk of data.body) totalLen += chunk.byteLength
-			const merged = new Uint8Array(totalLen)
-			let offset = 0
-			for (const chunk of data.body) { merged.set(chunk, offset); offset += chunk.byteLength }
+			const merged = this.mergeChunks(data.body)
 			bodyEntry = {
 				chunks: [merged],
-				total: data.totalBytes ?? totalLen,
+				total: merged.byteLength,
 				truncated: false,
-				mimeType: meta?.responseHeaders['content-type'] ?? meta?.responseHeaders['Content-Type'],
+				mimeType: this.headerValue(meta?.responseHeaders, 'content-type'),
 			}
 		} else if (pendingEntry) {
 			bodyEntry = pendingEntry
 			if (!bodyEntry.mimeType && meta) {
-				bodyEntry.mimeType = meta.responseHeaders['content-type'] ?? meta.responseHeaders['Content-Type']
+				bodyEntry.mimeType = this.headerValue(meta.responseHeaders, 'content-type')
 			}
 		}
 
@@ -642,7 +651,7 @@ export class NetworkDomain extends Domain {
 		if (!isWsUpgrade) {
 			if (data.success) {
 				const encodedDataLength = source === 'fetch'
-					? (data.connection?.timing?.sizeDownload ?? data.connection?.downloadSize ?? bodyEntry?.total ?? 0)
+					? (data.connection?.timing?.sizeDownload ?? data.connection?.downloadSize ?? data.totalBytes ?? bodyEntry?.total ?? 0)
 					: (bodyEntry?.total ?? 0)
 				this.event('Network.loadingFinished', {
 					requestId: data.requestId,
@@ -940,16 +949,20 @@ export class NetworkDomain extends Domain {
 
 	private buildHeadersText(headers: Record<string, string>, status: number, httpVersion?: number): string {
 		// h2+ has no textual status line; HTTP/1.x uses version-specific line.
-		if (httpVersion === 3 || httpVersion === 4 || httpVersion === 30) return this.headerBlock(headers)
+		if (this.isHeaderBlockOnlyVersion(httpVersion)) return this.headerBlock(headers)
 		const proto = httpVersion === 1 ? 'HTTP/1.0' : 'HTTP/1.1'
 		return `${proto} ${status} ${statusText(status)}\r\n` + this.headerBlock(headers)
 	}
 
 	private buildRequestHeadersText(method: string, url: string, headers: Record<string, string>, httpVersion?: number): string {
 		const target = this.requestTarget(url)
-		if (httpVersion === 3 || httpVersion === 4 || httpVersion === 30) return this.headerBlock(headers)
+		if (this.isHeaderBlockOnlyVersion(httpVersion)) return this.headerBlock(headers)
 		const proto = httpVersion === 1 ? 'HTTP/1.0' : 'HTTP/1.1'
 		return `${method} ${target} ${proto}\r\n` + this.headerBlock(headers)
+	}
+
+	private isHeaderBlockOnlyVersion(httpVersion?: number): boolean {
+		return httpVersion === 3 || httpVersion === 4 || httpVersion === 30
 	}
 
 	private requestTarget(url: string): string {
@@ -985,18 +998,32 @@ export class NetworkDomain extends Domain {
 		return out + '\r\n'
 	}
 
+	private headerValue(headers: Record<string, string> | undefined, name: string): string | undefined {
+		if (!headers) return undefined
+		const lowerName = name.toLowerCase()
+		for (const key of Object.keys(headers)) {
+			if (key.toLowerCase() === lowerName) return headers[key]
+		}
+		return undefined
+	}
+
 	private encodeBody(entry: BodyEntry): { body: string; base64Encoded: boolean } {
 		const body = this.mergeBody(entry)
 		if (this.shouldTreatAsText(entry.mimeType, body)) {
 			return { body: engine.decodeString(body), base64Encoded: false }
 		}
-		return { body: nativeCrypto.base64Encode(body), base64Encoded: true }
+		return { body: nativeCrypto.base64Encode(new Uint8Array(body)), base64Encoded: true }
 	}
 
 	private mergeBody(entry: BodyEntry): Uint8Array {
-		const body = new Uint8Array(entry.total)
+		return this.mergeChunks(entry.chunks, entry.total)
+	}
+
+	private mergeChunks(chunks: Uint8Array[], totalBytes?: number): Uint8Array {
+		const total = totalBytes ?? chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+		const body = new Uint8Array(total)
 		let offset = 0
-		for (const chunk of entry.chunks) {
+		for (const chunk of chunks) {
 			body.set(chunk, offset)
 			offset += chunk.byteLength
 		}
@@ -1017,7 +1044,8 @@ export class NetworkDomain extends Domain {
 		if (/(?:^|\/)(json|xml|javascript|x-www-form-urlencoded)(?:$|[+;])/i.test(mime)) return true
 		const sampleLen = Math.min(body.byteLength, 64)
 		for (let i = 0; i < sampleLen; i++) {
-			const ch = body[i]!
+			const ch = body[i]
+			if (ch === undefined) continue
 			if (ch === 0) return false
 			if (ch < 0x09) return false
 			if (ch > 0x0d && ch < 0x20) return false

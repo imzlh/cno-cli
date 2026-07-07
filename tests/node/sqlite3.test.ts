@@ -119,7 +119,15 @@ Deno.test('sqlite3: Statement.each visits rows', async () => {
 Deno.test('sqlite3: Database.serialize invokes callback', () => {
     const db = new Database(DB);
     let called = false;
-    db.serialize(() => { called = true; });
+    strictEqual(db.serialize(() => { called = true; }), db);
+    ok(called);
+    db.close();
+});
+
+Deno.test('sqlite3: Database.parallelize invokes callback and returns db', () => {
+    const db = new Database(DB);
+    let called = false;
+    strictEqual(db.parallelize(() => { called = true; }), db);
     ok(called);
     db.close();
 });
@@ -157,6 +165,49 @@ Deno.test('sqlite3: Database.configure accepts trace/profile/busyTimeout', () =>
     db.close();
 });
 
+Deno.test('sqlite3: Database.wait invokes callback and returns db', async () => {
+    const db = new Database(DB);
+    try {
+        await new Promise<void>((resolve, reject) => {
+            strictEqual(db.wait((err?: Error | null) => err ? reject(err) : resolve()), db);
+        });
+    } finally {
+        db.close();
+    }
+});
+
+Deno.test('sqlite3: trace and profile hooks observe executed SQL', async () => {
+    const db = new Database(DB);
+    const traces: string[] = [];
+    const profiles: Array<{ sql: string; ms: number }> = [];
+    db.configure('trace', (sql: string) => traces.push(sql));
+    db.configure('profile', (sql: string, ms: number) => profiles.push({ sql, ms }));
+    try {
+        db.exec('CREATE TABLE IF NOT EXISTS t11_trace (id INTEGER)');
+        await new Promise<void>((resolve, reject) => {
+            db.run('INSERT INTO t11_trace (id) VALUES (?)', 1, (err?: Error | null) => err ? reject(err) : resolve());
+        });
+        ok(traces.some((sql) => sql.includes('INSERT INTO t11_trace')));
+        ok(profiles.some((entry) => entry.sql.includes('INSERT INTO t11_trace') && entry.ms >= 0));
+    } finally {
+        db.close();
+    }
+});
+
+Deno.test('sqlite3: unsupported configure option throws', () => {
+    const db = new Database(DB);
+    let err: Error | null = null;
+    try {
+        db.configure('unsupported-option', 1);
+    } catch (error) {
+        err = error as Error;
+    } finally {
+        db.close();
+    }
+    ok(err instanceof Error);
+    strictEqual(err?.message, 'Unsupported sqlite3 configure option: unsupported-option');
+});
+
 // --- 12. Statement.run with named params ----------------------------------
 
 Deno.test('sqlite3: Statement.run with named params', async () => {
@@ -169,9 +220,33 @@ Deno.test('sqlite3: Statement.run with named params', async () => {
     db.close();
 });
 
+Deno.test('sqlite3: Statement.finalize invokes callback and future use errors', async () => {
+    const db = new Database(DB);
+    db.exec('CREATE TABLE IF NOT EXISTS t13 (id INTEGER)');
+    const stmt = db.prepare('INSERT INTO t13 (id) VALUES (?)');
+    await new Promise<void>((resolve, reject) => {
+        strictEqual(stmt.finalize((err?: Error | null) => err ? reject(err) : resolve()), stmt);
+    });
+
+    let err: Error | null = null;
+    try {
+        stmt.run(1);
+    } catch (error) {
+        err = error as Error;
+    }
+    ok(err instanceof Error);
+    strictEqual(err?.message, 'Statement has been finalized');
+    db.close();
+});
+
 // --- 13. verbose() returns sqlite3 instance --------------------------------
 
 Deno.test('sqlite3: verbose() returns sqlite3', () => {
     const s = verbose();
     ok(typeof s === 'object');
+});
+
+Deno.test('sqlite3: verbose() returns the sqlite3 module object', () => {
+    const sqlite3 = require('node:sqlite3');
+    strictEqual(verbose(), sqlite3);
 });
