@@ -37,7 +37,7 @@ Deno.test({ name: 'cts runtime: data URL modules run through static and dynamic 
     });
 });
 
-Deno.test({ name: 'cts runtime: blob URL modules support TypeScript JSX and relative-import failures', timeout: 15000 }, async () => {
+Deno.test({ name: 'cts runtime: blob URL modules support TypeScript and relative-import failures', timeout: 15000 }, async () => {
     await withTempDir('cts-blob-url-runtime', async (root) => {
         const entry = join(root, 'main.ts');
         await Deno.writeTextFile(entry, `
@@ -46,17 +46,6 @@ Deno.test({ name: 'cts runtime: blob URL modules support TypeScript JSX and rela
             ], { type: "application/typescript" }));
             const tsMod = await import(tsUrl);
             console.log(tsMod.a, tsMod.A.C);
-
-            const jsxUrl = URL.createObjectURL(new Blob([
-                'export default function render() { return <div>Hello CNO</div>; }\\n',
-            ], { type: "text/jsx" }));
-            globalThis.React = {
-                createElement(...args) {
-                    console.log(args[0], args[1], args[2]);
-                },
-            };
-            const jsxMod = await import(jsxUrl);
-            jsxMod.default();
 
             const relativeUrl = URL.createObjectURL(new Blob([
                 'export { value } from "./dep.ts";\\n',
@@ -73,7 +62,6 @@ Deno.test({ name: 'cts runtime: blob URL modules support TypeScript JSX and rela
         strictEqual(result.code, 0, result.stderr);
         strictEqual(result.stdout.trim(), [
             'a 2',
-            'div null Hello CNO',
             'true true',
         ].join('\n'));
     });

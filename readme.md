@@ -17,7 +17,7 @@ linked into it.
 | `cts/` | TypeScript loader: resolution, transform, bytecode cache, CJS/ESM bridge |
 | `cno/` | Runtime polyfills: Web API, Deno API, Node.js modules, `CNO` namespace |
 | `circu.js/` | Native runtime core: QuickJS, libuv, built-in C modules, `cjsc` |
-| `http/` | `@cnojs/http`, low-level protocol helpers used by cno polyfills |
+| `http/` | `@cnojs/http`, low-level protocol helpers used by cno polyfills, server only |
 | `ext-oxc/` | Optional native OXC extension for fast transform and import scanning |
 | `ext-quic/` | Optional QUIC extension used by WebTransport-related code |
 | `tests/` | Runtime tests grouped by compatibility surface |
@@ -105,13 +105,24 @@ No-argument `cno cache` seeds from `deno.json` imports and
 
 ## Development
 
+> [!WARNING]
+> if you just want to build it one-step, just try `build.sh` for posix-compatible shells and `build.ps1` for windows.
+> Don't forget to install dependencies before building.
+
 Install JavaScript dependencies first:
 
 ```sh
 pnpm install
 ```
 
-Type-check the TypeScript bundle surface:
+You are also supposed to install TypeScript dependencies for subprojects:
+
+```sh
+sh -c "cd cno && pnpm install"
+sh -c "cd cts && pnpm install"
+```
+
+Type-check the TypeScript bundle surface (optional):
 
 ```sh
 pnpm run type-check
@@ -139,6 +150,11 @@ build/stage/cno setup
 
 For broader native or bundled changes, rebuild with CMake.
 
+> [!NOTE]
+> You can also build the oxc native extension with:
+> `cd ext-oxc && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build`
+> and then copy the built library to the `stage/ext` directory.
+
 ## Testing
 
 The test runner discovers files matching:
@@ -160,7 +176,7 @@ build/stage/cno test tests/cjs
 `cno test` runs each test file in a real child process so process and signal
 behavior are closer to normal runtime behavior.
 
-## Native Extensions
+## Native Extensions (experimental, non-stable)
 
 The root CMake build can statically embed optional extensions:
 

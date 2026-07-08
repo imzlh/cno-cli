@@ -43,6 +43,7 @@ external harness:
 - JSON-without-attribute diagnostics from `specs/run/import_attributes_static_error` and `specs/run/import_attributes_dynamic_error` are deferred because cno still permits existing `package.json`/JSON module imports without `with { type: "json" }`.
 - Deno workspace installer/config behavior in `specs/npm/workspace_*`: cno currently resolves local `node_modules`/cache/package semantics but does not implement Deno's workspace membership and `workspace:` dependency graph.
 - `Array.fromAsync` parity is deferred because touching the current native intrinsic triggers a QuickJS `invalid version (26 expected=27)` runtime failure; local async-iterator coverage uses direct `for await` until the engine intrinsic is repaired.
+- `specs/run/import_blob_url_jsx` JSX output parity is deferred. `blob:` module loading is covered, but cno's current JSX transform/runtime output does not match Deno's classic `React.createElement` expectation in that fixture.
 - Very large stress tests unless they cover a current bug class.
 
 ## Recent Additions
@@ -104,6 +105,7 @@ external harness:
 - `specs/npm/node_modules_import`, `specs/npm/node_modules_import_auto`, `specs/npm/byonm_npm_specifier_in_node_modules`: local `node_modules` packages now keep one module identity across bare package imports, direct `./node_modules/...` file imports, and package subpath imports; `npm:pkg@range` can also satisfy semver ranges from an existing local `node_modules` package without falling back to the registry.
 - `specs/npm/worker_shutdown_during_npm_import`: Web Worker runs now inherit the parent runtime's resolver/cache config, so npm imports inside workers can use the same local cache as the entry process. Worker `self.close()` is backed by the native worker runtime stop path, suppresses close-after-shutdown errors/rejections, and preserves already-posted messages while preventing user code after close from running.
 - Web fetch/XHR protocol parity: `fetch()` and `XMLHttpRequest` now share a local protocol loader for `data:` and `blob:` URLs, including percent/base64 `data:` bodies and content-type propagation. This also protects data URL consumers such as worker/jsr/npm fixtures from curl-only protocol failures.
+- `specs/run/import_blob_url`, `specs/run/import_blob_url_import_relative`, `specs/worker/worker_doest_stall_event_loop`, `specs/worker/worker_message_handler_error`, `specs/worker/worker_terminate_tla_crash`: CTS now resolves `blob:` object URLs as module sources from the shared Web object-URL store, Worker construction snapshots parent-thread blob URLs into data URLs, worker-created blob modules can be dynamically imported without stalling the event loop, message-handler errors dispatch cancelable `Worker#error` events, and immediate termination of pending-TLA workers is stable.
 
 ## Next Sweep Targets
 
