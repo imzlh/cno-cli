@@ -99,6 +99,7 @@ export interface FetchInterceptPayload {
 	method: string
 	headers: Record<string, string>
 	postData?: Uint8Array
+	callFrames?: ConsoleCallFrame[]
 	resourceType?: string
 }
 

@@ -176,7 +176,7 @@ cts/src/
 ├── source/                     # Layer 2: read files + transform (CJS/ESM agnostic)
 │   ├── index.ts                # readSource(), readSourceForCjs()
 │   ├── transform.ts            # Transformer (OXC native primary, Sucrase fallback)
-│   └── cache.ts                # JscCache L1(内存)+L2(磁盘) bytecode cache
+│   └── cache.ts                # JscCache L1(memory)+L2(disk) bytecode cache
 │
 ├── compile/                    # Layer 3: compile + cache + bridge
 │   ├── index.ts                # ModuleCompiler facade (orchestrates ESM/CJS/WASM)

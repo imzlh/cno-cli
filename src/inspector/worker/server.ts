@@ -52,7 +52,7 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 		devtoolsFrontendUrl: `devtools://devtools/bundled/js_app.html?experiments=true&v8only=true&ws=${host}${wsPath}`,
 		id: targetId,
 		title: 'cno',
-		type: 'page',
+		type: 'node',
 		url: entryUrl,
 		webSocketDebuggerUrl: wsUrl,
 	}

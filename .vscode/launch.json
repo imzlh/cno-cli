@@ -1,42 +1,40 @@
 {
-    // 使用 IntelliSense 了解相关属性。 
-    // 悬停以查看现有属性的描述。
-    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    // Use IntelliSense to learn about related attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "(gdb) 附加",
+            "name": "(gdb) Attach",
             "type": "cppdbg",
             "request": "attach",
             "program": "${workspaceFolder}/build/stage/cno",
             "MIMode": "gdb",
             "setupCommands": [
                 {
-                    "description": "为 gdb 启用整齐打印",
+                    "description": "Enable pretty printing for gdb",
                     "text": "-enable-pretty-printing",
                     "ignoreFailures": true
                 },
                 {
-                    "description": "将反汇编风格设置为 Intel",
+                    "description": "Set disassembly flavor to Intel",
                     "text": "-gdb-set disassembly-flavor intel",
                     "ignoreFailures": true
                 }
             ]
         },
         {
-            "name": "(Windows) 附加",
+            "name": "(Windows) Attach",
             "type": "cppvsdbg",
             "request": "attach",
         },
         {
-            "name": "(gdb) 启动",
+            "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/stage/cno",
-            // "args": ["run", "${file}"],
-            "args": [
-                "cache"
-            ],
+            "args": ["run", "${file}"],
+            // "args": [ "cache" ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [],
@@ -44,19 +42,19 @@
             "MIMode": "gdb",
             "setupCommands": [
                 {
-                    "description": "为 gdb 启用整齐打印",
+                    "description": "Enable pretty printing for gdb",
                     "text": "-enable-pretty-printing",
                     "ignoreFailures": true
                 },
                 {
-                    "description": "将反汇编风格设置为 Intel",
+                    "description": "Set disassembly flavor to Intel",
                     "text": "-gdb-set disassembly-flavor intel",
                     "ignoreFailures": true
                 }
             ]
         },
         {
-            "name": "(Windows) 启动",
+            "name": "(Windows) Launch",
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/stage/cno.exe",

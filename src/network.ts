@@ -1,10 +1,3 @@
-/**
- * Global network settings — applied to every CURL handle via CurlInitHook.
- *
- * Proxy: Windows registry (watched for live changes) / env vars.
- * TLS:   --skip-cert-verify disables certificate verification.
- */
-
 import { setCurlInitHook } from '../cno/src/utils/network-hooks';
 import { log } from '../cts/src/api';
 

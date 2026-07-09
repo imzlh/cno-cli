@@ -52,14 +52,6 @@ export abstract class Domain {
 		return typeof v === 'number' ? v : undefined
 	}
 
-	protected reqNonNegativeInt(params: CdpParams, key: string): number {
-		const v = this.num(params, key)
-		if (v === undefined || !Number.isInteger(v) || v < 0) {
-			throw new CDPError(CdpErrorCode.InvalidParams, `CDP param '${key}' must be a non-negative integer`)
-		}
-		return v
-	}
-
 	/**
 	 * Treat the raw CDP params as a typed structure. This is a safe narrowing
 	 * when the handler immediately accesses known fields — the alternative is

@@ -12,7 +12,6 @@ import type { ConsoleDomain } from '../domains/console'
 import type { DebuggerDomain } from '../domains/debugger'
 import type { FetchDomain } from '../domains/fetch'
 import type { NetworkDomain } from '../domains/network'
-import type { PageDomain } from '../domains/page'
 import type { RuntimeDomain } from '../domains/runtime'
 import type { PausedEvent } from '../shared/cdp'
 import { buildConsoleStackTrace, consoleAPICalledType } from '../shared/console-utils'
@@ -20,7 +19,6 @@ import type {
 	BindingCalledPayload,
 	ConsolePayload,
 	FetchInterceptPayload,
-	LoadPayload,
 	NetFetchEvent,
 	NetServeEvent,
 	NetWSEvent,
@@ -36,14 +34,12 @@ export interface EventRouterDeps {
 	debuggerDomain: DebuggerDomain
 	runtimeDomain: RuntimeDomain
 	consoleDomain: ConsoleDomain
-	pageDomain: PageDomain
 	networkDomain: NetworkDomain
 	fetchDomain: FetchDomain
 }
 
 export function createEventRouter(deps: EventRouterDeps): (event: WorkerEvent, params: unknown) => void {
-	const { endpoint, emit, debuggerDomain, runtimeDomain, consoleDomain, pageDomain, networkDomain, fetchDomain } = deps
-	let scriptCount = 0
+	const { endpoint, emit, debuggerDomain, runtimeDomain, consoleDomain, networkDomain, fetchDomain } = deps
 
 	return (event: WorkerEvent, params: unknown): void => {
 		switch (event) {
@@ -59,8 +55,6 @@ export function createEventRouter(deps: EventRouterDeps): (event: WorkerEvent, p
 			case WorkerEvent.ScriptParsed: {
 				const payload = params as ScriptParsedPayload
 				debuggerDomain.onScriptParsed(payload)
-				pageDomain.onScriptParsed(payload.url || payload.scriptId)
-				if (scriptCount++ === 0) pageDomain.onDOMContent(Date.now() / 1000)
 				break
 			}
 			case WorkerEvent.Console: {
@@ -77,8 +71,6 @@ export function createEventRouter(deps: EventRouterDeps): (event: WorkerEvent, p
 				break
 			}
 			case WorkerEvent.Load: {
-				const payload = params as LoadPayload
-				pageDomain.onLoad(payload.timestamp)
 				break
 			}
 			case WorkerEvent.BindingCalled: {

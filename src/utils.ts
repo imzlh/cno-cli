@@ -1,4 +1,3 @@
-// src/utils.ts — shared CLI utilities
 import { dirname, normalizePath, isAbsolute, joinPaths, cwd, toPosixPath } from '../cts/src/utils';
 
 /**

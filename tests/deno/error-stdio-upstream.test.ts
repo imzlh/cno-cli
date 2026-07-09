@@ -41,7 +41,7 @@ Deno.test('deno upstream: Deno.errors constructors preserve cause', () => {
 });
 
 Deno.test('deno upstream: Deno.errors options lookup ignores Object prototype pollution', () => {
-    const objectProto = Object.prototype as Object.prototype & { cause?: unknown };
+    const objectProto = Object.prototype as Object & { cause?: unknown };
     objectProto.cause = 'polluted';
     try {
         const error = new Deno.errors.NotFound('msg', {});
@@ -52,7 +52,7 @@ Deno.test('deno upstream: Deno.errors options lookup ignores Object prototype po
 });
 
 Deno.test('deno upstream: assertion errors tolerate Object prototype getter pollution', () => {
-    const objectProto = Object.prototype as Object.prototype & { get?: unknown };
+    const objectProto = Object.prototype as Object & { get?: unknown };
     let caught: unknown;
     objectProto.get = () => {};
     try {

@@ -15,7 +15,6 @@ import { ConsoleDomain } from '../domains/console'
 import { DebuggerDomain } from '../domains/debugger'
 import { FetchDomain } from '../domains/fetch'
 import { NetworkDomain } from '../domains/network'
-import { PageDomain } from '../domains/page'
 import { ProtocolDomain } from '../domains/protocol'
 import { RuntimeDomain } from '../domains/runtime'
 import { TargetDomain } from '../domains/target'
@@ -122,7 +121,6 @@ export function bootstrapDebugWorker(): void {
 	const debuggerDomain = new DebuggerDomain(dispatcher, emit, endpoint)
 	const runtimeDomain = new RuntimeDomain(dispatcher, emit, endpoint)
 	const consoleDomain = new ConsoleDomain(dispatcher, emit)
-	const pageDomain = new PageDomain(dispatcher, emit, endpoint)
 	const networkDomain = new NetworkDomain(dispatcher, emit, endpoint)
 	const fetchDomain = new FetchDomain(dispatcher, emit, endpoint)
 	const targetDomain = new TargetDomain(dispatcher, emit)
@@ -135,7 +133,6 @@ export function bootstrapDebugWorker(): void {
 		debuggerDomain,
 		runtimeDomain,
 		consoleDomain,
-		pageDomain,
 		networkDomain,
 		fetchDomain,
 	})
@@ -152,7 +149,6 @@ export function bootstrapDebugWorker(): void {
 				entryUrl,
 				debuggerDomain,
 				runtimeDomain,
-				pageDomain,
 			}),
 	}).then((handle) => {
 		const { wsUrl } = handle

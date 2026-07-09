@@ -9,6 +9,7 @@
 
 import { log } from '../../../cts/src/api'
 import type { CallFrame, PausedEvent, Scope } from '../shared/cdp'
+import { remapConsoleFrameDetailed, type SourceMapLookup } from '../shared/console-utils'
 import { BreakReason, Step, native, type LocalVariable, type StepCode } from '../shared/native'
 import { isUserFile } from '../shared/user-files'
 import { WorkerEvent } from '../shared/wire'
@@ -17,6 +18,7 @@ import type { Serializer } from './remote-object'
 
 const BACKTRACE_GROUP = 'backtrace'
 const EVAL_FRAME_OFFSET = 4
+const sourcemap = import.meta.use('sourcemap') as SourceMapLookup
 
 const createScopeObject = (): Record<string, unknown> => Object.create(null)
 
@@ -72,7 +74,7 @@ export class PauseController {
 
 		const hit = callFrames[0]
 		const hitFilename = hit?.url || hit?.location?.scriptId || file
-		const hitLine = (hit?.location?.lineNumber ?? Math.max(0, line - 1)) + 1
+		const hitLine = (hit?.location?.lineNumber ?? line - 1) + 1
 
 		const payload: PausedEvent = {
 			callFrames,
@@ -141,6 +143,14 @@ export class PauseController {
 			if (fn && fn !== '<eval>') frameName = fn
 		}
 
+		let mapped = remapConsoleFrameDetailed(fFile, fLine, fCol, sourcemap)
+		if (!mapped.found && frameInfo && useTopHint) {
+			mapped = remapConsoleFrameDetailed(frameInfo.file, frameInfo.line, frameInfo.column, sourcemap)
+		}
+		fFile = mapped.filePath
+		fLine = mapped.lineNumber + 1
+		fCol = mapped.columnNumber + 1
+
 		const scopeChain: Scope[] = [
 			{
 				type: 'local',
@@ -161,8 +171,8 @@ export class PauseController {
 			functionName: frameName,
 			location: {
 				scriptId: fFile,
-				lineNumber: Math.max(0, fLine - 1),
-				columnNumber: Math.max(0, fCol - 1),
+				lineNumber: fLine - 1,
+				columnNumber: fCol - 1,
 			},
 			url: fFile,
 			scopeChain,

@@ -30,6 +30,7 @@ import {
 import type { ModuleInfo } from '../../../cts/src/api'
 import { toPosixPath } from '../../../cts/src/api'
 import { native } from '../shared/native'
+import { remapConsoleFrame, type SourceMapLookup } from '../shared/console-utils'
 import { isUserFile } from '../shared/user-files'
 import {
 	NetFetchKind,
@@ -59,12 +60,14 @@ import type { Serializer } from './remote-object'
 const engine = import.meta.use('engine')
 const fs = import.meta.use('fs')
 const os = import.meta.use('os')
+const sourcemap = import.meta.use('sourcemap') as SourceMapLookup
 const debug = import.meta.use('debug')
-
+const console = import.meta.use('console')
 
 const kOrigin = Symbol('console.origin')
 const { inspectorPreviewBodyBytes, maxPendingBodyBytes } = getTierLimits()
 const MAX_COMPLETED_BODIES = 50
+const CONSOLE_HOOK_OFFSET = 4
 
 interface BodyBufferState {
 	chunks: Uint8Array[]
@@ -155,15 +158,23 @@ export class Hooks {
 	private normalizeNetworkCallFrames(callFrames?: HookNetworkCallFrame[]): ConsoleCallFrame[] | undefined {
 		if (!callFrames || callFrames.length === 0) return undefined
 		const normalized: ConsoleCallFrame[] = []
-		for (const frame of callFrames) {
+		for (let index = 0; index < callFrames.length; index++) {
+			const frame = callFrames[index]
 			if (!frame?.scriptId && !frame?.url) continue
-			const loc = this.scriptFrameLocation(frame.scriptId || frame.url)
+			const mapped = index === 0
+				? remapConsoleFrame(frame.scriptId || frame.url, frame.lineNumber, frame.columnNumber, sourcemap, true)
+				: {
+					filePath: frame.scriptId || frame.url,
+					lineNumber: frame.lineNumber,
+					columnNumber: frame.columnNumber,
+				}
+			const loc = this.scriptFrameLocation(mapped.filePath)
 			normalized.push({
 				functionName: frame.functionName,
 				scriptId: loc.scriptId,
 				url: loc.url,
-				lineNumber: frame.lineNumber,
-				columnNumber: frame.columnNumber,
+				lineNumber: mapped.lineNumber,
+				columnNumber: mapped.columnNumber,
 			})
 			if (normalized.length >= 32) break
 		}
@@ -354,6 +365,7 @@ export class Hooks {
 						method: info.method,
 						headers: info.headers,
 						postData: info.postData ?? undefined,
+						callFrames: this.normalizeNetworkCallFrames(info.callFrames),
 						resourceType: info.resourceType,
 					} satisfies FetchInterceptPayload)
 					this.pendingIntercepts.set(info.requestId, resolve)
@@ -430,18 +442,25 @@ export class Hooks {
 		const callFrames: ConsoleCallFrame[] = []
 		try {
 			const depth = native.getStackDepth()
-			for (let level = 2; level < depth && callFrames.length < 32; level++) {
+			for (let level = CONSOLE_HOOK_OFFSET; level < depth && callFrames.length < 32; level++) {
 				const info = native.getFrameInfo(level)
 				if (!info) continue
 				const fname = info.func?.name || ''
-				if (!isUserFile(info.file)) continue
-				const loc = this.scriptFrameLocation(info.file)
+				const mapped = level === CONSOLE_HOOK_OFFSET
+					? remapConsoleFrame(info.file, info.line, info.column, sourcemap)
+					: {
+						filePath: info.file,
+						lineNumber: info.line - 1,
+						columnNumber: info.column - 1,
+					}
+				if (!isUserFile(mapped.filePath)) continue
+				const loc = this.scriptFrameLocation(mapped.filePath)
 				callFrames.push({
 					functionName: fname,
 					scriptId: loc.scriptId,
 					url: loc.url,
-					lineNumber: Math.max(0, info.line - 1),
-					columnNumber: Math.max(0, info.column - 1),
+					lineNumber: mapped.lineNumber,
+					columnNumber: mapped.columnNumber,
 				})
 			}
 		} catch { /* ignore frame inspection errors */ }

@@ -38,7 +38,7 @@ const os = import.meta.use('os');
 const tier = getTierLimits()
 const MAX_CACHED_BODIES = { low: 20, normal: 100, high: 200 }[getMemoryTier()] ?? 100
 const { inspectorPreviewBodyBytes: MAX_BODY_PREVIEW_BYTES } = tier
-const BODY_PREVIEW_UNAVAILABLE = '内容过多，无法展示'
+const BODY_PREVIEW_UNAVAILABLE = 'Content too large to display'
 const MAX_CACHED_REQUEST_BODIES = { low: 20, normal: 100, high: 200 }[getMemoryTier()] ?? 100
 const MAX_REQUEST_BODY_BYTES = { low: 16 * 1024, normal: 128 * 1024, high: 256 * 1024 }[getMemoryTier()] ?? 128 * 1024
 const FETCH_FRAME_ID = 'cno-fetch-frame-1'
@@ -916,13 +916,13 @@ export class NetworkDomain extends Domain {
 	private buildInitiator(callFrames?: ConsoleCallFrame[]): Record<string, unknown> {
 		const frames = this.limitCallFrames(callFrames)
 		if (frames.length === 0) return { type: 'script' }
-		return { type: 'script', stack: { callFrames: frames } }
+		return this.scriptInitiator(frames)
 	}
 
 	private buildServeInitiator(callFrames?: ConsoleCallFrame[]): Record<string, unknown> {
 		const frames = this.limitCallFrames(callFrames)
 		if (frames.length === 0) return { type: 'other' }
-		return { type: 'other', stack: { callFrames: frames } }
+		return this.scriptInitiator(frames)
 	}
 
 	private buildInitiatorForSource(source: NetworkSource, callFrames?: ConsoleCallFrame[]): Record<string, unknown> {
@@ -945,6 +945,17 @@ export class NetworkDomain extends Domain {
 			if (frames.length >= 32) break
 		}
 		return frames
+	}
+
+	private scriptInitiator(frames: ConsoleCallFrame[]): Record<string, unknown> {
+		const top = frames[0]
+		return {
+			type: 'script',
+			url: top?.url || top?.scriptId || '',
+			lineNumber: top?.lineNumber ?? 0,
+			columnNumber: top?.columnNumber ?? 0,
+			stack: { callFrames: frames },
+		}
 	}
 
 	private buildHeadersText(headers: Record<string, string>, status: number, httpVersion?: number): string {

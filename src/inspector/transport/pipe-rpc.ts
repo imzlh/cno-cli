@@ -14,6 +14,7 @@
 
 import { PipeKind, WorkerEvent } from '../shared/wire';
 import { isRpcMethod, type RpcMethod } from '../shared/rpc-contract';
+import { log } from '../../../cts/src/api';
 
 type Pipe = CModuleWorker.MessagePipe;
 type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
@@ -44,7 +45,7 @@ export class PipeClient {
 	constructor(private pipe: Pipe) {
 		this.pipe.onmessage = (msg: unknown) => this.onMessage(msg);
 		this.pipe.onmessageerror = (err: unknown) => {
-			console.error('[pipe-rpc] worker pipe error:', err);
+			log.error('pipe-rpc', `worker pipe error: ${err}`);
 		};
 	}
 
@@ -84,7 +85,7 @@ export class PipeServer {
 	constructor(private pipe: Pipe) {
 		this.pipe.onmessage = (msg: unknown) => this.onMessage(msg);
 		this.pipe.onmessageerror = (err: unknown) => {
-			console.error('[pipe-rpc] main pipe error:', err);
+			log.error('pipe-rpc', `main pipe error: ${err}`);
 		};
 	}
 

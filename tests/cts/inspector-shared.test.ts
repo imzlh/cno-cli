@@ -1,5 +1,5 @@
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
-import { consoleAPICalledType, buildConsoleStackTrace } from '../../src/inspector/shared/console-utils.ts';
+import { buildConsoleStackTrace, consoleAPICalledType, remapConsoleFrame } from '../../src/inspector/shared/console-utils.ts';
 import { CDPDispatcher, CDPError, CdpErrorCode, formatCdpError } from '../../src/inspector/worker/dispatcher.ts';
 
 Deno.test('inspector shared: consoleAPICalledType maps raw console methods to CDP types', () => {
@@ -42,6 +42,59 @@ Deno.test('inspector shared: buildConsoleStackTrace converts frames without muta
     ok(!('ignored' in stack!.callFrames[0]!));
     strictEqual(buildConsoleStackTrace([]), undefined);
     strictEqual(buildConsoleStackTrace(undefined), undefined);
+});
+
+Deno.test('inspector shared: remapConsoleFrame maps native console frames through sourcemap', () => {
+    const calls: Array<{ filePath: string; line: number; column: number }> = [];
+    const mapped = remapConsoleFrame('/tmp/out.js', 207, 27, {
+        getMapping(filePath, line, column) {
+            calls.push({ filePath, line, column });
+            return {
+                found: true,
+                original_file: '/tmp/src.ts',
+                original_line: 238,
+                original_column: 6,
+            };
+        },
+    });
+
+    deepStrictEqual(calls, [{ filePath: '/tmp/out.js', line: 207, column: 27 }]);
+    deepStrictEqual(mapped, {
+        filePath: '/tmp/src.ts',
+        lineNumber: 237,
+        columnNumber: 6,
+    });
+});
+
+Deno.test('inspector shared: remapConsoleFrame accepts zero-based network frames', () => {
+    const calls: Array<{ filePath: string; line: number; column: number }> = [];
+    const mapped = remapConsoleFrame('/tmp/out.js', 206, 26, {
+        getMapping(filePath, line, column) {
+            calls.push({ filePath, line, column });
+            return {
+                found: true,
+                original_file: '/tmp/src.ts',
+                original_line: 238,
+                original_column: 6,
+            };
+        },
+    }, true);
+
+    deepStrictEqual(calls, [{ filePath: '/tmp/out.js', line: 207, column: 26 }]);
+    deepStrictEqual(mapped, {
+        filePath: '/tmp/src.ts',
+        lineNumber: 237,
+        columnNumber: 6,
+    });
+});
+
+Deno.test('inspector shared: remapConsoleFrame preserves negative fallback coordinates', () => {
+    const mapped = remapConsoleFrame('/tmp/out.js', 0, -1, undefined);
+    deepStrictEqual(mapped, {
+        filePath: '/tmp/out.js',
+        lineNumber: -1,
+        columnNumber: -2,
+    });
 });
 
 Deno.test('inspector dispatcher: registerMany dispatches sync and async handlers', async () => {

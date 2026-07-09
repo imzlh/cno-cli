@@ -1,4 +1,4 @@
-import { createRuntime, loadConfigFile, fatal, formatError, extname, BinResolver, errMsg, log } from '../../cts/src/api';
+import { createRuntime, loadConfigFile, fatal, formatError, extname, resolveFile, BinResolver, errMsg, log } from '../../cts/src/api';
 import type { ConfigOptions, ModuleFormat } from '../../cts/src/api';
 import { entryAndDir } from '../utils';
 import { Inspector } from '../inspector';
@@ -97,7 +97,7 @@ function shouldLoadSourceEntry(entry: string, flags: Record<string, string | boo
 }
 
 function readEntrySource(entry: string): string {
-    return engine.decodeString(fs.readFile(entry));
+    return engine.decodeString(fs.readFile(resolveFile(entry)));
 }
 
 interface NpmRunSpec {

@@ -10,7 +10,7 @@ const ADD_WASM = new Uint8Array([
     0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b,
 ]);
 
-// worker_threads: the刁che cases are (1) MessageChannel two-way round-trip,
+// worker_threads: the edge cases are (1) MessageChannel two-way round-trip,
 // (2) postMessage between ports with onmessage, (3) isMainThread/threadId
 // contract, (4) Worker + parentPort ping-pong, (5) workerData passthrough.
 

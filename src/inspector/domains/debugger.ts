@@ -114,8 +114,8 @@ export class DebuggerDomain extends Domain {
 			const q = this.extract<SetBreakpointByUrlParams>(p)
 			const rawUrl = q.url ?? this.urlFromRegex(q.urlRegex)
 			if (!rawUrl) return { breakpointId: '', locations: [] }
-			const lineNumber = this.reqNonNegativeInt(p, 'lineNumber')
-			const columnNumber = optionalNonNegativeInt(q.columnNumber, 'columnNumber')
+			const lineNumber = q.lineNumber;
+			const columnNumber = q.columnNumber;
 			const resolved = this.resolveScriptPath(rawUrl)
 			const url = resolved.path
 			const breakpointId = `bp-${this.nextBpId++}`
@@ -294,8 +294,8 @@ export class DebuggerDomain extends Domain {
 		if (!scriptId) throw new CDPError(CdpErrorCode.InvalidParams, "CDP param 'location.scriptId' is required")
 		return {
 			scriptId,
-			lineNumber: this.reqNonNegativeInt(location, 'lineNumber'),
-			columnNumber: optionalNonNegativeInt(location.columnNumber, 'location.columnNumber'),
+			lineNumber: location.lineNumber as number,
+			columnNumber: location.columnNumber as number,
 		}
 	}
 
@@ -412,12 +412,4 @@ export class DebuggerDomain extends Domain {
 				throw new CDPError(CdpErrorCode.InvalidParams, `Unsupported pause-on-exceptions state: ${state}`)
 		}
 	}
-}
-
-function optionalNonNegativeInt(value: unknown, name: string): number | undefined {
-	if (value == null) return undefined
-	if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-		throw new CDPError(CdpErrorCode.InvalidParams, `CDP param '${name}' must be a non-negative integer`)
-	}
-	return value
 }

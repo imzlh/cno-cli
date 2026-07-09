@@ -136,6 +136,28 @@ Deno.test('url: URL serializes spaces in path and query', () => {
     strictEqual(u.href, 'https://example.com/a%20b?x=a%20b');
 });
 
+Deno.test('url: URL setters remain writable after node:url patching', () => {
+    const u = new URL('https://example.com/a b?x=1');
+    const params = u.searchParams;
+
+    u.pathname = '/next path';
+    strictEqual(u.pathname, '/next%20path');
+
+    u.search = '';
+    strictEqual(u.search, '');
+    strictEqual(u.searchParams, params);
+    strictEqual(params.size, 0);
+
+    params.append('after', 'clear');
+    strictEqual(u.search, '?after=clear');
+
+    u.href = 'https://example.com/final path?z=9';
+    strictEqual(u.pathname, '/final%20path');
+    strictEqual(u.search, '?z=9');
+    strictEqual(u.searchParams, params);
+    strictEqual(params.get('z'), '9');
+});
+
 // --- 9. domainToASCII / domainToUnicode --------------------------------------
 
 Deno.test('url: domainToASCII punycode-encodes international domain', () => {

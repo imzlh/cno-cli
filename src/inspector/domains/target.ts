@@ -19,7 +19,7 @@ import { Domain } from './base'
 
 const TARGET_ID = 'cno-debug-1'
 const SESSION_ID = 'cno-session-1'
-const TARGET_TYPE = 'page'
+const TARGET_TYPE = 'node'
 
 interface TargetInfo {
 	targetId: string

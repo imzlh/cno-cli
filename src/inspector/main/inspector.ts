@@ -123,7 +123,7 @@ export class Inspector {
 			},
 			onWorkerError: (error: WorkerErrorPayload) => {
 				const phase = error.phase ? ` during ${error.phase}` : ''
-				console.error('inspector', () => `debug worker crashed${phase}: ${errMsg(error)}`)
+				log.error('inspector', () => `debug worker crashed${phase}: ${errMsg(error)}`)
 			},
 		})
 		// Wait for the worker's WS server to report its URL via the ready RPC.

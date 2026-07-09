@@ -15,7 +15,6 @@ import { CDPError, CdpErrorCode, formatCdpError, type EmitEvent, type CDPDispatc
 import type { WorkerEndpoint } from '../transport/worker-endpoint'
 import type { DebuggerDomain } from '../domains/debugger'
 import type { RuntimeDomain } from '../domains/runtime'
-import type { PageDomain } from '../domains/page'
 
 const engine = import.meta.use('engine');
 
@@ -51,19 +50,16 @@ export interface ConnectionDeps {
 	entryUrl: string
 	debuggerDomain: DebuggerDomain
 	runtimeDomain: RuntimeDomain
-	pageDomain: PageDomain
 }
 
 export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): void {
-	const { channel, dispatcher, rpc, entryUrl, debuggerDomain, runtimeDomain, pageDomain } = deps
+	const { channel, dispatcher, rpc, debuggerDomain, runtimeDomain } = deps
 
 	const thisSend: CdpSink = (msg) => ws.send(JSON.stringify(msg))
 	channel.setSink(thisSend)
 
 	debuggerDomain.setConnected(true)
 	runtimeDomain.setConnected(true)
-	pageDomain.setConnected(true)
-	pageDomain.onConnected(entryUrl)
 	void rpc.call('setConnected', { connected: true })
 
 	ws.onmessage = (ev): void => {
@@ -109,7 +105,6 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 		channel.clearSink(thisSend)
 		debuggerDomain.setConnected(false)
 		runtimeDomain.setConnected(false)
-		pageDomain.setConnected(false)
 		void rpc.call('setConnected', { connected: false })
 	}
 }
