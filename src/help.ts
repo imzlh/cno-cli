@@ -70,7 +70,7 @@ ${C.bold('META')}
   ${C.cyan('--help')}, ${C.cyan('-h')}                     Print this message
 
 ${C.bold('ENVIRONMENT')}
-  ${C.cyan('CNO_EXT_PATH')}                   Directory of native extensions (default: <cno-dir>/ext)
+  ${C.cyan('CTS_EXT_PATH')}                   Directory of native extensions (default: <cno-dir>/ext)
   ${C.cyan('CTS_CACHE_DIR')}                  Override cache directory
   ${C.cyan('CTS_SILENT')}                     Suppress output ${C.dim('(true/false)')}
   ${C.cyan('CTS_NO_OXC')}                     Disable OXC acceleration ${C.dim('(true/false)')}

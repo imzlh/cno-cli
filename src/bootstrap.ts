@@ -37,7 +37,7 @@ function getEnv(name: string): string | null {
  * fall back to whatever circu.js has statically linked.
  */
 export function resolveExtDir(): string | null {
-    const envPath = getEnv('CNO_EXT_PATH');
+    const envPath = getEnv('CTS_EXT_PATH');
     if (envPath) return envPath;
 
     const dir = binaryDir();

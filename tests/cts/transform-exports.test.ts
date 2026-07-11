@@ -1,5 +1,6 @@
 import { strictEqual, ok } from 'node:assert';
 import { Transformer } from '../../cts/src/source/transform.ts';
+import { OxcTranspiler } from '../../cts/src/oxc.ts';
 import { transform } from '../../cts/deps/sucrase/src/index.ts';
 import { resolveExports, createCtx, clearPkgCache } from '../../cts/src/resolve/pkg.ts';
 import { normalizeBinField, getBinMap } from '../../cts/src/resolve/pkg.ts';
@@ -38,7 +39,25 @@ Deno.test('cts: transformer strips shebang before transform', () => {
         'transformed body must remain');
 });
 
-// --- 3. Sucrase sourcemaps stay local/offline ------------------------------
+// --- 3. OXC uses the runtime language for extensionless source entries -----
+
+Deno.test('cts: OXC uses explicit language for extensionless source entries', () => {
+    let kind: string | undefined;
+    const oxc = new OxcTranspiler({
+        version: 'test',
+        transpile(_source, opts) {
+            kind = opts?.kind;
+            return { code: 'export const ok = true;' };
+        },
+        scanImports() { return []; },
+    });
+    const t = new Transformer();
+    t.setOxc(oxc);
+    strictEqual(t.transform('import { type FileSystem } from "pkg";', '/tmp/git', 'ts'), 'export const ok = true;');
+    strictEqual(kind, 'ts');
+});
+
+// --- 4. Sucrase sourcemaps stay local/offline ------------------------------
 
 Deno.test('cts: sucrase source maps are generated without npm dependencies', () => {
     const out = transform('using resource: Resource = getResource();\nconst b: string = "x";', {

@@ -857,6 +857,9 @@ interface ProtocolStream {
 - Built alongside main project by `build.sh` / `build.ps1`
 - Produces `oxc.so` (Unix) or `oxc.dll` (Windows)
 - `cts/src/oxc.ts` provides the TypeScript interface (`OxcTranspiler`)
+- For a staged local build, configure the root build with
+  `-DCNO_EXT_DIR=/home/iz/cno-cli/ext-oxc/build`; otherwise
+  `build/stage/ext/oxc.so` can remain stale.
 
 ---
 
@@ -992,8 +995,7 @@ cno --help                  # Help
 
 | Variable | Description |
 |----------|-------------|
-| `CNO_POLYFILL` | Custom polyfill bundle path |
-| `CNO_EXT_PATH` | Native extensions directory |
+| `CTS_EXT_PATH` | Native extensions directory |
 | `CTS_CACHE_DIR` | Cache directory override |
 | `CTS_LOCK_DIR` | Lock file directory |
 | `CTS_SILENT` | Silent output (true/false) |
@@ -1004,7 +1006,7 @@ cno --help                  # Help
 | `CTS_ENABLE_NODE` | Enable node compat (true/false) |
 | `CTS_MEMORY_LIMIT` | Memory limit (e.g. 1GB) |
 | `CTS_MAX_STACK_SIZE` | Max stack size |
-| `CTS_WORKERS` | Precompile worker count (1-16) |
+| `CTS_WORKERS` | Precompile worker count (`0` = inline; otherwise explicit worker count) |
 | `NPM_CONFIG_REGISTRY` | NPM registry URL |
 | `NPM_TOKEN` | NPM auth token |
 
@@ -1172,8 +1174,8 @@ cts src/main.ts run script.ts
 
 ### Bytecode Cache
 
-- Location: `~/.cts/jsc/`
-- Clear: `rm -rf ~/.cts/jsc/`
+- Local modules: `~/.cts/local/<hash-prefix>/<hash>.jsc` with an mtime sidecar
+- Remote modules: `.jsc` and `.jsc.mt` beside the cached source
 - Version mismatch auto-clears
 
 ### Syntax Error Debug
@@ -1233,8 +1235,11 @@ IF YOU WANT TO USE, PLEASE USE `import.meta.use()` AS SHARED NAMESPACE TO DELIVE
 
 ### Precompile
 - Worker-parallel OXC (native) / Sucrase (fallback) transform
-- Main-thread QJS compile (C layer, fast)
-- Default workers: CPU cores (max 16, for big memory machines) and less
+- Workers return SharedArrayBuffer-backed code and source-map bytes; transform results carry only the task id plus payload.
+- The main thread must register source maps, then call `new engine.Module(...).dump()`; QuickJS dependency resolution is runtime-local, so neither step may move to a worker.
+- Each worker has at most two ordered transform tasks in flight, overlapping OXC work with the serialized QJS/disk lane without unbounded result buffering.
+- Plain `.js`/`.mjs`/`.cjs` modules compile directly from bytes on the main thread; malformed legacy encodings fall back to the string path.
+- Default workers reserve one core for main-thread QJS compile: inline on low/one-core, up to two on normal, cores minus one on high; `CTS_WORKERS` overrides this.
 - Scan tasks have **no timeout** (lightweight sucrase tokenize); only transform has a 60s safety timeout
 - BFS `wake()` in `deps.ts` only fires on `enqueue` or `pending===0`, not on every `finally` — otherwise idle workers busy-loop
 

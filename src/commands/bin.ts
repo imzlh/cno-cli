@@ -22,7 +22,7 @@ export async function spawnBinary(binName: string, args: string[], env: Record<s
         const resolver = new BinResolver(lockStore, { cacheDir });
         const resolved = resolver.resolve(binName, cwd, { global: true });
         if (!resolved) {
-            log.error('bin', () => `Command '${binName}' not found in bin index or node_modules/.bin`);
+            console.error(resolver.explain(binName) ?? `Command '${binName}' could not be resolved.`);
             return 1;
         }
 

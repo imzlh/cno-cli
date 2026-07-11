@@ -1301,6 +1301,23 @@ Deno.test({ name: 'cli stage upstream npm: run resolves package bin entrypoints'
     });
 });
 
+Deno.test({ name: 'cli stage: exec resolves bins from CTS cache, not local node_modules', timeout: 20000 }, async () => {
+    await withTempDir('cli-exec-cache-bin', async (root) => {
+        const cacheDir = join(root, 'cache');
+        await writeCachedNpmPackage(cacheDir, 'tool', '1.0.0', {
+            bin: { tool: './cli.mjs' },
+        }, {
+            'cli.mjs': 'console.log("cache");\n',
+        });
+        await Deno.mkdir(join(root, 'node_modules', '.bin'), { recursive: true });
+        await Deno.writeTextFile(join(root, 'node_modules', '.bin', 'tool'), '#!/bin/sh\necho local\n');
+
+        const result = await runCno(['exec', `--cache-dir=${cacheDir}`, 'tool'], root);
+        strictEqual(result.code, 0, result.stderr);
+        strictEqual(result.stdout.trim(), 'cache');
+    });
+});
+
 Deno.test({ name: 'cli stage upstream npm: dynamic import from npm can load local TS URLs', timeout: 20000 }, async () => {
     await withTempDir('cli-npm-dynamic-import-local-ts', async (root) => {
         const cacheDir = join(root, 'cache');

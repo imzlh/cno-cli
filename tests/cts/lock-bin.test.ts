@@ -311,6 +311,39 @@ Deno.test('cts bin resolver: resolves npm specifier bins from an explicit cache 
             strictEqual(resolver.resolve('npm:@denotest/special-chars-in-bin-name@1.0.0/\\foo"', root)?.entry, joinPaths(specialDir, 'main.mjs'));
             strictEqual(resolver.resolve('npm:@denotest/esm-basic@1.0.0', root), null);
             strictEqual(resolver.resolve('npm:@denotest/bin@1.0.0/missing', root), null);
+            ok(resolver.explain('npm:@denotest/esm-basic@1.0.0')?.includes("executable entry"));
+            ok(resolver.explain('npm:@denotest/bin@1.0.0/missing')?.includes('Available bins:'));
+        } finally {
+            lock.close();
+        }
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts bin resolver: global lookup ignores local bins and lock bins', () => {
+    const root = makePosixTempDir('bin-global-cache-only');
+    const cacheDir = joinPaths(root, 'cache');
+    const cachedDir = joinPaths(cacheDir, 'npm', 'tool@1.0.0');
+    const cachedEntry = joinPaths(cachedDir, 'cli.mjs');
+    const localBin = joinPaths(root, 'node_modules', '.bin', 'tool');
+    const lockedEntry = joinPaths(root, 'locked.mjs');
+    try {
+        mkdirSync(cachedDir, { recursive: true });
+        mkdirSync(join(root, 'node_modules', '.bin'), { recursive: true });
+        writeFileSync(join(cachedDir, 'package.json'), JSON.stringify({
+            name: 'tool', version: '1.0.0', bin: { tool: './cli.mjs' },
+        }));
+        writeFileSync(cachedEntry, 'console.log("cache");\n');
+        writeFileSync(localBin, '#!/bin/sh\necho local\n');
+        writeFileSync(lockedEntry, 'console.log("lock");\n');
+
+        const lock = new LockStore(root, false);
+        try {
+            lock.addBin('tool', lockedEntry, 'project');
+            lock.flush();
+            const resolver = new BinResolver(lock, { cacheDir });
+            strictEqual(resolver.resolve('tool', root, { global: true })?.entry, cachedEntry);
         } finally {
             lock.close();
         }
