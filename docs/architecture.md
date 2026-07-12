@@ -101,7 +101,7 @@ per-process or per-worker context, not global across all workers.
 | --- | --- |
 | Execute code | `run`, implicit run, `eval`, `repl` |
 | Project tooling | `task`, `exec` |
-| Cache/setup | `cache`, `setup` |
+| Cache/setup | `cache`, `pack`, `setup` |
 | Validation | `test` |
 | Diagnostics | `--inspect`, `--inspect-brk`, `--inspect-wait`, `DEBUG=*` |
 
@@ -113,6 +113,7 @@ per-process or per-worker context, not global across all workers.
 | Bytecode cache | inside CTS cache | `cts/src/source/cache.ts` |
 | npm package cache | `<cacheDir>/npm/<name>@<version>` | `cts/src/resolve/protocols/npm.ts` |
 | Node polyfills | `<cacheDir>/node` | `src/commands/setup.ts` |
+| Packed asset extraction | `<cacheDir>/pack-extract/<sha256>` | `cts/src/pack/reader.ts` |
 | Resolution lock | project root or cache dir | `cts/src/runtime/index.ts`, `cts/src/lock.ts` |
 
 `cno cache` is the command that persists `cts.lock`. Normal runtime commands

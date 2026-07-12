@@ -171,7 +171,8 @@ cts/src/
 │       ├── jsr.ts              # jsr: Deno registry
 │       ├── http.ts             # http:/https: remote modules
 │       ├── node.ts             # node: built-in polyfills
-│       └── data.ts             # data: URLs (RFC 2397)
+│       ├── data.ts             # data: URLs (RFC 2397)
+│       └── pack.ts             # pack:/ctsview: manifest-only resolution
 │
 ├── source/                     # Layer 2: read files + transform (CJS/ESM agnostic)
 │   ├── index.ts                # readSource(), readSourceForCjs()
@@ -215,6 +216,7 @@ cts/src/
 ├── oxc.ts                      # Native OXC extension loader
 ├── precompile.ts               # Worker-parallel transform + main-thread QJS compile
 ├── scan.ts                     # Import extraction (Sucrase tokenizer, used by workers)
+├── pack/                       # .jspack format validation, writer, extraction/reader
 ├── shell.ts                    # Shell command parser
 ├── task.ts                     # deno.json/package.json task runner
 ```
@@ -230,6 +232,8 @@ interface ModuleInfo {
     localPath: string;
     format: ModuleFormat;
     fileKind: FileKind;
+    moduleId?: string;          // QuickJS identity for alternate module views
+    cacheBytecode?: boolean;    // false when bytecode cannot preserve semantics
 }
 
 interface ConfigOptions {
@@ -412,7 +416,7 @@ read/write mode from the command:
 |------|----------|------|
 | `--lock-dir=<dir>` | that dir | writable under `cno cache`, else read-only |
 | `cno cache` (`cfg.persistLock`) | project root (`deno.json`/`deno.jsonc`/`package.json`, walked up from the entry dir); falls back to the cache dir when no project is found | **writable — the only command that persists `cts.lock`** |
-| `cno run` / `eval` / `repl` / `test` | project-root lock if one exists, else the cache dir | **read-only** — opens the file if present, otherwise a `:memory:` DB; never writes |
+| `cno run` / `eval` / `repl` / `test` / `pack` | project-root lock if one exists, else the cache dir | **read-only** — opens the file if present, otherwise a `:memory:` DB; never writes |
 | `--no-lock` (`cfg.disableLock`) | — | in-memory only |
 
 `persistLock` is a `ConfigOptions` flag set only by `cno cache`. Read-only
@@ -420,6 +424,39 @@ stores no-op all writes (`flush`/`setModule`/…), so `runFile`'s `flushLock()`
 is harmless. The lightweight read-only `new LockStore(cwd, true)` stores in
 `main.ts`/`bin.ts`/`task.ts` (bin-cache lookups) are unaffected — they never
 wrote to disk.
+
+### Packed Containers (`.jspack`)
+
+`cno pack` uses `DepScanner` in `fullGraph` mode, compiles every source under a
+relocatable `pack:` identity, and records exact parent/specifier edges. Keep
+these invariants when changing resolver, scanner, compiler, or cache code:
+
+- Packing must fail on scan/compile omissions; never fall back to the pack-time
+  source tree while running a container.
+- Preserve query/hash identities. Alternate import-attribute views use
+  `ctsview:<kind>/<encoded-spec>` via `moduleViewRef()`, never suffix tricks on
+  a user-controlled specifier.
+- Modules marked `sourceOnly` must set `ModuleInfo.cacheBytecode = false`.
+  Serialized QuickJS modules currently lose import-attribute semantics.
+- A bytecode ABI mismatch recompiles from bundled source. Extensionless entries
+  therefore store their explicit language in the manifest.
+- Validate manifest keys and blob ranges before extraction. Extract only to the
+  content-addressed cache with generated filenames; manifest paths are not
+  filesystem paths.
+- Extraction reuses a file only when its full contents match the container
+  blob. Never treat `.complete` or size alone as integrity. Materialize via
+  temp + `fsync` + atomic rename so concurrent first loads cannot observe
+  partial files. When rename cannot overwrite (Windows), unlink a bad
+  destination and retry; accept only if destination bytes already match.
+- Write the header and chunks to a same-directory temporary file, `fsync`, then
+  rename (with the same destination-exists replace path). Never expose a
+  partial destination or build duplicate full blobs.
+- Public pack surface (`cts` API): `writePack`, `loadPack`, `encodePack`,
+  `decodePack`, and related format helpers — used by CLI and integration tests.
+- `cno pack` may populate dependency caches but must not persist `cts.lock` or
+  run lifecycle scripts. Only `cno cache` owns those side effects.
+- Only statically discoverable imports belong to the container. Missing computed
+  imports fail explicitly at runtime rather than escaping the container.
 
 ### CJS→ESM Sync Loading (compile/bridge.ts)
 
@@ -947,6 +984,7 @@ cno repl                    # Interactive REPL
 cno test [paths...]         # Run tests
 cno task [name]             # Run deno.json task
 cno cache <file>            # Pre-cache dependencies
+cno pack <file> [-o x.jspack] # Build a portable module container
 cno setup                   # Install Node.js polyfill files to cache
 cno --version               # Version
 cno --help                  # Help
@@ -970,6 +1008,8 @@ cno --help                  # Help
 --max-stack-size=<size> # e.g. 4MB
 --polyfill=<path>       # Custom polyfill bundle
 --npm-mode=<normal|soft|hard>  # Materialize real node_modules (cno cache); see resolve/linker.ts
+--out=<path>, -o <path>    # cno pack output; must end in .jspack
+--ext=<lang>               # Language override for an extensionless entry
 ```
 
 ### Deno-compat No-op Flags
@@ -1036,6 +1076,7 @@ cno --help                  # Help
 | `src/commands/test.ts` | `runTest` — test runner |
 | `src/commands/task.ts` | `runTask` — deno.json tasks |
 | `src/commands/cache.ts` | `runCache` — cache management |
+| `src/commands/pack.ts` | `runPack` — build validated portable `.jspack` containers |
 | `src/commands/setup.ts` | `runSetup` — install Node.js polyfill files |
 | `src/commands/inspect.ts` | `parseInspectFlags` — --inspect flag parser |
 | `src/commands/bin.ts` | `spawnBinary` — resolve and spawn node_modules binaries, pnpm-liked direct runner |
@@ -1140,6 +1181,12 @@ Then, `cno test xxx.ts` will run all the tests.
 cno test                    # All test files
 cno test src/module/        # Specific directory
 cno test --concurrency=8    # Custom concurrency
+
+# Pack changes: rebuild the embedded CLI, then run the focused gates.
+cmake --build build -j2
+CTS_CACHE_DIR=/tmp/cno-pack-test build/stage/cno setup
+CTS_CACHE_DIR=/tmp/cno-pack-test build/stage/cno test tests/cts/pack-command.test.ts --concurrency=1
+CTS_CACHE_DIR=/tmp/cno-pack-test build/stage/cno test tests/cts/import-attributes-runtime.test.ts tests/cjs/require-esm-interop.test.ts --concurrency=1
 ```
 
 ---
@@ -1176,6 +1223,7 @@ cts src/main.ts run script.ts
 
 - Local modules: `~/.cts/local/<hash-prefix>/<hash>.jsc` with an mtime sidecar
 - Remote modules: `.jsc` and `.jsc.mt` beside the cached source
+- Packed assets: `~/.cts/pack-extract/<container-sha256>/`; `sourceOnly` modules bypass bytecode cache
 - Version mismatch auto-clears
 
 ### Syntax Error Debug

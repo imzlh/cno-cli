@@ -176,6 +176,18 @@ Deno.test('querystring: escape leaves !\'()* unescaped like Node', () => {
     strictEqual(querystring.escape("!'()*"), "!'()*");
 });
 
+Deno.test('querystring: escape percent-encodes spaces and reserved punctuation', () => {
+    strictEqual(querystring.escape('hello world'), 'hello%20world');
+    ok(querystring.escape('a=b&c').includes('%'));
+    strictEqual(querystring.escape("~!'()*"), "~!'()*");
+});
+
+Deno.test('querystring: escape encodes emoji code points as UTF-8 percent sequences', () => {
+    // Surrogate pairs must not be fed to encodeURIComponent one unit at a time.
+    strictEqual(querystring.escape('😀'), '%F0%9F%98%80');
+    strictEqual(querystring.escape('a😀b'), 'a%F0%9F%98%80b');
+});
+
 Deno.test('querystring: parse preserves empty key before equals sign', () => {
     const o = querystring.parse('=x');
     strictEqual(o[''], 'x');

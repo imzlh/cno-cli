@@ -501,6 +501,117 @@ Deno.test({
     },
 });
 
+// specs/task/boolean_logic: && || & through platform shell
+Deno.test({
+    name: 'cts task upstream: boolean_logic shell operators run via shell fallback',
+    ignore: Deno.build.os === 'windows',
+    async fn() {
+        const root = makePosixTempDir('task-boolean-logic');
+        const lock = new LockStore(root, true);
+        try {
+            writeFileSync(join(root, 'deno.json'), JSON.stringify({
+                tasks: {
+                    boolean_logic: 'sleep 0.05 && echo 3 >> out.txt && echo 4 >> out.txt & echo 1 >> out.txt && echo 2 >> out.txt || echo NOPE >> out.txt',
+                },
+            }));
+            const loaded = loadTasks(root, lock);
+            ok(loaded);
+            strictEqual(await loaded.runner.run('boolean_logic'), 0);
+            // Wait briefly for background `&` job to finish writing
+            await new Promise((r) => setTimeout(r, 200));
+            const text = readFileSync(join(root, 'out.txt'), 'utf8');
+            for (const n of ['1', '2', '3', '4']) ok(text.includes(n), text);
+            ok(!text.includes('NOPE'), text);
+        } finally {
+            lock.close();
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+// specs/task/wildcard: foo-* and dep-* globs
+Deno.test({
+    name: 'cts task upstream: wildcard task names match and run once with deps',
+    ignore: Deno.build.os === 'windows',
+    async fn() {
+        const root = makePosixTempDir('task-wildcard');
+        try {
+            writeFileSync(join(root, 'deno.json'), JSON.stringify({
+                tasks: {
+                    'foo-1': 'echo foo-1 >> out.txt',
+                    'foo-2': 'echo foo-2 >> out.txt',
+                    'foo-3': 'echo foo-3 >> out.txt',
+                    'dep-1': {
+                        command: 'echo dep-1 >> out.txt',
+                        dependencies: ['dep-2', 'foo-1'],
+                    },
+                    'dep-2': {
+                        command: 'echo dep-2 >> out.txt',
+                        dependencies: ['foo-1'],
+                    },
+                },
+            }));
+
+            const foo = await runCnoTask(['task', '-q', 'foo-*'], root);
+            strictEqual(foo.code, 0, foo.stderr);
+            const fooOut = readFileSync(join(root, 'out.txt'), 'utf8');
+            ok(fooOut.includes('foo-1'), fooOut);
+            ok(fooOut.includes('foo-2'), fooOut);
+            ok(fooOut.includes('foo-3'), fooOut);
+
+            writeFileSync(join(root, 'out.txt'), '');
+            const dep = await runCnoTask(['task', '-q', 'dep-*'], root);
+            strictEqual(dep.code, 0, dep.stderr);
+            const depOut = readFileSync(join(root, 'out.txt'), 'utf8');
+            // foo-1 once, then dep-2, then dep-1 (diamond deps dedupe)
+            strictEqual(depOut, 'foo-1\ndep-2\ndep-1\n', depOut);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+// specs/task/both_prefers_deno + package_json_echo
+Deno.test({
+    name: 'cts task upstream: deno tasks override package scripts; package-only scripts run',
+    ignore: Deno.build.os === 'windows',
+    async fn() {
+        const both = makePosixTempDir('task-both-prefers');
+        try {
+            writeFileSync(join(both, 'package.json'), JSON.stringify({
+                scripts: {
+                    output: 'echo should-never-run',
+                },
+            }));
+            writeFileSync(join(both, 'deno.json'), JSON.stringify({
+                tasks: {
+                    output: 'echo from-deno',
+                },
+            }));
+            const prefer = await runCnoTask(['task', '-q', 'output', 'extra'], both);
+            strictEqual(prefer.code, 0, prefer.stderr);
+            ok(prefer.stdout.includes('from-deno'), prefer.stdout);
+            ok(!prefer.stdout.includes('should-never-run'), prefer.stdout);
+        } finally {
+            rmSync(both, { recursive: true, force: true });
+        }
+
+        const pkgOnly = makePosixTempDir('task-pkg-echo');
+        try {
+            writeFileSync(join(pkgOnly, 'package.json'), JSON.stringify({
+                scripts: {
+                    echo: 'echo package-echo',
+                },
+            }));
+            const result = await runCnoTask(['task', '-q', 'echo'], pkgOnly);
+            strictEqual(result.code, 0, result.stderr);
+            ok(result.stdout.includes('package-echo'), result.stdout);
+        } finally {
+            rmSync(pkgOnly, { recursive: true, force: true });
+        }
+    },
+});
+
 Deno.test('cli utils: entryAndDir resolves relative, absolute and protocol targets', () => {
     const rel = entryAndDir('tests/cts/loader.test.ts');
     strictEqual(rel.entry, normalizePath(joinPaths(cwd(), 'tests/cts/loader.test.ts')));

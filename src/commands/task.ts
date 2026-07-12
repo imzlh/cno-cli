@@ -56,8 +56,17 @@ export async function runTask(args: string[], flags: Record<string, string | boo
         }
         const [name, ...rest] = args;
         if (name === undefined) return;
-        const code = await runner.run(name, rest);
-        if (code !== 0) os.exit(code);
+        // Deno-compatible task globs: `foo-*` runs every matching task once.
+        const matched = runner.matchNames(name);
+        if (!matched.length) {
+            const code = await runner.run(name, rest);
+            if (code !== 0) os.exit(code);
+            return;
+        }
+        for (const taskName of matched) {
+            const code = await runner.run(taskName, rest);
+            if (code !== 0) os.exit(code);
+        }
     } finally {
         lockStore.close();
     }
@@ -73,7 +82,8 @@ export function taskExists(name: string, flags: Record<string, string | boolean>
             runCwd,
             initCwd: invocationCwd,
         });
-        return result?.runner.has(name) ?? false;
+        if (!result) return false;
+        return result.runner.matchNames(name).length > 0 || result.runner.has(name);
     } finally {
         lockStore.close();
     }

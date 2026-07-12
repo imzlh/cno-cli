@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ['**']/home/iz/.cts/npm/NeteaseCloudMusicApi@4.32.0/server.js
+    branches: ['**']
     tags-ignore: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
 

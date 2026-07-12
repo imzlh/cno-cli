@@ -31,6 +31,7 @@ are installed.
 | `test [paths]` | `src/commands/test.ts` | Runs test files in child processes |
 | `task [name]` | `src/commands/task.ts` | Runs deno/package task definitions |
 | `cache [file]` | `src/commands/cache.ts` | Resolves graph and writes lock |
+| `pack <file>` | `src/commands/pack.ts` | Writes a self-contained `.jspack` module container |
 | `setup` | `src/commands/setup.ts` | Installs Node builtin polyfills into cache |
 | `exec <bin>` | `src/commands/bin.ts` | Resolves and spawns npm/package binaries |
 
@@ -105,6 +106,26 @@ before CTS installs its own engine hook.
 
 The command sets `persistLock: true`, so it is the normal path that writes
 `cts.lock`.
+
+## Pack Command
+
+`cno pack <entry> [-o output.jspack]` resolves one complete module graph and
+writes it to a portable container. The entry project's nearest config file is
+used even when the command is launched from a parent directory. Output defaults
+to `<entry-name>.jspack` in the current directory. `--silent`/`-q` suppresses
+both progress and the final artifact summary; `cno pack --help` lists the
+pack-specific options.
+
+An extensionless entry uses TypeScript syntax by default, matching `cno run`.
+Use `--ext=js`, `--ext=jsx`, or another explicit language when needed.
+
+Packed execution never resolves missing edges against the original source tree.
+A dependency or compile error therefore fails the pack instead of producing a
+partially portable artifact. Source bytes are retained beside bytecode so a pack
+can recompile when the QuickJS bytecode ABI differs or import attributes require
+the source path. Dependency downloads may populate the shared CTS cache, but
+packing does not create or update `cts.lock`; persistent lock ownership remains
+with `cno cache`.
 
 ## Setup Command
 

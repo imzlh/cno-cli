@@ -2,7 +2,7 @@ import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
-import { extractImports, isScannablePath, isTsLikePath, isWasmPath } from '../../cts/src/scan.ts';
+import { extractImports, hasTopLevelEsmSyntax, isScannablePath, isTsLikePath, isWasmPath } from '../../cts/src/scan.ts';
 import {
     clearPkgCache,
     createCtx,
@@ -38,7 +38,10 @@ Deno.test('cts scan: extracts runtime imports and skips type-only references', (
         export type { Exported } from './export-types';
         export * from './star';
         const dynamic = import('./dynamic');
+        const dynamicWithOptions = import('./dynamic-json', { with: { type: 'json' } });
+        const computedDynamic = import('./prefix/' + name);
         const cjs = require('./cjs');
+        const computedCjs = require('./prefix/' + name);
         const ignored = require(name);
     `);
 
@@ -50,6 +53,7 @@ Deno.test('cts scan: extracts runtime imports and skips type-only references', (
         './re-export',
         './star',
         './dynamic',
+        './dynamic-json',
         './cjs',
     ]));
 });
@@ -62,6 +66,14 @@ Deno.test('cts scan: dedupes imports and ignores invalid source', () => {
         export * from './same';
         require('./same');
     `), ['./same']);
+});
+
+Deno.test('cts scan: hasTopLevelEsmSyntax detects static import/export only', () => {
+    ok(hasTopLevelEsmSyntax('export function add(a, b) { return a + b; }\n'));
+    ok(hasTopLevelEsmSyntax('import x from "./x.js";\n'));
+    strictEqual(hasTopLevelEsmSyntax('const x = require("./x");\n'), false);
+    strictEqual(hasTopLevelEsmSyntax('const m = import("./dyn.js");\n'), false);
+    strictEqual(hasTopLevelEsmSyntax('exports.add = (a, b) => a + b;\n'), false);
 });
 
 Deno.test('cts scan: path helpers match scan extension policy', () => {

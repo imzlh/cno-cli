@@ -85,15 +85,16 @@ Deno.test({ name: 'eslint bin: cno exec runs package binary with forwarded args'
 
 Deno.test({ name: 'typescript bin: cno exec resolves tsc and strips arg separator', timeout: 120000 }, async () => {
     const ts = await import('npm:typescript');
+    const tsc = `npm:typescript@${ts.version}/tsc`;
     const dir = await Deno.makeTempDir({ prefix: 'cno-tsc-' });
     try {
         await Deno.writeTextFile(join(dir, 'index.ts'), 'const value: number = 1;\n');
 
-        const version = await runCno(['exec', 'tsc', '--', '--version']);
+        const version = await runCno(['exec', tsc, '--', '--version']);
         strictEqual(version.code, 0, version.stderr);
         ok(version.stdout.includes(ts.version), version.stdout);
 
-        const check = await runCno(['exec', 'tsc', '--', '--noEmit', '--ignoreConfig', '--target', 'es2022', join(dir, 'index.ts')]);
+        const check = await runCno(['exec', tsc, '--', '--noEmit', '--ignoreConfig', '--target', 'es2022', join(dir, 'index.ts')]);
         strictEqual(check.code, 0, check.stderr);
     } finally {
         await Deno.remove(dir, { recursive: true });

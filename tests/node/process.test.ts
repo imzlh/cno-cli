@@ -550,7 +550,59 @@ Deno.test('process upstream: report exposes basic public report API shape', () =
     strictEqual(typeof process.report.reportOnFatalError, 'boolean');
     strictEqual(typeof process.report.reportOnSignal, 'boolean');
     strictEqual(typeof process.report.reportOnUncaughtException, 'boolean');
-    strictEqual(process.report.writeReport(), '');
+});
+
+Deno.test('process: report.getReport returns Node-shaped diagnostic object', () => {
+    const r = process.report.getReport() as Record<string, any>;
+    ok(r.header && typeof r.header === 'object');
+    strictEqual(typeof r.header.reportVersion, 'number');
+    strictEqual(typeof r.header.processId, 'number');
+    strictEqual(typeof r.header.cwd, 'string');
+    ok(Array.isArray(r.header.commandLine));
+    ok(r.javascriptStack && typeof r.javascriptStack.message === 'string');
+    ok(Array.isArray(r.javascriptStack.stack));
+    ok(r.javascriptHeap && typeof r.javascriptHeap.usedMemory === 'number');
+    ok(r.resourceUsage && typeof r.resourceUsage.rss === 'number');
+    ok(Array.isArray(r.libuv));
+    ok(Array.isArray(r.workers));
+    ok(r.environmentVariables && typeof r.environmentVariables === 'object');
+
+    const withErr = process.report.getReport(new Error('report-boom')) as Record<string, any>;
+    ok(String(withErr.javascriptStack.message).includes('report-boom'));
+});
+
+Deno.test('process: report.writeReport writes JSON and returns path', () => {
+    const dir = Deno.makeTempDirSync({ prefix: 'cno-process-report-' });
+    const prevDir = process.report.directory;
+    const prevFile = process.report.filename;
+    try {
+        process.report.directory = dir;
+        process.report.filename = 'diag.json';
+        const path = process.report.writeReport();
+        ok(typeof path === 'string' && path.length > 0);
+        ok(path.endsWith('diag.json') || path.includes('diag.json'));
+        const text = Deno.readTextFileSync(path);
+        const parsed = JSON.parse(text);
+        ok(parsed.header);
+        ok(parsed.javascriptHeap);
+        strictEqual(parsed.header.filename, 'diag.json');
+
+        const custom = process.report.writeReport('custom.json');
+        ok(Deno.statSync(custom).isFile);
+        const abs = process.report.writeReport(`${dir}/abs.json`);
+        ok(Deno.statSync(abs).isFile);
+    } finally {
+        process.report.directory = prevDir;
+        process.report.filename = prevFile;
+        try {
+            for (const name of Deno.readDirSync(dir)) {
+                Deno.removeSync(`${dir}/${name.name}`);
+            }
+            Deno.removeSync(dir);
+        } catch {
+            // best-effort cleanup
+        }
+    }
 });
 
 Deno.test('process upstream: binding("uv") exposes errno lookup maps', () => {

@@ -351,3 +351,18 @@ Deno.test('cts bin resolver: global lookup ignores local bins and lock bins', ()
         rmSync(root, { recursive: true, force: true });
     }
 });
+
+Deno.test('cts bin resolver: automatic cache specs preserve package identity', () => {
+    const root = makePosixTempDir('bin-cache-spec');
+    const lock = new LockStore(root, true);
+    try {
+        const resolver = new BinResolver(lock);
+        strictEqual(resolver.npmPackageSpecifier('tsc'), 'npm:tsc@latest');
+        strictEqual(resolver.npmPackageSpecifier('npm:typescript@6.0.3/tsc'), 'npm:typescript@6.0.3');
+        strictEqual(resolver.npmPackageSpecifier('typescript/tsc'), null);
+        strictEqual(resolver.npmPackageSpecifier('./tsc'), null);
+    } finally {
+        lock.close();
+        rmSync(root, { recursive: true, force: true });
+    }
+});

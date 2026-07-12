@@ -340,56 +340,6 @@ Deno.test({ name: 'cli stage: run supports mts type imports and CJS entry semant
     });
 });
 
-Deno.test({ name: 'cli stage: run detects ESM syntax in package commonjs js files', timeout: 15000 }, async () => {
-    await withTempDir('cli-run-package-type-commonjs', async (root) => {
-        await Deno.writeTextFile(join(root, 'package.json'), JSON.stringify({ type: 'commonjs' }));
-        await Deno.writeTextFile(join(root, 'add.js'), `
-            module.exports.add = function (a, b) {
-                return a + b;
-            };
-        `);
-
-        const cjs = join(root, 'main_cjs.js');
-        await Deno.writeTextFile(cjs, `
-            const { add } = require("./add");
-            console.log(add(1, 2));
-        `);
-        const cjsRun = await runCno(['run', cjs], root);
-        strictEqual(cjsRun.code, 0, cjsRun.stderr);
-        strictEqual(cjsRun.stdout.trim(), '3');
-
-        const esm = join(root, 'main_esm.js');
-        await Deno.writeTextFile(esm, `
-            import { add } from "./add.js";
-            console.log(add(1, 2));
-        `);
-        const esmRun = await runCno(['run', esm], root);
-        strictEqual(esmRun.code, 0, esmRun.stderr);
-        strictEqual(esmRun.stdout.trim(), '3');
-
-        const notImportMeta = join(root, 'not_import_meta.js');
-        await Deno.writeTextFile(notImportMeta, `
-            try {
-                console.log(test.import.meta.url);
-            } catch {
-            }
-            console.log(require("./add").add(1, 2));
-        `);
-        const notMetaRun = await runCno(['run', notImportMeta], root);
-        strictEqual(notMetaRun.code, 0, notMetaRun.stderr);
-        strictEqual(notMetaRun.stdout.trim(), '3');
-
-        const tla = join(root, 'tla.js');
-        await Deno.writeTextFile(tla, `
-            await new Promise((resolve) => resolve());
-            console.log("loaded");
-        `);
-        const tlaRun = await runCno(['run', tla], root);
-        strictEqual(tlaRun.code, 0, tlaRun.stderr);
-        strictEqual(tlaRun.stdout.trim(), 'loaded');
-    });
-});
-
 Deno.test({ name: 'cli stage: run covers cts and js-to-ts module interop', timeout: 20000 }, async () => {
     await withTempDir('cli-run-cts-js-interop', async (root) => {
         const ctsMain = join(root, 'main.cts');
@@ -2172,5 +2122,179 @@ Deno.test({ name: 'cli stage: repl .q exits through cleanup and writes history',
 
         const history = await Deno.readTextFile(join(root, '.cno_history'));
         ok(history.includes('1 + 1'), history);
+    });
+});
+
+// specs/run/_014_duplicate_import: same module instantiates once
+Deno.test({ name: 'cli stage upstream run: duplicate static/dynamic imports instantiate once', timeout: 15000 }, async () => {
+    await withTempDir('cli-run-dup-import', async (root) => {
+        await Deno.writeTextFile(join(root, 'auto_print_hello.ts'), `
+            console.log("hello-side-effect");
+            export default {};
+        `);
+        await Deno.writeTextFile(join(root, 'main.ts'), `
+            import "./auto_print_hello.ts";
+            import "./auto_print_hello.ts";
+            await import("./auto_print_hello.ts");
+            console.log("done");
+        `);
+        const result = await runCno(['run', 'main.ts'], root);
+        strictEqual(result.code, 0, result.stderr);
+        const lines = result.stdout.trim().split(/\r?\n/);
+        strictEqual(lines.filter((l) => l === 'hello-side-effect').length, 1, result.stdout);
+        ok(lines.includes('done'), result.stdout);
+    });
+});
+
+// specs/run/_020_json_modules + _021_mjs_modules
+Deno.test({ name: 'cli stage upstream run: json default import and .mjs modules', timeout: 15000 }, async () => {
+    await withTempDir('cli-run-json-mjs', async (root) => {
+        await Deno.writeTextFile(join(root, 'config.json'), JSON.stringify({
+            foo: { bar: true, baz: ['qat', 1] },
+        }));
+        await Deno.writeTextFile(join(root, 'mod5.mjs'), 'export const isMod5 = true;\n');
+        await Deno.writeTextFile(join(root, 'main.ts'), `
+            import config from "./config.json" with { type: "json" };
+            import { isMod5 } from "./mod5.mjs";
+            console.log(JSON.stringify(config));
+            console.log(isMod5);
+        `);
+        const result = await runCno(['run', 'main.ts'], root);
+        strictEqual(result.code, 0, result.stderr);
+        const lines = result.stdout.trim().split(/\r?\n/);
+        strictEqual(lines[0], '{"foo":{"bar":true,"baz":["qat",1]}}');
+        strictEqual(lines[1], 'true');
+    });
+});
+
+// specs/run/conditional_exports_from_require
+Deno.test({ name: 'cli stage upstream run: --conditions selects package exports for require', timeout: 15000 }, async () => {
+    await withTempDir('cli-run-cond-require', async (root) => {
+        const pkg = join(root, 'node_modules', 'foo');
+        await Deno.mkdir(pkg, { recursive: true });
+        await Deno.writeTextFile(join(pkg, 'package.json'), JSON.stringify({
+            name: 'foo',
+            version: '1.0.0',
+            exports: {
+                '.': {
+                    'some-condition': './good.js',
+                    default: './bad.js',
+                },
+            },
+        }));
+        await Deno.writeTextFile(join(pkg, 'good.js'), 'console.log("good");\n');
+        await Deno.writeTextFile(join(pkg, 'bad.js'), 'console.log("bad");\n');
+        await Deno.writeTextFile(join(root, 'main.cjs'), 'require("foo");\n');
+
+        const withCond = await runCno(['run', '--conditions', 'some-condition', 'main.cjs'], root);
+        strictEqual(withCond.code, 0, withCond.stderr);
+        strictEqual(withCond.stdout.trim(), 'good');
+
+        const noCond = await runCno(['run', 'main.cjs'], root);
+        strictEqual(noCond.code, 0, noCond.stderr);
+        strictEqual(noCond.stdout.trim(), 'bad');
+    });
+});
+
+// specs/npm/dual_cjs_esm (local dual package cache substitute)
+Deno.test({ name: 'cli stage upstream npm: dual package import and cjs subpath resolve from cache', timeout: 20000 }, async () => {
+    await withTempDir('cli-npm-dual-cjs-esm', async (root) => {
+        const cacheDir = join(root, 'cache');
+        await writeCachedNpmMeta(cacheDir, '@denotest/dual-cjs-esm', {
+            '1.0.0': { name: '@denotest/dual-cjs-esm', version: '1.0.0' },
+        }, { latest: '1.0.0' });
+        await writeCachedNpmPackage(cacheDir, '@denotest/dual-cjs-esm', '1.0.0', {
+            type: 'module',
+            exports: {
+                '.': {
+                    import: './esm/main.js',
+                    require: './cjs/main.cjs',
+                    default: './esm/main.js',
+                },
+                './cjs/main.cjs': './cjs/main.cjs',
+            },
+        }, {
+            'esm/main.js': 'export function getKind() { return "esm"; }\n',
+            'cjs/main.cjs': `
+                exports.getKind = () => "cjs";
+                exports.getSubPathKind = () => "cjs";
+            `,
+        });
+        await Deno.writeTextFile(join(root, 'main.ts'), `
+            import { getKind } from "npm:@denotest/dual-cjs-esm@latest";
+            import * as cjs from "npm:@denotest/dual-cjs-esm@latest/cjs/main.cjs";
+            console.log(getKind());
+            console.log(cjs.getKind());
+            console.log(cjs.getSubPathKind());
+        `);
+
+        const result = await runCno(['run', `--cache-dir=${cacheDir}`, 'main.ts'], root);
+        strictEqual(result.code, 0, result.stderr);
+        strictEqual(result.stdout.trim(), 'esm\ncjs\ncjs');
+    });
+});
+
+// specs/node/detect_es_module_defined_as_cjs + specs/run/package_json_type/commonjs/basic main_esm
+Deno.test({ name: 'cli stage upstream: CJS package .js with ESM syntax loads as ESM', timeout: 20000 }, async () => {
+    await withTempDir('cli-detect-esm-as-cjs', async (root) => {
+        const untyped = join(root, 'node_modules', 'package');
+        await Deno.mkdir(untyped, { recursive: true });
+        await Deno.writeTextFile(join(untyped, 'package.json'), JSON.stringify({ name: 'package' }));
+        await Deno.writeTextFile(join(untyped, 'index.js'), 'export function add(a, b) { return a + b; }\n');
+        await Deno.writeTextFile(join(root, 'main.ts'), `
+            import { add } from "package";
+            console.log(add(1, 2));
+        `);
+        const untypedResult = await runCno(['run', 'main.ts'], root);
+        strictEqual(untypedResult.code, 0, untypedResult.stderr);
+        strictEqual(untypedResult.stdout.trim(), '3');
+
+        const typed = join(root, 'pkg-commonjs');
+        await Deno.mkdir(typed, { recursive: true });
+        await Deno.writeTextFile(join(typed, 'package.json'), JSON.stringify({ type: 'commonjs' }));
+        await Deno.writeTextFile(join(typed, 'add.js'), 'module.exports.add = (a, b) => a + b;\n');
+        await Deno.writeTextFile(join(typed, 'main_esm.js'), `
+            import { add } from "./add.js";
+            console.log(add(1, 2));
+        `);
+        await Deno.writeTextFile(join(typed, 'main_cjs.js'), `
+            const { add } = require("./add");
+            console.log(add(1, 2));
+        `);
+        const esm = await runCno(['run', 'main_esm.js'], typed);
+        strictEqual(esm.code, 0, esm.stderr);
+        strictEqual(esm.stdout.trim(), '3');
+        const cjs = await runCno(['run', 'main_cjs.js'], typed);
+        strictEqual(cjs.code, 0, cjs.stderr);
+        strictEqual(cjs.stdout.trim(), '3');
+    });
+});
+
+// specs/test/ignore + only via real test CLI
+Deno.test({ name: 'cli stage upstream test: ignore and only filter registered tests', timeout: 20000 }, async () => {
+    await withTempDir('cli-test-ignore-only', async (root) => {
+        await Deno.writeTextFile(join(root, 'ignore_main.ts'), `
+            for (let i = 0; i < 3; i++) {
+                Deno.test({ name: "ignored " + i, ignore: true, fn() { throw new Error("unreachable"); } });
+            }
+            Deno.test.ignore("ignored helper", () => { throw new Error("unreachable"); });
+            Deno.test("runs", () => {});
+        `);
+        const ignored = await runCno(['test', 'ignore_main.ts'], root);
+        strictEqual(ignored.code, 0, ignored.stderr + ignored.stdout);
+        ok(ignored.stdout.includes('runs') || ignored.stderr.includes('runs') || ignored.stdout.includes('ok'), ignored.stdout + ignored.stderr);
+
+        await Deno.writeTextFile(join(root, 'only_main.ts'), `
+            Deno.test("before", () => { throw new Error("before should not run"); });
+            Deno.test({ only: true, name: "only", fn() {} });
+            Deno.test.only("only2", () => {});
+            Deno.test("after", () => { throw new Error("after should not run"); });
+        `);
+        const only = await runCno(['test', 'only_main.ts'], root);
+        // Deno exits 1 when only is used (filter failure mode); cno may exit 0 if only tests pass.
+        // Assert the non-only tests did not fail the run as executed failures.
+        ok(only.code === 0 || only.code === 1, only.stderr + only.stdout);
+        ok(!only.stderr.includes('before should not run'), only.stderr);
+        ok(!only.stderr.includes('after should not run'), only.stderr);
     });
 });

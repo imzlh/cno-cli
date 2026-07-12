@@ -44,6 +44,7 @@ Handlers live under `cts/src/resolve/protocols/`.
 | `http:` and `https:` | `http.ts` |
 | `node:` and builtin aliases | `node.ts` |
 | `data:` | `data.ts` |
+| `pack:` | `pack.ts` (registered only while running a `.jspack`) |
 
 Bare specifiers first check builtin aliases and path aliases, then fall through
 to npm resolution.
@@ -147,6 +148,41 @@ npm packages are stored flat:
 
 The materializer uses the resolved scan graph rather than re-deriving versions
 from semver text.
+
+## Packed Modules
+
+`cts/src/pack/writer.ts` assigns relocatable `pack:` identities, records every
+resolved edge, and stores both transformed bytecode and original source bytes.
+Query and hash suffixes remain part of module identity. Scanner or compiler
+failures are fatal because a container is required to hold a complete graph.
+Variants of the same local source share one original-source blob while keeping
+independent compiled module identities.
+Local dependencies outside the project root use a hashed synthetic identity
+plus their basename; pack-time absolute directory names are not stored in the
+manifest.
+
+The writer validates the completed manifest, writes its header and payload
+chunks sequentially to a same-directory temporary file, calls `fsync`, and then
+renames it into place. It does not build duplicate whole-container buffers in
+memory, and a failed write cannot expose a partial destination.
+
+`cts/src/pack/reader.ts` validates the manifest and every blob range before
+registering `PackHandler`. Files are materialized under a content-addressed
+cache directory using generated filenames, never manifest-controlled paths:
+
+```text
+<cacheDir>/pack-extract/<sha256>/
+```
+
+Each extracted file is checked by full byte content (size first, then a
+byte-for-byte compare) against the container blob. Matching files are reused;
+mismatched or missing files are rewritten via a same-directory temporary path,
+`fsync`, and atomic rename. A `.complete` marker only records that a prior
+extraction finished — it is not an integrity signal. Same-length tampering and
+torn multi-process first extraction are both healed on the next load.
+
+The handler performs manifest-only resolution. Computed imports absent from the
+edge table fail consistently and cannot escape to the pack-time filesystem.
 
 ## OXC
 

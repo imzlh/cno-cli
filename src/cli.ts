@@ -40,6 +40,8 @@ const KNOWN_FLAGS = new Set<string>([
     'no-http', 'no-jsr', 'no-node', 'no-oxc', 'ignore-scripts',
     'npm-mode', 'polyfill', 'ext', 'cwd',
     'reload', 'r', 'precache', 'env', 'env-file', 'preload',
+    // pack
+    'out', 'o',
     // test
     'concurrency', 'filter', 'fail-fast', 'permit-no-files',
     // misc
@@ -91,7 +93,7 @@ const VALUE_FLAGS = new Set<string>([
     'cert', 'config', 'import-map', 'lock', 'location', 'log-level',
     'seed', 'v8-flags',
     'require', 'import', 'loader', 'env', 'env-file', 'preload',
-    'conditions', 'max-old-space-size',
+    'conditions', 'max-old-space-size', 'out',
 ]);
 
 const NODE_RUNTIME_VALUE_FLAGS = new Set<string>(['require', 'import', 'loader', 'conditions', 'max-old-space-size']);
@@ -261,7 +263,7 @@ export function parseArgv(argv: string[]): ParsedCli {
         // End of cno option parsing. Everything after this belongs to the
         // selected command; the first token becomes the run/test/cache target.
         if (a === '--') {
-            if (cmdDecided && cmd !== null && cmd !== 'run') {
+            if (cmdDecided && cmd !== null && cmd !== 'run' && cmd !== 'pack') {
                 positional.push(a);
             } else if (!cmdDecided) {
                 cmd = null;
@@ -361,6 +363,19 @@ export function parseArgv(argv: string[]): ParsedCli {
             if (k === 'p')      { flags['print'] = true; pushRawTokens(a); i++; continue; }
             if (k === 'A')      { flags['allow-all'] = true; pushRawTokens(a); i++; continue; }
             if (!cmdDecided && (k === 'pe' || k === 'ep')) { consumeEvalAlias(true); continue; }
+            if (k === 'o') {
+                const next = argv[i + 1];
+                if (shouldConsumeValueFlagToken(next)) {
+                    flags['out'] = next;
+                    pushRawTokens(a, next);
+                    i += 2;
+                } else {
+                    flags['out'] = true;
+                    pushRawTokens(a);
+                    i++;
+                }
+                continue;
+            }
             if (k === 'C') {
                 const next = argv[i + 1];
                 if (shouldConsumeValueFlagToken(next)) {

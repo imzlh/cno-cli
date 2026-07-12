@@ -33,6 +33,7 @@ ${C.bold('COMMANDS')}
   ${C.cyan('exec')}   ${C.cyan('<command>')} [args…]       Run an npm package binary, same as pnpx
   ${C.cyan('eval')}   ${C.cyan('<code>')}                  Evaluate inline code
   ${C.cyan('cache')}  ${C.cyan('<file>')}                  Pre-download deps and write lock
+  ${C.cyan('pack')}   ${C.cyan('<file>')} [-o ${C.dim('<out.jspack>')}]     Pack an entry and its deps into a portable ${C.cyan('.jspack')} container
   ${C.cyan('repl')}                           Start an interactive TypeScript REPL
   ${C.cyan('setup')}                          Install NodeJS modules. Please run in cno repo dir
   ${C.cyan('fmt')}    [paths…]                Format source files            ${C.dim('(not yet)')}

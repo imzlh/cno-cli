@@ -1,5 +1,6 @@
 import { deepStrictEqual, strictEqual } from 'node:assert';
 import domain from 'node:domain';
+import * as domainNs from 'node:domain';
 import { EventEmitter } from 'node:events';
 
 Deno.test('node:domain run catches thrown errors', async () => {
@@ -12,6 +13,50 @@ Deno.test('node:domain run catches thrown errors', async () => {
 
     strictEqual(result, undefined);
     strictEqual((await seen).message, 'a thrown error');
+});
+
+Deno.test('node:domain enter/exit maintain active stack', () => {
+    const a = domain.create();
+    const b = domain.create();
+    strictEqual(domainNs.active, null);
+
+    a.enter();
+    strictEqual(domainNs.active, a);
+    b.enter();
+    strictEqual(domainNs.active, b);
+    b.exit();
+    strictEqual(domainNs.active, a);
+    a.exit();
+    strictEqual(domainNs.active, null);
+});
+
+Deno.test('node:domain exit of non-top domain pops it and above', () => {
+    const a = domain.create();
+    const b = domain.create();
+    const c = domain.create();
+    a.enter();
+    b.enter();
+    c.enter();
+    b.exit();
+    strictEqual(domainNs.active, a);
+    a.exit();
+    strictEqual(domainNs.active, null);
+});
+
+Deno.test('node:domain run sets active for the duration of the callback', () => {
+    const outer = domain.create();
+    const inner = domain.create();
+    const order: string[] = [];
+
+    outer.run(() => {
+        order.push(domainNs.active === outer ? 'outer' : '?');
+        inner.run(() => {
+            order.push(domainNs.active === inner ? 'inner' : '?');
+        });
+        order.push(domainNs.active === outer ? 'outer2' : '?');
+    });
+    order.push(domainNs.active === null ? 'null' : 'still');
+    deepStrictEqual(order, ['outer', 'inner', 'outer2', 'null']);
 });
 
 Deno.test('node:domain add forwards EventEmitter error events', async () => {

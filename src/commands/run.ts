@@ -1,4 +1,4 @@
-import { createRuntime, loadConfigFile, fatal, formatError, extname, resolveFile, BinResolver, errMsg, log } from '../../cts/src/api';
+import { createRuntime, loadConfigFile, fatal, formatError, extname, resolveFile, BinResolver, errMsg, log, loadPack } from '../../cts/src/api';
 import type { ConfigOptions, ModuleFormat } from '../../cts/src/api';
 import { entryAndDir } from '../utils';
 import { Inspector } from '../inspector';
@@ -20,6 +20,10 @@ interface RunOpts {
     flags: Record<string, string | boolean>;
     rawArgs: Args;
     config?: Partial<ConfigOptions>;
+}
+
+function isJspackFile(entry: string): boolean {
+    return extname(entry).toLowerCase() === '.jspack';
 }
 
 function entryUrl(entry: string): string {
@@ -313,12 +317,16 @@ export async function runFile(opts: RunOpts): Promise<void> {
         : entryAndDir(opts.file);
     const fileCfg = loadConfigFile(dir);
     const cliCfg  = flagsToConfig(opts.flags);
+    const isPack = !isStdin && isJspackFile(entry);
 
     const cfg: Partial<ConfigOptions> = {
         ...fileCfg,
         ...opts.config,
         ...cliCfg,
     };
+    // A .jspack container has no real project directory to resolve/lock
+    // against — its module graph is fully described by its own manifest.
+    if (isPack) cfg.disableLock = true;
 
     // CDP debug session MUST attach before createRuntime so our engine.onModule
     // wrapper is in place before CTS's hookEngine() installs its handler.
@@ -349,7 +357,7 @@ export async function runFile(opts: RunOpts): Promise<void> {
         runtime.addInitHook(dbg.scriptInitHook);
     }
 
-    if (opts.flags['precache'] || opts.flags['reload']) {
+    if (!isPack && (opts.flags['precache'] || opts.flags['reload'])) {
         try {
             const info = runtime.resolver.resolve(entry, `${os.cwd}/<precache>`);
             await runtime.precache(info.specPath, info.localPath);
@@ -363,21 +371,28 @@ export async function runFile(opts: RunOpts): Promise<void> {
         setArgs(opts.rawArgs);
         await runDenoPreloads(runtime, opts.rawArgs.actionArgs);
         await runNodePreloads(runtime, opts.rawArgs.internalArgs);
-        Reflect.set(globalThis, '__mainScript', entryUrl(entry));
-        const resolved = isStdin ? { entry, npmBin: false } : resolveNpmRunEntry(runtime, entry, dir);
-        const runEntry = resolved.entry;
-        const sourceLang = sourceLangFromFlags(opts.flags);
-        const entryLang = entryLangFromFlags(opts.flags);
-        const npmBinSourceEntry = resolved.npmBin && extname(runEntry) === '';
-        const sourceOpts: { lang: string; format?: ModuleFormat } = npmBinSourceEntry
-            ? { lang: 'js', format: 'cjs' }
-            : { lang: sourceLang };
-        const useSourceEntry = isStdin || npmBinSourceEntry || (!resolved.npmBin && shouldLoadSourceEntry(runEntry, opts.flags));
-        const mod = isStdin
-            ? runtime.loadSourceEntry(await readStdinSource(), entry, {}, { lang: sourceLang })
-            : useSourceEntry
-            ? runtime.loadSourceEntry(readEntrySource(runEntry), runEntry, {}, sourceOpts)
-            : await runtime.loadEntry(runEntry, {}, entryLang);
+        let mod: Awaited<ReturnType<typeof runtime.loadEntry>>;
+        if (isPack) {
+            const { manifest } = loadPack(entry, runtime.resolver, runtime.compiler.esm.jsc, runtime.config.cacheDir);
+            Reflect.set(globalThis, '__mainScript', entryUrl(manifest.entry));
+            mod = await runtime.loadEntry(manifest.entry, {}, manifest.modules[manifest.entry]?.lang ?? '');
+        } else {
+            Reflect.set(globalThis, '__mainScript', entryUrl(entry));
+            const resolved = isStdin ? { entry, npmBin: false } : resolveNpmRunEntry(runtime, entry, dir);
+            const runEntry = resolved.entry;
+            const sourceLang = sourceLangFromFlags(opts.flags);
+            const entryLang = entryLangFromFlags(opts.flags);
+            const npmBinSourceEntry = resolved.npmBin && extname(runEntry) === '';
+            const sourceOpts: { lang: string; format?: ModuleFormat } = npmBinSourceEntry
+                ? { lang: 'js', format: 'cjs' }
+                : { lang: sourceLang };
+            const useSourceEntry = isStdin || npmBinSourceEntry || (!resolved.npmBin && shouldLoadSourceEntry(runEntry, opts.flags));
+            mod = isStdin
+                ? runtime.loadSourceEntry(await readStdinSource(), entry, {}, { lang: sourceLang })
+                : useSourceEntry
+                ? runtime.loadSourceEntry(readEntrySource(runEntry), runEntry, {}, sourceOpts)
+                : await runtime.loadEntry(runEntry, {}, entryLang);
+        }
         await mod.eval();
     } catch (e) {
         if (isInternalWorkerClose(e)) throw e;

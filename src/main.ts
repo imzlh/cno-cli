@@ -30,11 +30,13 @@ const processResources = createResourceManager();
 
 import type { Args } from '../cno/src/utils/args';
 import setArgs from '../cno/src/utils/args';
+import { resolveObjectURLBytes } from '../cno/src/webapi/url';
 import { registerExtensions } from './bootstrap';
 import { parseArgv, readArgv, warnUnknownFlags } from './cli';
 import { spawnBinary } from './commands/bin';
 import { runCache } from './commands/cache';
 import { runEval } from './commands/eval';
+import { runPack } from './commands/pack';
 import { runRepl } from './commands/repl';
 import { runFile } from './commands/run';
 import { runSetup } from './commands/setup';
@@ -44,6 +46,8 @@ import { C, showHelp, showVersion } from './help';
 import { disableCertVerify, startProxy, stopNetwork } from './network';
 
 import '../cno/src/main';   // main polyfill(cno) entry
+
+Reflect.set(globalThis, '__cno_resolve_blob_url', resolveObjectURLBytes);
 
 const fs = import.meta.use('fs');
 const console = import.meta.use('console');
@@ -201,6 +205,8 @@ async function dispatch(): Promise<void> {
         }
         case 'cache':
             return runCache(cli.positional, cli.flags);
+        case 'pack':
+            return runPack(cli.positional, cli.flags);
         case 'task':
             return runTask(cli.positional, cli.flags);
         case 'exec': {

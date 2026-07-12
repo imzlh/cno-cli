@@ -100,6 +100,24 @@ Deno.test('cli: value flags consume their value before the entry file', () => {
     deepStrictEqual(test.rawArgs.actionArgs, ['--concurrency', '2']);
 });
 
+Deno.test('cli: pack output flags work before and after the entry', () => {
+    const short = parseArgv(['pack', 'main.ts', '-o', 'dist/app.jspack']);
+    strictEqual(short.cmd, 'pack');
+    strictEqual(short.flags.out, 'dist/app.jspack');
+    deepStrictEqual(short.positional, ['main.ts']);
+
+    const long = parseArgv(['pack', '--out=app.jspack', 'main.ts']);
+    strictEqual(long.flags.out, 'app.jspack');
+    deepStrictEqual(long.positional, ['main.ts']);
+
+    const missing = parseArgv(['pack', 'main.ts', '-o', '--no-oxc']);
+    strictEqual(missing.flags.out, true);
+    strictEqual(missing.flags['no-oxc'], true);
+
+    const dashEntry = parseArgv(['pack', '--', '--entry.ts']);
+    deepStrictEqual(dashEntry.positional, ['--entry.ts']);
+});
+
 Deno.test('cli: run keeps repeated env and preload value flags before entry', () => {
     const cli = parseArgv([
         'run',

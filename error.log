@@ -1,0 +1,3255 @@
+prompt> pat-uvu  •   (1 / 1)
+
+  Total:     1
+  Passed:    1
+  Skipped:   0
+  Duration:  0.52ms
+
+ats
+  ok csv-parse: sync parser reads quoted records
+  ok msgpack-lite: encodes and decodes nested objects
+  ok ms: parses and formats duration strings
+Server listening on http://127.0.0.1:33575
+  ok ws: server and client echo over loopback
+Server listening on http://127.0.0.1:36487
+  ok ws: transfers binary frames and ping-pong payloads
+Server listening on http://127.0.0.1:36905
+  ok ws: propagates close code and reason between client and server
+Server listening on http://127.0.0.1:40101
+  ok isomorphic-ws: node client echo over ws server
+  ok cheerio: loads server DOM parser dependencies
+  ok cheerio: mutates nested DOM and serializes attributes
+  ok config parsers: yaml json5 dotenv round-trip
+◇ injected env (2) from ../../../tmp/cno-dotenv-b30e14e2ec74/.env // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
+  ok dotenv: config reads env file and mutates process.env
+Server listening on http://127.0.0.1:37663
+  ok socket.io: websocket client/server emits acknowledgement over loopback
+  ok node-pty: runs shell when native addon exists or reports missing build output
+  ok node-pty: writes interactive input through the pseudo terminal
+  ok ansi/chalk color stack: generate and strip ANSI sequences
+  ok pako and fflate: gzip round-trip binary data
+  ok arktype: validates runtime object schemas
+  ok uvu: registers and runs assertion tests in-process
+  ok argon2: native prebuild hashes and verifies passwords
+  ok tape: executes a TAP assertion stream
+  ok rollup: bundles virtual ESM modules
+  ok rollup: reads entry graph from disk and writes bundle output
+  ok postcss: processes a plugin pipeline
+  ok esbuild: transforms TypeScript through platform binary package
+  ok esbuild: bundles disk entry through platform binary package
+  ok uvu bin: runs a directory test suite
+  ok vitest: standalone expect assertions execute
+  ok conf: persists settings through Node filesystem APIs
+  ok conf: applies schema defaults and persists delete operations
+  ok lowdb: persists JSON records through ESM node adapter
+  ok lowdb: updates and rewrites records across reloads
+  ok xterm-headless: applies cursor movement and SGR state
+  ok xterm-headless: terminal buffer updates on input
+  ok tape bin: runs a CommonJS test file
+  ok sharp: native prebuild loads libvips and renders PNG
+  ok sharp: resizes decoded image and returns output metadata
+  ok zod and superstruct: runtime validators execute
+[05:17:28:435 - 7F1443022A40]: Load type section success.
+
+[05:17:28:435 - 7F1443022A40]: Load import section success.
+
+[05:17:28:436 - 7F1443022A40]: Load function section success.
+
+[05:17:28:436 - 7F1443022A40]: Load table section success.
+
+[05:17:28:436 - 7F1443022A40]: Load memory section success.
+
+[05:17:28:436 - 7F1443022A40]: Load global section success.
+
+[05:17:28:436 - 7F1443022A40]: Load export section success.
+
+[05:17:28:436 - 7F1443022A40]: Load table segment section success.
+
+[05:17:28:436 - 7F1443022A40]: Load datacount section success.
+
+[05:17:28:436 - 7F1443022A40]: Load code segment section success.
+
+[05:17:28:437 - 7F1443022A40]: Load data segment section success.
+
+[05:17:28:557 - 7F1443022A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:17:28:558 - 7F1443022A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:17:28:558 - 7F1443022A40]: Load module success.
+
+[05:17:28:558 - 7F1443022A40]: Memory instantiate:
+[05:17:28:558 - 7F1443022A40]:   page bytes: 65536, init pages: 338, max pages: 32768
+[05:17:28:558 - 7F1443022A40]:   heap offset: 22151168, heap size: 0
+
+[05:17:28:558 - 7F1443022A40]: Memory instantiate success.
+  ok sql.js: wasm sqlite executes a query
+  ok localforage: reports a usable storage driver or a clear unsupported error
+  ok prettier: formats source through parser plugins
+  ok prettier bin: cno exec runs CJS CLI dynamic import path
+  ok mocha bin: runs a CommonJS test file
+  ok eslint: lints text through config and parser stack
+  ok eslint bin: cno exec runs package binary with forwarded args
+  fail typescript bin: cno exec resolves tsc and strips arg separator AssertionError: Package 'tsc@latest' was not found in the CTS cache. cno exec only uses '/home/iz/.cts/npm'.
+ { actual: 1, expected: 0, generatedMessage: false, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: Package 'tsc@latest' was not found in the CTS cache. cno exec only uses '/home/iz/.cts/npm'.
+  
+      at strictEqual (node:assert/mod:169:25)
+      at <anonymous> (/home/iz/cno-cli/tests/npm/cli-tools.test.ts:93:20)
+[05:17:37:421 - 7F3B83CBEA40]: Load type section success.
+
+[05:17:37:421 - 7F3B83CBEA40]: Load function section success.
+
+[05:17:37:421 - 7F3B83CBEA40]: Load table section success.
+
+[05:17:37:421 - 7F3B83CBEA40]: Load memory section success.
+
+[05:17:37:421 - 7F3B83CBEA40]: Load global section success.
+
+[05:17:37:421 - 7F3B83CBEA40]: Load export section success.
+
+[05:17:37:421 - 7F3B83CBEA40]: Load code segment section success.
+
+[05:17:37:421 - 7F3B83CBEA40]: Load data segment section success.
+
+[05:17:37:421 - 7F3B83CBEA40]: Found aux __heap_base global, value: 14656
+[05:17:37:423 - 7F3B83CBEA40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:17:37:423 - 7F3B83CBEA40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:17:37:423 - 7F3B83CBEA40]: Load module success.
+
+[05:17:37:423 - 7F3B83CBEA40]: Load type section success.
+
+[05:17:37:423 - 7F3B83CBEA40]: Load function section success.
+
+[05:17:37:423 - 7F3B83CBEA40]: Load table section success.
+
+[05:17:37:423 - 7F3B83CBEA40]: Load memory section success.
+
+[05:17:37:423 - 7F3B83CBEA40]: Load global section success.
+
+[05:17:37:423 - 7F3B83CBEA40]: Load export section success.
+
+[05:17:37:423 - 7F3B83CBEA40]: Load code segment section success.
+
+[05:17:37:423 - 7F3B83CBEA40]: Load data segment section success.
+
+[05:17:37:423 - 7F3B83CBEA40]: Found aux __heap_base global, value: 14656
+[05:17:37:424 - 7F3B83CBEA40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:17:37:425 - 7F3B83CBEA40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:17:37:425 - 7F3B83CBEA40]: Load module success.
+
+[05:17:37:425 - 7F3B83CBEA40]: Memory instantiate:
+[05:17:37:425 - 7F3B83CBEA40]:   page bytes: 65536, init pages: 1, max pages: 65536
+[05:17:37:425 - 7F3B83CBEA40]:   heap offset: 65536, heap size: 0
+
+[05:17:37:425 - 7F3B83CBEA40]: Memory instantiate success.
+[05:17:37:425 - 7F3B83CBEA40]: Memory instantiate:
+[05:17:37:425 - 7F3B83CBEA40]:   page bytes: 65536, init pages: 1, max pages: 65536
+[05:17:37:425 - 7F3B83CBEA40]:   heap offset: 65536, heap size: 0
+
+[05:17:37:425 - 7F3B83CBEA40]: Memory instantiate success.
+  ok tsx bin: executes TypeScript through IPC preflight and exits
+  ok node preload flag: --require runs before the entry script
+  ok commander and yargs: parse argv arrays with typed options
+  ok ramda date-fns and dayjs: functional and date utilities execute
+  ok uuid and nanoid: generate valid identifiers
+  ok crypto-js: hashes and HMACs data in pure JS
+  ok jose: signs and verifies HS256 JWTs through WebCrypto
+Server listening on http://127.0.0.1:42289
+[05:17:45:327 - 7F1C1682EA40]: Load type section success.
+
+[05:17:45:327 - 7F1C1682EA40]: Load import section success.
+
+[05:17:45:327 - 7F1C1682EA40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 1536, WASM module load failed
+[05:17:45:336 - 7F1C1682EA40]: Load type section success.
+
+[05:17:45:336 - 7F1C1682EA40]: Load import section success.
+
+[05:17:45:336 - 7F1C1682EA40]: Load function section success.
+
+[05:17:45:336 - 7F1C1682EA40]: Load table section success.
+
+[05:17:45:336 - 7F1C1682EA40]: Load memory section success.
+
+[05:17:45:336 - 7F1C1682EA40]: Load global section success.
+
+[05:17:45:336 - 7F1C1682EA40]: Load export section success.
+
+[05:17:45:336 - 7F1C1682EA40]: Load table segment section success.
+
+[05:17:45:336 - 7F1C1682EA40]: Load code segment section success.
+
+[05:17:45:336 - 7F1C1682EA40]: Load data segment section success.
+
+[05:17:45:336 - 7F1C1682EA40]: Found malloc function, name: malloc, index: 57
+[05:17:45:336 - 7F1C1682EA40]: Found free function, name: free, index: 12
+[05:17:45:348 - 7F1C1682EA40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:17:45:348 - 7F1C1682EA40]: Load module success.
+
+[05:17:45:348 - 7F1C1682EA40]: Memory instantiate:
+[05:17:45:348 - 7F1C1682EA40]:   page bytes: 65536, init pages: 2, max pages: 65536
+[05:17:45:348 - 7F1C1682EA40]:   heap offset: 131072, heap size: 0
+
+[05:17:45:348 - 7F1C1682EA40]: Memory instantiate success.
+  ok undici: fetches JSON from a local http server
+Server listening on http://127.0.0.1:33641
+  ok node-fetch@2: CJS fetches JSON from a local http server
+Server listening on http://127.0.0.1:40967
+  ok node-fetch@3: ESM fetches JSON from a local http server
+Server listening on http://127.0.0.1:36207
+  ok cross-fetch: fetches JSON from a local http server
+Server listening on http://127.0.0.1:33981
+  ok fetch clients: send POST bodies and follow redirects
+  ok zeromq: native addon loads and exposes runtime capabilities
+  ok native lifecycle deps: node-pty can resolve node-addon-api for node-gyp
+  ok ffi-napi and ref-napi: call libc and dereference native memory
+  ok tough-cookie: stores and matches scoped cookies
+Server listening on http://127.0.0.1:35251
+Server listening on http://127.0.0.1:34753
+  ok http-proxy-agent and https-proxy-agent: proxy real requests
+  ok bindings: better-sqlite3 searches native addon from package root
+  ok sqlite3: native Node-API addon opens an in-memory database
+Server listening on http://127.0.0.1:34127
+  ok sqlite3: prepared statements insert and query multiple rows
+  ok cpu-features: built legacy native addon reports unsupported Node ABI
+  ok axios and got: follow redirects and send JSON bodies
+Server listening on http://127.0.0.1:40345
+  ok form-data and busboy: stream multipart upload through node:http
+  ok tar: creates gzip archive and extracts files from disk
+  ok execa: runs a child process with stdin and captures stdout
+  ok chokidar: observes add change and unlink events
+  ok glob and fast-glob: match files from disk
+  ok glob and fast-glob: honor cwd ignore and dotfile options
+  ok minimatch picomatch and pathe: match and normalize paths
+Server listening on http://127.0.0.1:44943
+  ok express: routes JSON requests through node:http server
+Server listening on http://127.0.0.1:40697
+  ok koa: middleware reads request stream and sets response headers
+  ok lodash and lodash-es: CJS and ESM utility packages both execute
+  ok jsonwebtoken: signs and verifies HS256 tokens
+Server listening on http://127.0.0.1:37257
+  ok fastify: listens on loopback and serializes JSON replies
+  ok jsonwebtoken: signs and verifies RS256 PEM tokens
+  ok CNO native algorithm: byte transforms encodings and search helpers
+  ok CNO native bjson: stable value round-trips and rejects unsafe shapes
+  ok CNO native algorithm: hashes and Xoshiro RNG are deterministic for same inputs
+  ok CNO native text: iconv encoder decoder streaming and conversion semantics
+  ok CNO native xml: parser streams elements character data comments and cdata
+  ok CNO native sourcemap: load lookup and remove simple mappings
+  ok CNO.llhttp: formats and parses requests with body and headers
+  ok CNO.llhttp: formats and parses responses and converts to Web Response
+  ok CNO.llhttp: streaming request parser reports expect-continue and parse errors
+  ok CNO.llhttp: Web Request/Response conversion preserves method, URL and body
+  ok location: about:blank URL shape and unsupported navigation methods
+  ok reportError: dispatches ErrorEvent without throwing
+  ok global timers: queueMicrotask and setImmediate validate callbacks
+  ok cts: TransformError carries fileName/line/column on syntax error
+  ok cts: transformer strips shebang before transform
+  ok cts: OXC uses explicit language for extensionless source entries
+  ok cts: sucrase source maps are generated without npm dependencies
+  ok cts: sucrase distinguishes runtime imports from type-only imports
+  ok cts: CJS transform preserves import-equals require side effects
+  ok cts: CNO transform preserves runtime import attributes
+  ok cts: sucrase ignores shadowed imported names for import elision
+  ok cts: sucrase export type groups only emit local placeholders
+  ok cts: sucrase preserves native class fields when ES transforms are disabled
+  ok cts: sucrase native class field initializers are transformed once
+  fail cts: sucrase emits compact modern enum literals AssertionError: var E = E || {}; E["A"] = 0; E[0] = "A"; E["B"] = 1_000; E[1_000] = "B"; E["C"] = 1001; E[1001] = "C"; E["D"] = "d"; { actual: false, expected: true, generatedMessage: false, code: 'ERR_ASSERTION', operator: '==' }
+  AssertionError: var E = E || {}; E["A"] = 0; E[0] = "A"; E["B"] = 1_000; E[1_000] = "B"; E["C"] = 1001; E[1001] = "C"; E["D"] = "d";
+      at innerOk (node:assert/mod:113:25)
+      at ok (node:assert/mod:121:12)
+      at <anonymous> (/home/iz/cno-cli/tests/cts/transform-exports.test.ts:171:16)
+      at startTest (<core>:61588:33)
+  ok cts: sucrase generated names avoid source collisions
+  ok cts: sucrase jsx-only transform preserves imports and exports
+  ok cts: sucrase automatic jsx runtime emits direct import list
+  ok cts: sucrase jsx string whitespace and entities are preserved
+  ok cts: sucrase jsx hyphenated props stay quoted
+  ok cts: sucrase duplicate jsx keys preserve discarded key newlines
+  ok cts: sucrase flow pragma removal preserves trivia
+  ok cts: sucrase tokenizer lookahead skips comments without regex
+  fail cts: sucrase tokenizer lookahead handles const enum AssertionError: var Mode = Mode || {}; Mode["Read"] = 0; Mode[0] = "Read"; Mode["Write"] = 1; Mode[1] = "Write"; { actual: false, expected: true, generatedMessage: false, code: 'ERR_ASSERTION', operator: '==' }
+  AssertionError: var Mode = Mode || {}; Mode["Read"] = 0; Mode[0] = "Read"; Mode["Write"] = 1; Mode[1] = "Write";
+      at innerOk (node:assert/mod:113:25)
+      at ok (node:assert/mod:121:12)
+      at <anonymous> (/home/iz/cno-cli/tests/cts/transform-exports.test.ts:285:16)
+      at startTest (<core>:61588:33)
+  ok cts: sucrase tsx fragment import elision keeps React
+  ok cts: sucrase react displayName uses parent directory for index files
+  ok cts: resolveExports maps "." to package exports
+  ok cts: resolveExports maps "./utils" to subpath target
+  ok cts: resolveExports returns null for an unmapped subpath
+  ok cts: normalizeBinField accepts string bin
+  ok cts: getBinMap reads bin field from package.json
+  ok cli stage: version and help commands exit successfully
+  ok bcryptjs: hashes and compares passwords in pure JS
+  ok bcrypt: loads native addon and compares passwords
+  ok cli stage: eval runs inline code with Deno args empty
+  ok cts runtime: data URL modules run through static and dynamic imports
+  fail cts runtime: blob URL modules support TypeScript and relative-import failures AssertionError: ✖ Uncaught (in /tmp/cno-cts-blob-url-runtime-151727-36867842b473/main.ts) Module Not Found
+  Cannot resolve "blob:/cno-mrfyltc5-1-161h5x3as3m" from "/tmp/cno-cts-blob-url-runtime-151727-36867842b473/main.ts": blob: object URLs are not available in this runtime
+    construct (<core>:44263:56)
+
+  → Is the package name correct? Try cts cache <entry> to pre-fetch.
+
+ { actual: 1, expected: 0, generatedMessage: false, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: ✖ Uncaught (in /tmp/cno-cts-blob-url-runtime-151727-36867842b473/main.ts) Module Not Found
+    Cannot resolve "blob:/cno-mrfyltc5-1-161h5x3as3m" from "/tmp/cno-cts-blob-url-runtime-151727-36867842b473/main.ts": blob: object URLs are not available in this runtime
+      construct (<core>:44263:56)
+  
+    → Is the package name correct? Try cts cache <entry> to pre-fetch.
+  
+  
+      at strictEqual (node:assert/mod:169:25)
+      at <anonymous> (/home/iz/cno-cli/tests/cts/import-attributes-runtime.test.ts:62:20)
+  ok cts runtime: import attributes expose bytes and text module views
+  ok cli stage: eval supports print and extension modes
+  ok cts runtime: json import attributes work for static and dynamic imports
+  ok cts node protocol: resolves bare and subpath polyfills from cache dir
+  ok cts node protocol: relative polyfill imports stay inside builtin namespace
+  ok cts node protocol: registered resolver bypasses cache filesystem lookup
+  ok cts node protocol: ignores stale lock paths from another cache dir
+  ok cts data protocol: writes decoded text, base64 and typed cache entries
+  ok cts data protocol: invalid data URLs fail before writing cache files
+  ok cts file protocol: resolves encoded file URLs and detects format/kind
+  ok cts http protocol: normalizes relative URLs and caches successful fetch bytes
+  ok cts http protocol: non-2xx responses throw module not found errors
+  ok cts jsc cache: local freshness and remote sidecar paths are observable
+  ok cli stage: run and implicit run pass script arguments after entry
+  ok cli: run stops flag parsing after entry file
+  ok cli: implicit run keeps pre-entry runtime flags separate
+  ok cli: inspect optional value consumes only port-like tokens
+  ok cli: implicit run keeps Node preload flags in execArgv
+  ok cli: value flags consume their value before the entry file
+  ok cli: run keeps repeated env and preload value flags before entry
+  ok cli: value flags can consume dash-prefixed non-option values
+  ok cli: option terminator stops cno flag parsing before entry
+  ok cli: exec keeps command args after option terminator
+  ok cli: eval aliases collect code as entry
+  ok cts path: normalizes separators and drive prefixes
+  ok cts path: basename dirname extname and joins handle common edges
+  ok cts path: normalizePath collapses dot segments without escaping roots
+  ok cts path: isRelative accepts only explicit relative specifiers
+  ok cts LRU: get updates recency and set evicts least-recently-used
+  ok cts misc: hash and cache filenames are stable
+  ok cts misc: bytes and semver matching cover common range forms
+  ok cts misc: npm specPath parser handles scoped packages and subpaths
+  ok cts misc: stripJsonc removes comments without touching strings
+  ok cts misc: parseArgs handles long, short, inline and positional boundaries
+  ok cli stage: run supports local query hash imports and BOM sources
+console probe
+  ok inspector console: top frame matches Error.stack call site
+  ok cts: BUILTINS includes major node modules
+  ok cts: isBuiltinSpecifier detects node: prefix
+  ok cts: isBuiltinSpecifier only accepts known builtin subpaths
+  ok cts: builtins.ts exports BUILTINS and isBuiltinSpecifier
+  ok cli stage: run exposes import.meta entry metadata
+  ok cli stage: run exposes Deno.mainModule to dependencies
+  ok inspector pipe rpc: client calls server handlers and resolves replies
+  ok inspector pipe rpc: server errors reject pending client calls
+  ok inspector pipe rpc: events flow from server to client listener
+  ok inspector object store: release object and group are idempotent
+  ok inspector serializer: primitives and object ids match CDP RemoteObject shape
+  ok inspector serializer: previews and property descriptors include own data and accessors
+  ok inspector serializer: map previews expose entry previews and overflow
+  ok cli stage: run defaults stdin and extensionless entries to TypeScript
+  ok cts config: parseSize accepts common units and rejects malformed values
+  ok cts config: loadConfigFile merges tsconfig deno import maps and package cts mode
+  fail cts resolver upstream: ESM package subpaths do not add extensions or directory indexes AssertionError: Missing expected exception { actual: undefined, expected: undefined, generatedMessage: false, code: 'ERR_ASSERTION', operator: 'throws' }
+  AssertionError: Missing expected exception
+      at throws (node:assert/mod:373:26)
+      at <anonymous> (/home/iz/cno-cli/tests/cts/config-resolver.test.ts:100:8)
+      at startTest (<core>:61588:33)
+  ok cts resolver: tsconfig paths resolve relative to baseUrl
+  ok cts resolver: package imports use default condition from local package parent
+  ok cts npm: package imports missing entries expose Node error code
+  ok cts npm: package exports without matching condition do not fall back to package marker
+  ok cts npm: version after package subpath is an invalid specifier
+  ok cts npm: package directory subpaths prefer index.js over ts json and wasm siblings
+  ok cts npm: nested npm parents resolve dependency ranges from their own package
+  ok cts npm: local package lookup follows symlink real paths for private deps
+  ok cts resolver: file kind and attr helpers classify common paths
+  ok cts resolver: data handler emits filesystem flow for plain data URLs
+  ok cts resolver: data handler decodes base64 JSON and rejects invalid URLs
+  ok cts npm: cached packages still queue lifecycle scripts during cache
+  ok cts resolver: stale remote lock entries from another cache dir are not usable
+  ok cts resolver: stale npm lock entries with mismatched format are not usable
+  ok cts npm: stale parent localPath does not redirect dependency lookup to old cache
+  ok cts source cache: remote detection and empty local cache are stable
+  ok cts errors: err attaches kind and formatError uses labels and hints
+  ok cts types: moduleRef prefers explicit module identity
+  ok cli stage: run propagates Deno exit codes
+  ok cts shell: parser preserves quoted operators and segment operators
+  ok cts shell: parser handles escapes, pipes and background separators
+  ok cts lifecycle: plans node fallback scripts without shelling the whole command
+  ok cts lifecycle: keeps single non-node and shell-only syntax on shell fallback
+  ok cts lifecycle: resolves fallback bins without touching shell or path commands
+  ok cts lifecycle: executes && || ; with shell-compatible short-circuiting
+  ok cts shell: unix bin resolver accepts direct node shebang scripts
+  ok cts shell: unix bin resolver extracts basedir-relative JS entry
+  ok cts shell: windows bin resolver extracts dp0-relative JS entry
+  ok cts task: loadTasks merges package scripts and deno task overrides
+  ok cts task: shell fallback appends extra args without expansion
+  ok cli stage: run dedupes concurrent dynamic imports already evaluating
+  ok cts task: package scripts run pre/post but deno tasks do not
+[31m✖ Circular dependency detected:[0m a
+[31m✖ Dependency task [36ma[0m[31m failed (exit 1)[0m
+  ok cts task: dependencies dedupe diamond graphs and reject cycles
+  ok cts task: shell-only syntax runs through platform shell
+10n[31m✖ Task [36mfail5[0m[31m exited with code 5[0m
+[31m✖ Unknown task:[0m missing
+  Available: [36mfail5[0m
+  ok cts task: shell fallback propagates exit codes and unknown tasks fail
+  ok cts task: INIT_CWD defaults to invocation directory and preserves existing env
+  ok cli stage: run supports mts type imports and CJS entry semantics
+  fail cli stage: run detects ESM syntax in package commonjs js files AssertionError: ✖ Uncaught (in /tmp/cno-cli-run-package-type-commonjs-151718-44eccfc651ff/main_esm.js) Syntax Error
+  Unexpected token '{'
+  /tmp/cno-cli-run-package-type-commonjs-151718-44eccfc651ff/main_esm.js:2:1
+
+  1 │ 
+  2 │             import { add } from "./add.js";
+      ^
+  3 │             console.log(add(1, 2));
+    execWithSource (<core>:3250:42)
+
+  → Check the highlighted file for TypeScript/JavaScript syntax errors.
+
+ { actual: 1, expected: 0, generatedMessage: false, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: ✖ Uncaught (in /tmp/cno-cli-run-package-type-commonjs-151718-44eccfc651ff/main_esm.js) Syntax Error
+    Unexpected token '{'
+    /tmp/cno-cli-run-package-type-commonjs-151718-44eccfc651ff/main_esm.js:2:1
+  
+    1 │ 
+    2 │             import { add } from "./add.js";
+        ^
+    3 │             console.log(add(1, 2));
+      execWithSource (<core>:3250:42)
+  
+    → Check the highlighted file for TypeScript/JavaScript syntax errors.
+  
+  
+      at strictEqual (node:assert/mod:169:25)
+      at <anonymous> (/home/iz/cno-cli/tests/cts/cli-stage.test.ts:367:20)
+  ok cts task cli: --config and --cwd split config lookup from execution cwd
+  ok cli utils: entryAndDir resolves relative, absolute and protocol targets
+  ok inspector network: fetch and serve requests expose initiator stacks
+  ok cache command: buildCacheConfig forces writable lock and applies cache flags
+  ok cache command: invalid npm-mode flag does not clobber file config
+  ok cache command: collectSpecifiers merges deno imports and package dependency groups
+  ok cache command: entry-mode specifier collection can exclude deno import-map aliases
+  ok cli stage: run covers cts and js-to-ts module interop
+  ok cache command: remote entry targets do not seed project package dependencies
+  ok cli stage: run loads env files before entry
+  ok cli stage: run supports process loadEnvFile
+  ok cache command: executes lifecycle scripts for cached npm packages
+  ok cli stage: run preloads modules before imports and dedupes entry preload
+  ok cli stage: run honors NODE_OPTIONS require before cli require
+  ok cli stage: run supports multiple require preloads with CJS metadata
+  ok cli stage: run requires sync ESM from CJS and rejects TLA ESM
+  ok cli stage: run preserves dynamic import TLA and failure caching
+  ok cli stage: run covers private fields and weak references
+  ok cli stage: run imports wasm modules from ESM CJS and CTS
+  ok cli stage: run imports CJS files from ESM package entry points
+  ok cli stage: run lets package CJS require local JS ESM sources
+  ok cli stage: run handles duplicate dynamic imports and async catch flow
+  ok cli stage: run keeps Deno args and runtime-written dynamic imports fresh
+  ok cli stage: run handles concurrent stdio reads and writes
+  ok cli stage: test discovers nested tests and reports failures with exit code 1
+  ok cli stage: test supports filter fail-fast and permit-no-files
+  ok cli stage: test accepts default TypeScript extensionless and --ext entries
+  ok cli stage upstream: CJS re-export analysis reports deterministic first missing dependency
+  ok cli stage upstream: spawned package entry keeps npm parent resolution state
+  ok cli stage upstream npm: run resolves package bin entrypoints
+  ok cli stage: exec resolves bins from CTS cache, not local node_modules
+  ok cli stage upstream npm: dynamic import from npm can load local TS URLs
+  ok cli stage upstream npm: non-analyzable dynamic import can add npm deps
+  ok cli stage upstream npm: direct non-analyzable dynamic npm import resolves cached package
+  ok cli stage upstream npm: dynamic import reuses the same cached npm package instance
+  ok cli stage upstream npm: common CJS package features resolve from cache
+  ok cli stage upstream npm: CJS packages can require deps subpaths and ESM
+  fail cli stage upstream npm: package createRequire validates inputs and loads package files AssertionError: [runtime] ✖ Uncaught (in unhandled promise rejection) Error
+  The "url" argument must be of type string or an instance of URL
+    createRequire (node:module/mod:54:35)
+✖ Uncaught (in /tmp/cno-cli-npm-create-require-151718-3ff71d07ed80/main.ts) Error
+  The "url" argument must be of type string or an instance of URL
+    createRequire (node:module/mod:54:35)
+
+ { actual: 1, expected: 0, generatedMessage: false, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: [runtime] ✖ Uncaught (in unhandled promise rejection) Error
+    The "url" argument must be of type string or an instance of URL
+      createRequire (node:module/mod:54:35)
+  ✖ Uncaught (in /tmp/cno-cli-npm-create-require-151718-3ff71d07ed80/main.ts) Error
+    The "url" argument must be of type string or an instance of URL
+      createRequire (node:module/mod:54:35)
+  
+  
+      at strictEqual (node:assert/mod:169:25)
+      at <anonymous> (/home/iz/cno-cli/tests/cts/cli-stage.test.ts:1557:20)
+  ok cli stage upstream npm: CJS and ESM package condition interop matches runtime entry
+  ok cli stage upstream npm: dynamic dependency resolution failures are catchable
+  ok cli stage upstream npm: package code can exec bundled cno and preserve globals
+  ok cli stage upstream npm: package origins resolve mixed-case and raw subpath imports
+  ok cli stage upstream npm: bin and package subpaths resolve without explicit versions
+  ok cli stage upstream npm: project package names do not shadow npm dependencies
+  ok less: renders nested rules and variables
+  ok less: resolves disk imports from filename
+  ok cli stage upstream npm: package require can see node_modules folders added at runtime
+  ok cli stage upstream npm: package sources decode lossy UTF-8 without aborting
+  ok cache command: retries missing native build outputs after lifecycle scripts
+  ok cli stage upstream npm: cached-only rejects packages missing from cache
+  ok cli stage upstream npm: invalid static package specifier fails before entry completes
+  fail cache command: fails when a lifecycle script exits non-zero AssertionError: ✔ 1 modules cached
+  Lock: /tmp/cno-cache-lifecycle-fail-152038-d49f0dd0ea5d/cts.lock
+[lifecycle] install native-failure@1.0.0 exited with code 7
+ { actual: 0, expected: 1, generatedMessage: false, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: ✔ 1 modules cached
+    Lock: /tmp/cno-cache-lifecycle-fail-152038-d49f0dd0ea5d/cts.lock
+  [lifecycle] install native-failure@1.0.0 exited with code 7
+  
+      at strictEqual (node:assert/mod:169:25)
+      at <anonymous> (/home/iz/cno-cli/tests/cts/cache-command.test.ts:291:20)
+  ok cli stage upstream npm: invalid dynamic package specifier is catchable
+  ok cli stage upstream npm: missing dynamic package version is catchable
+  ok cli stage upstream npm: missing package subpaths fail without fallback
+  ok cli stage upstream npm: workers can import npm while another worker closes
+  ok cli stage upstream npm: package json import attributes read npm package metadata
+  ok cli stage upstream npm: local node_modules imports share package module identity
+  ok cli stage upstream npm: npm specifier can match local node_modules semver range
+  ok cli stage: repl .q exits through cleanup and writes history
+  ok cno utils args: parseArgs separates internal action entry and script args
+  ok cno utils args: builders derive Deno and Node argv from shared state
+  ok cno utils path: normalize join dirname and extension cover common paths
+  ok cts flow: runSync executes filesystem steps and propagates caught errors
+  ok cts flow: runAsync writes and reads bytes
+  ok cts cjs: buildPaths walks parent node_modules directories and caches
+  ok cts cjs bridge: exposes named exports attached to function exports
+  ok cts linker: soft mode links only project root packages and writes manifest
+  ok cts linker: hard mode materializes nested package edges and prunes stale roots
+  ok inspector shared: consoleAPICalledType maps raw console methods to CDP types
+  ok inspector shared: buildConsoleStackTrace converts frames without mutating input
+  ok inspector shared: remapConsoleFrame maps native console frames through sourcemap
+  ok inspector shared: remapConsoleFrame accepts zero-based network frames
+  ok inspector shared: remapConsoleFrame preserves negative fallback coordinates
+  ok inspector dispatcher: registerMany dispatches sync and async handlers
+  ok inspector dispatcher: unknown methods and errors use CDP payload shape
+  ok stylus: renders variables and nested rules
+  ok stylus: resolves disk imports through paths option
+  ok cts lock: flush opens a fresh writable DB and persists pending entries
+  ok cts lock: close persists pending entries before the DB is opened
+  ok cts lock: removeBinsForPackage hides pending and persisted bins
+  ok cts lock: findModuleSpecsByPrefix merges pending and persisted specs
+[bridge] globalThis.require re-installed — prior runtime hijacked
+[bridge] CTS_INTERNAL re-installed — prior runtime hijacked
+[bridge] globalThis.require re-installed — prior runtime hijacked
+[bridge] CTS_INTERNAL re-installed — prior runtime hijacked
+[runtime] engine.onModule re-installed — prior runtime hooks replaced
+  ok cts runtime lock: discovers project lock read-only and --no-lock skips it
+  ok cts resolver lock: frozen rejects modules missing from the lock
+  ok cts bin resolver: prefers local node_modules bin over lock index
+  ok cts bin resolver: rejects path-like names and resolves direct JS lock bins
+  ok cts bin resolver: resolves npm specifier bins from an explicit cache dir
+  ok cts bin resolver: global lookup ignores local bins and lock bins
+  ok cts scan: extracts runtime imports and skips type-only references
+  ok cts scan: dedupes imports and ignores invalid source
+  ok cts scan: path helpers match scan extension policy
+  fail cts pkg: detectFormat follows extension, package type and deno defaults AssertionError: 'cjs' strictEqual 'esm' { actual: 'cjs', expected: 'esm', generatedMessage: true, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: 'cjs' strictEqual 'esm'
+      at strictEqual (node:assert/mod:169:25)
+      at <anonymous> (/home/iz/cno-cli/tests/cts/scan-pkg.test.ts:112:39)
+      at startTest (<core>:61588:33)
+  ok cts pkg: resolveExports honors import/require conditions and wildcard maps
+  ok cts pkg: resolveImports handles direct and wildcard package imports
+  fail cts pkg: resolveMain and resolveSubpath keep ESM subpaths strict but CJS fallbacks wide AssertionError: { path: '/tmp/cno-pkg-main-152255-bd171cac8661/sub/index.js', format: 'esm' } strictEqual null { actual: { path: '/tmp/cno-pkg-main-152255-bd171cac8661/sub/index.js', format: 'esm' }, expected: null, generatedMessage: true, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: { path: '/tmp/cno-pkg-main-152255-bd171cac8661/sub/index.js', format: 'esm' } strictEqual null
+      at strictEqual (node:assert/mod:169:25)
+      at <anonymous> (/home/iz/cno-cli/tests/cts/scan-pkg.test.ts:201:35)
+      at startTest (<core>:61588:33)
+  ok cts pkg: resolveExports tries array fallbacks in order
+  ok http h1: request builder emits defaults without overriding explicit headers
+  ok http h1: request builder supports full URL request-target and HTTP/1.0 close
+  ok http h1: response parser handles incremental headers and body
+  ok http h1: response parser buffers body when no data callback is set
+  ok http h1: parse errors call onError instead of throwing when installed
+  ok http zlib: accept-encoding ignores q=0 and picks supported codecs
+  ok http zlib: compression predicates cover text and structured types
+  ok http zlib: one-shot and streaming gzip round-trip bytes
+  ok http protocol: ALPN helpers map supported protocol versions
+  ok http dns-cache: literal addresses resolve without touching cache
+  ok http2: error code constants are the real nghttp2 values
+  ok http2: SETTINGS identifier constants match nghttp2
+  ok http2: HTTP2_HEADER_* pseudo-header constants are strings
+  ok http2: common HTTP2_HEADER_* field-name constants are strings
+  ok http2: HTTP2_METHOD_* constants expose common verbs
+  ok http2: HTTP_STATUS_* constants expose common status codes
+  ok http2: DEFAULT_SETTINGS_* constants match Node defaults
+  ok http2: session role constants match nghttp2
+  ok http2: stream state constants match nghttp2
+  ok http2: createServer returns an http.Server
+  ok http2: createSecureServer returns an https.Server
+  ok fs: sync read/write/stat/unlink round-trip
+  ok fs: promises API read/write/mkdir/rmdir/stat
+  ok fs: readdir returns entries and Dirent names
+  ok fs: readFile on missing path throws ENOENT
+  ok fs: createReadStream pipes file content
+  ok fs: createWriteStream writes full content
+  ok stream: pipeline pipes and resolves
+  ok stream: pipeline rejects when source errors
+  ok stream: Transform mutates chunks
+  ok stream: PassThrough preserves data
+  ok stream: Readable.toWeb / Writable.fromWeb exist
+  ok events: once() removes listener after first emit
+  ok events: removeAllListeners clears all
+  ok events: defaultMaxListeners is 10
+  ok child_process: execSync returns stdout
+  ok child_process: spawnSync with stdio pipe captures exit code
+  ok crypto: sha256 is stable and hex
+  ok crypto: randomBytes returns requested length
+  ok crypto: timingSafeEqual on equal buffers
+  ok url: URL parses query
+  ok url: URLSearchParams toString round-trips
+  ok util: format interpolates
+  ok util: inspect formats objects
+  ok node:domain run catches thrown errors
+  ok node:domain add forwards EventEmitter error events
+  ok node:domain remove detaches EventEmitter error forwarding
+  ok node:domain bind preserves arguments and reports thrown errors
+  ok node:domain intercept handles callback errors before invoking callback
+  ok node:test upstream: top-level helpers share the same callable test function
+  ok nested step
+  ok node:test upstream: context exposes assert namespace and nested tests
+  ok node:test upstream: done callback pass support
+  ok node:test upstream: mock.fn tracks calls, results, errors and this
+  ok node:test upstream: mock.fn implementation override honors times option
+  ok node:test upstream: mock.method spies, restores and rejects non-functions
+  ok node:test upstream: mock reset clears calls and restoreAll restores methods
+  ok util: format handles placeholders escaping and trailing args
+  ok util upstream: format numeric specifiers match Node coercion edges
+  ok util: formatWithOptions and inspect options affect object formatting
+  ok util upstream: default export debug aliases inspect custom symbol and text coders
+  ok util: terminal helpers normalize control sequences and text styles
+  ok util: toUSVString replaces unpaired surrogates
+  ok util: isDeepStrictEqual compares nested built-in values
+  ok util upstream: types recognize typed arrays and native errors
+  ok util: inherits wires prototype chain and super_ marker
+  ok util: promisify resolves rejects and honors custom implementation
+  ok util: callbackify forwards fulfillment rejection and falsy rejection
+DeprecationWarning: deprecated test function
+  ok util upstream: deprecate returns callable wrapper and callbackify validates input
+  ok util: parseArgs handles strings booleans defaults negation and tokens
+  ok util: system error helpers expose errno map and validate arguments
+  ok util: MIMEType parses essence params and serializes updates
+  ok util: MIMEType validates essence and keeps parseable first parameters
+  ok util: MIMEParams validates runtime updates and serializes quoted values
+  ok util: aborted resolves for already and later aborted signals
+  ok util: parseEnv supports comments quoting multiline and expansion
+  ok stream.promises: pipeline resolves after all chunks are written
+  ok stream.promises: pipeline accepts transform factory functions
+  ok stream.promises: pipeline rejects on transform errors
+  ok stream.promises: finished resolves for writable finish
+  ok stream.promises: finished rejects on stream error
+  ok stream.promises: finished rejects when AbortSignal aborts
+  ok stream.promises: finished resolves for Web ReadableStream after consumption
+  ok stream.promises: namespace finished also supports Web ReadableStream
+✖ Uncaught (in /home/iz/cno-cli/tests/node/targets/cdp-discovery.target.ts) Error
+  ArrayBuffer object expected
+    transpileBytes (<core>:30400:76)
+
+  ok sass: compiles SCSS with variables
+  ok sass: compiles disk entry with @use dependency
+  ok terser: minifies modern JavaScript
+  ok magic-string: overwrites and emits source map
+  ok acorn and estree-walker: parse and walk AST
+  ok dgram edge: createSocket validates socket type before native UDP init
+  ok dgram edge: address and remoteAddress report unbound state
+  ok dgram edge: ttl arguments are validated before socket options
+  ok assert: default function behaves like ok for falsy values
+  ok assert: strict namespace function rejects all falsy values
+  ok assert: throws RegExp predicate matches primitive thrown values
+  ok assert: throws validation function must return true exactly
+  ok assert: throws validates Error object message and name
+  ok assert: throws object matcher requires expected undefined properties to exist
+  ok assert: doesNotThrow rethrows exceptions that do not match predicate
+  ok assert: rejects rejects when callback does not return a promise
+  ok assert: rejects object matcher requires expected undefined properties to exist
+  ok assert upstream: CallTracker is exported on namespace default and strict
+  ok assert upstream: AssertionError stores explicit metadata
+  ok assert upstream: AssertionError generates messages and honors stackStartFn
+  ok assert upstream: strictEqual message matches equivalent AssertionError
+  ok assert upstream: deepStrictEqual distinguishes -0 and boxed numbers
+  ok assert upstream: throws and rejects support message-only overloads
+  ok assert upstream: strict namespace aliases use strict deep equality
+✖ Uncaught (in /home/iz/cno-cli/tests/node/cdp-protocol.test.ts) Module Not Found
+  Cannot resolve "../../src/inspector/domains/page" from "/home/iz/cno-cli/tests/node/cdp-protocol.test.ts": Cannot resolve: /home/iz/cno-cli/src/inspector/domains/page
+    construct (<core>:44263:56)
+
+  → Is the package name correct? Try cts cache <entry> to pre-fetch.
+
+  ok stream.web: exports Web Stream constructors from global scope
+  ok stream.web: readableFromWeb converts Web ReadableStream to Node Readable
+  ok stream.web: readableToWeb converts Node Readable to Web ReadableStream
+  ok stream.web: writableFromWeb forwards Node writes into Web WritableStream
+  ok stream.web: writableToWeb forwards Web writes into Node Writable
+  ok stream upstream: Writable.toWeb waits for delayed Node write callbacks
+  ok stream.web: duplexFromWeb bridges a TransformStream
+  ok readline: createInterface accepts a Readable stream
+  ok readline: createInterface emits line events
+  ok readline: createInterface normalizes CRLF and flushes unterminated final line
+  ok readline: question resolves with answer
+  ok readline: question writes prompt to provided output
+  ok readline: pause/resume toggle input paused state
+  ok readline: pause and resume emit once per state transition
+  ok readline: write echoes data to terminal output
+  ok readline: createInterface accepts output option
+  ok readline: prompt uses current prompt string in non-terminal mode
+  ok readline: getPrompt returns configured prompt string
+  ok readline: write updates line state in terminal mode
+  ok readline: Interface extends EventEmitter
+  ok readline: close emits close event
+  ok readline: close is idempotent and removes input listeners
+  ok readline: clear helpers write ANSI control sequences
+  ok readline upstream: promises interface is async iterable over input lines
+  ok readline upstream: callback interface is async iterable over input lines
+  ok path: posix and win32 submodules are shared namespace singletons
+  ok path: posix root and trailing directory parse like Node
+  ok path: win32 parse preserves drive and UNC roots in dir
+  ok path: win32 toNamespacedPath handles drive and UNC absolute paths
+  ok path: win32 drive-relative and cross-drive relative edges
+  ok path: namespace objects expose long path helpers
+  ok path: public methods reject non-string path arguments
+  ok path: format inserts extension dots and preserves empty base directories
+  ok fs.promises.FileHandle: open + read + close lifecycle
+  ok fs.promises.FileHandle: read with offset does not overwrite prefix
+  ok fs.promises.FileHandle: write at position
+  ok fs.promises.FileHandle: truncate shortens the file
+  ok fs.promises.FileHandle: stat returns file size
+  ok fs.promises.FileHandle: fd is numeric and readFile supports encoding
+  ok fs.promises.FileHandle: writeFile writes from current offset without truncating
+  ok fs.promises.FileHandle: writev writes multiple buffers and reports bytesWritten
+  ok fs.promises.FileHandle: sync and datasync are callable
+  ok fs.promises.FileHandle: close is idempotent
+  ok fs.promises.FileHandle: read after close throws
+  ok cache command: fails when dependency scanning reports errors
+Server listening on http://127.0.0.1:39571
+  ok http: res.end(callback) invokes callback once
+Server listening on http://127.0.0.1:46853
+  ok http: res.end(data, cb) delivers body and fires callback
+Server listening on http://127.0.0.1:45705
+  ok http: writeHead(statusCode, statusMessage) preserves custom statusMessage
+Server listening on http://127.0.0.1:43597
+  ok http: flushHeaders() sends headers before body
+Server listening on http://127.0.0.1:34459
+  ok http: writeEarlyHints invokes callback
+Server listening on http://127.0.0.1:33039
+  ok http: second res.end only invokes its own callback, no crash
+Server listening on http://127.0.0.1:33399
+  ok http: HEAD request returns headers with empty body
+Server listening on http://127.0.0.1:39851
+  ok http: removeHeader before writeHead drops the header
+  ok cache command: scans every provided entry file
+  ok wasi: WASI is a constructor
+  ok wasi: constructor without options throws ERR_INVALID_ARG_TYPE
+  ok wasi: constructor requires string version option
+  ok wasi: constructor accepts preview1 and exposes wasiImport
+  ok wasi: getImportObject exposes wasi_snapshot_preview1 bindings
+  ok wasi: getImports mirrors getImportObject namespace
+  ok wasi: unsupported version throws ERR_INVALID_ARG_VALUE
+  ok wasi: static version is undefined on current Node surface
+  ok wasi: start with invalid instance throws ERR_INVALID_ARG_TYPE
+  ok wasi: initialize with invalid instance throws ERR_INVALID_ARG_TYPE
+  ok wasi: initialize after failed start reports already started
+Server listening on http://127.0.0.1:37687
+  ok http: setHeader after writeHead throws headers-sent error
+Server listening on http://127.0.0.1:38731
+  ok http: writeHead accepts flat [k, v, k, v] header array
+Server listening on http://127.0.0.1:35673
+  ok http: second writeHead throws
+Server listening on http://127.0.0.1:38991
+  ok inspector: bare --inspect defaults to 127.0.0.1:9229, no break
+  ok inspector: --inspect=9333 parses custom port, default host
+  ok inspector: --inspect=0.0.0.0:9444 splits host and port
+  ok inspector: --inspect-brk sets breakOnStart=true outside REPL
+  ok inspector: --inspect-brk in REPL sets breakOnStart=false
+  ok inspector: --inspect-wait sets waitForClient=true
+  ok inspector: absent flags return null
+  ok inspector: non-numeric port falls back to 9229
+  ok inspector: inspect-brk takes precedence over inspect
+  ok inspector: --inspect=true string is treated as bare flag
+  ok inspector: empty host before colon falls back to 127.0.0.1
+  ok inspector: host is trimmed around host:port syntax
+  ok inspector: port 0 falls back to 9229
+  ok inspector: inspect-wait takes precedence over inspect
+  ok http upstream: Agent keepAlive reuses sockets and tracks free pool
+  ok http upstream: Agent keepAlive stale idle sockets do not fail next request
+Server listening on http://127.0.0.1:40039
+  ok http: write after end invokes callback with error
+Server listening on http://127.0.0.1:38739
+  ok http: req.socket === res.socket and carries address info
+Server listening on http://127.0.0.1:32875
+  ok console: log/info go to stdout, warn/error go to stderr
+  ok http: multiple res.write yields chunked body
+  ok console: assert only writes when assertion is false
+  ok console: count increments and countReset clears
+  ok http: client parser preserves split response header fields and values
+  ok http: client accepts close-delimited response body
+  ok http: client marks response complete before end event
+  ok http: client reports truncated content-length response
+  ok http: client treats 1xx as information before final response
+  ok console: time/timeEnd logs elapsed
+  ok console: dir inspects object
+  ok http: client parser preserves response trailers
+  ok http: client emits upgrade for 101 response with head
+  ok console: table renders rows
+  ok console: group/groupEnd indent
+  ok http: client emits connect for CONNECT response with head
+  ok console: options object constructor honors nested groupIndentation
+  ok http: client CONNECT treats first 1xx response as tunnel head boundary
+Server listening on http://127.0.0.1:35977
+  ok http: server.close callback fires and stops accepting
+  ok net: double resume() on a connected socket is idempotent
+  ok net: TCP echo round-trip
+  ok console: groupCollapsed indents like group
+  ok console: timeLog includes label and extra arguments
+  ok global console exists
+  ok console: namespace Console export matches named import
+  ok console: single-stream constructor routes error output to the same stream
+  ok console: count without label uses default label
+Count for 'missing-count' does not exist
+  ok console: countReset missing label emits process warning
+Label 'dup-time' already exists for console.time()
+No such label 'dup-time' for console.timeEnd()
+No such label 'missing-time-log' for console.timeLog()
+  ok console: duplicate time and missing time labels emit process warnings
+  ok console: ignoreErrors suppresses write errors
+  ok console: trace includes message and Trace prefix
+  ok console: clear writes terminal clear escape sequence
+  ok console upstream: time and count methods tolerate missing labels
+  ok console upstream: formats cross-realm built-in objects
+  ok net: socket timeout fires on inactivity
+  ok net: socket.address() reports local port after connect
+  ok http: STATUS_CODES and METHODS are populated
+  ok repl: start returns REPLServer with configured prompt
+  ok repl: displayPrompt writes prompt to supplied output
+  ok stream.consumers: text consumes Node Readable strings and buffers
+  ok stream.consumers: buffer consumes async iterable mixed chunks
+  ok stream.consumers: arrayBuffer returns a trimmed standalone buffer
+  ok stream.consumers: json parses chunked JSON text
+  ok stream.consumers: blob consumes Web ReadableStream chunks
+  ok stream.consumers: invalid stream argument rejects with TypeError
+  ok stream.consumers: Node Readable errors reject pending consumers
+  ok repl: input expression is evaluated and printed
+  ok repl: defineCommand action can write to output and redisplay prompt
+  ok repl: defineCommand stores command metadata
+  ok repl: .help output includes custom command help
+  ok repl: evaluating property access prints result and re-prompts
+  ok repl: REPL_MODE_SLOPPY and REPL_MODE_STRICT are symbols
+  ok repl: builtinModules is array
+  ok repl: recoveredFromError is undefined in node module surface
+  ok zlib: gzipSync then gunzipSync round-trips
+  ok zlib: deflateSync then inflateSync round-trips
+  ok zlib: deflateRawSync then inflateRawSync round-trips
+  ok zlib: empty buffer round-trips
+✖ Uncaught (in /home/iz/cno-cli/tests/node/targets/cdp-discovery.target.ts) Error
+  ArrayBuffer object expected
+    transpileBytes (<core>:30400:76)
+
+  ok zlib: large buffer round-trips
+  ok zlib: brotli compress then decompress round-trips
+  ok zlib upstream: BrotliCompress and BrotliDecompress classes stream data
+  ok zlib: gzip is byte-different from deflate (header/footer)
+  ok zlib: unzipSync auto-detects gzip and deflate payloads
+  ok zlib: sync APIs accept string and DataView inputs
+  ok zlib upstream: gzip accepts ArrayBuffer in callback and sync forms
+  ok zlib upstream: crc32 supports seeds and large repeated empty input
+  ok zlib upstream: invalid flush option and maxOutputLength throw
+  ok zlib upstream: createDeflate accepts an empty dictionary and closes cleanly
+  ok zlib: gzip callback API yields compressed output
+  ok zlib: streaming gunzip pipeline finishes split gzip payload
+  ok zlib: callback APIs require a callback
+  ok async_hooks: executionAsyncId returns number
+  ok async_hooks: triggerAsyncId returns number
+  ok async_hooks: createHook returns handle
+  ok async_hooks: AsyncLocalStorage run/getStore
+  ok async_hooks: AsyncLocalStorage getStore undefined outside run
+  ok async_hooks: AsyncLocalStorage.exit clears store
+  ok async_hooks: AsyncLocalStorage.disable is callable
+  ok async_hooks: AsyncLocalStorage.snapshot restores captured store
+  ok async_hooks: AsyncResource is a constructor
+  ok async_hooks: AsyncResource asyncId and triggerAsyncId return numbers
+  ok async_hooks: AsyncResource.runInAsyncScope binds
+  ok async_hooks upstream: AsyncResource.bind preserves async context and thisArg
+  ok async_hooks upstream: AsyncResource.bind static creates a bound resource
+  ok async_hooks: asyncWrapProviders is object
+  ok async_hooks: executionAsyncId differs across promises
+  ok async_hooks: AsyncLocalStorage propagates through promise and timer boundaries
+  ok async_hooks: nested AsyncLocalStorage.run restores outer store
+  ok async_hooks: AsyncLocalStorage.enterWith sets current store
+  ok async_hooks: AsyncLocalStorage.bind captures creation context
+  ok async_hooks upstream: AsyncLocalStorage propagates through common async APIs
+  ok async_hooks upstream: AsyncLocalStorage propagates through dynamic import
+[runtime] ✖ Uncaught (in unhandled promise rejection) Error
+  The "url" argument must be of type string or an instance of URL
+    pathToString (node:fs/utils:490:29)
+  fail vite: builds a disk app through rolldown/native resolver path TypeError: The "url" argument must be of type string or an instance of URL
+      at fileURLToPath (node:url/mod:595:18)
+      at pathToString (node:fs/utils:490:29)
+      at splitPathOrFd (node:fs/utils:497:32)
+      at readFileSync (node:fs/sync:20:33)
+      at <anonymous> (npm:vite@8.1.4/dist/node/chunks/node.js:543:79)
+Server listening on http://127.0.0.1:41363
+  fail vite: dev server serves transformed TypeScript from disk TypeError: The "url" argument must be of type string or an instance of URL
+      at fileURLToPath (node:url/mod:595:18)
+      at pathToString (node:fs/utils:490:29)
+      at splitPathOrFd (node:fs/utils:497:32)
+      at readFileSync (node:fs/sync:20:33)
+      at <anonymous> (npm:vite@8.1.4/dist/node/chunks/node.js:543:79)
+  ok tls: createSecureContext returns SecureContext
+  ok tls: SecureContext constructor accepts empty options object
+  ok tls: tls.connect is a function
+  ok tls: tls.createServer is a function
+  ok tls: tls.createServer returns a server with listen/close
+  ok tls: rootCertificates is an array of strings
+  ok tls upstream: setDefaultCACertificates validates and accepts PEM arrays
+  ok tls: DEFAULT_MIN_VERSION and DEFAULT_MAX_VERSION match Node defaults
+  ok tls: TLSSocket is a constructor
+  ok tls: connect to a closed port emits error
+  ok tls: TLSSocket.getCipher exists
+  ok tls: getCiphers returns common cipher names
+  ok tls: createServer completes a real TLS round-trip
+  ok tls: TLSSocket resumes a paused socket with buffered handshake bytes
+  ok tls: TLSSocket starts after unshifted ClientHello bytes
+  ok tls: TLSSocket starts after a framed prefix with tail bytes
+  ok tls: TLSSocket continues after a partial framed ClientHello tail
+  ok tls: TLSSocket starts over a generic Duplex
+  ok tls: TLSSocket over generic Duplex is passive by default
+Waiting for DevTools client...
+{
+  "expected": {
+    "functionName": "handleConnection",
+    "filePath": "/home/iz/cno-cli/tests/node/targets/cdp-pause-stack.target.ts",
+    "line": 27
+  },
+  "top": {
+    "callFrameId": "0",
+    "functionName": "handleConnection",
+    "location": {
+      "scriptId": "/home/iz/cno-cli/tests/node/targets/cdp-pause-stack.target.ts",
+      "lineNumber": 26,
+      "columnNumber": 128
+    },
+    "url": "/home/iz/cno-cli/tests/node/targets/cdp-pause-stack.target.ts",
+    "scopeChain": [
+      {
+        "type": "local",
+        "name": "handleConnection",
+        "object": {
+          "type": "object",
+          "className": "Object",
+          "description": "Object",
+          "objectId": "obj:1"
+        }
+      },
+      {
+        "type": "closure",
+        "object": {
+          "type": "object",
+          "className": "Object",
+          "description": "Object",
+          "objectId": "obj:2"
+        }
+      },
+      {
+        "type": "global",
+        "object": {
+          "type": "object",
+          "className": "Object",
+          "description": "Object",
+          "objectId": "obj:3"
+        }
+      }
+    ]
+  }
+}
+Waiting for DevTools client...
+{
+  "expected": {
+    "functionName": "handleConnection",
+    "filePath": "/home/iz/cno-cli/tests/node/targets/cdp-pause-stack.target.ts",
+    "line": 27
+  },
+  "top": {
+    "callFrameId": "0",
+    "functionName": "handleConnection",
+    "location": {
+      "scriptId": "/home/iz/cno-cli/tests/node/targets/cdp-pause-stack.target.ts",
+      "lineNumber": 26,
+      "columnNumber": 128
+    },
+    "url": "/home/iz/cno-cli/tests/node/targets/cdp-pause-stack.target.ts",
+    "scopeChain": [
+      {
+        "type": "local",
+        "name": "handleConnection",
+        "object": {
+          "type": "object",
+          "className": "Object",
+          "description": "Object",
+          "objectId": "obj:1"
+        }
+      },
+      {
+        "type": "closure",
+        "object": {
+          "type": "object",
+          "className": "Object",
+          "description": "Object",
+          "objectId": "obj:2"
+        }
+      },
+      {
+        "type": "global",
+        "object": {
+          "type": "object",
+          "className": "Object",
+          "description": "Object",
+          "objectId": "obj:3"
+        }
+      }
+    ]
+  }
+}
+  fail cdp: Debugger rejects invalid breakpoint line numbers Error: Test timed out after 10000ms
+      at construct (native)
+      at construct (<core>:44263:56)
+      at <anonymous> (<core>:61582:68)
+  ok cdp: paused top frame matches Error.stack call site
+  ok perf_hooks: performance.now returns number
+  ok perf_hooks: mark/measure/clear are callable
+  ok perf_hooks: PerformanceObserver is constructable
+  ok perf_hooks: createHistogram returns object
+  ok perf_hooks: createHistogram records count min and max
+  ok perf_hooks: monitorEventLoopDelay returns monitor
+✖ Uncaught (in /home/iz/cno-cli/tests/node/targets/cdp-discovery.target.ts) Error
+  ArrayBuffer object expected
+    transpileBytes (<core>:30400:76)
+
+  ok perf_hooks upstream: monitorEventLoopDelay records samples while enabled
+  ok perf_hooks: constants object exists
+  ok perf_hooks: performance.timeOrigin is number
+  ok perf_hooks upstream: performance.timeOrigin is read-only
+  ok perf_hooks: performance.now is monotonic non-decreasing
+  ok perf_hooks: getEntriesByType and clearMarks are selective
+  ok perf_hooks: PerformanceObserver receives mark and measure entries
+  ok perf_hooks upstream: PerformanceObserver validates observe options
+  ok perf_hooks: PerformanceObserver.supportedEntryTypes includes mark and measure
+  ok perf_hooks: mark stores detail and measure without marks starts at zero
+  ok perf_hooks: measure throws for missing marks
+  ok perf_hooks: timerify wraps function and emits function entry
+  ok perf_hooks upstream: markResourceTiming records resource entries
+  ok perf_hooks upstream: observer takeRecords and disconnect semantics
+  ok worker_threads: receiveMessageOnPort returns undefined when empty
+  ok worker_threads: receiveMessageOnPort drains queued message
+  ok worker_threads upstream: receiveMessageOnPort drains independent pending queues
+  ok worker_threads: MessagePort.onmessageerror is settable
+  ok worker_threads: MessagePort.ref and unref return undefined
+  ok worker_threads: MessagePort.onmessage is settable
+  ok worker_threads: postMessage without transfer
+  ok worker_threads upstream: MessagePort.off removes a message listener
+  ok worker_threads: postMessage clones nested objects
+  ok worker_threads: receiveMessageOnPort clones Buffer payloads as Uint8Array
+  ok worker_threads: postMessage transfer detaches source ArrayBuffer
+  ok worker_threads: postMessage transfer preserves typed array view metadata
+  ok worker_threads: postMessage transfer preserves shared backing buffer across views
+  ok worker_threads: postMessage transfer preserves DataView metadata
+  ok worker_threads: transfer-only ArrayBuffer detaches without payload reference
+  ok worker_threads: postMessage preserves shared backing buffer without transfer
+  ok worker_threads: ArrayBuffer view is not transferable
+  ok worker_threads: duplicate transfer list throws before detach
+  ok worker_threads: MessagePort without transfer list is rejected
+  ok worker_threads: duplicate MessagePort transfer throws before detach
+  ok worker_threads: transferred MessagePort cannot be transferred again
+  ok worker_threads: postMessage can transfer a MessagePort
+  ok worker_threads: transfer list MessagePort appears in event.ports without payload reference
+  ok worker_threads: onmessage event exposes transferred ports in order
+  ok worker_threads: port.close fires close
+  ok worker_threads: MessageChannel creates two ports
+  ok worker_threads: postMessage to closed port returns true without throwing
+  ok worker_threads: MessagePort.start and close return undefined
+  ok worker_threads: on("message") receives values after start()
+  ok worker_threads upstream: MessagePort.on invokes all message listeners in order
+  ok diagnostics_channel: channel returns Channel
+  ok diagnostics_channel: same name returns same channel
+  ok diagnostics_channel: subscribe then hasSubscribers true
+  ok diagnostics_channel: hasSubscribers false for unknown
+  ok diagnostics_channel: publish notifies subscribers in subscription order
+  ok diagnostics_channel: Channel has name
+  ok diagnostics_channel: unsubscribe non-subscriber is safe
+  ok diagnostics_channel: top-level subscribe/unsubscribe uses named channel
+  ok diagnostics_channel: top-level unsubscribe reports false for missing handler
+  ok diagnostics_channel: symbol channel names are preserved
+  ok diagnostics_channel: invalid channel names are rejected where Node rejects them
+  ok diagnostics_channel: subscribe requires a function
+  ok diagnostics_channel: tracingChannel exposes the five tracing phases
+  ok diagnostics_channel: tracingChannel starts without subscribers
+  ok diagnostics_channel: multiple subscribers tracked
+  ok diagnostics_channel: duplicate subscriber is removed one subscription at a time
+  ok diagnostics_channel: tracingChannel subscribe and unsubscribe handlers
+  ok diagnostics_channel: tracingChannel traceSync publishes result context
+  ok diagnostics_channel: tracingChannel tracePromise publishes async phases
+  ok diagnostics_channel: tracingChannel traceCallback wraps callback result
+  ok node:cluster exposes primary-process compatibility surface
+  ok node:cluster disconnect emits asynchronously and calls callback
+  ok node:cluster fork reports unsupported worker spawning explicitly
+  ok node:trace_events tracks enabled categories across tracing objects
+  ok node:trace_events validates category options
+  ok node:trace_events preserves category list and exposes default namespace
+  ok node:trace_events category refcounts survive overlapping tracing lifetimes
+  ok util.types: exported namespace and node:util/types share functions
+  ok util.types: ArrayBuffer and view predicates distinguish DataView
+  ok util.types: boxed primitive predicates only match boxed values
+  ok util.types: collection and iterator predicates reject plain iterators
+  ok util.types: function, generator, promise and error predicates
+  ok util.types: built-in object predicates cover common branches
+  ok vm: runInThisContext evaluates code
+  ok vm: Script.runInThisContext runs
+  ok vm: runInNewContext uses sandbox
+  ok vm: Script.runInNewContext uses sandbox
+  ok vm: createContext + isContext
+  ok vm: createContext and isContext reject non-object inputs
+  ok vm: runInContext can mutate sandbox
+  ok vm: runInNewContext does not leak to outer scope
+  ok vm: Script accepts filename option
+  ok vm: runInNewContext accepts options object
+  ok vm: Script tolerates sourceURL in options
+  ok vm: runInNewContext does not expose process by default
+  ok vm upstream: new contexts expose standard intrinsics without process
+  ok vm upstream: Deno.inspect handles common values from new contexts
+  ok vm: runInThisContext rethrows native error types
+  ok vm upstream: runInThisContext can write through global alias
+[DEP_WEBPACK_JAVASCRIPT_MODULES_PLUGIN] DeprecationWarning: webpack.JavascriptModulesPlugin has moved to webpack.javascript.JavascriptModulesPlugin
+[DEP_WEBPACK_LIBRARY_TEMPLATE_PLUGIN] DeprecationWarning: webpack.LibraryTemplatePlugin is deprecated and has been replaced by compilation.outputOptions.library or compilation.addEntry + passing a library option
+[DEP_WEBPACK_SINGLE_ENTRY_PLUGIN] DeprecationWarning: SingleEntryPlugin was renamed to EntryPlugin
+[DEP_WEBPACK_OPTIONS_DEFAULTER] DeprecationWarning: webpack.WebpackOptionsDefaulter is deprecated and has been replaced by webpack.config.getNormalizedWebpackOptions and webpack.config.applyWebpackOptionsDefaults
+  ok vm upstream: Script.runInNewContext accepts dynamic import expressions
+  ok vm: runInNewContext parses webpack-style magic comment keys
+  ok vm: sandbox globalThis aliases this and writes back to sandbox
+  ok vm: Script.runInContext mutates existing context
+  ok vm: compileFunction compiles callable code
+  ok vm: compileFunction can use parsingContext globals
+  ok vm: compileFunction combines parsingContext with contextExtensions
+  ok vm: compileFunction writes extension-owned globals back to extension
+  ok vm: measureMemory resolves with numeric memory fields
+  ok vm: runInContext requires a contextified object
+  ok vm: async runInContext writes back after promise settles
+  ok vm: Script produceCachedData exposes cached data fields
+  ok vm: compileFunction supports contextExtensions and cachedData fields
+  ok sqlite3: Database.open creates a file
+  ok sqlite3: exec runs DDL
+  ok sqlite3: prepare returns Statement
+  ok sqlite3: Statement.run returns result metadata
+  ok sqlite3: Statement.get callback returns first row
+  ok sqlite3: Statement.all callback returns all rows
+  ok sqlite3: Statement.each visits rows
+  ok sqlite3: Database.serialize invokes callback
+  ok sqlite3: Database.parallelize invokes callback and returns db
+  ok sqlite3: Database.get callback returns row
+  ok sqlite3: Database.all callback returns rows
+  ok sqlite3: Database.configure accepts trace/profile/busyTimeout
+  ok sqlite3: Database.wait invokes callback and returns db
+  ok sqlite3: trace and profile hooks observe executed SQL
+  ok sqlite3: unsupported configure option throws
+  ok sqlite3: Statement.run with named params
+  ok sqlite3: Statement.finalize invokes callback and future use errors
+  ok sqlite3: verbose() returns sqlite3
+  ok sqlite3: verbose() returns the sqlite3 module object
+[05:18:25:937 - 7FCEF34C1A40]: Load type section success.
+
+[05:18:25:937 - 7FCEF34C1A40]: Load function section success.
+
+[05:18:25:937 - 7FCEF34C1A40]: Load memory section success.
+
+[05:18:25:937 - 7FCEF34C1A40]: Load global section success.
+
+[05:18:25:937 - 7FCEF34C1A40]: Load export section success.
+
+[05:18:25:937 - 7FCEF34C1A40]: Load code segment section success.
+
+[05:18:25:938 - 7FCEF34C1A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:18:25:938 - 7FCEF34C1A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:18:25:938 - 7FCEF34C1A40]: Load module success.
+
+[05:18:25:940 - 7FCEF34C1A40]: Memory instantiate:
+[05:18:25:940 - 7FCEF34C1A40]:   page bytes: 65536, init pages: 1, max pages: 65536
+[05:18:25:940 - 7FCEF34C1A40]:   heap offset: 65536, heap size: 0
+
+[05:18:25:940 - 7FCEF34C1A40]: Memory instantiate success.
+[05:18:25:991 - 7FCEF34C1A40]: Memory instantiate:
+[05:18:25:991 - 7FCEF34C1A40]:   page bytes: 65536, init pages: 1, max pages: 65536
+[05:18:25:991 - 7FCEF34C1A40]:   heap offset: 65536, heap size: 0
+
+[05:18:25:991 - 7FCEF34C1A40]: Memory instantiate success.
+[05:18:25:992 - 7FCEF34C1A40]: Memory instantiate:
+[05:18:25:992 - 7FCEF34C1A40]:   page bytes: 65536, init pages: 1, max pages: 65536
+[05:18:25:992 - 7FCEF34C1A40]:   heap offset: 65536, heap size: 0
+
+[05:18:25:992 - 7FCEF34C1A40]: Memory instantiate success.
+  ok webpack: compiles a disk ESM entry with default CJS exports shape
+  ok querystring: stringify basic object
+  ok querystring: stringify with custom sep and eq
+  ok querystring: stringify percent-encodes spaces and reserved
+  ok querystring: stringify array values
+  ok querystring: stringify empty value
+  ok querystring: parse basic string
+  ok querystring: parse repeated keys into array
+  ok querystring: stringify then parse round-trips
+  ok querystring: parse empty value
+  ok querystring: parse with custom sep and eq
+  ok querystring: parse maxKeys limits keys
+  ok querystring: escape/unescape round-trips
+  ok querystring: unescape decodes + as space
+  ok querystring: stringify with custom encodeURIComponent
+  ok querystring: parse with custom decodeURIComponent
+  ok querystring: parse treats bare keys as empty strings
+  ok querystring: parse ignores empty segments between separators
+  ok querystring: parse maxKeys 0 means unlimited
+  ok querystring: stringify coerces numbers and booleans
+  ok querystring: stringify serializes null and undefined as empty values
+  ok querystring: stringify serializes nullish array entries as empty values
+  ok querystring: stringify serializes non-finite numbers as empty values
+  ok querystring: stringify non-objects as empty string
+  ok querystring: stringify falsy separators use defaults
+  ok querystring: escape leaves !'()* unescaped like Node
+  ok querystring: parse preserves empty key before equals sign
+  ok querystring: parse decodes plus signs in keys and values
+  ok querystring: parse passes plus signs as percent spaces to custom decoder
+  ok querystring: parse tolerates malformed percent escapes
+  ok querystring: parse falls back when a custom decoder throws
+  ok querystring: unescape tolerates malformed percent escapes
+  ok querystring: parse returns null-prototype object
+  ok querystring: parse non-strings as empty null-prototype object
+  ok querystring: parse falsy separators use defaults
+  ok fs.writeSync supports string position and encoding overload
+  ok fs.promises.FileHandle.write supports string position and encoding overload
+  ok fs: readFile honors w+ flag and creates an empty file
+  ok fs: readFile decodes hex base64 and binary encodings
+  ok fs: writeFile and appendFile honor string encodings
+  ok fs: writeFile and appendFile honor explicit flags
+  ok fs: numeric open flags preserve append read-write and exclusive semantics
+  ok fs: URL and Buffer path-like values work across sync and promises
+  ok fs upstream: Buffer paths work for link readlink rename and unlink
+  ok fs upstream: exists uses boolean callbacks and custom promisify semantics
+  ok fs: opendir reads entries for string URL and Buffer paths
+  ok fs upstream: opendir validates options and reports missing or non-directory paths
+  ok @babel/core: parses, transforms and generates modern syntax
+  ok react-dom/server: renders React with a stable non-prerelease peer version
+  ok @vue/compiler-sfc: parses and compiles template, script setup and style
+  ok graphql: builds schema and executes resolver-backed queries
+  ok punycode: encode ASCII appends delimiter per Node behavior
+  ok punycode: encode non-ASCII returns punycode payload without xn-- prefix
+  ok punycode: decode payload returns original unicode string
+  ok punycode: decode reverses encode for ASCII payload
+  ok punycode: toASCII converts IDN
+  ok punycode: toUnicode reverses toASCII
+  ok punycode: ucs2.decode handles surrogate pairs
+  ok punycode: ucs2.encode round-trips ucs2.decode
+  ok punycode: version is string
+  ok punycode: encode empty string stays empty
+  ok punycode: decode is case-insensitive for ASCII payload letters
+  ok punycode: encode/decode round-trip astral code points
+  ok punycode: toASCII only encodes the unicode label in a mixed domain
+  ok punycode: toASCII preserves local-part before @
+  ok punycode: toASCII normalizes unicode dot separators
+  ok punycode: toUnicode leaves uppercase XN-- prefix untouched
+  ok punycode: toUnicode leaves plain ASCII domains unchanged
+  ok punycode: toASCII encodes accented latin labels
+  ok punycode: toUnicode decodes punycoded latin labels
+  ok punycode: toASCII leaves punycoded labels unchanged
+  ok punycode: decode empty string stays empty
+  ok punycode upstream: replacement character labels round-trip through ASCII
+  ok punycode: ucs2.decode preserves unpaired surrogates as code units
+  ok os: EOL is \n on non-Windows
+  ok os: totalmem >= freemem and both positive
+  ok os: loadavg returns array of 3 numbers
+  ok os: cpus returns array of CpuInfo objects
+  ok os: networkInterfaces returns object of interface arrays
+  ok os: userInfo returns object with uid/gid/homedir
+  ok os: userInfo supports buffer encoding
+  ok os: availableParallelism is a positive integer
+  ok os: devNull is string; hostname() and release() return strings
+  ok os upstream: arch and machine follow Deno.build mappings
+  ok os upstream: homedir remains a string when HOME is unset
+  ok os upstream: selected methods coerce to their return values
+  ok os: getPriority validates pid range before native call
+  ok os: setPriority validates pid and priority ranges before native call
+  ok util: format interpolates %s %d %j %
+  ok util: inspect formats object with colors option
+  ok util: formatWithOptions still performs printf-style substitution
+  ok util: isDeepStrictEqual compares structurally
+  ok util: promisify converts callback API to promise
+  ok util: promisify honors util.promisify.custom
+  ok util: promisify preserves this binding when called with .call
+  ok util: promisify rejects callback errors and exposes custom symbol on wrapper
+  ok util: callbackify converts async function to callback
+  ok util: callbackify wraps falsy rejection reasons
+  ok util: callbackify wraps undefined rejection with ERR_FALSY_VALUE_REJECTION
+  ok util: callbackify invokes callback asynchronously
+  ok util: inherits sets up prototype chain
+  ok util.types.isPromise exists
+  ok util.types recognizes typed arrays and boxed primitives
+  ok util: stripVTControlCharacters removes ANSI escape sequences
+  ok util: toUSVString replaces lone surrogates
+  ok util: parseArgs parses string and boolean options
+  ok util: parseArgs supports loose unknown options and option terminator
+  ok util: parseArgs supports short names multiple defaults and negative booleans
+  ok util: parseArgs reports strict boolean inline values
+  ok util: MIMEType parses type subtype and params
+  ok util: transferableAbortController returns abort controller with signal
+  ok util: transferableAbortSignal returns signal-like object
+  ok util: aborted resolves with abort event when signal aborts
+  ok fs upstream: callback exceptions escape instead of being converted into second callbacks
+  ok fs upstream: Dir constructor reads entries and supports callbacks iteration and close
+  ok fs upstream: readdir recursive returns relative paths for callback sync and promises
+  ok fs upstream: rm removes symlink itself without deleting the target directory
+  ok fs upstream: mkdtemp honors buffer encoding and missing parent errors
+  ok fs upstream: cp creates parent dirs and promises cp applies filters per entry
+  ok fs upstream: promises cp can repeat recursive directory copy into same target
+  ok fs upstream: fsync and fdatasync callback and sync APIs flush open fds
+  ok fs upstream: close fstat ftruncate and futimes operate on numeric fds
+  ok fs upstream: statfs works for callback sync promises Buffer paths and bigint
+  ok fs upstream: statfs reports ENOENT for missing paths
+  ok fs upstream: Stats default constructor methods all return false
+  ok fs upstream: stat rejects invalid path values with ERR_INVALID_ARG_TYPE
+  ok fs upstream: rename errors include source path and destination
+  ok fs upstream: statSync maps missing jsr-style path to ENOENT
+  ok fs upstream: lstatSync throwIfNoEntry false returns undefined
+  ok fs upstream: FileHandle.read respects explicit position
+  ok fs upstream: copyFile COPYFILE_EXCL preserves existing destination
+  ok fs upstream: promises readFile rejects an already aborted signal
+  ok fs upstream: selected constants match platform values
+  ok events: once fires exactly once
+  ok events: prependListener runs first
+  ok events: prependOnceListener runs first and once
+  ok events: removeListener removes only the matching listener
+  ok events: removeAllListeners clears all events
+  ok events: setMaxListeners updates the limit
+  ok events: defaultMaxListeners is 10
+  ok events: emit returns boolean indicating listeners
+  ok events: on() async iterator yields events
+  ok events: on() async iterator preserves all event arguments
+  ok events: once(ee, name) returns a promise resolving on emit
+  ok events upstream: once and on support EventTarget
+  ok events upstream: EventTarget once rejects on abort and removes listener
+  ok events: once rejects if error fires before the target event
+  ok events: on throws synchronously for an already-aborted signal
+  ok events: once rejects with AbortError for an already-aborted signal
+  ok events: getEventListeners returns array
+  ok events: rawListeners exposes once wrapper with original listener
+  ok events: newListener fires before listener is added
+  ok events: meta-events are skipped when unobserved on emit-overriding subclasses
+  ok events: errorMonitor observes errors before regular error listeners
+  ok events: captureRejections emits error when async listener rejects
+  ok events upstream: static captureRejections applies to new emitters
+  ok events: captureRejectionSymbol method handles rejected listeners
+  ok events: static listenerCount accepts an optional listener
+  ok events: static helpers support EventTarget listeners
+  ok events: static helpers reject invalid targets
+  ok events: addAbortListener fires once and remove cancels it
+  ok events: addAbortListener runs for already-aborted signals unless removed
+  ok events: EventEmitterAsyncResource behaves like EventEmitter
+  ok events: listener registration does not depend on Array push or unshift
+  ok events upstream: EventEmitter construction does not depend on mutable Object helpers
+  ok events: on() async iterator rejects on error and removes listeners
+  ok sqlite: module loads
+  ok sqlite: DatabaseSync is constructor
+  ok sqlite: constants expose stable numeric changeset codes
+  ok sqlite: DatabaseSync constructor accepts path
+  ok sqlite upstream: DatabaseSync accepts Buffer and file URL paths
+  ok sqlite upstream: sqlite-type symbol and in-memory rows match Node shape
+  ok sqlite: DatabaseSync exec creates table
+  ok sqlite upstream: exec accepts batch statements
+  ok sqlite: DatabaseSync prepare returns statement
+  ok sqlite: DatabaseSync statement run inserts row
+  ok sqlite: DatabaseSync statement all retrieves rows
+  ok sqlite: DatabaseSync isOpen follows open and close lifecycle
+  ok sqlite: DatabaseSync get returns first row object
+  ok sqlite: DatabaseSync iterate yields rows in order
+  ok sqlite: StatementSync sourceSQL and columns reflect the statement
+  ok sqlite: StatementSync setReturnArrays converts rows to arrays
+  ok sqlite: StatementSync setReadBigInts returns bigint rowids
+  ok sqlite upstream: numbered positional parameters can be reused and reordered
+  ok sqlite upstream: named parameters support bare names and unknown-name filtering
+  ok sqlite upstream: empty blobs and large integer rows keep Node shapes
+  ok sqlite upstream: reset after reads does not lock later schema changes
+  ok sqlite: DatabaseSync isTransaction toggles around BEGIN/COMMIT
+  ok sqlite: unsupported DatabaseSync.function throws runtime-specific error
+  ok sqlite: backup throws runtime-specific not-implemented error
+  ok sqlite: Session constructor throws runtime-specific not-implemented error
+  fail cdp: /json/version exposes protocol version and webSocketDebuggerUrl Error: Test timed out after 10000ms
+      at construct (native)
+      at construct (<core>:44263:56)
+      at <anonymous> (<core>:61582:68)
+  ok crypto: AES-256-CBC encrypt then decrypt round-trips
+  ok crypto: AES-256-GCM round-trips with auth tag
+  ok crypto: AES-256-GCM with wrong auth tag throws on final
+  ok crypto upstream: AES-GCM multiple updates and invalid inputs match Node
+  ok net: Socket readyState transitions opening -> open
+  ok net: connect to a closed port emits ECONNREFUSED
+  ok net: refused connection emits error before close
+  ok net: bytesWritten accumulates across writes
+  ok net: write(data, callback) callback fires
+  ok net: socket.end(data) sends final data then closes
+  ok net: socket.destroy sets destroyed and closes
+  ok net: connect(port, host, listener) fires listener exactly once
+  ok net: setKeepAlive accepts Node millisecond initialDelay
+  ok net: Unix pipe server supports ref unref and close
+  ok crypto upstream: RSA publicEncrypt/privateDecrypt round-trips KeyObjects
+  ok crypto upstream: AES-CBC chunk vectors and final padding match Node
+  ok crypto upstream: decipher auto padding controls last chunk semantics
+  ok crypto upstream: cipher and decipher validate algorithm key and iv
+  ok crypto: SHA256 sign then verify round-trips
+  ok crypto: verify rejects tampered data
+  ok crypto: static sign/verify round-trips raw EC keys
+  ok crypto: verify rejects signature from a different EC keypair
+  ok crypto: createSecretKey produces HMAC-compatible KeyObject
+  ok crypto upstream: secret KeyObject export supports raw and JWK formats
+  ok crypto: createSign/createVerify support hex signature encoding
+  ok crypto upstream: sign and verify support RSA SHA224 and SHA384 aliases
+  ok crypto: pbkdf2Sync is deterministic for same input
+  ok crypto upstream: pbkdf2 sha1 matches RFC vector in sync and async forms
+  ok crypto upstream: pbkdf2 supports official digest vectors and typed-array bytes
+✖ Uncaught (in /home/iz/cno-cli/tests/node/targets/cdp-discovery.target.ts) Error
+  ArrayBuffer object expected
+    transpileBytes (<core>:30400:76)
+
+  ok crypto: scryptSync derives expected length
+  ok crypto: scryptSync accepts cost/blockSize/parallelization aliases
+  ok crypto: scrypt callback matches scryptSync output
+  ok crypto: scryptSync rejects non-power-of-two cost
+  ok crypto: scrypt rejects invalid params before invoking callback
+  ok crypto: createHmac produces stable hex
+  ok crypto upstream: hash and HMAC encodings match Node fixtures
+  ok crypto upstream: hash and HMAC finalized state matches Node
+  ok crypto: latin1 string input encodes code units as bytes
+  ok net: Unix pipe socket unref allows process exit
+  ok net: socket readable event supports read() consumption
+  ok crypto: generateKeyPairSync rsa returns KeyObjects by default
+  ok crypto upstream: generateKeyPair callback returns KeyObjects and exportable public keys
+  ok crypto: getHashes includes sha256 and sha512
+  ok crypto: static sign/verify accept PEM key material
+  ok crypto: createPublicKey derives verifying key from private PEM
+  ok crypto: createPrivateKey imports PKCS8 DER buffers
+  ok crypto: createPublicKey imports SPKI DER buffers
+  ok crypto: ieee-p1363 dsaEncoding round-trips for EC signatures
+  ok crypto: EC curve aliases map to the same P-256 key family
+  ok crypto upstream: EC explicit parameter encoding is rejected
+  ok crypto: randomBytes returns Buffer with encoding-aware toString
+  ok crypto upstream: randomBytes callback exceptions escape instead of becoming second callbacks
+  ok crypto upstream: randomBytes async pseudoRandomBytes randomUUID and randomInt basics
+  ok crypto upstream: randomInt callback overloads return values in range
+  ok crypto: randomFillSync fills typed arrays, ArrayBuffers and DataViews in range
+  ok crypto upstream: randomFill callback fills only the requested range
+  ok crypto: timingSafeEqual accepts ArrayBuffer views and enforces lengths/types
+  ok crypto: one-shot hash and cipher metadata expose supported algorithms
+  ok crypto upstream: hkdfSync uses ArrayBufferView bytes and enforces info limit
+  ok crypto upstream: hkdf async callback matches hkdfSync
+  ok net: server.maxConnections limits accepted sockets
+  ok net: socket.bytesRead counts received bytes
+  ok net: socket.connect({ port, host }) object form works
+  ok net: server connection socket exposes remoteFamily
+  ok net upstream: connection event receives the accepted socket
+  ok net upstream: server can listen on the same port after close
+  ok net upstream: concurrent sockets do not share read buffers
+  ok net: bidirectional pipe closes after short response
+  ok net: BlockList checks addresses ranges and subnets
+  ok stream: isDisturbed false before consumption, true after data
+  ok stream: isReadable true while open, false after null push
+  ok stream: compose chains two transforms
+  ok stream: compose requires at least two streams
+  ok stream: pipeline resolves on success
+  ok stream: pipeline callback receives error on transform failure
+  ok stream: Readable.from yields iterable values
+  ok stream: Readable.from emits Buffer as one binary chunk
+  ok stream: Writable.end is chainable and emits finish
+  ok stream: Writable.end callback fires when already ended
+  ok stream: PassThrough is duplex
+  ok stream.promises.pipeline is exported
+  ok stream: default highWaterMark matches byte and object mode defaults
+  ok stream: setDefaultHighWaterMark affects newly constructed streams
+  ok stream: Transform flush can append a trailing chunk
+  ok stream: Readable.from propagates async iterable errors after yielded chunks
+  ok stream: unpipe emits on the destination with the original source
+  ok stream: isReadable returns true for a fresh PassThrough
+  ok stream upstream: base Stream is an EventEmitter
+  ok stream: resume keeps readable-mode streams readable without data listeners
+  ok stream: unshift prepends data for readable and duplex streams
+  ok child_process: spawn captures stdout and exit code
+  ok module: builtinModules and isBuiltin expose bare builtin names
+  ok module: default export exposes Module static helpers
+  fail module: createRequire accepts file URL strings and objects TypeError: The "url" argument must be of type string or an instance of URL
+      at fileURLToPath (node:url/mod:595:18)
+      at createRequire (node:module/mod:54:35)
+      at <anonymous> (/home/iz/cno-cli/tests/node/module.test.ts:28:45)
+      at startTest (<core>:61588:33)
+  ok module: createRequire from absolute filename loads and resolves local CJS
+  ok module upstream: require.resolve paths accepts directories and file URL directories
+  ok module upstream: require loads node_modules package main entry
+  ok module upstream: require.resolve package exports errors expose code
+  ok module upstream: package exports use import and require conditions
+  ok child_process: spawn non-zero exit code surfaces in callback
+  ok child_process: spawn with stdio inherit returns null streams
+  ok child_process: child.pid is a positive number
+  ok module upstream: package exports resolve root and pattern ESM entries
+  ok module upstream: ESM import of type commonjs package exposes named exports
+  ok module upstream: CJS default property is preserved on default import
+  ok module upstream: CJS dynamic import resolves ESM package exports
+  ok module upstream: package imports wildcard works from CJS package internals
+  ok module upstream: empty package main falls back to index.js
+  fail module upstream: no-type package js with ESM syntax is detected as ESM Error: Syntax error in /tmp/cno-node-module-detect-esm-syntax-152563-9783b1540b9e/entry.mjs: unsupported keyword: export { kind: 2 }
+  Error: Syntax error in /tmp/cno-node-module-detect-esm-syntax-152563-9783b1540b9e/entry.mjs: unsupported keyword: export
+      at eval (native)
+      at execWithSource (<core>:3250:42)
+      at execJs (<core>:3224:29)
+      at exec (<core>:3192:21)
+      at loadAndGet (<core>:3106:19)
+      at load (<core>:26290:88)
+      at load (<core>:31473:35)
+      at Module (native)
+      at compileEsm (<core>:25730:62)
+  ok module upstream: CJS re-export of required ESM preserves namespace and names
+  ok module upstream: ESM module.exports export survives CJS re-export chain
+  ok module upstream: node condition MJS re-export of CJS preserves named export
+  ok module upstream: CJS re-export getters from subfolder survive ESM namespace bridge
+  ok module upstream: ESM import of extensionless package subpath can load CJS
+  ok module: Module._cache exposes the same object-like require cache proxy
+  ok module: createRequire rejects relative paths
+  ok module upstream: createRequire arity error stack uses node:module prefix
+  ok module: _nodeModulePaths includes root node_modules on POSIX
+  ok module: _nodeModulePaths resolves relative input from cwd
+  ok module: _nodeModulePaths avoids duplicate node_modules segments
+  ok module: findSourceMap and register are available no-op hooks
+  ok module upstream: _preloadModules requires modules relative to cwd
+  ok module upstream: runMain loads the current process argv entry
+  ok module: Module constructor links parent and initializes paths
+  ok module: Module.wrap and _compile provide CommonJS wrapper variables
+  ok module upstream: Module._compile with relative fake filename resolves package requires from cwd
+  ok module upstream: Module.prototype._compile can be overridden
+  ok module: exported _compile returns module exports object
+  ok child_process: exec returns stdout/stderr to callback
+  ok v8: serialize then deserialize round-trips
+  ok v8: Serializer writeHeader + releaseBuffer
+  ok v8: Serializer.writeValue + Deserializer.readValue
+  ok v8: getHeapStatistics returns object
+  ok v8: getHeapSpaceStatistics returns array
+  ok v8: getHeapCodeStatistics returns object
+  ok v8: setFlagsFromString is callable
+  ok v8: cachedDataVersionTag returns number
+  ok v8: startupSnapshot accepts callbacks and reports non-building runtime
+  ok v8: DefaultSerializer is subclass of Serializer
+  ok v8: DefaultDeserializer is subclass of Deserializer
+  ok v8: serialize primitives
+  ok v8: promiseHooks is object or undefined
+  ok v8: serialize preserves cycles, Map, Set, and BigInt
+  ok v8: Deserializer.readHeader pairs with Serializer.writeHeader
+  ok v8: Deserializer wire format version requires a header first
+  ok v8: serialize of function throws clone error
+  ok v8: serialize and deserialize preserve typed arrays
+  ok v8: getHeapSpaceStatistics entries expose numeric size fields
+  ok v8: Serializer releaseBuffer can be called repeatedly
+  ok v8: Serializer and Deserializer raw numeric methods round-trip
+  ok v8: Serializer and Deserializer reject non-view raw buffers
+  ok v8: Deserializer.readRawBytes validates length and reads remaining bytes
+  ok v8: invalid serialized data throws while reading header
+  ok v8: setFlagsFromString changes cachedDataVersionTag
+  ok child_process: execFile runs a file with args
+  ok string_decoder: write decodes utf8
+  ok string_decoder: end flushes
+  ok string_decoder: split multi-byte utf8 reassembled
+  ok string_decoder: utf8 with BOM
+  ok string_decoder: latin1 decoding
+  ok string_decoder: hex encoding
+  ok string_decoder: ascii encoding
+  ok string_decoder: end without pending returns empty
+  ok string_decoder: multiple writes then end
+  ok string_decoder: default encoding utf8
+  ok string_decoder: end on incomplete utf8 emits replacement char
+  ok string_decoder: write works again after end resets decoder state
+  ok string_decoder: hex end with buffer encodes final bytes as hex
+  ok string_decoder: base64 buffers incomplete output until end
+  ok string_decoder: base64 emits only complete triplets across writes
+  ok string_decoder upstream: incomplete byte sequences match Node output
+  ok string_decoder upstream: base64url buffers and omits padding
+  ok string_decoder: utf16le split code units are reassembled across writes
+  ok string_decoder: constructor can initialize subclass-style instances
+  ok child_process: spawnSync returns status and stdout
+  ok child_process: spawnSync on missing command errors
+  ok url: parse splits host, path, query, hash
+  ok url: parse with parseQueryString returns parsed query
+  ok url: resolve resolves relative paths
+  ok url: format rebuilds URL from object
+  ok url: fileURLToPath and pathToFileURL round-trip
+  ok url: pathToFileURL percent-encodes URL syntax characters
+  ok url: fileURLToPath rejects encoded slash on POSIX paths
+  ok url: URL normalizes origin and pathname
+  ok url: URLSearchParams append/get/delete/has
+  ok url: URLSearchParams sequence constructor preserves duplicate keys
+  ok url: URLSearchParams set replaces all existing values
+  ok url: URLSearchParams sort orders keys
+  ok url: URLSearchParams sort is stable for duplicate keys
+  ok url: URLSearchParams toString encodes special chars
+  ok url: URLSearchParams is iterable
+  ok url: URL exposes username/password
+  fail url: URL serializes spaces in path and query AssertionError: '?x=a b' strictEqual '?x=a%20b' { actual: '?x=a b', expected: '?x=a%20b', generatedMessage: true, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: '?x=a b' strictEqual '?x=a%20b'
+      at strictEqual (node:assert/mod:169:25)
+      at <anonymous> (/home/iz/cno-cli/tests/node/url-edge.test.ts:135:16)
+      at startTest (<core>:61588:33)
+  ok url: URL setters remain writable after node:url patching
+  ok url: domainToASCII punycode-encodes international domain
+  ok url: domainToASCII preserves ASCII labels around the IDN label
+  ok url: domainToASCII normalizes unicode dot separators
+  ok url upstream: domainToASCII preserves IPv6 literals and rejects invalid punycode labels
+  ok url: domainToUnicode decodes punycoded labels
+  ok url: domainToUnicode leaves non-punycode ASCII labels unchanged
+  fail url: format URL object can drop auth, search, and fragment AssertionError: 'https://example.com/path?q=1#frag' strictEqual 'https://example.com/path' { actual: 'https://example.com/path?q=1#frag', expected: 'https://example.com/path', generatedMessage: true, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: 'https://example.com/path?q=1#frag' strictEqual 'https://example.com/path'
+      at strictEqual (node:assert/mod:169:25)
+      at <anonymous> (/home/iz/cno-cli/tests/node/url-edge.test.ts:192:31)
+      at startTest (<core>:61588:33)
+  ok url: format object query preserves nullish and non-finite values as empty
+  ok url: format object search takes precedence over query object
+  ok url: format object brackets IPv6 hostname
+  ok url: format object escapes URL delimiters in pathname
+  fail url: urlToHttpOptions exposes request options from URL TypeError: The "url" argument must be an instance of URL
+      at urlToHttpOptions (node:url/mod:688:18)
+      at <anonymous> (/home/iz/cno-cli/tests/node/url-edge.test.ts:230:46)
+      at startTest (<core>:61588:33)
+  ok url: URLSearchParams constructor from object takes first value
+  ok url: URLSearchParams object constructor stringifies array values
+  ok child_process: child.kill sends signal and resolves exit
+  ok child_process: child.on("error") emits on spawn failure
+  ok child_process: execFile respects cwd option
+  ok process: pid and ppid are positive integers
+  ok process: argv is array of strings
+  ok process: execPath is a string
+  ok process upstream: execPath and deprecated mainModule are writable
+  ok process: cwd and chdir round-trip
+  ok process upstream: chdir failure is a Node-style ENOENT error
+  ok process: env get/set/delete
+  ok process: env.toString and indexing
+  ok process: env coerces assigned non-string values to strings
+  ok process upstream: env preserves empty strings and tolerates invalid and symbol keys
+  ok process: platform/arch/version are strings
+  ok process: versions.node exists
+  ok process upstream: versions exposes Node and Deno compatibility fields
+  ok process: memoryUsage returns numeric fields
+  ok process upstream: memoryUsage.rss returns a numeric resident set size
+  ok process: uptime is positive
+  ok process upstream: uptime works without this binding
+  ok process upstream: constructor can be called without new
+  ok process: hrtime.bigint returns bigint
+  ok process: hrtime() returns [seconds, nanoseconds]
+  ok process: hrtime(previous) returns a non-negative diff tuple
+  ok process: kill(pid, 0) checks own pid without killing
+  ok process: kill(veryLargePid) throws ESRCH
+  ok process: nextTick defers after current work
+  ok process: nextTick forwards arguments
+  ok process: nextTick runs before Promise jobs queued in the same turn
+  ok process upstream: uncaughtException catches errors thrown from nextTick
+  ok process: exitCode defaults to 0 or undefined
+  ok process upstream: default export exposes writable process fields
+  ok child_process: spawn passes env overrides to child
+  ok process upstream: process.exitCode controls normal subprocess exit
+  ok process: stdin/stdout/stderr exist
+  ok process upstream: stdio exposes fd and writable tty size fields
+  ok process: umask() returns a number
+  ok process: argv0 and execArgv have Node-like shapes
+  ok process: title is a non-empty string
+warn-message
+  ok child_process: spawn coerces non-string env values
+  ok process: emitWarning emits warning event with code and detail
+  ok process: rawListeners exposes once wrapper and removeAllListeners clears event
+  ok process upstream: unimplemented event names still use EventEmitter listener APIs
+  ok process upstream: signal event listeners are exposed through listeners()
+  ok process: setMaxListeners returns process and updates getMaxListeners
+  ok process: allowedNodeEnvironmentFlags accepts value forms for known flags
+  ok process: getBuiltinModule resolves node builtins
+  ok process upstream: versions, execArgv and sourceMapsEnabled have Node-compatible shapes
+  ok process upstream: moduleLoadList is exposed as an initially empty array
+  ok process upstream: config exiting uid and gid expose Node-compatible public shape
+  ok process upstream: report exposes basic public report API shape
+  ok process upstream: binding("uv") exposes errno lookup maps
+  ok process upstream: cpuUsage reports current usage and validates previous values
+  ok fs.watch: returns an FSWatcher
+  ok child_process: explicit env does not inherit parent env and skips nullish values
+  ok child_process: spawnSync accepts options as second argument and shell true
+  ok child_process: spawnSync with encoding returns string stdout
+  ok fs.watch: emits change on file write
+  ok fs.watch: recursive option accepted
+  ok fs.watch: FSWatcher.close fires close event
+  ok child_process: spawnSync stdio array undefined defaults to pipe
+  ok fs.watch: encoding buffer yields Buffer filename when provided
+  ok child_process: spawnSync writes input to child stdin
+  ok fs.watchFile + unwatchFile
+  ok fs.unwatchFile without prior watch is safe
+  ok fs.watch: ref/unref return the watcher itself
+  ok inspector: url() returns string or undefined
+  ok inspector: waitForDebugger is callable
+  ok inspector: console object exists
+  ok inspector: close returns undefined when inspector is not active
+  ok inspector: Session is a constructor
+  ok inspector: Session methods exist
+  ok inspector: Session.connect and disconnect return undefined
+  ok inspector: Session.post before connect throws ERR_INSPECTOR_NOT_CONNECTED
+  ok inspector: Session.post evaluates expressions after connect
+  ok inspector: Session.post after disconnect throws ERR_INSPECTOR_NOT_CONNECTED
+  ok inspector: open returns a handle with dispose
+  ok https: createServer is a function
+  ok https: request and get are functions
+  ok https: globalAgent exists
+  ok https: createServer returns a server
+  ok https: STATUS_CODES populated
+  ok https: METHODS is an array
+  ok https: Agent is a constructor
+  ok https: Agent maxSockets default is Infinity
+  ok https: Agent respects explicit keepAlive and maxSockets options
+  ok https: createServer accepts requestListener
+  ok https: server.address() returns null before listen
+  ok https: request uses provided method and defaults to globalAgent
+  ok https: request to a closed port emits error
+  ok https: createServer serves a real TLS response
+  ok https: request honors custom lookup with global agent
+  ok https: request honors custom lookup without agent
+  fail cdp: Debugger rejects invalid pause-on-exceptions state Error: Test timed out after 10000ms
+      at construct (native)
+      at construct (<core>:44263:56)
+      at <anonymous> (<core>:61582:68)
+  ok https: server parser preserves split header fields and values
+  ok child_process upstream: process.execPath handles Node CLI eval print and warning flags
+  ok path: join collapses separators and dots
+  ok path: join with no non-empty segments returns dot
+  ok path: resolve makes paths absolute
+  ok path: dirname/basename/extname decompose
+  ok path: relative computes relative path
+  ok path: normalize removes redundant separators
+  ok path: isAbsolute detects absolute paths
+  ok path: parse returns root/dir/base/ext/name
+  ok path: format rebuilds path
+  ok path: extname handles dotfiles and trailing dots like Node
+  ok path: basename only strips an exact suffix match
+  ok path: format uses name/ext when base is absent
+  ok path: format base takes precedence over name and ext
+  ok path: sep and delimiter are non-empty
+  ok path: posix and win32 namespaces expose sep
+  ok path upstream: posix and win32 namespace identities are stable
+  ok path: posix and win32 normalize their own separators
+  ok path: relative returns empty string for same resolved path
+  ok buffer: Buffer.from string round-trip
+  ok buffer: Buffer.from base64 uses Node-compatible loose decoding
+  ok buffer: Buffer.alloc fills
+  ok buffer upstream: Buffer.alloc rejects non-number sizes
+  ok buffer: Buffer.alloc repeats string fills
+  ok buffer upstream: Buffer.alloc repeats decoded string and byte fills
+  ok buffer: ascii and latin1 encode code units like Node
+  ok buffer: Buffer.allocUnsafe has correct length
+  ok buffer: Buffer.from array
+  ok buffer: Buffer.from ArrayBuffer view shares memory
+  ok buffer: Buffer.from Uint8Array copies bytes
+  ok buffer upstream: Buffer.from Buffer creates an independent copy
+  ok buffer upstream: Buffer.from invalid encoding throws but empty-ish encodings default
+  ok buffer: compare and equals
+  ok buffer: Buffer.concat joins buffers
+  ok buffer: Buffer.concat honors explicit totalLength
+  ok buffer upstream: Buffer.concat validates explicit totalLength type and range
+  ok buffer: Buffer.isBuffer
+  ok buffer upstream: static methods are enumerable for safer-buffer compatibility
+  ok buffer upstream: Buffer.copyBytesFrom copies typed array backing bytes
+  ok buffer: Buffer.write writes at offset
+  ok buffer: Buffer.copy copies bytes
+  ok buffer upstream: Buffer.copy respects target offsets and truncates safely
+  ok buffer: subarray shares underlying buffer
+  ok buffer: reverse mutates in place
+  ok buffer: slice supports negative indexes and shares memory
+  ok buffer upstream: Buffer.toJSON exposes type and byte data
+  ok buffer: swap16 swaps bytes
+  ok buffer: swap methods reject incompatible lengths
+  ok buffer: byteLength differs by encoding
+  ok buffer upstream: byteLength handles common encodings and fallbacks
+  ok buffer: byteLength for base64 follows Node estimated length
+  ok buffer: Buffer.isEncoding recognizes utf8
+  ok buffer upstream: Buffer.isEncoding accepts case variants and rejects non-strings
+  ok buffer: byteLength accepts DataView and typed array views
+  ok buffer: indexOf and includes handle strings buffers and empty needles
+  ok buffer: hex decoding stops at the first invalid pair
+  ok buffer: hex decoding truncates odd length and rejects non-ascii digits
+  ok buffer: writeBigUInt64BE and readBigUInt64BE round-trip
+  ok buffer: writeBigInt64LE and readBigInt64LE round-trip negatives
+  ok buffer upstream: variable-width unsigned reads honor endianness
+  ok buffer upstream: slice infinity and utf8Write edge behavior
+  ok buffer upstream: utf8 toString keeps BOM bytes
+  ok buffer upstream: module constants and web re-exports match public node:buffer surface
+  ok buffer upstream: transcode converts between UTF-8 single-byte and UTF-16 encodings
+  ok buffer upstream: isUtf8 isAscii atob and btoa follow Node helper semantics
+  ok https: server handles sequential requests on one TLS connection
+  ok child_process: spawn emits spawn before stdio and exit events
+  ok ipc_channel: module exports MessageDecoder and IPCChannel constructors
+  ok ipc_channel: MessageDecoder parses newline-delimited JSON messages
+  ok ipc_channel: MessageDecoder reassembles fragmented input
+  ok ipc_channel: MessageDecoder emits error for invalid JSON frame
+  ok ipc_channel: MessageDecoder ignores empty frames between delimiters
+  ok ipc_channel: MessageDecoder reset drops buffered partial message
+  ok ipc_channel: MessageDecoder preserves escaped newlines inside JSON strings
+  ok https: pipelined responses stay in request order
+  ok https: server closes TLS connection after Connection close request
+  ok child_process: execFile supports encoding buffer
+  ok child_process: execFile enforces stdout maxBuffer before callback
+  ok tty: isatty false for regular file
+  ok tty: isatty returns boolean
+  ok tty: isatty on stdio fds returns boolean
+  ok tty: isatty on stdio fds matches process stdio isTTY flags
+  ok tty: ReadStream and WriteStream exist
+  ok tty: ReadStream has setRawMode
+  ok tty: WriteStream has cursor/clear/window methods
+  ok tty: isatty on negative fd returns false
+  ok tty: isatty returns false for invalid fd values
+  ok tty: WriteStream prototype color helpers match upstream shape
+  ok child_process upstream: execFile enforces stderr maxBuffer before callback
+  ok child_process upstream: shell true passes arguments and supports shell pipelines
+  ok child_process upstream: spawn missing command emits platform errno
+  ok child_process upstream: kill can be called repeatedly without throwing
+  ok https: request listener runs before slow body completes
+  ok https: server emits clientError on malformed request
+  ok child_process upstream: fork buffers child messages until listener is attached
+  ok https: listener error after headers closes TLS socket
+  ok constants: default export exposes flattened fs, crypto, zlib and os constants
+  ok constants: named primitive exports mirror default export
+  ok constants: nested namespaces preserve source module identities
+  ok constants: aggregate object is frozen but nested namespaces remain usable
+  ok child_process: fork child exits after IPC listener is removed
+  ok fsp: readFile/writeFile round-trip
+  ok fsp: appendFile appends
+  ok fsp: writeFile accepts Uint8Array and readFile returns Buffer by default
+  ok node cluster upstream: primary-only export surface is available
+  ok node domain upstream: run catches thrown errors
+  ok node domain upstream: add and remove EventEmitter error routing
+  ok node domain upstream: bind and intercept route callback errors
+  ok fsp: stat returns file info
+  ok fsp: lstat on symlink returns isSymbolicLink
+  ok fsp: readlink returns symlink target
+  ok fsp: mkdir recursive creates nested dirs
+  ok fsp: readdir with withFileTypes returns Dirent objects
+  ok fsp: rm recursive removes tree
+  ok fsp: rm force ignores missing paths
+  ok fsp: access succeeds for existing, throws for missing
+  ok fsp: rename moves file
+  ok fsp: copyFile copies file contents
+  ok fsp: truncate shortens an existing file
+  ok fsp: realpath resolves path
+  ok fsp: chmod sets permissions
+  ok child_process upstream: fork json IPC serializes typed array views as arrays
+  ok dgram: createSocket returns a Socket
+  ok child_process upstream: fork advanced IPC preserves structured values
+  ok dgram: bind assigns a port
+  ok dgram: address() returns family and port
+  ok dgram: send/receive round-trip
+  ok dgram: setBroadcast returns undefined once socket is bound
+  ok child_process upstream: send after IPC close reports ERR_IPC_CHANNEL_CLOSED
+  ok dgram: setTTL returns the configured ttl once socket is bound
+  ok dgram: ref/unref return the socket itself
+  ok dgram: createSocket accepts options object
+  ok dgram upstream: reuseAddr allows multiple sockets to bind the same UDP port
+  ok dgram: remoteAddress throws before connect
+  ok dgram: close fires close event
+  ok dgram: send(Buffer, offset, length, ...) sends slice and reports byte count
+  ok dgram: connected socket send omits port and address
+  ok dgram: validates socket type and unbound address state
+  ok dgram: validates ttl arguments before socket options
+  ok timers: timeout scheduled after sync work uses current loop time
+  ok timers: setTimeout returns a Timeout
+  ok timers: setInterval returns Timeout; clearInterval cancels
+  ok timers: setImmediate returns Immediate; clearImmediate cancels
+  ok timers: Immediate ref state toggles like Node
+  ok timers: clearTimeout after fire is safe
+  ok timers: setTimeout forwards extra arguments
+  ok timers: setImmediate forwards extra arguments
+  ok timers: clearTimeout cancels a pending callback
+  ok child_process upstream: spawn supports ipc stdio entry outside fd 3 tuple shape
+  ok timers: clearTimeout accepts Timeout numeric primitive
+  ok dns: lookup localhost returns loopback
+  ok dns: lookupSync localhost returns loopback
+  ok dns: lookupSync localhost with all=true returns address objects
+  ok dns.promises.lookup returns address+family
+  ok dns: lookup localhost with all=true returns address objects
+  ok dns: getServers and setServers round-trip loopback server list
+  ok dns: Resolver getServers reflects setServers
+  ok dns.promises: Resolver getServers reflects setServers
+  ok dns.promises: getServers and setServers mirror callback API state
+  ok dns: lookup accepts numeric family and rejects invalid family
+  ok dns: lookup accepts IPv4 and IPv6 string family values
+  ok dns: rejects invalid rrtype instead of silently querying A
+  ok dns: validates servers and supports ipv6first result order
+  ok dns: lookupService resolves service name for local address
+  ok dns upstream: lookupService promise APIs and not-found errors match callback API
+  ok dns.reverse on 127.0.0.1 returns hostnames
+  ok dns error codes are defined
+  ok dns: getDefaultResultOrder and setDefaultResultOrder round-trip
+  ok child_process upstream: spawn exposes extra pipe stdio entries by fd index
+  ok timers: Timeout refresh reschedules pending callback
+  ok timers upstream: Timeout refresh after clearTimeout does not reactivate callback
+  ok timers.promises: setTimeout resolves
+  ok timers.promises: setImmediate resolves
+  ok timers.promises: setInterval async iterator yields
+  ok timers.promises: setTimeout with AbortSignal rejects
+  ok timers.promises: throws for invalid delay and options arguments
+  ok timers.promises: already-aborted signal rejects with AbortError
+  ok timers.promises.scheduler: wait rejects with AbortError
+  ok timers.promises.scheduler: yield resumes asynchronously
+  ok timers: global setTimeout is function
+  ok timers: clearTimeout with undefined is safe
+  ok worker_threads: isMainThread is true on main, threadId >= 0
+  ok worker_threads: main-thread globals match Node defaults
+  ok worker_threads: MessageChannel two-way round-trip
+  ok worker_threads: MessagePort echo (reply on same channel)
+Server listening on http://127.0.0.1:37093
+  ok http: rawHeaders preserves original casing and order
+Server listening on http://127.0.0.1:44165
+  ok http: httpVersionMajor and httpVersionMinor reflect request version
+Server listening on http://127.0.0.1:43383
+  ok http: requestTimeout zero disables first request timeout
+Server listening on http://127.0.0.1:45791
+  ok http: duplicate request headers collected into headersDistinct
+Server listening on http://127.0.0.1:39223
+  ok http: req.method and req.url reflect request line
+Server listening on http://127.0.0.1:35357
+  ok http: server emits upgrade event on Connection: Upgrade
+Server listening on http://127.0.0.1:41783
+  ok http: server emits connect event on CONNECT request
+Server listening on http://127.0.0.1:46519
+  ok http: req.complete is true after body ends
+Server listening on http://127.0.0.1:35377
+  ok http: POST body is readable via data/end events
+Server listening on http://127.0.0.1:38433
+  ok http: server emits clientError on malformed request
+Server listening on http://127.0.0.1:35781
+  ok http upstream: ServerResponse can send wrapped Web Response bodies
+  ok child_process upstream: fork execArgv conditions affect child package exports
+  ok webapi upstream: FileReader constants and initial state
+  ok webapi upstream: FileReader reads Blob text and dispatches ordered events
+  ok webapi upstream: FileReader skips first loadend when load starts another read
+  ok webapi upstream: FileReader reads ArrayBuffer and data URL
+  ok webapi upstream: FileReader reads binary string and rejects concurrent reads
+  ok webapi upstream: FileReader abort before read is a no-op
+  ok webapi upstream: FileReader abort cancels load and emits abort loadend
+  ok webapi upstream: ImageData constructs unorm8 data with defaults
+  ok webapi upstream: ImageData accepts existing data and settings
+  ok webapi upstream: ImageData validates dimensions data length and settings
+  ok caches: global exists
+  ok caches.open: returns a Cache
+  ok Cache: put then match returns the Response
+  ok Cache: match on missing returns undefined
+  ok Cache: put overwrites previous entry
+  ok Cache: delete removes entry
+  ok Cache: matchAll returns all entries
+  ok Cache: keys returns Request objects
+  ok Cache: put accepts a Request
+  ok caches: has/delete/keys manage cache names
+  ok caches.match: global match across caches
+  ok Cache: put with Vary header distinguishes by request header
+  ok Cache upstream: Cache is an illegal constructor
+  ok Cache upstream: string URL and Request keys round-trip independently
+  ok Cache upstream: Vary star is rejected and Vary headers select matching requests
+  ok Cache upstream: put marks the source response consumed while storing
+  ok Cache upstream: failed response bodies are not cached
+  ok Cache upstream: put stores a response backed by a file resource
+  ok Cache upstream: put rejects non-GET before consuming the response
+  ok Cache upstream: add fetches GET responses without consuming caller request
+  ok Cache upstream: add and addAll reject non-GET and failed fetches without storing
+  ok Cache upstream: match honors ignoreSearch and method filtering
+  ok Cache upstream: ignoreVary bypasses stored Vary header checks
+  ok Cache upstream: matchAll delete and keys share query option semantics
+  ok Cache upstream: keys returns request copies instead of internal cache keys
+  ok CacheStorage upstream: match respects cacheName and query options
+  ok BroadcastChannel: delivers to same-name peers but not the sender
+  ok BroadcastChannel: close prevents delivery and postMessage throws after close
+  ok BroadcastChannel: ref and unref are chainable without closing
+  ok webcrypto: sha-256 digest is stable and 32 bytes
+  ok webcrypto: sha-256 differs for different input
+  ok webcrypto upstream: digest consumes only the supplied BufferSource view range
+  ok webcrypto upstream: unsupported digest algorithms reject
+  ok webcrypto: HMAC sign then verify succeeds
+  ok webcrypto: HMAC verify fails on tampered data
+  ok URLPattern upstream: constructs from absolute string
+  ok URLPattern upstream: constructs from relative string with base
+  ok URLPattern upstream: constructs from init and supports ignoreCase
+  ok URLPattern upstream: matches all URL components and exposes result shape
+  ok URLPattern upstream: object input uses baseURL and returns original inputs
+  ok URLPattern upstream: constructor requires new and validates base URLs
+  ok URLPattern upstream: RegExp prototype pollution does not break construction
+  ok URLPattern upstream: flags pattern regression
+  ok webcrypto upstream: RSA-PSS and RSASSA sign verify round-trips
+  ok webcrypto upstream: ECDSA sign verify and key direction errors
+  ok webcrypto: AES-GCM encrypt then decrypt round-trips
+  ok webapi console upstream: console is a namespace object
+  ok webapi: localStorage exists
+  ok webapi: localStorage set/get round-trip
+  ok webapi: localStorage getItem returns null for missing
+  ok webapi: localStorage removeItem removes
+  ok webcrypto upstream: RSA-OAEP encrypt decrypt and oversized plaintext reject
+  ok webcrypto: AES-GCM with wrong IV fails to decrypt
+  ok webcrypto upstream: AES-GCM tagLength is measured in bits
+  ok webcrypto: key usages guard rejects off-label use
+  ok webcrypto upstream: HMAC raw and JWK import export match known vector
+  ok webcrypto upstream: HMAC JWK accepts use sig and base64url key material
+  ok webcrypto: wrapKey and unwrapKey round-trip JWK keys
+  ok webcrypto upstream: HMAC generation uses hash block-size defaults for JWK
+  ok webcrypto upstream: CryptoKey has native-like shape and is not directly constructable
+  ok webcrypto upstream: exportKey rejects non-extractable keys with DOMException
+  ok webcrypto upstream: PBKDF2 deriveKey and deriveBits are deterministic
+  ok webcrypto upstream: PBKDF2 SHA-1 matches RFC 6070 vector
+  ok webcrypto upstream: HKDF and ECDH deriveBits length semantics
+  ok webcrypto upstream: AES-CBC import encrypt decrypt round-trips
+  ok webcrypto: getRandomValues fills and mutates the array
+  ok webcrypto upstream: getRandomValues supports integer typed arrays
+  ok webcrypto upstream: getRandomValues rejects non-integer views and oversize input
+  ok webcrypto upstream: randomUUID returns RFC 4122 version 4 UUID strings
+  ok webapi console upstream: assert does not throw and only emits on falsy input
+  ok webapi console upstream: format preserves direct long strings but abbreviates object fields
+  ok webapi console upstream: format specifiers handle numeric and symbol inputs
+  ok webapi console upstream: inspect and format tolerate proxied built-ins
+  ok webapi console upstream: Deno.inspect includes Error causes once
+  ok webapi console upstream: Deno.inspect forwards supported inspect options
+  ok Intl.DateTimeFormat: formats a date
+  ok Intl.DateTimeFormat: formatToParts returns parts array
+  ok Intl.DateTimeFormat: options affect output
+  ok Intl.DateTimeFormat: resolvedOptions returns config
+  ok Intl.DateTimeFormat: formatRange
+  ok Intl.NumberFormat: formats number
+  ok Intl.NumberFormat: style currency
+  ok Intl.NumberFormat: style percent
+  ok Intl.NumberFormat: formatToParts
+  ok Intl.NumberFormat: formatRange
+  ok Intl.NumberFormat: resolvedOptions
+  ok Intl.Collator: compare orders strings
+  ok Intl.Collator: case-insensitive ordering
+  ok Intl.Collator: resolvedOptions
+  ok Intl.Collator: supportedLocalesOf
+  ok Intl.PluralRules: selects plural category
+  ok Intl.PLuralRules: selectRange
+  ok Intl.PluralRules: resolvedOptions
+  ok Intl.DisplayNames: language display
+  ok Intl.DisplayNames: region display
+  ok Intl.DisplayNames: currency display
+  ok Intl.DisplayNames: resolvedOptions
+  ok Intl.RelativeTimeFormat: formats relative time
+  ok Intl.RelativeTimeFormat: formatToParts
+  ok Intl.ListFormat: formats list
+  ok webapi: localStorage clear removes all in an isolated storage directory
+  ok Intl upstream: ListFormat honors type style iterables and formatToParts
+  ok Intl.getCanonicalLocales normalizes
+  ok Intl upstream: v8BreakIterator is not exposed
+  ok queueMicrotask: defers after current work
+  ok queueMicrotask: callback receives no arguments
+  ok WeakRef: deref remains stable across same-turn promise resolution
+  ok WeakRef: immediate deref keeps temporary targets alive in same job
+  ok global aliases: window and self point at globalThis
+  ok setTimeout: fires after delay
+  ok setTimeout: forwards arguments
+  ok clearTimeout: cancels pending timer
+  ok XMLHttpRequest: GET text response exposes state headers and body
+  ok XMLHttpRequest: POST sends body and request headers
+  ok XMLHttpRequest: arraybuffer responseType returns exact bytes
+  ok XMLHttpRequest upstream: data URL uses shared local protocol loader
+  ok XMLHttpRequest upstream: blob and invalid json response shapes
+  ok XMLHttpRequest upstream: overrideMimeType controls text decoding
+  ok XMLHttpRequest upstream: responseType cannot change while loading
+  ok XMLHttpRequest: setRequestHeader requires an opened request
+  ok XMLHttpRequest: validates method and responseType synchronously
+  ok webapi: localStorage length property in an isolated storage directory
+  ok setInterval: fires multiple times
+  ok timers upstream: string callbacks execute in global scope
+  ok XMLHttpRequest: abort emits abort and loadend without load
+  ok timers upstream: callback this and illegal invocation binding
+  ok timers upstream: metadata, ToNumber and BigInt validation
+  ok timers upstream: timeout ordering and microtask checkpoints
+  ok timers upstream: nested microtasks run before following timer turns
+  ok timers upstream: queueMicrotask ignores global Date overrides
+  ok structuredClone: deep clones nested object
+  ok structuredClone: clones Map and Set
+  ok structuredClone: clones Date
+  ok structuredClone: clones RegExp source and flags
+  ok structuredClone: preserves sparse array holes
+  ok structuredClone: clones class and null-prototype objects as plain objects
+  ok structuredClone: ignores symbol-keyed properties and rejects symbol values
+  ok structuredClone: clones boxed primitives without custom properties
+  ok structuredClone: clones ArrayBuffer
+  ok structuredClone: preserves ArrayBuffer identity without transfer
+  ok structuredClone: preserves shared backing buffer across views without transfer
+  ok structuredClone: transfer detaches ArrayBuffer and preserves typed view
+  ok structuredClone: transfer preserves BigInt typed arrays
+  ok structuredClone: transfer preserves shared backing buffer across views
+  ok structuredClone: transfer preserves DataView metadata
+  ok structuredClone: transfer list buffer detaches even when not in payload
+  ok structuredClone: ArrayBuffer view is not transferable
+  ok structuredClone: SharedArrayBuffer is cloneable but not transferable
+  ok structuredClone: transfers buffers nested in Map and Set
+  ok structuredClone: transfers ArrayBuffer used as Map key
+  ok structuredClone upstream: transfers MessagePort through self.structuredClone
+  ok structuredClone upstream: DataCloneError messages for invalid and detached transfer list entries
+  ok structuredClone: preserves circular references
+  ok structuredClone: clones Error standard fields only
+  ok structuredClone: unsupported objects throw DataCloneError
+  ok structuredClone: duplicate transfer list throws before detach
+  ok structuredClone: invalid transfer list entry throws before detach
+  ok atob/btoa: round-trip binary-safe
+  ok btoa: produces base64
+  ok atob: decodes base64
+  ok structuredClone: throws on function
+[05:18:37:462 - 7FDAB26D2A40]: Load type section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load function section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load export section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load code segment section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:18:37:462 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:18:37:462 - 7FDAB26D2A40]: Load module success.
+
+  ok WebAssembly: Module can be compiled from bytes
+[05:18:37:462 - 7FDAB26D2A40]: Load type section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load function section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load export section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load code segment section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:18:37:462 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:18:37:462 - 7FDAB26D2A40]: Load module success.
+
+  ok WebAssembly: Module.exports lists exported functions
+[05:18:37:462 - 7FDAB26D2A40]: Load type section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load function section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load export section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load code segment section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:18:37:462 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:18:37:462 - 7FDAB26D2A40]: Load module success.
+
+  ok WebAssembly: Module.imports lists imports (empty here)
+[05:18:37:462 - 7FDAB26D2A40]: Load type section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load function section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load export section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load code segment section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:18:37:462 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:18:37:462 - 7FDAB26D2A40]: Load module success.
+
+  ok WebAssembly: instantiate returns callable exports
+[05:18:37:462 - 7FDAB26D2A40]: Load type section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load function section success.
+
+[05:18:37:462 - 7FDAB26D2A40]: Load export section success.
+
+[05:18:37:463 - 7FDAB26D2A40]: Load code segment section success.
+
+[05:18:37:463 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:18:37:463 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:18:37:463 - 7FDAB26D2A40]: Load module success.
+
+  ok WebAssembly: compile + instantiate round-trip
+  ok WebAssembly: Memory can be created
+  ok WebAssembly: Memory.grow increases size
+  ok WebAssembly: Memory.buffer is live after grow
+  ok WebAssembly: Table can be created
+  ok WebAssembly: Table.get/set round-trips
+  ok WebAssembly: Table.grow increases length
+[05:18:37:463 - 7FDAB26D2A40]: Load type section success.
+
+[05:18:37:463 - 7FDAB26D2A40]: Load function section success.
+
+[05:18:37:463 - 7FDAB26D2A40]: Load export section success.
+
+[05:18:37:463 - 7FDAB26D2A40]: Load code segment section success.
+
+[05:18:37:463 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:18:37:463 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:18:37:463 - 7FDAB26D2A40]: Load module success.
+
+  ok WebAssembly: validate returns boolean
+  ok WebAssembly: compileStreaming/instantiateStreaming exist
+  ok WebAssembly upstream: instantiateStreaming rejects non-Response byte source
+  ok WebAssembly upstream: streaming requires application/wasm content type
+[05:18:37:464 - 7FDAB26D2A40]: Load type section success.
+
+[05:18:37:464 - 7FDAB26D2A40]: Load function section success.
+
+[05:18:37:464 - 7FDAB26D2A40]: Load export section success.
+
+[05:18:37:464 - 7FDAB26D2A40]: Load code segment section success.
+
+[05:18:37:464 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:18:37:464 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:18:37:464 - 7FDAB26D2A40]: Load module success.
+
+[05:18:37:465 - 7FDAB26D2A40]: Load type section success.
+
+[05:18:37:465 - 7FDAB26D2A40]: Load function section success.
+
+[05:18:37:465 - 7FDAB26D2A40]: Load export section success.
+
+[05:18:37:465 - 7FDAB26D2A40]: Load code segment section success.
+
+[05:18:37:465 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:18:37:465 - 7FDAB26D2A40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:18:37:465 - 7FDAB26D2A40]: Load module success.
+
+  ok WebAssembly upstream: compileStreaming and instantiateStreaming accept wasm responses
+  ok WebAssembly: invalid bytes throw on compile
+  ok webapi: localStorage key() returns key at index in an isolated storage directory
+  ok webapi: sessionStorage exists and works
+  ok webapi: localStorage and sessionStorage are independent
+  ok webapi upstream: storage globals are assignable without replacing storage objects
+  ok WebSocket: static readyState constants
+  ok WebSocket upstream: constructor rejects invalid URLs and duplicate protocols
+  ok WebSocket upstream: constructor accepts URL objects
+  ok WebSocket upstream: close validates custom code and reason before sending
+  ok webapi upstream: storage proxy supports ordinary and symbol properties
+  ok WebSocket: connects and reaches OPEN state
+  ok WebSocket: send/receive echo
+  ok WebSocket: close fires onclose event
+  ok WebSocket: bufferedAmount is a number
+  ok WebSocket: binaryType get/set
+  ok WebSocket: addEventListener message works
+  ok WebSocket upstream: echoes Uint8Array as Blob by default
+  ok WebSocket upstream: echoes Blob and ArrayBuffer as ArrayBuffer when requested
+  ok webapi upstream: storage proxy hides implementation fields
+  ok webapi: EventSource class exists
+  ok webapi: EventSource static constants
+  ok webapi: EventSource extends EventTarget
+  ok webapi: EventSource url property
+  ok webapi: EventSource withCredentials defaults to false
+  ok webapi: EventSource withCredentials true
+  ok webapi: EventSource readyState initially CONNECTING
+  ok webapi: EventSource onopen handler is settable
+  ok webapi: EventSource onmessage handler is settable
+  ok webapi: EventSource onerror handler is settable
+  ok webapi: EventSource addEventListener works
+  ok webapi: EventSource close changes readyState to CLOSED
+Server listening on http://127.0.0.1:33233
+  ok EventSource upstream: data payload preserves colons
+Server listening on http://127.0.0.1:35209
+  ok EventSource upstream: custom events join data lines and expose lastEventId
+  ok ReadableStream: async iterator drains chunks
+  ok ReadableStream: getReader locks; second reader throws
+  ok ReadableStream: tee yields two independent streams
+  ok ReadableStream: reader.cancel resolves pending read as done
+  ok ReadableStream upstream: cancel passes reason to underlying source
+  ok ReadableStream upstream: releaseLock rejects pending read
+  ok ReadableStream: pull is invoked on read
+  ok ReadableStream: fromAsyncIterable via start
+  ok WritableStream: getWriter locks; second writer throws
+  ok WritableStream: write then close
+  ok WritableStream: abort resolves writer and rejects closed
+  ok WritableStream upstream: abort forwards reason to underlying sink
+  ok TransformStream: transforms chunks
+  ok TransformStream: flush is called on close
+  ok pipeTo: forwards data from ReadableStream to WritableStream
+  ok pipeTo: rejects on source error
+  ok pipeTo: rejects on destination error
+  ok pipeTo: aborts when signal fires
+  ok pipeThrough: chains a TransformStream
+  ok ReadableStream: read returns done:true at end
+  ok ReadableStream: desiredSize is positive when room
+  ok WritableStream: write returns a promise that resolves
+  ok ReadableStream: releaseLock allows a new reader
+  ok ReadableStream upstream: empty Uint8Array chunks are delivered as chunks
+  ok ReadableStream.from: accepts sync and async iterables
+  ok ReadableStream.from upstream: cancel calls iterator return
+  ok ReadableStream.from: rejects primitive inputs
+  ok CompressionStream: writable abort and readable cancel settle cleanly
+  ok DecompressionStream: writable abort and readable cancel settle cleanly
+  ok CompressionStream and DecompressionStream: gzip round-trip
+  ok DecompressionStream: invalid gzip is reported when writable closes
+  fail raw transport: HTTP proxy uses absolute-form forwarding AssertionError: false == true { actual: false, expected: true, generatedMessage: true, code: 'ERR_ASSERTION', operator: '==' }
+  AssertionError: false == true
+      at innerOk (node:assert/mod:113:25)
+      at ok (node:assert/mod:121:12)
+      at <anonymous> (/home/iz/cno-cli/tests/webapi/proxy-transport.test.ts:241:46)
+  ok FormData: append string then get
+  ok FormData: set replaces all values for a key
+  ok FormData: delete removes all values for a key
+  ok FormData: has checks existence
+  ok FormData: append Blob with filename becomes File
+  ok FormData: entries/keys/values iteration
+  ok Blob: size and type reflect input
+  ok Blob: slice returns sub-range
+  ok Blob: slice with contentType overrides type
+  ok Blob: text() decodes utf8
+  ok Blob: arrayBuffer() returns raw bytes
+  ok Blob: bytes() returns Uint8Array
+  ok Blob: stream() returns a ReadableStream
+  ok File: name and lastModified
+  ok File extends Blob
+  ok Blob: multiple parts concatenate
+  ok Blob: empty blob has size 0
+  ok Blob: type is lowercased and normalized
+  ok Blob upstream: constructor snapshots binary parts and coerces objects once
+  ok Blob upstream: constructor accepts nested blobs buffers and unusual options objects
+  ok Blob upstream: slice supports negative indexes and rejects invalid content type
+  ok File upstream: constructor coerces file bits and names like Blob
+  ok FormData upstream: methods validate required arguments and callback
+  ok FormData upstream: filename override accepts empty string for File values
+  ok FormData upstream: forEach uses thisArg parent and live entries
+  ok Blob upstream: endings option normalizes only string parts
+  ok Blob upstream: stream reads are independent
+  ok File upstream: constructor metadata defaults and string tag
+  ok raw transport: HTTPS target uses CONNECT then TLS
+  ok webapi: location exists on globalThis
+  ok webapi: location is Location instance
+  ok webapi: location exposes about:blank URL shape
+  ok webapi: location navigation methods throw
+  ok webapi: location setters throw instead of silently mutating
+  ok webapi: location.ancestorOrigins is DOMStringList
+  ok webapi: location.toString returns href
+  ok webapi upstream: EventTarget removeEventListener matches listener and capture
+  ok webapi upstream: EventTarget object listeners target persistence and listener snapshot
+  ok webapi upstream: EventTarget subclass object-prototype event names and duplicate listeners
+  ok webapi upstream: EventTarget dispatch tracks phase target and cancelation result
+  ok webapi upstream: EventTarget dispatch skips listeners removed before their turn
+  ok webapi upstream: EventTarget stopPropagation keeps same-target listeners but stopImmediatePropagation stops them
+  ok webapi upstream: EventTarget null listener is no-op but brand checks still apply
+  ok webapi upstream: EventTarget prototype methods default this to globalThis
+  ok webapi upstream: global addEventListener signal option unregisters on abort
+  ok webapi upstream: Event CustomEvent CloseEvent and ProgressEvent match DOM defaults
+  ok webapi upstream: DOMException code lookup ignores Object prototype pollution
+  ok webapi upstream: DOMException exposes stack as an own accessor
+  ok webapi upstream: atob btoa and TextEncoder/TextDecoder edge behavior
+  ok webapi upstream: Storage global is not replaced and named properties mirror entries
+  ok webapi upstream: Blob coerces parts and normalizes type
+  ok webapi upstream: File coerces file bits and filename inputs
+  ok webapi upstream: Headers constructor mutation and invalid input semantics
+  ok webapi upstream: Request accepts stringifiers URL objects and cloned stream bodies
+  ok webapi upstream: Response body readers init validation clone and formData
+  ok raw transport: HTTPS proxy supports nested TLS to HTTPS target
+  fail EventSource: receives SSE through HTTP proxy AssertionError: 0 strictEqual 1 { actual: 0, expected: 1, generatedMessage: true, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: 0 strictEqual 1
+      at strictEqual (node:assert/mod:169:25)
+      at <anonymous> (/home/iz/cno-cli/tests/webapi/proxy-transport.test.ts:296:20)
+  fail WebSocket: upgrades and receives a frame through HTTP proxy AssertionError: 0 strictEqual 1 { actual: 0, expected: 1, generatedMessage: true, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: 0 strictEqual 1
+      at strictEqual (node:assert/mod:169:25)
+      at <anonymous> (/home/iz/cno-cli/tests/webapi/proxy-transport.test.ts:318:20)
+  ok webapi: scheduler.postTask exists
+  ok webapi: scheduler.postTask resolves
+  ok webapi: scheduler.postTask with priority option
+  ok scheduler upstream: postTask runs asynchronously and resolves async callbacks
+  ok scheduler upstream: postTask propagates thrown and rejected callback errors
+  fail WebSocket: WSS uses CONNECT, TLS, upgrade and frames Error: WSS proxy request failed
+      at construct (native)
+      at construct (<core>:44263:56)
+      at <anonymous> (/home/iz/cno-cli/tests/webapi/proxy-transport.test.ts:336:46)
+      at emitError (<core>:49878:24)
+      at connectClient (<core>:49510:35)
+  ok raw transport: SOCKS5 authenticates and resolves DNS locally
+  ok raw transport: SOCKS5h delegates hostname resolution to proxy
+  ok raw transport: SOCKS4a delegates hostname resolution to proxy
+  ok raw transport: NO_PROXY respects domain boundaries and ports
+  ok webapi: scheduler.postTask with delay
+  ok webapi: scheduler.postTask with AbortSignal rejects
+  ok scheduler upstream: delayed postTask aborts before callback runs
+  ok scheduler upstream: postTask validates callback priority and delay
+  ok webapi: scheduler.yield resolves
+  ok webapi: scheduler.yield with options
+  ok webapi: TaskController exists and works
+  ok webapi: TaskController with priority
+  ok scheduler upstream: TaskController validates priority and exposes web shape
+  ok webapi: TaskSignal readonly priority
+  ok webapi: TaskController.abort sets aborted
+  ok scheduler upstream: TaskSignal forwards abort events reason and throwIfAborted
+  ok webapi: navigator.locks exists
+  ok webapi: locks.request exclusive
+  ok webapi: locks.request shared
+  ok webapi: locks.request returns value from callback
+[runtime] ✖ Uncaught (in unhandled promise rejection) Error
+  lock error
+    construct (<core>:44263:56)
+  ok webapi: locks.request rejects on callback error
+  ok webapi: locks.request with AbortSignal
+  ok webapi: locks.query returns object
+  ok webapi upstream: localStorage quota rejects oversize writes atomically
+  ok MessageChannel: two ports are connected
+  ok MessageChannel: two-way messaging
+  ok MessageChannel: postMessage structured-clones objects
+  ok URL: parses http URL completely
+  ok URL: default http port (80) is omitted
+  ok URL: non-default port is retained
+  ok URL: file URL origin is null
+  ok URL: + in query decodes to space
+  ok URL: percent-encoding round-trips reserved chars
+  ok URL: setting search replaces all params
+  ok URL: setting pathname updates pathname
+  ok URL: setting hash normalizes leading #
+  ok URL: append creates duplicate keys, getAll returns all
+  ok URL: searchParams.sort orders by key
+  ok URL: searchParams.has with value check
+  ok URL: searchParams.delete removes specific value
+  ok URL: searchParams.size reflects entry count
+  ok URL: searchParams iteration methods
+  ok URL: URLSearchParams from object
+  ok URL: URLSearchParams from another instance clones
+  ok URL: URLSearchParams handles empty key and value
+  ok URL.canParse validates URL strings
+  ok URL.parse returns null on invalid, URL on valid
+  ok URL: relative URL resolves against base
+  ok URL: hostname is lowercased
+  ok URL: setting host updates hostname
+  ok URL: setting hostname alone retains port
+  ok URL: setting port alone
+  ok URL upstream: invalid and default ports follow WHATWG semantics
+  ok URL upstream: URL object input is copied and port changes affect only receiver
+  ok URL: origin does not include credentials
+  ok MessageChannel: onmessage and addEventListener both fire
+  ok URL: toJSON returns href
+  ok URL: href setter re-parses entire URL
+  ok URL upstream: Deno.inspect preserves explicit empty query without exposing searchParams
+  ok MessageChannel: close stops delivery
+  ok MessageChannel: start flushes queued messages
+  ok MessageChannel: postMessage with transfer list
+  ok MessageChannel: postMessage accepts transfer options object
+  ok MessageChannel: transfer-only ArrayBuffer detaches without payload reference
+  ok MessageChannel: postMessage preserves shared backing buffer without transfer
+  ok MessageChannel: transferring MessagePort moves the endpoint
+  ok MessageChannel: transfer options object can move MessagePort
+  ok MessageChannel: transferred MessagePort payload matches event ports entry
+  ok MessageChannel: transfer list MessagePort appears in event.ports without payload reference
+  ok MessageChannel: transferring multiple MessagePorts preserves event.ports order
+  ok MessageChannel: queued transfer keeps MessagePort in event.ports
+  ok MessageChannel: MessagePort without transfer list is rejected
+  ok MessageChannel: duplicate MessagePort transfer throws before detach
+  ok MessageChannel: transferred MessagePort cannot be transferred again
+  ok MessagePort is an EventTarget
+  ok MessageChannel: messages delivered in order
+  ok webapi upstream: TextDecoder decodes utf8 ascii label and SharedArrayBuffer views
+  ok webapi upstream: TextEncoder encode and encodeInto handle surrogate boundaries
+  ok webapi upstream: TextEncoder coerces input and toString tags are web-compatible
+  ok webapi upstream: TextDecoderStream cancels the source when iteration stops early
+  ok webapi upstream: TextDecoder handles empty chunk in stream mode for legacy encodings
+  ok performance: now() returns a number
+  ok performance: now() is monotonic
+  ok performance: timeOrigin is a number
+  ok performance: mark + measure
+  ok performance: getEntries returns PerformanceEntry list
+  ok performance: clearMarks / clearMeasures
+  ok performance: toJSON returns object
+  ok performance upstream: toJSON contains only timeOrigin
+  ok performance upstream: mark returns entries and clones detail
+  ok performance upstream: measure and clear functions follow public semantics
+  ok performance upstream: measure uses the most recent mark with a duplicate name
+  ok performance: markResourceTiming records resource entries without throwing
+  ok performance upstream: constructor guards and EventTarget inheritance
+  ok performance upstream: Deno.inspect includes performance class names
+  ok localStorage: setItem/getItem/removeItem
+  ok localStorage: length and key()
+  ok localStorage: removeItem empties selected entries
+  ok localStorage: bracket access works
+  ok localStorage: overwriting replaces value
+  ok localStorage: Web Storage methods stringify keys and values
+  ok EventTarget: add/dispatch/remove listener
+  ok EventTarget: once listener fires once
+  ok AbortSignal removes listener on abort
+  ok Event: type and flags
+  ok Event: preventDefault only when cancelable
+  ok CustomEvent: carries detail
+  ok ErrorEvent upstream: defaults init fields and inspect shape
+  ok Event phase constants
+  ok Event: eventPhase is NONE initially
+  ok Event: timeStamp is a number
+  ok EventTarget: remove non-added listener is no-op
+  ok EventTarget: listeners fire in registration order
+  ok EventTarget upstream: dispatch sets target and currentTarget
+  ok EventTarget upstream: object listeners and capture matching removal
+  ok EventTarget upstream: dispatch uses a listener snapshot
+  ok EventTarget upstream: listener event type is stringified
+  ok EventTarget upstream: prototype methods reject invalid receivers
+  ok webapi upstream: URLSearchParams form-url-encodes records and pairs
+  ok webapi upstream: URLSearchParams decodes plus and malformed percent sequences
+  ok webapi upstream: URLSearchParams handles missing names values and empty pairs
+  ok webapi upstream: URLSearchParams constructor validates iterable pair lengths
+  ok webapi upstream: URLSearchParams methods validate required arguments
+  ok webapi upstream: URLSearchParams operations use internal slots not overridden methods
+  ok webapi upstream: URLSearchParams iterators are live and sort is stable
+  ok webapi upstream: URLSearchParams keys values and entry pairs follow live iterator semantics
+  ok webapi upstream: URL searchParams object stays bound after search and href setters
+  ok AbortSignal upstream: constructor is illegal
+  ok AbortSignal.abort: creates already-aborted signal with reason
+  ok AbortController upstream: default abort reason is AbortError and toStringTag is web-compatible
+  ok AbortController: abort fires listeners once and preserves first reason
+  ok AbortSignal.any: returns first already-aborted signal reason
+  ok AbortSignal.any: aborts when one source aborts and keeps first reason
+  ok AbortSignal.any: rejects non-array input
+  ok AbortSignal.timeout: aborts asynchronously with TimeoutError
+  ok AbortSignal.timeout: rejects invalid timeout values
+  ok webapi fetch upstream: Headers iteration callbacks and Set-Cookie edge cases
+  ok webapi fetch upstream: Headers iteration observes live mutations
+  ok webapi fetch upstream: Headers reject malformed names values and init pairs
+  ok webapi fetch upstream: Headers string tag is web-compatible
+  ok webapi fetch upstream: Headers init is robust against RegExp prototype pollution
+  ok webapi fetch upstream: Body reads typed arrays and URLSearchParams
+  ok webapi fetch upstream: Body parses multipart non-ASCII names filenames and extra headers
+  ok webapi fetch upstream: Body round-trips multipart non-ASCII FormData
+  ok localStorage upstream: quota errors leave failed entries unset
+  ok sessionStorage: basic round-trip
+  ok navigator: userAgent is a string
+  ok navigator: platform is a string
+  ok navigator: language is a string
+  ok navigator: languages is an array of strings
+  ok webapi fetch upstream: Body consumes large multi-chunk streams
+  ok webapi fetch upstream: Request accepts URL-like input and clones stream bodies
+  ok webapi fetch upstream: Request validates and normalizes HTTP methods
+  ok webapi fetch upstream: fetch supports data and blob local protocols
+  ok webapi fetch upstream: Request constructed from consumed Request keeps override body independent
+  ok webapi fetch upstream: Request and Response preserve typed-array view ranges
+  ok webapi fetch upstream: Body tracks direct reader use
+  ok webapi fetch upstream: Response accepts iterable bodies and boxed strings
+  ok webapi fetch upstream: Response readers blob formData and bodyUsed
+  ok webapi fetch upstream: Response init validation and clone semantics
+  ok webapi fetch upstream: Response can use another Response as init
+  ok webapi fetch upstream: Response redirect accepts URL objects and empty bodies read as empty
+  ok webapi fetch upstream: Response static constructors preserve status headers and error shape
+  ok fetch: GET with body rejects
+  ok fetch: HEAD with body rejects
+Server listening on http://127.0.0.1:43657
+  ok fetch: 204 response body is null and text() is empty
+Server listening on http://127.0.0.1:35059
+  ok fetch: json() on 204 rejects
+Server listening on http://127.0.0.1:34369
+  ok fetch: response body is single-use
+Server listening on http://127.0.0.1:38051
+  ok fetch: arrayBuffer returns raw bytes
+Server listening on http://127.0.0.1:45877
+  ok fetch upstream node: accepts fs ReadStream request bodies
+Server listening on http://127.0.0.1:41697
+  ok navigator: language falls back across locale env vars
+  ok navigator: hardwareConcurrency is a positive number
+  ok navigator upstream: userAgentData exposes low entropy data and selected high entropy hints
+  ok navigator: onLine is boolean
+  ok navigator: permissions is an object
+  ok navigator: clipboard is an object
+  ok navigator.permissions: query returns cached PermissionStatus by name
+  ok navigator.permissions: query rejects invalid descriptors
+  ok fetch: follows 302 redirect by default
+  ok Request: clones body stream reference semantics
+  ok navigator.storage: estimate and persistence methods resolve
+  ok Response: redirect() produces 302 with Location
+  ok navigator.clipboard: text round-trip and unsupported rich clipboard APIs
+  ok navigator upstream: share APIs report unsupported without side effects
+  ok navigator: getBattery returns cached full battery status
+  ok navigator.connection: exposes stable network information shape
+  ok navigator.opensocket: exposes direct socket entry points without opening sockets
+  ok Response: json() serializes and sets content-type
+  ok Headers: append then get returns comma-joined
+  ok Headers: iteration yields all entries
+  ok AbortSignal: abort() fires event and sets aborted
+  ok AbortSignal.timeout fires after ms
+  ok ReadableStream: async iterator drains chunks
+  ok ReadableStream: tee produces two independent streams
+  ok TransformStream: transforms chunks
+  ok URL: parses and normalizes
+  ok URLSearchParams: encodes spaces as +
+  ok structuredClone: deep clones nested object
+  ok atob/btoa round-trip
+  ok deno upstream: internal pathFromURL converts file URLs and rejects non-file URLs
+  ok deno upstream: internal inspectArgs is exposed for test helpers
+  ok deno upstream: version build system and symbol metadata expose expected public shapes
+  ok deno upstream: selected ESNext collection and typed-array helpers are present
+  ok webapi: MessageChannel creates two ports
+  ok webapi: MessagePort postMessage and onmessage
+  ok MessageChannel upstream: global ports can be transferred in event.ports
+  ok MessageChannel upstream: transferred port identity is shared between data and ports
+  ok webapi: MessagePort postMessage with transfer
+  ok deno cron: rejects invalid names schedules and handlers
+  ok deno cron: validates object schedules and backoff options before scheduling
+  ok deno cron: pre-aborted signal accepts valid schedules without running handler
+  ok deno cron: active jobs reject duplicate names and resolve when aborted
+  ok webapi: MessagePort close event fires
+  ok webapi: MessagePort onmessageerror is settable
+  ok webapi: MessagePort start() begins message flow
+  ok webapi: MessagePort ref/unref are callable
+  ok deno cron: rejects once the active cron job limit is reached
+  ok deno upstream: noColor follows NO_COLOR only when non-empty
+  ok deno upstream: system info helpers return stable shapes
+  ok deno upstream: execPath uid and gid expose public OS values
+  ok deno upstream: networkInterfaces returns Deno shaped entries
+  ok deno upstream: umask returns the previous process mask
+  fail deno: KV openKv accepts memory and rejects invalid filenames TypeError: ArrayBuffer object expected
+      at transpileSharedBytes (native)
+      at transpileBytes (<core>:30400:76)
+      at transformBytes (<core>:25300:87)
+      at loadEsm (<core>:25772:103)
+      at load (<core>:25709:29)
+      at load (<core>:26295:30)
+      at load (<core>:31473:35)
+      at Module (native)
+      at compileEsm (<core>:25726:22)
+      at loadEsm (<core>:25775:49)
+  ok deno: KV set/get/delete round-trip
+  ok deno: KV versionstamp changes on update
+  ok deno: KV getMany returns entries in order, null for missing
+  ok deno: KV value codec preserves structured edge values
+  ok deno: KV list filters by prefix and returns keys
+  ok deno: KV list supports limit cursor and reverse iteration
+  ok deno: KV atomic insert with versionstamp:null check only commits once
+  ok deno: KV atomic set + delete in one commit
+  ok deno: KV atomic operations validate keys and cannot be reused
+  ok deno: KV atomic U64 shortcuts handle sum max and min
+  ok deno: KV KvU64 constructor coercion inspect and persistence
+  ok deno: KV atomic mutate entry point uses U64 values
+  ok deno: KV atomic mutate rejects invalid mutation shapes
+  ok deno: KV atomic U64 mutations wrap and reject non-U64 types
+  ok deno: KV key ordering follows Deno key type ordering
+  ok deno: KV list selector boundaries batch limits and cursors
+  ok deno: KV commitVersionstamp suffix replaces final key part
+  ok deno: KV AtomicOperation exposes state through Deno.inspect
+  ok deno: KV atomic operation is thenable and commits once
+  ok deno: KV atomic commit notifies watch streams
+  ok deno: KV watch yields initial state and later changes
+  ok deno: KV queue delivers immediate messages and resolves listener on close
+Queue handler error: Error: delivery failed
+      at construct (native)
+      at construct (<core>:44263:56)
+      at <anonymous> (/home/iz/cno-cli/tests/deno/kv.test.ts:528:22)
+      at deliverMessage (<core>:59969:27)
+      at <anonymous> (<core>:59959:47)
+      at <anonymous> (<core>:44540:36)
+  ok deno: KV queue stores original value in keysIfUndelivered after retries are exhausted
+  ok deno: KV queue validates delay backoff and undelivered keys
+  ok deno upstream: child process ppid matches parent pid
+  ok deno upstream: timer web compatibility edge cases
+  ok deno fs upstream: watchFs yields file events and close ends iteration
+  ok deno: KV set with expireIn makes entry expire
+  ok deno: KV operations reject after close
+  ok deno fs upstream: writeFileSync honors create createNew append and URL paths
+  ok deno fs upstream: writeFile honors create createNew append and URL paths
+  ok deno fs upstream: writeTextFile mirrors byte write options
+  ok deno permissions: query/request/revoke always return granted status
+  ok deno errors: extended error classes expose stable names
+  ok deno fs upstream: non-file URLs are rejected before filesystem access
+  ok deno fs: sync text file operations accept string and file URL paths
+  ok deno fs upstream: writeFile and writeTextFile consume web streams
+  ok deno fs upstream: writeFile honors pre-aborted signals before creating files
+  ok deno fs: async write/copy/rename/readDir/remove round-trip
+  ok deno fs upstream: writeFile propagates queued abort reasons
+  ok deno fs: makeTempFile and makeTempDir honor prefix and suffix
+  fail deno fs upstream: readFile and readTextFile propagate abort reasons AssertionError: TypeError: property is not configurable throws [Function] { actual: TypeError: property is not configurable
+        at defineProperty (native)
+        at __rethrow (<core>:39753:25)
+        at <anonymous> (<core>:39762:53), expected: [Function: anonymous], generatedMessage: true, code: 'ERR_ASSERTION', operator: 'throws' }
+  AssertionError: TypeError: property is not configurable throws [Function]
+      at _checkError (node:assert/mod:273:33)
+      at rejects (node:assert/mod:457:20)
+  ok deno fs upstream: writeFile mode and temp naming are observable
+  ok deno fs upstream: copyFile preserves source and overwrites destination
+  ok deno fs upstream: copyFile preserves executable mode bits
+  ok deno fs upstream: copyFile reports missing source
+  ok deno fs upstream: mkdir recursive accepts existing directories and URL paths
+  ok deno fs upstream: readDir yields stable entry shapes
+  fail deno fs upstream: readFile errors expose Deno error code fields AssertionError: false == true { actual: false, expected: true, generatedMessage: true, code: 'ERR_ASSERTION', operator: '==' }
+  AssertionError: false == true
+      at innerOk (node:assert/mod:113:25)
+      at ok (node:assert/mod:121:12)
+      at <anonymous> (/home/iz/cno-cli/tests/deno/fs-upstream-compat.test.ts:320:32)
+  ok deno fs upstream: readTextFile replaces malformed utf8 bytes consistently
+  ok deno fs upstream: remove handles files directories URL paths and recursive trees
+  ok deno fs upstream: remove unlinks symlinks without following targets
+  ok deno fs upstream: rename supports string and URL paths
+  ok deno fs upstream: rename overwrites files but preserves failing directory targets
+  ok deno fs upstream: rename supports Unix replacement cases around symlinks
+  ok deno fs upstream: stat and lstat expose file directory and timestamp shape
+  ok deno fs upstream: FileInfo exposes platform stat extension fields
+  ok deno fs upstream: makeTempDir and makeTempFile create unique entries in existing dirs only
+  ok deno fs upstream: truncate path and FsFile clamp negative lengths to zero
+  ok deno fs upstream: realPath follows symlinks and accepts file URLs
+  ok deno fs upstream: hard links share content and report exists or missing errors
+  ok deno fs upstream: symlink and readLink support string and URL paths
+  ok deno fs upstream: chmod follows symlink targets and accepts file URLs
+  ok deno fs upstream: utime accepts number seconds Date objects and URL paths
+  ok deno fs upstream: utime accepts directories and large number seconds
+  ok deno fs upstream: watchFs ignore filters contained paths
+  ok deno fs upstream: chown accepts current uid gid null sides and URL paths
+  ok deno command: output captures stdout and stderr
+  ok deno upstream: Deno.errors constructors preserve cause
+  ok deno upstream: Deno.errors options lookup ignores Object prototype pollution
+  ok deno upstream: assertion errors tolerate Object prototype getter pollution
+  ok deno upstream: stdio zero-length reads and writes return zero
+  ok deno upstream: consoleSize only reports dimensions for terminal stdout
+  ok deno fs upstream: watchFs supports multiple roots and iterator return
+  ok deno fs upstream: watchFs throws for missing paths
+  ok deno.permissions: async and sync methods return stable granted status
+  ok deno.permissions: invalid descriptors reject before returning granted status
+  ok deno.permissions: descriptor identity follows normalized descriptor scope
+  ok deno.permissions: official sys and path-like descriptors validate
+  ok deno.permissions: PermissionStatus onchange is writable
+  ok deno.permissions: PermissionStatus dispatches EventTarget listeners and onchange
+  ok deno.permissions: Permissions and PermissionStatus constructors expose native-style shape
+  ok deno.errors: exported constructors cover common filesystem and network names
+  ok deno command: outputSync captures stdout, stderr and status
+  ok deno command: spawn exposes readable streams and status
+  ok deno fs upstream: watchFs is recursive by default
+  ok deno tls: listenTls and connectTls negotiate ALPN and exchange bytes
+  ok deno command: spawn supports piped stdin
+  ok deno fs upstream: watchFs recursive false excludes nested file events
+  ok deno command: cwd and env are visible in child process
+  ok deno tls: startTls upgrades and consumes a TCP connection
+  ok deno tls: startTls rejects while the TCP connection has a pending read
+  ok deno: globalThis.Deno is defined
+  ok deno upstream: selected global object descriptors and aliases match Deno
+  ok deno upstream: ES global helpers Promise.withResolvers and groupBy work
+  ok deno: Deno.env get/set/has/delete reflect each other
+  ok deno: Deno.env.toObject is a plain object of strings
+  ok deno: Deno.env.toObject is a snapshot and empty values stay present
+  ok deno: Deno.env.get on unset key returns undefined
+  ok deno: Deno.env rejects invalid keys and values before touching the host env
+  ok deno upstream: Deno.env coerces non-symbol keys and values to strings
+  ok deno: Deno.errors classes are Error subclasses with names
+  ok deno upstream: Deno.errors constructors preserve cause and errno-style codes
+  ok deno: Deno.build and Deno.version have expected shape
+  ok deno: Deno.pid and Deno.ppid are positive numbers
+  ok deno: Deno.test accepts name + fn
+  ok deno: Deno.test accepts options object
+  ok deno: Deno.test.only is callable
+  ok deno: Deno.chdir + Deno.cwd round-trip
+  ok deno: Deno.chdir accepts file URL paths
+  ok deno upstream: cwd reports NotFound after current directory is removed
+  ok deno upstream: chdir rejects missing directories
+  ok deno: Deno.mainModule is string and Deno.execPath is function
+  ok deno: Deno.memoryUsage returns numeric fields
+  ok deno: upgradeWebSocket returns a 101 response and negotiated socket
+  ok deno: upgradeWebSocket validates required upgrade headers only
+  ok deno: HttpClient constructors expose stable public shape
+  ok deno: HttpClient exposes proxy helpers and rejects connections after close
+Server listening on http://127.0.0.1:37321
+  ok deno: Deno.serve lifecycle exposes addr onListen finished abort and onError
+Server listening on http://0.0.0.0:0
+  ok deno: Deno.serve supports Unix domain socket path and reports Unix addr
+  ok deno upstream: mainModule and execPath are observable in file subprocesses
+  ok deno: args is enumerable and returns a read-only snapshot
+  ok deno: isatty and cpuUsage expose stable public shapes
+  ok deno command upstream: non-piped stdio getters throw
+  ok deno: refTimer and unrefTimer accept timer handles and reject invalid handles
+  fail cdp: /json lists a page target with a debugger ws URL Error: Test timed out after 10000ms
+      at construct (native)
+      at construct (<core>:44263:56)
+      at <anonymous> (<core>:61582:68)
+  ok deno command upstream: spawned child exposes ChildProcess public shape
+serve-target listening on 18091
+  ok deno upstream: unrefTimer does not keep the event loop alive
+  ok deno: Deno.serve handles text/json/404 routes
+  ok deno command upstream: piped stdout and stderr stream to completion
+✖ Uncaught (in /home/iz/cno-cli/tests/node/targets/cdp-discovery.target.ts) Error
+  ArrayBuffer object expected
+    transpileBytes (<core>:30400:76)
+
+  ok deno upstream: refTimer restores a previously unrefed timer
+serve-target listening on 18091
+  ok deno: Deno.serve handles request body HEAD stream and handler errors
+  ok deno upstream: mixed ref and unref timers exit after referenced work
+  ok deno command upstream: subprocess readable helpers drain bytes text json and arrayBuffer
+  ok deno ffi: UnsafePointer create value equals and offset semantics
+  ok deno ffi: UnsafePointer.of and UnsafePointerView read process memory views
+  ok deno ffi: UnsafePointerView reads numeric scalar types little-endian
+  ok deno ffi: UnsafeCallback lifecycle methods are idempotent around pointer creation
+  ok deno ffi: UnsafeFnPointer calls UnsafeCallback pointers and propagates errors
+  ok deno ffi: dlopen calls native functions and handles optional symbols
+  ok deno ffi: dlopen validates symbol definitions before loading
+  ok deno ffi: dlopen reports missing libraries without requiring a fixture binary
+  ok deno command upstream: piped stdin writes into child process
+  ok deno: exitCode accepts only integer numbers and drives Deno.exit
+  ok deno-inner: trivial
+  ok deno-inner: object-form
+  ok deno-inner: only-form
+  ok deno command upstream: output captures stdout and stderr by default
+  ok deno stdio: standard streams expose stable shape without consuming input
+  ok deno stdio: zero-length read and write operations return zero bytes
+  ok deno process: umask cache, uid gid and signal validation are observable
+  ok deno process: inspect and system memory info expose stable public shapes
+  ok deno process upstream: inspect handles cross-realm built-in objects
+  ok deno net: networkInterfaces returns Deno-shaped interface entries with cidr prefixes
+  ok deno net: validation failures happen before opening sockets
+  ok deno net: tcp listen port 0 reports selected port and accepts a connection
+  ok deno net: listener async iterator and Conn streams exchange bytes
+  fail deno net: listener close settles pending accept and async iterator AssertionError: TypeError: property is not configurable throws [Function: Busy] { actual: TypeError: property is not configurable
+        at defineProperty (native)
+        at __rethrow (<core>:39753:25)
+        at <anonymous> (<core>:39762:53), expected: [class Busy], generatedMessage: true, code: 'ERR_ASSERTION', operator: 'throws' }
+  AssertionError: TypeError: property is not configurable throws [Function: Busy]
+      at _checkError (node:assert/mod:263:33)
+      at rejects (node:assert/mod:457:20)
+  fail deno net: async iterator next resolves done when listener closes TypeError: property is not configurable
+      at defineProperty (native)
+      at __rethrow (<core>:39753:25)
+      at <anonymous> (<core>:39762:53)
+  fail deno net: listener async iterator break closes listener AssertionError: TypeError: property is not configurable throws [Function: BadResource] { actual: TypeError: property is not configurable
+        at defineProperty (native)
+        at __rethrow (<core>:39753:25)
+        at <anonymous> (<core>:39762:53), expected: [class BadResource], generatedMessage: true, code: 'ERR_ASSERTION', operator: 'throws' }
+  AssertionError: TypeError: property is not configurable throws [Function: BadResource]
+      at _checkError (node:assert/mod:263:33)
+      at rejects (node:assert/mod:457:20)
+  ok deno net: explicit undefined hostname binds wildcard address
+  ok deno net: tcp closeWrite half-closes writes while reads continue
+  ok deno net: unix listener accepts a connection and reports socket addresses
+  ok deno net: unix listener reports address in use for the same socket path
+  ok deno net: udp listenDatagram sends receives and iterates messages
+  ok deno net: udp concurrent sends and iterator close settle cleanly
+  ok deno signal upstream: addSignalListener receives repeated self signals
+  ok deno command upstream: outputSync keeps stdout and stderr separate
+  ok deno command upstream: output rejects non-piped stdio and piped stdin
+  ok deno command upstream: invalid stdio variants throw before spawning
+  fail deno upstream: Error.stack first line reflects current name and message AssertionError: '    at construct (native)
+    at construct (<core>:44263:56)
+    at <anonymous> (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:14:26)
+    at startTest (<core>:61588:33)
+    at runTestFileAndReport (<core>:75733:40)
+' match /^Foo: bar\n/ { actual: '    at construct (native)\n    at construct (<core>:44263:56)\n    at <anonymous> (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:14:26)\n    at startTest (<core>:61588:33)\n    at runTestFileAndReport (<core>:75733:40)\n', expected: /^Foo: bar\n/, generatedMessage: true, code: 'ERR_ASSERTION', operator: 'match' }
+  AssertionError: '    at construct (native)
+      at construct (<core>:44263:56)
+      at <anonymous> (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:14:26)
+      at startTest (<core>:61588:33)
+      at runTestFileAndReport (<core>:75733:40)
+  ' match /^Foo: bar\n/
+      at match (node:assert/mod:521:25)
+      at <anonymous> (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:17:14)
+      at startTest (<core>:61588:33)
+      at runTestFileAndReport (<core>:75733:40)
+  fail deno upstream: Error.captureStackTrace removes the requested frame AssertionError: 'Error
+    at <anonymous> (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:30:4)
+    at startTest (<core>:61588:33)
+    at runTestFileAndReport (<core>:75733:40)
+' strictEqual '    at construct (native)
+    at foo (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:23:26)
+    at <anonymous> (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:30:4)
+    at startTest (<core>:61588:33)
+    at runTestFileAndReport (<core>:75733:40)
+' { actual: 'Error\n    at <anonymous> (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:30:4)\n    at startTest (<core>:61588:33)\n    at runTestFileAndReport (<core>:75733:40)\n', expected: '    at construct (native)\n    at foo (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:23:26)\n    at <anonymous> (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:30:4)\n    at startTest (<core>:61588:33)\n    at runTestFileAndReport (<core>:75733:40)\n', generatedMessage: true, code: 'ERR_ASSERTION', operator: 'strictEqual' }
+  AssertionError: 'Error
+      at <anonymous> (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:30:4)
+      at startTest (<core>:61588:33)
+      at runTestFileAndReport (<core>:75733:40)
+  ' strictEqual '    at construct (native)
+      at foo (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:23:26)
+      at <anonymous> (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:30:4)
+      at startTest (<core>:61588:33)
+      at runTestFileAndReport (<core>:75733:40)
+  '
+      at strictEqual (node:assert/mod:169:25)
+      at foo (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:27:35)
+      at <anonymous> (/home/iz/cno-cli/tests/deno/error-stack-upstream.test.ts:30:4)
+      at startTest (<core>:61588:33)
+      at runTestFileAndReport (<core>:75733:40)
+  ok deno signal upstream: multiple listeners and removal are ordered per signal
+  ok deno FsFile upstream: stdio keeps legacy rid descriptors
+  ok deno FsFile: openSync read write seek stat and truncate
+  ok deno FsFile upstream: open defaults to read and accepts file URL create paths
+  ok deno FsFile: async read write seek sync and stat
+  ok deno FsFile upstream: write-only mode rejects reads and truncate clears existing file
+  ok deno FsFile: empty reads return zero and EOF returns null
+  ok deno FsFile: create helpers truncate and expose FsFile constructor shape
+  ok deno FsFile: readable and writable streams use the file pointer
+  ok deno FsFile: readable and writable streams take ownership of the handle
+  ok deno FsFile: sync maintenance methods and unsupported terminal methods
+  ok deno FsFile upstream: syncData and sync preserve written bytes
+  ok deno open: options require an explicit access mode and compatible create/truncate flags
+  ok deno FsFile: read and write reject null buffers
+  ok deno FsFile: seek follows Deno offsets from start current and end
+  ok deno FsFile upstream: invalid seek mode rejects without closing file
+  ok deno command upstream: child output drains pipes while waiting
+  ok deno FsFile: append mode writes at EOF regardless of seek position
+  ok deno command upstream: invalid signals throw before native kill
+  ok deno FsFile: lock tryLock unlock and disposal are callable
+  ok deno command upstream: kill supports default numeric and check-only signals
+  ok deno command upstream: asyncDispose terminates running child
+  ok deno FsFile: closed handles reject further operations
+  ok deno FsFile upstream: Symbol.dispose closes and repeated close is harmless
+  ok deno signal upstream: duplicate listener is registered once
+  ok deno test harness: hooks steps each and benches run in order
+  ok deno signal upstream: removed listener can be added again
+  ok deno test harness: only filters ordinary tests
+  ok deno signal upstream: subprocess can exit while listening
+  ok deno test harness: failing tests make __startTest return false
+  ok deno test harness: noRun tests are registered but not executed
+  ok deno command upstream: env inherits by default and clearEnv isolates child env
+  ok deno command upstream: invalid cwd rejects before native spawn
+  ok deno test harness: non-Error and AggregateError throws are collected
+  ok deno command upstream: URL command and cwd paths are accepted
+  ok deno command upstream: missing executable rejects output and outputSync throws
+  ok deno command upstream: AbortSignal terminates spawned child
+[05:18:42:697 - 7F4BA57BDA40]: Load type section success.
+
+[05:18:42:698 - 7F4BA57BDA40]: Load import section success.
+
+[05:18:42:698 - 7F4BA57BDA40]: Load function section success.
+
+[05:18:42:698 - 7F4BA57BDA40]: Load table section success.
+
+[05:18:42:698 - 7F4BA57BDA40]: Load memory section success.
+
+[05:18:42:698 - 7F4BA57BDA40]: Load global section success.
+
+[05:18:42:698 - 7F4BA57BDA40]: Load export section success.
+
+[05:18:42:698 - 7F4BA57BDA40]: Load table segment section success.
+
+[05:18:42:698 - 7F4BA57BDA40]: Load code segment section success.
+
+[05:18:42:701 - 7F4BA57BDA40]: Load data segment section success.
+
+  ok deno test harness: failing hooks make __startTest return false
+[05:18:42:750 - 7F4BA57BDA40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:18:42:750 - 7F4BA57BDA40]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:18:42:751 - 7F4BA57BDA40]: Load module success.
+
+[05:18:42:763 - 7F4BA57BDA40]: Memory instantiate:
+[05:18:42:763 - 7F4BA57BDA40]:   page bytes: 65536, init pages: 21, max pages: 65536
+[05:18:42:763 - 7F4BA57BDA40]:   heap offset: 1376256, heap size: 0
+
+[05:18:42:763 - 7F4BA57BDA40]: Memory instantiate success.
+  ok deno-dom: parses HTML through jsr wasm entry
+  ok deno-dom: preserves utf8 text and attributes through wasm string glue
+  ok deno command upstream: kill after status throws
+  ok deno test harness: overloads ignore and each object cases
+  ok deno command upstream: output after manually consuming streams returns empty pipes
+  ok deno test harness: retry repeats timeout and failed steps are reflected
+  ok deno test harness: TestContext.step rejects invalid step definitions
+[05:18:43:055 - 7F4BA51656C0]: Load type section success.
+
+[05:18:43:055 - 7F4BA51656C0]: Load import section success.
+
+[05:18:43:055 - 7F4BA51656C0]: Load function section success.
+
+[05:18:43:055 - 7F4BA51656C0]: Load table section success.
+
+[05:18:43:055 - 7F4BA51656C0]: Load memory section success.
+
+[05:18:43:055 - 7F4BA51656C0]: Load global section success.
+
+[05:18:43:055 - 7F4BA51656C0]: Load export section success.
+
+[05:18:43:055 - 7F4BA51656C0]: Load table segment section success.
+
+[05:18:43:055 - 7F4BA51656C0]: Load code segment section success.
+
+[05:18:43:059 - 7F4BA51656C0]: Load data segment section success.
+
+[05:18:43:110 - 7F4BA51656C0]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _start in the module 
+[05:18:43:110 - 7F4BA51656C0]: /home/iz/cno-cli/circu.js/deps/wamr/core/iwasm/common/wasm_runtime_common.c, line 7628, can not find an export 0 named _initialize in the module 
+[05:18:43:110 - 7F4BA51656C0]: Load module success.
+
+[05:18:43:116 - 7F4BA51656C0]: Memory instantiate:
+[05:18:43:116 - 7F4BA51656C0]:   page bytes: 65536, init pages: 21, max pages: 65536
+[05:18:43:116 - 7F4BA51656C0]:   heap offset: 1376256, heap size: 0
+
+[05:18:43:116 - 7F4BA51656C0]: Memory instantiate success.
+  ok deno test harness: invalid overloads and sanitizer no-op are observable
+  ok deno command upstream: relative executable resolves through cwd and PATH
+  ok deno test harness: TestContext name origin and parent match upstream
+✨ jsr:@hono/hono@4.12.27/src/compose.ts...
+  ok deno test harness: assertSnapshot creates matches and reports mismatches
+  ok deno bench harness: overload names ignore and only filters are reflected
+  fail deno command upstream: spawn shorthand overloads mirror Command methods AssertionError: TypeError: property is not configurable throws /Piped stdin is not supported/ { actual: TypeError: property is not configurable
+        at defineProperty (native)
+        at __rethrow (<core>:39753:25)
+        at wrappedFsFunc (<core>:39767:34)
+        at <anonymous> (/home/iz/cno-cli/tests/deno/command-upstream-compat.test.ts:556:35)
+        at throws (node:assert/mod:364:8)
+        at <anonymous> (/home/iz/cno-cli/tests/deno/command-upstream-compat.test.ts:555:4), expected: /Piped stdin is not supported/, generatedMessage: true, code: 'ERR_ASSERTION', operator: 'throws' }
+  AssertionError: TypeError: property is not configurable throws /Piped stdin is not supported/
+      at _checkError (node:assert/mod:285:29)
+      at throws (node:assert/mod:380:20)
+      at <anonymous> (/home/iz/cno-cli/tests/deno/command-upstream-compat.test.ts:555:4)
+  ok cjs: __dirname is undefined in ESM scope
+  ok cjs: createRequire returns a function
+  ok cjs: createRequire(import.meta.url) returns working require
+  ok cjs: require() of async ESM throws instead of returning partial namespace
+  ok cjs: require() of sync ESM exposes default export
+  ok cjs: require() of ESM returns cached identity
+  ok cjs: require() of ESM exposes named exports
+  ok cjs: circular require returns partial exports
+  ok cjs: __esModule flag preserves named exports without double-wrapping default
+  ok cjs: require.cache is populated
+  ok cjs: default exports object has Object.prototype like Node
+  ok cjs upstream: ESM import of CJS preserves reserved export names
+  ok cjs upstream: ESM import of CJS preserves escaped whitespace export names
+  ok cjs upstream: ESM import of CJS preserves non-identifier export names
+  ok cjs upstream: ESM import of CJS module.exports object assignment exposes named keys
+  ok cjs upstream: static named import from CJS sees bridged export names
+  ok cjs upstream: ESM import of primitive CJS module.exports keeps default only
+  ok cjs upstream: named CJS function export loses this context when called bare
+  ok cjs: new Function dynamic import resolves relative to current module
+  ok cjs: JSDoc import comments do not break Function.prototype exports
+  ok cjs upstream: require(esm) honors the module.exports named export
+  ok cjs: require() of missing module throws
+✨ jsr:@hono/hono@4.12.27/src/context.ts...
+✨ jsr:@hono/hono@4.12.27/src/request.ts...
+✨ jsr:@hono/hono@4.12.27/src/http-exception.ts...
+✨ jsr:@hono/hono@4.12.27/src/request/constants.ts...
+  fail cdp: WebSocket attach accepts a Runtime.evaluate round-trip Error: Test timed out after 10000ms
+      at construct (native)
+      at construct (<core>:44263:56)
+      at <anonymous> (<core>:61582:68)
+✨ jsr:@hono/hono@4.12.27/src/utils/body.ts...
+✨ jsr:@hono/hono@4.12.27/src/utils/url.ts...
+✨ jsr:@hono/hono@4.12.27/src/utils/html.ts...
+✨ jsr:@hono/hono@4.12.27/src/router.ts...
+✨ jsr:@hono/hono@4.12.27/src/utils/constants.ts...
+✨ jsr:@hono/hono@4.12.27/src/router/reg-exp-router/index.ts...
+✨ jsr:@hono/hono@4.12.27/src/router/reg-exp-router/router.ts...
+✨ jsr:@hono/hono@4.12.27/src/router/reg-exp-router/matcher.ts...
+✨ jsr:@hono/hono@4.12.27/src/router/reg-exp-router/node.ts...
+✨ jsr:@hono/hono@4.12.27/src/router/reg-exp-router/trie.ts...
+✨ jsr:@hono/hono@4.12.27/src/router/reg-exp-router/prepared-router.ts...
+✨ jsr:@hono/hono@4.12.27/src/router/smart-router/index.ts...
+✨ jsr:@hono/hono@4.12.27/src/router/smart-router/router.ts...
+✨ jsr:@hono/hono@4.12.27/src/router/trie-router/index.ts...
+✨ jsr:@hono/hono@4.12.27/src/router/trie-router/router.ts...
+✨ jsr:@hono/hono@4.12.27/src/router/trie-router/node.ts...
+  ok hono: c.json treats undefined status as the default response status
+  [32mPASS[0m  tests/npm/config-more.test.ts  [2m309.04ms[0m
+  [32mPASS[0m  tests/npm/ws.test.ts  [2m1221.69ms[0m
+  [32mPASS[0m  tests/npm/node-pty.test.ts  [2m268.61ms[0m
+  [32mPASS[0m  tests/npm/tty-storage-utils.test.ts  [2m324.68ms[0m
+  [32mPASS[0m  tests/npm/build-tools.test.ts  [2m3427.77ms[0m
+  [32mPASS[0m  tests/npm/test-config-runners.test.ts  [2m5520.31ms[0m
+  [32mPASS[0m  tests/npm/native-prebuild-more.test.ts  [2m4212.69ms[0m
+  [32mPASS[0m  tests/npm/validation-storage-more.test.ts  [2m1178.30ms[0m
+  [32mPASS[0m  tests/npm/runner-tools.test.ts  [2m4510.99ms[0m
+  [31mFAIL[0m  tests/npm/cli-tools.test.ts  [2m12244.45ms[0m
+  [32mPASS[0m  tests/npm/utils-crypto-more.test.ts  [2m16433.04ms[0m
+  [32mPASS[0m  tests/npm/fetch-clients.test.ts  [2m1194.36ms[0m
+  [32mPASS[0m  tests/npm/native-prebuild-deps.test.ts  [2m16459.75ms[0m
+  [32mPASS[0m  tests/npm/native-ffi-zeromq.test.ts  [2m450.03ms[0m
+  [32mPASS[0m  tests/npm/network-utils.test.ts  [2m992.77ms[0m
+  [32mPASS[0m  tests/npm/native-bindings-root.test.ts  [2m359.90ms[0m
+  [32mPASS[0m  tests/npm/ecosystem-more.test.ts  [2m2688.13ms[0m
+  [32mPASS[0m  tests/npm/matching-utils.test.ts  [2m539.50ms[0m
+  [32mPASS[0m  tests/npm/server-frameworks.test.ts  [2m2756.44ms[0m
+  [32mPASS[0m  tests/cno/native.test.ts  [2m131.31ms[0m
+  [32mPASS[0m  tests/cno/api.test.ts  [2m125.06ms[0m
+  [31mFAIL[0m  tests/cts/transform-exports.test.ts  [2m248.51ms[0m
+  [32mPASS[0m  tests/npm/config-utils-crypto.test.ts  [2m31446.95ms[0m
+  [31mFAIL[0m  tests/cts/import-attributes-runtime.test.ts  [2m651.82ms[0m
+  [32mPASS[0m  tests/cts/node-protocol.test.ts  [2m292.02ms[0m
+  [32mPASS[0m  tests/cts/protocol-source-cache.test.ts  [2m270.31ms[0m
+  [32mPASS[0m  tests/cts/cli-utils.test.ts  [2m129.12ms[0m
+  [32mPASS[0m  tests/cts/inspector-console-stack.test.ts  [2m292.68ms[0m
+  [32mPASS[0m  tests/cts/loader.test.ts  [2m124.42ms[0m
+  [32mPASS[0m  tests/cts/inspector-main-transport.test.ts  [2m367.40ms[0m
+  [31mFAIL[0m  tests/cts/config-resolver.test.ts  [2m342.80ms[0m
+  [32mPASS[0m  tests/cts/task-shell.test.ts  [2m1033.40ms[0m
+  [32mPASS[0m  tests/cts/inspector-network-stack.test.ts  [2m121.64ms[0m
+  [31mFAIL[0m  tests/cts/cli-stage.test.ts  [2m19118.24ms[0m
+  [32mPASS[0m  tests/cts/runtime-utils.test.ts  [2m152.35ms[0m
+  [32mPASS[0m  tests/cts/linker.test.ts  [2m259.89ms[0m
+  [32mPASS[0m  tests/cts/inspector-shared.test.ts  [2m106.70ms[0m
+  [32mPASS[0m  tests/cts/lock-bin.test.ts  [2m467.70ms[0m
+  [31mFAIL[0m  tests/cts/scan-pkg.test.ts  [2m328.43ms[0m
+  [32mPASS[0m  tests/cts/http-core.test.ts  [2m109.83ms[0m
+  [32mPASS[0m  tests/node/http2-constants.test.ts  [2m300.89ms[0m
+  [32mPASS[0m  tests/node/fs-stream-proc.test.ts  [2m440.67ms[0m
+  [32mPASS[0m  tests/node/domain.test.ts  [2m120.47ms[0m
+  [32mPASS[0m  tests/node/test-module.test.ts  [2m117.17ms[0m
+  [32mPASS[0m  tests/node/util.test.ts  [2m137.00ms[0m
+  [32mPASS[0m  tests/node/stream-promises.test.ts  [2m177.93ms[0m
+  [32mPASS[0m  tests/npm/build-more.test.ts  [2m30767.66ms[0m
+  [32mPASS[0m  tests/node/dgram-edge.test.ts  [2m126.64ms[0m
+  [32mPASS[0m  tests/node/assert.test.ts  [2m108.99ms[0m
+  [31mFAIL[0m  tests/node/cdp-protocol.test.ts  [2m151.30ms[0m
+  [32mPASS[0m  tests/node/stream-web.test.ts  [2m189.90ms[0m
+  [32mPASS[0m  tests/node/readline.test.ts  [2m223.28ms[0m
+  [32mPASS[0m  tests/node/path-edge.test.ts  [2m111.03ms[0m
+  [32mPASS[0m  tests/node/fs-filehandle.test.ts  [2m177.19ms[0m
+  [32mPASS[0m  tests/node/http-adapter-edge.test.ts  [2m398.91ms[0m
+  [31mFAIL[0m  tests/cts/cache-command.test.ts  [2m22981.15ms[0m
+  [32mPASS[0m  tests/node/wasi.test.ts  [2m112.46ms[0m
+  [32mPASS[0m  tests/node/inspect-flags.test.ts  [2m108.94ms[0m
+  [32mPASS[0m  tests/node/console.test.ts  [2m402.74ms[0m
+  [32mPASS[0m  tests/node/http-net-edge.test.ts  [2m689.80ms[0m
+  [32mPASS[0m  tests/node/stream-consumers.test.ts  [2m160.41ms[0m
+  [32mPASS[0m  tests/node/repl.test.ts  [2m477.91ms[0m
+  [32mPASS[0m  tests/node/zlib.test.ts  [2m1792.83ms[0m
+  [32mPASS[0m  tests/node/async-hooks.test.ts  [2m222.42ms[0m
+  [32mPASS[0m  tests/node/tls.test.ts  [2m710.46ms[0m
+  [32mPASS[0m  tests/node/cdp-paused-stack.test.ts  [2m1100.58ms[0m
+  [32mPASS[0m  tests/node/perf-hooks.test.ts  [2m238.76ms[0m
+  [32mPASS[0m  tests/node/worker-messageport.test.ts  [2m193.55ms[0m
+  [32mPASS[0m  tests/node/diagnostics-channel.test.ts  [2m114.86ms[0m
+  [32mPASS[0m  tests/node/cluster-trace-events.test.ts  [2m116.28ms[0m
+  [32mPASS[0m  tests/node/util-types.test.ts  [2m115.71ms[0m
+  [32mPASS[0m  tests/node/vm.test.ts  [2m240.86ms[0m
+  [32mPASS[0m  tests/node/sqlite3.test.ts  [2m135.13ms[0m
+  [32mPASS[0m  tests/node/querystring.test.ts  [2m112.29ms[0m
+  [32mPASS[0m  tests/node/fs-write-overloads.test.ts  [2m239.74ms[0m
+  [31mFAIL[0m  tests/npm/app-stack.test.ts  [2m49425.14ms[0m
+  [32mPASS[0m  tests/node/punycode.test.ts  [2m111.98ms[0m
+  [32mPASS[0m  tests/node/os-util.test.ts  [2m146.28ms[0m
+  [32mPASS[0m  tests/node/fs-edge.test.ts  [2m4376.79ms[0m
+  [32mPASS[0m  tests/node/events-edge.test.ts  [2m140.77ms[0m
+  [32mPASS[0m  tests/node/sqlite.test.ts  [2m126.21ms[0m
+  [32mPASS[0m  tests/node/crypto-edge.test.ts  [2m753.90ms[0m
+  [32mPASS[0m  tests/node/net-socket-state.test.ts  [2m906.93ms[0m
+  [32mPASS[0m  tests/node/stream-advanced.test.ts  [2m212.93ms[0m
+  [31mFAIL[0m  tests/node/module.test.ts  [2m236.98ms[0m
+  [32mPASS[0m  tests/node/v8.test.ts  [2m119.51ms[0m
+  [32mPASS[0m  tests/node/string-decoder.test.ts  [2m117.59ms[0m
+  [31mFAIL[0m  tests/node/url-edge.test.ts  [2m115.61ms[0m
+  [32mPASS[0m  tests/node/process.test.ts  [2m462.21ms[0m
+  [32mPASS[0m  tests/node/fs-watch.test.ts  [2m1190.32ms[0m
+  [32mPASS[0m  tests/node/inspector.test.ts  [2m193.23ms[0m
+  [31mFAIL[0m  tests/node/cdp-debugger.test.ts  [2m20204.00ms[0m
+  [32mPASS[0m  tests/node/buffer-path.test.ts  [2m127.49ms[0m
+  [32mPASS[0m  tests/node/ipc-channel.test.ts  [2m122.27ms[0m
+  [32mPASS[0m  tests/node/tty.test.ts  [2m247.84ms[0m
+  [32mPASS[0m  tests/node/https.test.ts  [2m1175.37ms[0m
+  [32mPASS[0m  tests/node/constants.test.ts  [2m249.64ms[0m
+  [32mPASS[0m  tests/node/cluster-domain.test.ts  [2m121.80ms[0m
+  [32mPASS[0m  tests/node/fs-promises.test.ts  [2m200.40ms[0m
+  [32mPASS[0m  tests/node/dgram.test.ts  [2m330.82ms[0m
+  [32mPASS[0m  tests/node/dns.test.ts  [2m115.15ms[0m
+  [32mPASS[0m  tests/node/timers.test.ts  [2m562.86ms[0m
+  [32mPASS[0m  tests/node/http-incoming.test.ts  [2m328.70ms[0m
+  [32mPASS[0m  tests/node/child-process.test.ts  [2m5069.17ms[0m
+  [31mFAIL[0m  tests/node/worker-threads.test.ts  [2m555.08ms[0m
+  [32mPASS[0m  tests/webapi/file-reader-image-data-upstream.test.ts  [2m118.08ms[0m
+  [32mPASS[0m  tests/webapi/cache.test.ts  [2m137.17ms[0m
+  [32mPASS[0m  tests/webapi/urlpattern.test.ts  [2m129.51ms[0m
+  [32mPASS[0m  tests/webapi/locks-broadcast.test.ts  [2m396.75ms[0m
+  [32mPASS[0m  tests/webapi/webcrypto-subtle.test.ts  [2m362.57ms[0m
+  [32mPASS[0m  tests/webapi/console-upstream.test.ts  [2m243.54ms[0m
+  [32mPASS[0m  tests/webapi/intl.test.ts  [2m104.14ms[0m
+  [32mPASS[0m  tests/webapi/xhr.test.ts  [2m152.78ms[0m
+  [32mPASS[0m  tests/webapi/basic.test.ts  [2m207.51ms[0m
+  [32mPASS[0m  tests/webapi/wasm.test.ts  [2m94.51ms[0m
+  [32mPASS[0m  tests/webapi/websocket.test.ts  [2m208.45ms[0m
+  [32mPASS[0m  tests/webapi/eventsource.test.ts  [2m172.16ms[0m
+  [31mFAIL[0m  tests/webapi/worker.test.ts  [2m476.75ms[0m
+  [32mPASS[0m  tests/webapi/streams-deep.test.ts  [2m114.58ms[0m
+  [32mPASS[0m  tests/webapi/formdata-blob.test.ts  [2m106.00ms[0m
+  [32mPASS[0m  tests/webapi/location.test.ts  [2m102.19ms[0m
+  [32mPASS[0m  tests/webapi/upstream-compat.test.ts  [2m115.20ms[0m
+  [31mFAIL[0m  tests/webapi/proxy-transport.test.ts  [2m620.80ms[0m
+  [32mPASS[0m  tests/webapi/scheduler.test.ts  [2m268.68ms[0m
+  [32mPASS[0m  tests/webapi/locks.test.ts  [2m102.62ms[0m
+  [32mPASS[0m  tests/webapi/storage.test.ts  [2m1670.06ms[0m
+  [32mPASS[0m  tests/webapi/url-deep.test.ts  [2m107.49ms[0m
+  [32mPASS[0m  tests/webapi/messaging.test.ts  [2m168.34ms[0m
+  [32mPASS[0m  tests/webapi/text-encoding-upstream.test.ts  [2m111.46ms[0m
+  [32mPASS[0m  tests/webapi/events.test.ts  [2m103.70ms[0m
+  [32mPASS[0m  tests/webapi/urlsearchparams-upstream.test.ts  [2m105.02ms[0m
+  [32mPASS[0m  tests/webapi/abort.test.ts  [2m103.94ms[0m
+  [32mPASS[0m  tests/webapi/fetch-objects-upstream.test.ts  [2m326.77ms[0m
+  [32mPASS[0m  tests/webapi/perf-storage-nav.test.ts  [2m553.75ms[0m
+  [32mPASS[0m  tests/webapi/fetch-streams.test.ts  [2m309.75ms[0m
+  [32mPASS[0m  tests/webapi/message-channel.test.ts  [2m188.38ms[0m
+  [32mPASS[0m  tests/deno/cron.test.ts  [2m259.27ms[0m
+  [32mPASS[0m  tests/deno/os-runtime-upstream.test.ts  [2m482.66ms[0m
+  [31mFAIL[0m  tests/deno/kv.test.ts  [2m232.74ms[0m
+  [31mFAIL[0m  tests/deno/fs-upstream-compat.test.ts  [2m216.47ms[0m
+  [32mPASS[0m  tests/deno/error-stdio-upstream.test.ts  [2m103.69ms[0m
+  [32mPASS[0m  tests/deno/permissions-errors.test.ts  [2m113.90ms[0m
+  [32mPASS[0m  tests/deno/fs-watch-upstream-compat.test.ts  [2m1173.52ms[0m
+  [32mPASS[0m  tests/deno/fs-command.test.ts  [2m814.92ms[0m
+  [32mPASS[0m  tests/deno/tls.test.ts  [2m406.36ms[0m
+  [32mPASS[0m  tests/deno/serve.test.ts  [2m740.46ms[0m
+  [32mPASS[0m  tests/deno/ffi-pointer.test.ts  [2m112.48ms[0m
+  [32mPASS[0m  tests/deno/global.test.ts  [2m928.47ms[0m
+  [31mFAIL[0m  tests/deno/process-net-edge.test.ts  [2m121.12ms[0m
+  [31mFAIL[0m  tests/deno/error-stack-upstream.test.ts  [2m102.60ms[0m
+  [32mPASS[0m  tests/deno/fs-file.test.ts  [2m156.94ms[0m
+  [32mPASS[0m  tests/deno/signal-upstream.test.ts  [2m853.64ms[0m
+  [32mPASS[0m  tests/jsr/deno-dom.test.ts  [2m885.93ms[0m
+  [32mPASS[0m  tests/deno/test-harness.test.ts  [2m1814.48ms[0m
+  [31mFAIL[0m  tests/deno/command-upstream-compat.test.ts  [2m3140.28ms[0m
+  [32mPASS[0m  tests/cjs/createRequire.test.ts  [2m119.32ms[0m
+  [32mPASS[0m  tests/cjs/require-esm-interop.test.ts  [2m136.23ms[0m
+  [31mFAIL[0m  tests/node/cdp-discovery.test.ts  [2m30204.85ms[0m
+  [32mPASS[0m  tests/jsr/hono.test.ts  [2m47609.63ms[0m
+
+[31mFailed tests:[0m
+  [2mtests/npm/cli-tools.test.ts[0m  typescript bin: cno exec resolves tsc and strips arg separator
+    [2m[object Object][0m
+  [2mtests/cts/transform-exports.test.ts[0m  cts: sucrase emits compact modern enum literals
+    [2m[object Object][0m
+  [2mtests/cts/transform-exports.test.ts[0m  cts: sucrase tokenizer lookahead handles const enum
+    [2m[object Object][0m
+  [2mtests/cts/import-attributes-runtime.test.ts[0m  cts runtime: blob URL modules support TypeScript and relative-import failures
+    [2m[object Object][0m
+  [2mtests/cts/config-resolver.test.ts[0m  cts resolver upstream: ESM package subpaths do not add extensions or directory indexes
+    [2m[object Object][0m
+  [2mtests/cts/cli-stage.test.ts[0m  cli stage: run detects ESM syntax in package commonjs js files
+    [2m[object Object][0m
+  [2mtests/cts/cli-stage.test.ts[0m  cli stage upstream npm: package createRequire validates inputs and loads package files
+    [2m[object Object][0m
+  [2mtests/cts/scan-pkg.test.ts[0m  cts pkg: detectFormat follows extension, package type and deno defaults
+    [2m[object Object][0m
+  [2mtests/cts/scan-pkg.test.ts[0m  cts pkg: resolveMain and resolveSubpath keep ESM subpaths strict but CJS fallbacks wide
+    [2m[object Object][0m
+  [2mtests/cts/cache-command.test.ts[0m  cache command: fails when a lifecycle script exits non-zero
+    [2m[object Object][0m
+  [2mtests/npm/app-stack.test.ts[0m  vite: builds a disk app through rolldown/native resolver path
+    [2m[object Object][0m
+  [2mtests/npm/app-stack.test.ts[0m  vite: dev server serves transformed TypeScript from disk
+    [2m[object Object][0m
+  [2mtests/node/module.test.ts[0m  module: createRequire accepts file URL strings and objects
+    [2m[object Object][0m
+  [2mtests/node/module.test.ts[0m  module upstream: no-type package js with ESM syntax is detected as ESM
+    [2m[object Object][0m
+  [2mtests/node/url-edge.test.ts[0m  url: URL serializes spaces in path and query
+    [2m[object Object][0m
+  [2mtests/node/url-edge.test.ts[0m  url: format URL object can drop auth, search, and fragment
+    [2m[object Object][0m
+  [2mtests/node/url-edge.test.ts[0m  url: urlToHttpOptions exposes request options from URL
+    [2m[object Object][0m
+  [2mtests/node/cdp-debugger.test.ts[0m  cdp: Debugger rejects invalid breakpoint line numbers
+    [2m[object Object][0m
+  [2mtests/node/cdp-debugger.test.ts[0m  cdp: Debugger rejects invalid pause-on-exceptions state
+    [2m[object Object][0m
+  [2mtests/webapi/proxy-transport.test.ts[0m  raw transport: HTTP proxy uses absolute-form forwarding
+    [2m[object Object][0m
+  [2mtests/webapi/proxy-transport.test.ts[0m  EventSource: receives SSE through HTTP proxy
+    [2m[object Object][0m
+  [2mtests/webapi/proxy-transport.test.ts[0m  WebSocket: upgrades and receives a frame through HTTP proxy
+    [2m[object Object][0m
+  [2mtests/webapi/proxy-transport.test.ts[0m  WebSocket: WSS uses CONNECT, TLS, upgrade and frames
+    [2m[object Object][0m
+  [2mtests/deno/kv.test.ts[0m  deno: KV openKv accepts memory and rejects invalid filenames
+    [2m[object Object][0m
+  [2mtests/deno/fs-upstream-compat.test.ts[0m  deno fs upstream: readFile and readTextFile propagate abort reasons
+    [2m[object Object][0m
+  [2mtests/deno/fs-upstream-compat.test.ts[0m  deno fs upstream: readFile errors expose Deno error code fields
+    [2m[object Object][0m
+  [2mtests/deno/process-net-edge.test.ts[0m  deno net: listener close settles pending accept and async iterator
+    [2m[object Object][0m
+  [2mtests/deno/process-net-edge.test.ts[0m  deno net: async iterator next resolves done when listener closes
+    [2m[object Object][0m
+  [2mtests/deno/process-net-edge.test.ts[0m  deno net: listener async iterator break closes listener
+    [2m[object Object][0m
+  [2mtests/deno/error-stack-upstream.test.ts[0m  deno upstream: Error.stack first line reflects current name and message
+    [2m[object Object][0m
+  [2mtests/deno/error-stack-upstream.test.ts[0m  deno upstream: Error.captureStackTrace removes the requested frame
+    [2m[object Object][0m
+  [2mtests/deno/command-upstream-compat.test.ts[0m  deno command upstream: spawn shorthand overloads mirror Command methods
+    [2m[object Object][0m
+  [2mtests/node/cdp-discovery.test.ts[0m  cdp: /json/version exposes protocol version and webSocketDebuggerUrl
+    [2m[object Object][0m
+  [2mtests/node/cdp-discovery.test.ts[0m  cdp: /json lists a page target with a debugger ws URL
+    [2m[object Object][0m
+  [2mtests/node/cdp-discovery.test.ts[0m  cdp: WebSocket attach accepts a Runtime.evaluate round-trip
+    [2m[object Object][0m
+
+[31m✖ 138/159[0m
