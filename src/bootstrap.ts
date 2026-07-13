@@ -33,7 +33,7 @@ function getEnv(name: string): string | null {
 
 /**
  * Resolve the directory holding native shared-library extensions
- * (ext-h2, ext-quic). Returns null if none found — the runtime will
+ * (oxc, ext-h2, ext-quic). Returns null if none found — the runtime will
  * fall back to whatever circu.js has statically linked.
  */
 export function resolveExtDir(): string | null {
@@ -51,6 +51,10 @@ export function resolveExtDir(): string | null {
 
 /** Name → relative filename within the ext directory. */
 const EXTENSIONS: Record<string, string> = {
+    // Optional native accelerator for cts scan/transform (worker_safe).
+    // Without this entry, tryLoadOxc must register itself — and a failed
+    // re-register used to silently fall back to Sucrase for the whole graph.
+    'oxc': 'oxc' + DLEXT,
     // '@cnojs/http/ext-h2': 'cno_nghttp2' + DLEXT,
     // '@cnojs/quic':        'cno_quicly'  + DLEXT,
 };
@@ -62,7 +66,8 @@ const EXTENSIONS: Record<string, string> = {
  * name is already a built-in (e.g. statically embedded via CJS_EXTRA_*) —
  * the built-in always wins.
  *
- * Call this exactly once, before any polyfill or user code runs.
+ * Runs on the main process and every worker that boots via src/main.ts
+ * (parse workers included) so dyn_registry is populated per JSRuntime.
  */
 export function registerExtensions(): void {
     const dir = resolveExtDir();

@@ -44,6 +44,10 @@ const KNOWN_FLAGS = new Set<string>([
     'out', 'o',
     // test
     'concurrency', 'filter', 'fail-fast', 'permit-no-files',
+    // task
+    // --eval under `task` is ad-hoc shell (specs/task/eval); top-level --eval is subcommand
+    // location is honored for Deno.location (--location=URL)
+    'location',
     // misc
     'silent', 'q', 'print', 'p',
     'system-proxy', 'skip-cert-verify',
@@ -82,7 +86,7 @@ const DENO_NOOP_FLAGS = new Set<string>([
     'no-remote', 'lock', 'lock-write',
     // misc deno features we just ignore
     'v8-flags',
-    'seed', 'location', 'no-npm',
+    'seed', 'no-npm',
     // Node runtime flags accepted for process.execPath compatibility.
     'conditions', 'C', 'no-warnings', 'max-old-space-size',
 ]);
@@ -233,7 +237,9 @@ export function parseArgv(argv: string[]): ParsedCli {
     }
 
     function shouldStopParsingFlagsAfterPositional(): boolean {
-        return cmd === null || cmd === 'run';
+        // run/implicit-run: first positional is the script.
+        // exec: first positional is the package/bin name (pnpx-style); rest is for that bin.
+        return cmd === null || cmd === 'run' || cmd === 'exec';
     }
 
     function consumeEvalAlias(print: boolean): void {
@@ -295,10 +301,17 @@ export function parseArgv(argv: string[]): ParsedCli {
             continue;
         }
 
+        // Top-level --eval=code → eval subcommand; under `task`, --eval is a flag.
         if (!cmdDecided && a.startsWith('--eval=')) {
             cmd = 'eval';
             cmdDecided = true;
             positional.push(a.slice('--eval='.length));
+            i++;
+            continue;
+        }
+        if (cmd === 'task' && a.startsWith('--eval=')) {
+            flags['eval'] = a.slice('--eval='.length);
+            pushRawTokens(a);
             i++;
             continue;
         }
@@ -317,6 +330,20 @@ export function parseArgv(argv: string[]): ParsedCli {
         // --flag (bool) — values must use --flag=value syntax
         if (a.startsWith('--')) {
             const k = a.slice(2);
+            // specs/task/eval: `task --eval <shell>` is ad-hoc shell, not eval subcommand.
+            if (cmd === 'task' && k === 'eval') {
+                const next = argv[i + 1];
+                if (shouldConsumeValueFlagToken(next)) {
+                    flags['eval'] = next;
+                    pushRawTokens(a, next);
+                    i += 2;
+                } else {
+                    flags['eval'] = true;
+                    pushRawTokens(a);
+                    i++;
+                }
+                continue;
+            }
             // Treat --eval as a value flag synonym for the subcommand.
             if (!cmdDecided && k === 'eval') {
                 consumeEvalAlias(false);

@@ -186,6 +186,17 @@ Deno.test('cli: exec keeps command args after option terminator', () => {
     deepStrictEqual(cli.rawArgs.args, ['--', '--version']);
 });
 
+// `cno exec opencode --version` must forward --version to the bin, not treat
+// it as cno's top-level version subcommand/flag (that left args empty → TUI).
+Deno.test('cli: exec forwards flags after the binary name', () => {
+    const cli = parseArgv(['exec', 'opencode', '--version']);
+    strictEqual(cli.cmd, 'exec');
+    deepStrictEqual(cli.positional, ['opencode', '--version']);
+    strictEqual(cli.rawArgs.entry, 'opencode');
+    deepStrictEqual(cli.rawArgs.args, ['--version']);
+    strictEqual(cli.flags['version'], undefined);
+});
+
 Deno.test('cli: eval aliases collect code as entry', () => {
     const short = parseArgv(['-e', 'console.log(1)']);
     strictEqual(short.cmd, 'eval');

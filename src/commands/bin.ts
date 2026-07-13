@@ -1,6 +1,7 @@
 // bin.ts — `cno exec <binary>` entry point
 
 import { uname, LockStore, BinResolver } from '../../cts/src/api';
+import { ensureNodePolyfills } from './setup';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
@@ -28,6 +29,8 @@ export async function spawnBinary(binName: string, args: string[], env: Record<s
         const cacheEnv = { ...os.environ(), ...env };
         const effectiveCacheDir = cacheDir || cacheEnv.CTS_CACHE_DIR;
         if (effectiveCacheDir) cacheEnv.CTS_CACHE_DIR = effectiveCacheDir;
+        // postinstall scripts need node: builtins from the cache polyfill tree
+        await ensureNodePolyfills(effectiveCacheDir);
         const cacheArgs = [os.exePath, 'cache'];
         if (effectiveCacheDir) cacheArgs.push(`--cache-dir=${effectiveCacheDir}`);
         cacheArgs.push(`--lock-dir=${cwd}`, packageSpec);

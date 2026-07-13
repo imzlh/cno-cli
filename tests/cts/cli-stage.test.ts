@@ -2125,6 +2125,42 @@ Deno.test({ name: 'cli stage: repl .q exits through cleanup and writes history',
     });
 });
 
+Deno.test({
+    name: 'cli stage: repl treats a detached POSIX terminal as EOF',
+    ignore: Deno.build.os === 'windows',
+    timeout: 10000,
+}, async () => {
+    await withTempDir('cli-repl-pty', async (root) => {
+        const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+        const harness = [
+            'import json, os, pty, subprocess, sys, time',
+            'master, slave = pty.openpty()',
+            'child = subprocess.Popen([sys.argv[1], "repl"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "CTS_SILENT": "true", "HOME": sys.argv[2]})',
+            'os.close(slave)',
+            'time.sleep(0.2)',
+            'os.close(master)',
+            'stdout, stderr = child.communicate(timeout=5)',
+            'print(json.dumps({"code": child.returncode, "stdout": stdout.decode(errors="replace"), "stderr": stderr.decode(errors="replace")}))',
+        ].join('\n');
+
+        let output: Deno.CommandOutput;
+        try {
+            output = await new Deno.Command('python3', {
+                args: ['-c', harness, execPath, root],
+                stdout: 'piped',
+                stderr: 'piped',
+            }).output();
+        } catch {
+            return;
+        }
+
+        strictEqual(output.code, 0, decodeUtf8(output.stderr));
+        const result = JSON.parse(decodeUtf8(output.stdout)) as { code: number; stderr: string };
+        strictEqual(result.code, 0, result.stderr);
+        ok(!result.stderr.includes('Uncaught'), result.stderr);
+    });
+});
+
 // specs/run/_014_duplicate_import: same module instantiates once
 Deno.test({ name: 'cli stage upstream run: duplicate static/dynamic imports instantiate once', timeout: 15000 }, async () => {
     await withTempDir('cli-run-dup-import', async (root) => {
@@ -2296,5 +2332,19 @@ Deno.test({ name: 'cli stage upstream test: ignore and only filter registered te
         ok(only.code === 0 || only.code === 1, only.stderr + only.stdout);
         ok(!only.stderr.includes('before should not run'), only.stderr);
         ok(!only.stderr.includes('after should not run'), only.stderr);
+    });
+});
+
+// specs/run/stdin_cjs
+Deno.test({ name: 'cli stage upstream run: stdin --ext=cjs resolves relative requires from cwd', timeout: 15000 }, async () => {
+    await withTempDir('cli-stdin-cjs', async (root) => {
+        await Deno.writeTextFile(join(root, 'say_hello.js'), 'console.log("Hello!");\n');
+        const result = await runCnoWithInput(
+            ['run', '-q', '--ext=cjs', '-'],
+            "require('./say_hello.js');\n",
+            root,
+        );
+        strictEqual(result.code, 0, result.stderr);
+        strictEqual(result.stdout.trim(), 'Hello!');
     });
 });

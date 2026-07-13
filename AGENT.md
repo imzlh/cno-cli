@@ -214,8 +214,9 @@ cts/src/
 ├── flow.ts                     # Generator-based I/O flow (runSync, runAsync, StepType)
 ├── lock.ts                     # SQLite3 lock store (sources, modules, bins tables)
 ├── oxc.ts                      # Native OXC extension loader
-├── precompile.ts               # Worker-parallel transform + main-thread QJS compile
-├── scan.ts                     # Import extraction (Sucrase tokenizer, used by workers)
+├── precompile.ts               # Thin re-export of parse.ts (ParseDriver transform-only)
+├── import-scanner.ts           # Import graph scan (main-thread oxc-first; Sucrase fallback)
+├── scan.ts                     # Sucrase extractImports + cheap hasImportAttributes / hasTopLevelEsmSyntax
 ├── pack/                       # .jspack format validation, writer, extraction/reader
 ├── shell.ts                    # Shell command parser
 ├── task.ts                     # deno.json/package.json task runner
@@ -281,6 +282,10 @@ after the fact — re-deriving could pick a different-but-valid version than
 what was actually resolved, breaking singleton-sensitive packages. Regenerated
 on every `cno cache` run (last-writer-wins, no diffing); the in-store
 `node_modules/` is shared across all projects using the same cache dir.
+Link failures fail closed: missing store packages, EPERM, or other link errors
+throw from `materializeNodeModules` and abort `cno cache` (no green success
+after partial/zero links). Soft mode also rejects dangling symlinks to absent
+store dirs before creating them.
 
 ### ModuleCompiler Details (compile/index.ts)
 
@@ -423,7 +428,9 @@ read/write mode from the command:
 stores no-op all writes (`flush`/`setModule`/…), so `runFile`'s `flushLock()`
 is harmless. The lightweight read-only `new LockStore(cwd, true)` stores in
 `main.ts`/`bin.ts`/`task.ts` (bin-cache lookups) are unaffected — they never
-wrote to disk.
+wrote to disk. Persist surface is **single-path**: `LockStore.flush` /
+`ModuleResolver.flushLock` only (no separate `rewrite` / `rewriteLock` alias —
+they were zero-diff dual names).
 
 ### Packed Containers (`.jspack`)
 
@@ -440,14 +447,11 @@ these invariants when changing resolver, scanner, compiler, or cache code:
   Serialized QuickJS modules currently lose import-attribute semantics.
 - A bytecode ABI mismatch recompiles from bundled source. Extensionless entries
   therefore store their explicit language in the manifest.
-- Validate manifest keys and blob ranges before extraction. Extract only to the
-  content-addressed cache with generated filenames; manifest paths are not
-  filesystem paths.
-- Extraction reuses a file only when its full contents match the container
-  blob. Never treat `.complete` or size alone as integrity. Materialize via
-  temp + `fsync` + atomic rename so concurrent first loads cannot observe
-  partial files. When rename cannot overwrite (Windows), unlink a bad
-  destination and retry; accept only if destination bytes already match.
+- Validate manifest keys and blob ranges before load. Runtime path is
+  `PackSession.open` → `install`: one map of the container, lazy
+  `PackBlobStore` (0-copy `subarray`), on-demand `deserialize` — no
+  `pack-extract`, no eager seed, no bytecode copies. `localPath` stays the
+  synthetic `pack:` id; `isFileBackedPath` gates disk bytecode/mtime.
 - Write the header and chunks to a same-directory temporary file, `fsync`, then
   rename (with the same destination-exists replace path). Never expose a
   partial destination or build duplicate full blobs.
@@ -457,6 +461,21 @@ these invariants when changing resolver, scanner, compiler, or cache code:
   run lifecycle scripts. Only `cno cache` owns those side effects.
 - Only statically discoverable imports belong to the container. Missing computed
   imports fail explicitly at runtime rather than escaping the container.
+- Offline pack `edges` are built only from `DepScanner` `resolutions` (the BFS
+  resolve log). Do not rebuild edges by re-scanning sources in the writer — a
+  second incomplete pass (e.g. JS/TS-only) drops non-source edges. Every file
+  kind that can declare static deps must be scanned the same way: JS/TS via
+  ImportScanner, WASM via import-module names (`cts/src/wasm-imports.ts`).
+  Host-only WASM import modules (WASI, bare `env`) are not graph edges; all
+  other import module names (including path-like ones) are.
+
+### CJS external resolve miss vs rethrow (compile/bridge.ts)
+
+`buildCjsDeps.resolveExternal` maps only resolution **misses** to `null`
+(`isResolutionMiss`: `ModuleNotFound` / `FileNotFound` / `MODULE_NOT_FOUND` /
+`ENOENT`) so CJS can continue the local `node_modules` walk. Non-miss kinds
+(`ProtocolDisabled`, `NetworkError`, `LockFrozen`, `InvalidSpecifier`, …)
+rethrow and must not be rewritten as a generic `MODULE_NOT_FOUND`.
 
 ### CJS→ESM Sync Loading (compile/bridge.ts)
 
@@ -1223,7 +1242,7 @@ cts src/main.ts run script.ts
 
 - Local modules: `~/.cts/local/<hash-prefix>/<hash>.jsc` with an mtime sidecar
 - Remote modules: `.jsc` and `.jsc.mt` beside the cached source
-- Packed assets: `~/.cts/pack-extract/<container-sha256>/`; `sourceOnly` modules bypass bytecode cache
+- Packed modules: one mapped buffer + lazy 0-copy views; on-demand deserialize; `sourceOnly` skips bytecode
 - Version mismatch auto-clears
 
 ### Syntax Error Debug
@@ -1288,7 +1307,8 @@ IF YOU WANT TO USE, PLEASE USE `import.meta.use()` AS SHARED NAMESPACE TO DELIVE
 - Each worker has at most two ordered transform tasks in flight, overlapping OXC work with the serialized QJS/disk lane without unbounded result buffering.
 - Plain `.js`/`.mjs`/`.cjs` modules compile directly from bytes on the main thread; malformed legacy encodings fall back to the string path.
 - Default workers reserve one core for main-thread QJS compile: inline on low/one-core, up to two on normal, cores minus one on high; `CTS_WORKERS` overrides this.
-- Scan tasks have **no timeout** (lightweight sucrase tokenize); only transform has a 60s safety timeout
+- Import scan runs on the main thread via `ImportScanner` (oxc-first, Sucrase fallback) — never on the transform worker pool (old scan+10s-kill dual path caused silent incomplete graphs)
+- Transform workers only: 60s per-task safety timeout; no scan tasks in `ParseDriver`
 - BFS `wake()` in `deps.ts` only fires on `enqueue` or `pending===0`, not on every `finally` — otherwise idle workers busy-loop
 
 ### Networking

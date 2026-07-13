@@ -8,8 +8,10 @@ Deno.test({ name: 'native lifecycle deps: node-pty can resolve node-addon-api fo
     const cacheDir = mkdtempSync(join(tmpdir(), 'cno-native-lifecycle-'));
     const lockDir = mkdtempSync(join(tmpdir(), 'cno-native-lock-'));
     try {
+        // Link deps only: install runs `node-gyp` when no linux prebuild ships.
         const cached = spawnSync(process.execPath, [
             'cache',
+            '--ignore-scripts',
             `--cache-dir=${cacheDir}`,
             `--lock-dir=${lockDir}`,
             'npm:node-pty',

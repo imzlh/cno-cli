@@ -52,6 +52,50 @@ Deno.test('cts lock: flush opens a fresh writable DB and persists pending entrie
     }
 });
 
+// Dual flush/rewrite names implied different policies but shared one body —
+// single surface is flush / flushLock only.
+Deno.test('cts lock: single persist surface is flush (no rewrite dual name)', () => {
+    const root = makePosixTempDir('lock-single-flush');
+    try {
+        const store = new LockStore(root, false);
+        ok(typeof store.flush === 'function');
+        ok(!('rewrite' in store));
+        store.setModule({
+            specPath: 'file:///single.ts',
+            localPath: joinPaths(root, 'single.ts'),
+            format: 'esm',
+            fileKind: 'source',
+        });
+        store.flush();
+        store.close();
+
+        const resolver = new ModuleResolver(createConfig({
+            cacheDir: joinPaths(root, 'cache'),
+            enableOxc: false,
+            silent: true,
+        }), root, false);
+        ok(typeof resolver.flushLock === 'function');
+        ok(!('rewriteLock' in resolver));
+        // Same path precache uses after scan: flushLock must persist.
+        resolver.lockStore.setModule({
+            specPath: 'file:///via-resolver.ts',
+            localPath: joinPaths(root, 'via-resolver.ts'),
+            format: 'esm',
+            fileKind: 'source',
+        });
+        resolver.flushLock();
+        const again = new LockStore(root, true);
+        try {
+            ok(again.getModule('file:///single.ts'));
+            ok(again.getModule('file:///via-resolver.ts'));
+        } finally {
+            again.close();
+        }
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test('cts lock: close persists pending entries before the DB is opened', () => {
     const root = makePosixTempDir('lock-close-persist');
     try {
@@ -159,6 +203,7 @@ Deno.test('cts runtime lock: discovers project lock read-only and --no-lock skip
         }), joinPaths(root, 'src'));
         try {
             ok(noLock.resolver.lockPath !== joinPaths(root, 'cts.lock'));
+            strictEqual(noLock.resolver.lockStore.enabled, false);
             strictEqual(noLock.resolver.lockStore.getModule('npm:a@1.0.0/index.ts'), undefined);
         } finally {
             LockStore.closeAllFast();

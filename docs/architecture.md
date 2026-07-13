@@ -113,7 +113,7 @@ per-process or per-worker context, not global across all workers.
 | Bytecode cache | inside CTS cache | `cts/src/source/cache.ts` |
 | npm package cache | `<cacheDir>/npm/<name>@<version>` | `cts/src/resolve/protocols/npm.ts` |
 | Node polyfills | `<cacheDir>/node` | `src/commands/setup.ts` |
-| Packed asset extraction | `<cacheDir>/pack-extract/<sha256>` | `cts/src/pack/reader.ts` |
+| Packed module load | mapped buffer + lazy 0-copy + on-demand deserialize | `cts/src/pack/session.ts` |
 | Resolution lock | project root or cache dir | `cts/src/runtime/index.ts`, `cts/src/lock.ts` |
 
 `cno cache` is the command that persists `cts.lock`. Normal runtime commands

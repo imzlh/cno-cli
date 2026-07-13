@@ -123,6 +123,7 @@ Deno.test('cache command: collectSpecifiers merges deno imports and package depe
                 localWorkspace: 'workspace:./packages/local',
                 localFile: 'file:../local-file',
                 gitDep: 'https://github.com/example/pkg.git',
+                xlsx: 'https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz',
                 ignored: false,
             },
             devDependencies: {
@@ -143,6 +144,7 @@ Deno.test('cache command: collectSpecifiers merges deno imports and package depe
             'npm:alpha@^1.0.0',
             'npm:beta@2.0.0',
             'npm:real-package@^5.0.0',
+            'npm:xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz',
         ]);
     } finally {
         rmSync(root, { recursive: true, force: true });

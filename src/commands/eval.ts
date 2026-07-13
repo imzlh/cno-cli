@@ -35,6 +35,16 @@ export async function runEval(opts: EvalOpts): Promise<void> {
     const evalPath = joinPaths(cwd, `<eval>.${ext}`);
     const fileCfg  = loadConfigFile(cwd);
 
+    // specs/run/_070_location: polyfill may already have location=undefined.
+    const loc = opts.flags['location'];
+    if (typeof loc === 'string' && loc.length > 0) {
+        try { os.setenv('CNO_LOCATION', loc); } catch { /* */ }
+        try {
+            const apply = Reflect.get(globalThis, '__cno_applyLocation');
+            if (typeof apply === 'function') apply(loc);
+        } catch { /* */ }
+    }
+
     const cfg: Partial<ConfigOptions> = {
         ...fileCfg,
         silent: opts.flags['silent'] === true,

@@ -166,20 +166,12 @@ chunks sequentially to a same-directory temporary file, calls `fsync`, and then
 renames it into place. It does not build duplicate whole-container buffers in
 memory, and a failed write cannot expose a partial destination.
 
-`cts/src/pack/reader.ts` validates the manifest and every blob range before
-registering `PackHandler`. Files are materialized under a content-addressed
-cache directory using generated filenames, never manifest-controlled paths:
-
-```text
-<cacheDir>/pack-extract/<sha256>/
-```
-
-Each extracted file is checked by full byte content (size first, then a
-byte-for-byte compare) against the container blob. Matching files are reused;
-mismatched or missing files are rewritten via a same-directory temporary path,
-`fsync`, and atomic rename. A `.complete` marker only records that a prior
-extraction finished — it is not an integrity signal. Same-length tampering and
-torn multi-process first extraction are both healed on the next load.
+`PackSession.open` maps the container once (`fs.readFile` + decode/validate).
+`install` only activates a lazy `PackBlobStore` and `PackHandler` — no
+per-module extract, no eager VFS seed, no bytecode copies. Source and bytecode
+are `blob.subarray` views; `engine.deserialize(view)` runs on first load via
+`JscCache` → `getMemoryBytecode`. Module `localPath` stays the synthetic
+`pack:` id; `isFileBackedPath` keeps disk `.jsc`/mtime off those keys.
 
 The handler performs manifest-only resolution. Computed imports absent from the
 edge table fail consistently and cannot escape to the pack-time filesystem.

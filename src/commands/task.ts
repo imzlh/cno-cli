@@ -35,6 +35,55 @@ function taskLookup(flags: Record<string, string | boolean>): {
 
 export async function runTask(args: string[], flags: Record<string, string | boolean> = {}): Promise<void> {
     const { invocationCwd, requestedConfigPath, runCwd, startDir } = taskLookup(flags);
+    const evalFlag = flags['eval'];
+
+    // specs/task/eval: `cno task --eval <shell-cmd>` runs ad-hoc shell.
+    if (evalFlag !== undefined) {
+        if (evalFlag === true || evalFlag === 'true' || evalFlag === '') {
+            console.error('error: [TASK] must be specified when using --eval');
+            console.error('');
+            console.error(`Usage: ${C.cyan('cno task')} [OPTIONS] [TASK]`);
+            os.exit(1);
+        }
+        if (typeof evalFlag !== 'string') {
+            console.error('error: [TASK] must be specified when using --eval');
+            os.exit(1);
+            throw new Error('unreachable');
+        }
+        const lockStore = new LockStore(startDir, true);
+        try {
+            const result = loadTasks(startDir, lockStore, {
+                forwardedArgs: forwardedInspectArgs(flags),
+                configPath: requestedConfigPath,
+                runCwd,
+                initCwd: invocationCwd,
+            });
+            if (result) {
+                const code = await result.runner.runEval(evalFlag, args);
+                if (code !== 0) os.exit(code);
+                return;
+            }
+            // No tasks config: still run ad-hoc shell (Deno allows task --eval without named tasks).
+            const process = import.meta.use('process');
+            let isWin = false;
+            try { isWin = /win/i.test(os.uname().sysname); } catch { /* */ }
+            const argv = isWin ? ['cmd.exe', '/c', evalFlag] : ['sh', '-c', evalFlag];
+            const cwd = runCwd ?? startDir;
+            console.log(`Task  ${evalFlag}`);
+            const child = process.spawn(argv, {
+                stdin: 'inherit', stdout: 'inherit', stderr: 'inherit',
+                env: { ...os.environ(), PWD: cwd, INIT_CWD: invocationCwd },
+                cwd,
+            });
+            const info = await child.wait();
+            const code = info.exit_status ?? 0;
+            if (code !== 0) os.exit(code);
+        } finally {
+            lockStore.close();
+        }
+        return;
+    }
+
     const lockStore = new LockStore(startDir, true);
     try {
         const result = loadTasks(startDir, lockStore, {

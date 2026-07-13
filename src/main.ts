@@ -267,12 +267,9 @@ async function dispatch(): Promise<void> {
 // (testChildEntry) so the two only differ in how the result gets back.
 async function runTestFileAndReport(file: string, flags: Record<string, string | boolean>, send: (msg: TestChildMessage) => void): Promise<void> {
     try {
-        await runFile({ file, args: [], flags, rawArgs: makeRunArgs(file) });
-        // Use the module-level startTest / getFailedTests exports directly —
-        // Deno.__startTest is the external Deno-compat API and prints the
-        // "Failed tests:" summary as a side effect. We want the parent to
-        // aggregate and print a single clean summary, so we call the raw
-        // function and collect the failed list ourselves.
+        // Deno test modules are not "main"; import.meta.main is false under `deno test`.
+        await runFile({ file, args: [], flags, rawArgs: makeRunArgs(file), asMain: false });
+        // Use the module-level startTest / getFailedTests exports directly
         const { startTest, getFailedTests } = await import('../cno/src/deno/index');
         const passed = await startTest(file, true, true, {
             filter: typeof flags.filter === 'string' ? flags.filter : undefined,

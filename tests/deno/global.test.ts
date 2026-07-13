@@ -11,7 +11,8 @@ Deno.test('deno: globalThis.Deno is defined', () => {
 
 Deno.test('deno upstream: selected global object descriptors and aliases match Deno', () => {
     strictEqual(globalThis.self, globalThis);
-    strictEqual(globalThis.window, globalThis);
+    // Deno main-thread public API: window is present but undefined.
+    strictEqual(globalThis.window, undefined);
     strictEqual(globalThis.navigator instanceof Navigator, true);
     throws(() => new Navigator(), TypeError);
 

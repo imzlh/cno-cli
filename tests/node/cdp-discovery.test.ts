@@ -59,11 +59,12 @@ Deno.test({ name: 'cdp: /json lists a page target with a debugger ws URL', timeo
     try {
         const list: any[] = await getJson('/json');
         ok(Array.isArray(list) && list.length >= 1, '/json must return a non-empty target list');
-        const page = list.find((t) => t.type === 'page');
-        ok(page, 'must expose a page target');
-        ok(typeof page.webSocketDebuggerUrl === 'string' && page.webSocketDebuggerUrl.startsWith('ws://'),
-            'page target must carry a ws debugger URL');
-        ok(page.title !== undefined && page.id !== undefined, 'page target must have title and id');
+        // cno advertises Node-style targets (type "node"), not browser pages.
+        const target = list.find((t) => t.type === 'node' || t.type === 'page');
+        ok(target, 'must expose a node/page target');
+        ok(typeof target.webSocketDebuggerUrl === 'string' && target.webSocketDebuggerUrl.startsWith('ws://'),
+            'target must carry a ws debugger URL');
+        ok(target.title !== undefined && target.id !== undefined, 'target must have title and id');
     } finally {
         child.kill('SIGKILL');
         await new Promise((r) => child.on('exit', r));

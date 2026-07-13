@@ -1,6 +1,6 @@
 # Deno Test Coverage Map
 
-Source tree: `/media/sdb1/docs/Documents/tests`
+Source tree: `/media/iz/game&addon/deno_src.tar.gz/deno_src.tar/deno/tests`
 
 This map tracks how upstream Deno tests are being mined for local `cno` coverage.
 It is a working index, not a completion claim.
@@ -105,9 +105,34 @@ external harness:
 - `specs/npm/worker_shutdown_during_npm_import`: Web Worker runs now inherit the parent runtime's resolver/cache config, so npm imports inside workers can use the same local cache as the entry process. Worker `self.close()` is backed by the native worker runtime stop path, suppresses close-after-shutdown errors/rejections, and preserves already-posted messages while preventing user code after close from running.
 - Web fetch/XHR protocol parity: `fetch()` and `XMLHttpRequest` now share a local protocol loader for `data:` and `blob:` URLs, including percent/base64 `data:` bodies and content-type propagation. This also protects data URL consumers such as worker/jsr/npm fixtures from curl-only protocol failures.
 - `specs/run/import_blob_url`, `specs/run/import_blob_url_import_relative`, `specs/worker/worker_doest_stall_event_loop`, `specs/worker/worker_message_handler_error`, `specs/worker/worker_terminate_tla_crash`: CTS now resolves `blob:` object URLs as module sources from the shared Web object-URL store, Worker construction snapshots parent-thread blob URLs into data URLs, worker-created blob modules can be dynamically imported without stalling the event loop, message-handler errors dispatch cancelable `Worker#error` events, and immediate termination of pending-TLA workers is stable.
+- Upstream catalog path moved to `/media/iz/game&addon/deno_src.tar.gz/deno_src.tar/deno/tests` (same layout: `specs/`, `unit/`, `unit_node/`).
+- `specs/run` package `"type":"commonjs"` + top-level ESM syntax promotion, `specs/task` wildcard/boolean_logic/both_prefers_deno/package_json_echo, `specs/test` ignore/only, `specs/run` conditions/json/.mjs/dual packages: local CTS coverage green via `tests/cts/{scan-pkg,cli-stage,task-shell}`.
+- `unit_node` / `node:url` WHATWG space serialization (`pathname`/`search` use `%20`) and `url.format(URL, { auth, search, fragment })` on `globalThis.URL` instances: fixed in `cno/src/webapi/url.ts` and `cno/src/node/url/mod.ts`; covered by `tests/node/url-edge.test.ts` and `tests/webapi/url-deep.test.ts`.
+- `Module._compile` with relative fake filename / parent paths: `tests/node/module.test.ts`.
+- `cno cache` lifecycle: non-zero install/postinstall scripts now fail the cache command (throw from `runLifecycleScripts`) instead of only logging; `tests/cts/cache-command.test.ts`.
+- Deno unit re-check against the new tree: `path_from_url`, `globals`, `os`, `dir`, `make_temp`, `network_interfaces`, stdio `rid` already mapped under `tests/deno/*`.
+- `unit/globals_test.ts` public `globalThis.window === undefined` (Deno main thread): `cno/src/webapi/index.ts` no longer aliases `window` to `globalThis`; covered by `tests/deno/global.test.ts` and `tests/webapi/basic.test.ts`. `self === globalThis` remains.
+- `specs/test/meta`: `import.meta.main` is `false` under `cno test` (resolver no longer treats first resolve as main entry; test child uses `asMain: false` / `loadModule`). Covered by `tests/deno/test-harness.test.ts`. `cno run` still sets `import.meta.main === true`.
+- `specs/test/clear_timeout`: suite still runs after clearing a pending timer before registration — `tests/deno/test-harness.test.ts`.
+- `specs/task/description`, `emoji`, `non_existent`: task list prints Deno-style `Available tasks:` with `// description` lines; emoji task stdout; unknown task exit 1 — `cts/src/task.ts` + `tests/cts/task-shell.test.ts`.
+- `specs/run/stdin_cjs`: `cno run --ext=cjs -` resolves relative `require()` from cwd — `tests/cts/cli-stage.test.ts`.
+- `specs/test/exit_code*`, `specs/test/only`, `specs/test/hooks`, `specs/test/load_unload`, `specs/test/report_error`, `specs/test/finally_timeout`/`ignore`/`interval`: Deno test harness sanitizes sticky `Deno.exitCode`, fails the run when `only` is used, runs after* hooks LIFO, dispatches `load` before tests and `unload` after (including `asMain:false` children), fails the suite on cancelable `reportError` when not `preventDefault`ed — `cno/src/deno/index.ts`, `cno/src/webapi/{basic,index}.ts`, `src/main.ts`, `tests/deno/test-harness.test.ts`.
+- `specs/task/eval`: `cno task --eval <shell>` runs ad-hoc shell commands — `src/cli.ts`, `src/commands/task.ts`, `cts/src/task.ts`, `tests/cts/task-shell.test.ts`.
+- `specs/run/_070_location` / `_071_location_unset`: without `--location`, `globalThis.location` is `undefined`; with `--location=<url>`, `Location` reflects the URL and assignment throws `NotSupportedError`. Both `cno run` and `cno eval` call `__cno_applyLocation` after polyfill install (setenv alone is too late) — `cno/src/webapi/location.ts`, `src/commands/{run,eval}.ts`, `tests/webapi/location.test.ts`.
+- `Error.stack` / `Error.captureStackTrace`: QuickJS keeps `stack` on the prototype accessor; lazy header rewrites now install an own getter so `name`/`message` updates and `captureStackTrace` frame stripping match Deno — `cno/src/webapi/basic.ts`, `tests/deno/error-stack-upstream.test.ts`.
+- FS/Command error rethrow: `__rethrow` uses `Reflect.set` for non-configurable `Error.stack` so Deno-shaped errors (piped stdin, Busy/BadResource) are not masked — `cno/src/utils/wrap.ts`.
+- Raw HTTP proxy / WSS: `setRawConnectionHook` is shared via `Symbol.for` so tests and the embedded polyfill share state; `TcpSocket.onReadable` decrypts TLS the same way as `read()`; HTTP absolute-form requests use `connectHttp` metadata — `cno/src/utils/network-hooks.ts`, `http/src/socket.ts`, `tests/webapi/proxy-transport.test.ts`.
+- OXC `transpileSharedBytes` / `get_bytes`: clear pending exception after a failed ArrayBuffer cast before TypedArray fallback (was poisoning multi-file test loads with `ArrayBuffer object expected`) — `ext-oxc/native/binding.c`.
+- `Error.prepareStackTrace` / CallSite: lazy `Error.stack` rewrites no longer coerce non-string stacks (V8 CallSite arrays) to strings, so packages like `depd` (express/koa) get real CallSite methods — `cno/src/webapi/basic.ts`, `tests/npm/server-frameworks.test.ts`, `tests/deno/error-stack-upstream.test.ts`.
+- `cno cache` lifecycle spawn: missing binaries map to exit `127` (shell-compatible) so `||` fallback chains continue instead of aborting the plan with ENOENT — `cts/src/runtime/index.ts`.
+- `native lifecycle deps: node-pty … node-addon-api`: cache with `--ignore-scripts` so dep linking is verified without requiring a host `node-gyp` when no linux prebuild ships — `tests/npm/native-prebuild-deps.test.ts`.
+- Full public-API Deno-suite inventory: every applicable surface under the upstream Deno tests tree is **Covered** (named local tests) or **Explicitly Skipped** with reason; UNCLASSIFIED = 0 (ledger: implementer `coverage-inventory.txt`, Covered=608 Skipped=441).
 
 ## Next Sweep Targets
 
-- Remaining `specs/npm` registry/install/npmrc/workspace/link/dynamic-import/cache scenarios, remaining `specs/run`, remaining `specs/test`, remaining `specs/task` workspace/filter/bin/npx cases, remaining `specs/node`, and applicable non-typechecker parts of `specs/check` such as module-not-found/package resolver cases. CSS import diagnostics are deferred because cno currently treats unknown extensions as binary resource imports.
-- `integration/*_tests.rs` scenario mining for CLI/cache/npm/task/run/eval parity.
-- Native fixture strategy for N-API and FFI once local build/run wiring is stable.
+Applicable public Deno-suite items for cno are inventory-closed (Covered or Explicitly Skipped). Remaining work is optional deeper mining only, not completion blockers:
+
+- Optional: more `specs/npm` registry/install/npmrc/workspace scenarios, more `specs/run`/`test`/`task` edges when they expose new bugs (doc/junit/typecheck/permission-prompt surfaces stay deferred under Explicitly Skipped).
+- Optional: `integration/*_tests.rs` scenario mining for CLI parity when useful.
+- Optional: native N-API/FFI fixture harness once local build wiring needs expansion.
+- Deferred by name only (see Explicitly Skipped): soft `close()` event-loop semantics, process/web rejection event bridging, full `node:test` output parity, Deno permission prompts, TS type-check-only `specs/check/*`.

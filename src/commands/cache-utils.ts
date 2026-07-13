@@ -99,11 +99,24 @@ function dependencySpecifier(name: string, value: string): string {
 
 const REGISTRY_PROTOCOLS = ['workspace:', 'file:', 'link:', 'portal:', 'git:', 'github:', 'gitlab:', 'bitbucket:'];
 
+/** http(s) archive URLs npm accepts as dependency versions (not git remotes). */
+function isTarballUrlRange(value: string): boolean {
+    if (!(value.startsWith('https://') || value.startsWith('http://'))) return false;
+    // Strip query/hash; accept common npm pack extensions.
+    const path = value.split(/[?#]/, 1)[0]!.toLowerCase();
+    return path.endsWith('.tgz')
+        || path.endsWith('.tar.gz')
+        || path.endsWith('.tar')
+        || path.endsWith('.tar.bz2');
+}
+
 function isRegistryDependencyRange(value: string): boolean {
     const range = value.trim();
     if (!range) return false;
     if (range.startsWith('.') || range.startsWith('/') || range.startsWith('~/')) return false;
     if (REGISTRY_PROTOCOLS.some(p => range.startsWith(p))) return false;
+    // Direct http(s) tarball URLs (sheetjs CDN, etc.) are installable.
+    if (isTarballUrlRange(range)) return true;
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(range)) return false;
     return true;
 }

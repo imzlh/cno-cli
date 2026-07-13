@@ -172,6 +172,23 @@ Deno.test('cts shell: unix bin resolver accepts direct node shebang scripts', ()
     }
 });
 
+// Native bins (opencode ELF ~180MB) must not be fully read when resolving.
+Deno.test('cts shell: unix bin resolver skips ELF binaries without full read', () => {
+    const root = makePosixTempDir('unix-elf-bin');
+    try {
+        const elf = joinPaths(root, 'opencode.exe');
+        // Minimal ELF magic + padding (not a real executable).
+        const buf = new Uint8Array(4096);
+        buf[0] = 0x7f; buf[1] = 0x45; buf[2] = 0x4c; buf[3] = 0x46;
+        writeFileSync(elf, buf);
+        const t0 = Date.now();
+        strictEqual(resolveUnixBinEntry(elf), null);
+        ok(Date.now() - t0 < 500, 'must not fully read native binary');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test('cts shell: unix bin resolver extracts basedir-relative JS entry', () => {
     const root = makePosixTempDir('unix-wrapper-bin');
     try {
@@ -624,4 +641,72 @@ Deno.test('cli utils: entryAndDir resolves relative, absolute and protocol targe
     const remote = entryAndDir('https://example.test/mod.ts');
     strictEqual(remote.entry, 'https://example.test/mod.ts');
     strictEqual(remote.dir, cwd());
+});
+
+// specs/task/description, emoji, non_existent
+Deno.test({
+    name: 'cts task cli: lists descriptions, runs emoji tasks, fails unknown names',
+    ignore: Deno.build.os === 'windows',
+    async fn() {
+        const root = makePosixTempDir('task-desc-emoji');
+        try {
+            writeFileSync(join(root, 'deno.json'), JSON.stringify({
+                tasks: {
+                    echo_emoji: {
+                        description: 'This is some task',
+                        command: 'echo 1',
+                    },
+                    multiline_description: {
+                        description: 'This is a multiline\ndescription',
+                        command: 'echo 2',
+                    },
+                    fire: 'echo 🔥',
+                },
+            }));
+
+            const listed = await runCnoTask(['task', '--config', join(root, 'deno.json')], root);
+            strictEqual(listed.code, 0, listed.stderr + listed.stdout);
+            ok(listed.stdout.includes('Available tasks:'), listed.stdout);
+            ok(listed.stdout.includes('- echo_emoji'), listed.stdout);
+            ok(listed.stdout.includes('// This is some task'), listed.stdout);
+            ok(listed.stdout.includes('// This is a multiline'), listed.stdout);
+            ok(listed.stdout.includes('// description'), listed.stdout);
+            ok(listed.stdout.includes('echo 1'), listed.stdout);
+
+            const emoji = await runCnoTask(['task', '-q', '--config', join(root, 'deno.json'), 'fire'], root);
+            strictEqual(emoji.code, 0, emoji.stderr);
+            ok(emoji.stdout.includes('🔥'), emoji.stdout);
+
+            const missing = await runCnoTask(['task', '--config', join(root, 'deno.json'), 'non_existent'], root);
+            strictEqual(missing.code, 1, missing.stderr + missing.stdout);
+            ok(/Unknown task|not found|non_existent/i.test(missing.stderr + missing.stdout), missing.stderr + missing.stdout);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+// specs/task/eval
+Deno.test({
+    name: 'cts task upstream: --eval runs ad-hoc shell and errors without command',
+    ignore: Deno.build.os === 'windows',
+    async fn() {
+        const root = makePosixTempDir('task-eval');
+        try {
+            writeFileSync(join(root, 'deno.json'), JSON.stringify({ tasks: {} }));
+            const okEval = await runCnoTask(['task', '--eval', 'echo hello-eval'], root);
+            strictEqual(okEval.code, 0, okEval.stderr + okEval.stdout);
+            ok(okEval.stdout.includes('hello-eval'), okEval.stdout);
+
+            const noArg = await runCnoTask(['task', '--eval'], root);
+            strictEqual(noArg.code, 1, noArg.stderr + noArg.stdout);
+            ok(/must be specified when using --eval/i.test(noArg.stderr + noArg.stdout), noArg.stderr + noArg.stdout);
+
+            const pwd = await runCnoTask(['task', '--eval', 'echo $(pwd)'], root);
+            strictEqual(pwd.code, 0, pwd.stderr + pwd.stdout);
+            ok(pwd.stdout.includes(root) || pwd.stdout.trim().length > 0, pwd.stdout);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
 });

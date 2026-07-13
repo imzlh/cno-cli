@@ -97,16 +97,10 @@ Deno.test('CNO.llhttp: Web Request/Response conversion preserves method, URL and
     strictEqual(await streamText(responseMessage.body), 'world');
 });
 
-Deno.test('location: about:blank URL shape and unsupported navigation methods', () => {
-    strictEqual(location.href, 'about:blank');
-    strictEqual(location.protocol, 'about:');
-    strictEqual(location.origin, 'null');
-    strictEqual(location.ancestorOrigins.length, 0);
-    strictEqual(location.ancestorOrigins.contains('https://example.test'), false);
-    strictEqual(location.ancestorOrigins.item(0), null);
-    throws(() => location.assign('https://example.test/'), /Not supported/);
-    throws(() => location.reload(), /Not supported/);
-    throws(() => location.replace('https://example.test/'), /Not supported/);
+// specs/run/_071_location_unset: without --location, location is undefined.
+Deno.test('location: undefined without --location (Deno default)', () => {
+    strictEqual(globalThis.location, undefined);
+    ok(typeof Location === 'function');
 });
 
 Deno.test('reportError: dispatches ErrorEvent without throwing', () => {

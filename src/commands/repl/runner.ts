@@ -3,6 +3,7 @@ const streams = import.meta.use('streams');
 const engine = import.meta.use('engine');
 const console = import.meta.use('console');
 const sfs = import.meta.use('fs');
+const error = import.meta.use('error');
 
 // preset some envs
 Reflect.set(globalThis, 'console', console);
@@ -481,8 +482,12 @@ export class CnoRepl {
         this.#onExit(() => {
         // Disable bracketed paste mode before exiting
             if (this.#isatty) {
-                sfs.write(os.STDOUT_FILENO, engine.encodeString('\x1b[?2004l'));
-                (this.#stdin as CModuleStreams.TTY).mode = streams.TTY_MODE_NORMAL;
+                try {
+                    sfs.write(os.STDOUT_FILENO, engine.encodeString('\x1b[?2004l'));
+                } catch {}
+                try {
+                    (this.#stdin as CModuleStreams.TTY).mode = streams.TTY_MODE_NORMAL;
+                } catch {}
             }
         });
     }
@@ -537,17 +542,27 @@ export class CnoRepl {
         } catch {}
     }
 
-    async #readInput(): Promise<void> {
+    #finishInput(): void {
+        this.#running = false;
+        if (this.#readlineResolver) {
+            const resolver = this.#readlineResolver;
+            this.#readlineResolver = null;
+            resolver(null);
+        }
+        this.#stopReadingQuietly();
+    }
+
+    #isTerminalDisconnect(err: unknown): boolean {
+        if (!this.#isatty || typeof err !== 'object' || err === null) return false;
+        return Reflect.get(err, 'code') === error.errno.EIO;
+    }
+
+    #readInput(): void {
         this.#stdin.onread = (res: null | undefined | Uint8Array, err: undefined | CModuleError.Error) => {
             if (!res) {
-                if (!err) {
-                    this.#running = false;
-                    if (this.#readlineResolver) {
-                        const resolver = this.#readlineResolver;
-                        this.#readlineResolver = null;
-                        resolver(null);
-                    }
-                    this.#stopReadingQuietly();
+                // A detached POSIX PTY reports EIO instead of EOF.
+                if (!err || this.#isTerminalDisconnect(err)) {
+                    this.#finishInput();
                     return;
                 }
                 console.error('Failed to read from console:', err ?? 'EOF');
@@ -564,7 +579,15 @@ export class CnoRepl {
                 if (!this.#running) this.#stdin.stopRead();
             });
         };
-        this.#stdin.startRead();
+        try {
+            this.#stdin.startRead();
+        } catch (err) {
+            if (this.#isTerminalDisconnect(err)) {
+                this.#finishInput();
+                return;
+            }
+            throw err;
+        }
     }
 
     #handleByte(byte: number): void {

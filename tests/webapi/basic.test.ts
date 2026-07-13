@@ -38,9 +38,9 @@ Deno.test('WeakRef: immediate deref keeps temporary targets alive in same job', 
     strictEqual(await Promise.resolve(ref.deref()?.ok), true);
 });
 
-Deno.test('global aliases: window and self point at globalThis', () => {
-    strictEqual(globalThis.window, globalThis);
+Deno.test('global aliases: self is globalThis; window is undefined (Deno)', () => {
     strictEqual(globalThis.self, globalThis);
+    strictEqual(globalThis.window, undefined);
 });
 
 // --- 3. setTimeout fires after delay --------------------------------------

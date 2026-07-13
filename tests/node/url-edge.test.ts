@@ -56,6 +56,19 @@ Deno.test('url: fileURLToPath rejects encoded slash on POSIX paths', () => {
     throws(() => url.fileURLToPath('file:///tmp/a%2Fb'), TypeError);
 });
 
+// Regression: subclassing globalThis.URL broke super() on QuickJS ("not a function").
+Deno.test('url: fileURLToPath accepts import.meta.url string', () => {
+    const p = url.fileURLToPath(import.meta.url);
+    ok(typeof p === 'string' && p.length > 0);
+    ok(p.includes('url-edge') || p.endsWith('.ts') || p.endsWith('.js'));
+});
+
+Deno.test('url: node:url URL constructs like globalThis.URL', () => {
+    const u = new nodeUrl.URL('file:///tmp/x');
+    strictEqual(u.href, 'file:///tmp/x');
+    strictEqual(nodeUrl.URL, globalThis.URL);
+});
+
 // --- 5. URL class parses and normalizes --------------------------------------
 
 Deno.test('url: URL normalizes origin and pathname', () => {

@@ -661,3 +661,37 @@ Deno.test('module: exported _compile returns module exports object', () => {
     const result = module._compile('exports.value = require("node:path").basename(__filename);', '/tmp/direct.js');
     deepStrictEqual(result, { value: 'direct.js' });
 });
+
+// specs/node/require_export_from_parent_with_no_filename
+Deno.test('module upstream: Module._compile resolves packages from parent paths with relative filename', () => {
+    return withTempDir('node-module-require-from-string', (root) => {
+        const pkgDir = path.join(root, 'node_modules', '@denotest', 'cjs-multiple-exports');
+        Deno.mkdirSync(pkgDir, { recursive: true });
+        Deno.writeTextFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({
+            name: '@denotest/cjs-multiple-exports',
+            version: '1.0.0',
+            main: './add.js',
+        }));
+        Deno.writeTextFileSync(path.join(pkgDir, 'add.js'), 'module.exports = (a, b) => a + b;\n');
+
+        const cwd = Deno.cwd();
+        try {
+            Deno.chdir(root);
+            function requireFromString(code: string, filename: string): unknown {
+                const paths = Module._nodeModulePaths(path.dirname(filename));
+                const m = new Module(filename, module.parent as Module | null);
+                m.paths = paths;
+                m._compile(code, filename);
+                return m.exports;
+            }
+            const code = `
+                const add = require("@denotest/cjs-multiple-exports/add");
+                exports.result = add(1, 2);
+            `;
+            const out = requireFromString(code, 'fake.js') as { result: number };
+            strictEqual(out.result, 3);
+        } finally {
+            Deno.chdir(cwd);
+        }
+    });
+});

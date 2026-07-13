@@ -68,12 +68,35 @@ Deno.test('cts scan: dedupes imports and ignores invalid source', () => {
     `), ['./same']);
 });
 
+Deno.test('cts scan: finds from-clause after a long named import list', () => {
+    // multiaddr registry.js-style: dozens of named bindings exceed the old
+    // 80-token findFromString window and dropped "./constants.js" from the
+    // pack edge table (compile then failed with "no static edge").
+    const names = Array.from({ length: 50 }, (_, i) => `CODE_${i}`).join(', ');
+    const source = `import { ${names} } from "./constants.js";\nimport { x } from "./errors.js";\n`;
+    deepStrictEqual(sorted(extractImports(source, false)), sorted([
+        './constants.js',
+        './errors.js',
+    ]));
+});
+
 Deno.test('cts scan: hasTopLevelEsmSyntax detects static import/export only', () => {
     ok(hasTopLevelEsmSyntax('export function add(a, b) { return a + b; }\n'));
     ok(hasTopLevelEsmSyntax('import x from "./x.js";\n'));
+    ok(hasTopLevelEsmSyntax('import.meta.url;\n'));
     strictEqual(hasTopLevelEsmSyntax('const x = require("./x");\n'), false);
     strictEqual(hasTopLevelEsmSyntax('const m = import("./dyn.js");\n'), false);
     strictEqual(hasTopLevelEsmSyntax('exports.add = (a, b) => a + b;\n'), false);
+    // Nested / comments must not force ESM (CJS dual packages).
+    strictEqual(hasTopLevelEsmSyntax('function f() { export const x = 1; }\n'), false);
+    strictEqual(hasTopLevelEsmSyntax('// import x from "./x.js";\nconst y = 1;\n'), false);
+    strictEqual(hasTopLevelEsmSyntax('const s = "import x from \'./x.js\'";\n'), false);
+    // Large CJS body must stay sub-second (old full Sucrase path was multi-second).
+    const heavy = 'exports.x = ' + Array.from({ length: 500 }, (_, i) =>
+        `{ k${i}: ${i} }`).join(' + ') + ';\n';
+    const t0 = Date.now();
+    strictEqual(hasTopLevelEsmSyntax(heavy), false);
+    ok(Date.now() - t0 < 200, `hasTopLevelEsmSyntax too slow: ${Date.now() - t0}ms`);
 });
 
 Deno.test('cts scan: path helpers match scan extension policy', () => {

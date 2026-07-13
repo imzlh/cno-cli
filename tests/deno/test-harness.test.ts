@@ -1,5 +1,7 @@
 import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert';
+import { join } from 'node:path';
 import { decodeUtf8 } from '../_helpers/bytes.ts';
+import { withTempDir } from '../_helpers/temp.ts';
 
 async function runEval(code: string): Promise<{ stdout: string; stderr: string; code: number }> {
     const output = await new Deno.Command(Deno.execPath(), {
@@ -78,7 +80,8 @@ Deno.test({ name: 'deno test harness: only filters ordinary tests', timeout: 100
 
     strictEqual(child.code, 0, child.stderr);
     const result = resultLine(child.stdout);
-    strictEqual(result.passed, true);
+    // specs/test/only: selected tests run, but overall suite fails when only is used
+    strictEqual(result.passed, false);
     deepStrictEqual(result.order, ['only']);
 });
 
@@ -427,4 +430,239 @@ Deno.test({ name: 'deno bench harness: overload names ignore and only filters ar
     const onlyResult = resultLine(only.stdout);
     strictEqual(onlyResult.passed, true);
     deepStrictEqual(onlyResult.order, ['only:only bench']);
+});
+
+// specs/test/meta — Deno.test modules have import.meta.main === false
+Deno.test({ name: 'deno test upstream: import.meta.main is false in tested modules', timeout: 15000 }, async () => {
+    await withTempDir('deno-test-meta', async (root) => {
+        const file = join(root, 'main.ts');
+        await Deno.writeTextFile(file, `
+const main = import.meta.main;
+const url = import.meta.url;
+Deno.test('check values', () => {
+  if (main !== false) throw new Error('import.meta.main must be false under test, got ' + main);
+  if (typeof url !== 'string' || !url.includes('main.ts')) throw new Error('bad url ' + url);
+  console.log('import.meta.main: ' + main);
+  console.log('import.meta.url: ' + url);
+});
+`);
+        const output = await new Deno.Command(Deno.execPath(), {
+            args: ['test', file, '--concurrency=1'],
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const text = new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr);
+        strictEqual(output.code, 0, text);
+        ok(text.includes('import.meta.main: false'), text);
+        ok(text.includes('main.ts'), text);
+    });
+});
+
+// specs/test/clear_timeout — pending timers cleared before suite still run
+Deno.test({ name: 'deno test upstream: clearTimeout of pending timer still runs suite', timeout: 15000 }, async () => {
+    await withTempDir('deno-test-clear-timeout', async (root) => {
+        const file = join(root, 'main.ts');
+        await Deno.writeTextFile(file, `
+clearTimeout(setTimeout(() => {}, 1000));
+Deno.test('test 1', () => {});
+Deno.test('test 2', () => {});
+Deno.test('test 3', () => {});
+`);
+        const output = await new Deno.Command(Deno.execPath(), {
+            args: ['test', file, '--concurrency=1'],
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const text = new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr);
+        strictEqual(output.code, 0, text);
+        ok(/PASS|3\/|ok/i.test(text), text);
+    });
+});
+
+// specs/test/exit_code, exit_code2, exit_code3
+Deno.test({ name: 'deno test upstream: Deno.exitCode sanitizer fails tests and sticks', timeout: 20000 }, async () => {
+    await withTempDir('deno-test-exit-code', async (root) => {
+        const exit1 = join(root, 'exit1.js');
+        await Deno.writeTextFile(exit1, `
+Deno.test("Deno.exitCode", () => { Deno.exitCode = 42; });
+`);
+        const r1 = await new Deno.Command(Deno.execPath(), {
+            args: ['test', exit1, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
+        }).output();
+        const t1 = new TextDecoder().decode(r1.stdout) + new TextDecoder().decode(r1.stderr);
+        strictEqual(r1.code, 1, t1);
+        ok(/exit code set to 42|fail Deno\.exitCode/i.test(t1), t1);
+
+        const exit2 = join(root, 'exit2.js');
+        await Deno.writeTextFile(exit2, `
+Deno.test("Deno.exitCode", () => { Deno.exitCode = 5; throw new Error(""); });
+Deno.test("success", () => {});
+`);
+        const r2 = await new Deno.Command(Deno.execPath(), {
+            args: ['test', exit2, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
+        }).output();
+        const t2 = new TextDecoder().decode(r2.stdout) + new TextDecoder().decode(r2.stderr);
+        strictEqual(r2.code, 1, t2);
+        ok(/fail Deno\.exitCode/i.test(t2), t2);
+        ok(/fail success|exit code set to 5/i.test(t2), t2);
+
+        const exit3 = join(root, 'exit3.js');
+        await Deno.writeTextFile(exit3, `
+Deno.test("Deno.exitCode", () => { Deno.exitCode = 42; });
+Deno.test("success", () => {});
+`);
+        const r3 = await new Deno.Command(Deno.execPath(), {
+            args: ['test', exit3, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
+        }).output();
+        const t3 = new TextDecoder().decode(r3.stdout) + new TextDecoder().decode(r3.stderr);
+        strictEqual(r3.code, 1, t3);
+        ok(/fail Deno\.exitCode|exit code set to 42/i.test(t3), t3);
+        ok(/ok success/i.test(t3), t3);
+    });
+});
+
+// specs/test/only — overall failure when only is used
+Deno.test({ name: 'deno test upstream: only option fails overall run', timeout: 15000 }, async () => {
+    await withTempDir('deno-test-only', async (root) => {
+        const file = join(root, 'main.ts');
+        await Deno.writeTextFile(file, `
+Deno.test({ name: "before", fn() {} });
+Deno.test({ only: true, name: "only", fn() {} });
+Deno.test.only({ name: "only2", fn() {} });
+Deno.test({ name: "after", fn() {} });
+`);
+        const output = await new Deno.Command(Deno.execPath(), {
+            args: ['test', file, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
+        }).output();
+        const text = new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr);
+        strictEqual(output.code, 1, text);
+        ok(/ok only/i.test(text), text);
+        ok(/ok only2/i.test(text), text);
+        ok(!/ok before/i.test(text) && !/ok after/i.test(text), text);
+    });
+});
+
+// specs/test/hooks — after* LIFO, before* FIFO
+Deno.test({ name: 'deno test upstream: hooks order before FIFO after LIFO', timeout: 15000 }, async () => {
+    const child = await runEval(`
+        const logs = [];
+        Deno.test.beforeAll(() => logs.push('beforeAll 1'));
+        Deno.test.beforeAll(() => logs.push('beforeAll 2'));
+        Deno.test.beforeEach(() => logs.push('beforeEach 1'));
+        Deno.test.beforeEach(() => logs.push('beforeEach 2'));
+        Deno.test.afterEach(() => logs.push('afterEach 1'));
+        Deno.test.afterEach(() => logs.push('afterEach 2'));
+        Deno.test.afterAll(() => logs.push('afterAll 1'));
+        Deno.test.afterAll(() => logs.push('afterAll 2'));
+        Deno.test('first', () => logs.push('test 1'));
+        Deno.test('second', () => logs.push('test 2'));
+        const passed = await Deno.__startTest('hooks-order.ts', 'test');
+        console.log('RESULT ' + JSON.stringify({ passed, logs }));
+    `);
+    strictEqual(child.code, 0, child.stderr);
+    const result = resultLine(child.stdout);
+    // only option not used → but we didn't use only; hooks-only suite should pass
+    // Wait: if no only, passed true. after LIFO means afterEach 2 before afterEach 1.
+    deepStrictEqual(result.logs, [
+        'beforeAll 1', 'beforeAll 2',
+        'beforeEach 1', 'beforeEach 2', 'test 1', 'afterEach 2', 'afterEach 1',
+        'beforeEach 1', 'beforeEach 2', 'test 2', 'afterEach 2', 'afterEach 1',
+        'afterAll 2', 'afterAll 1',
+    ]);
+    strictEqual(result.passed, true);
+});
+
+// specs/test/load_unload
+Deno.test({ name: 'deno test upstream: load before suite and unload after', timeout: 15000 }, async () => {
+    await withTempDir('deno-test-load-unload', async (root) => {
+        const file = join(root, 'main.ts');
+        await Deno.writeTextFile(file, `
+let interval = null;
+addEventListener("load", () => {
+  console.log("load");
+  interval = setInterval(() => {}, 0);
+});
+addEventListener("unload", () => {
+  console.log("unload");
+  if (interval) clearInterval(interval);
+});
+Deno.test("test", () => {
+  console.log("test");
+  if (!interval) throw new Error("Interval was not set");
+});
+`);
+        const output = await new Deno.Command(Deno.execPath(), {
+            args: ['test', file, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
+        }).output();
+        const text = new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr);
+        strictEqual(output.code, 0, text);
+        const loadAt = text.indexOf('load');
+        const testAt = text.indexOf('\ntest') >= 0 ? text.indexOf('\ntest') : text.indexOf('test');
+        const unloadAt = text.indexOf('unload');
+        ok(loadAt >= 0 && testAt > loadAt, text);
+        ok(unloadAt > testAt, text);
+    });
+});
+
+// specs/test/report_error
+Deno.test({ name: 'deno test upstream: reportError fails the suite', timeout: 15000 }, async () => {
+    await withTempDir('deno-test-report-error', async (root) => {
+        const file = join(root, 'main.ts');
+        await Deno.writeTextFile(file, `
+Deno.test("foo", () => {
+  reportError(new Error("foo"));
+  console.log(1);
+});
+Deno.test("bar", () => {});
+`);
+        const output = await new Deno.Command(Deno.execPath(), {
+            args: ['test', file, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
+        }).output();
+        const text = new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr);
+        strictEqual(output.code, 1, text);
+        ok(/fail|FAILED|error/i.test(text), text);
+    });
+});
+
+// specs/test/finally_timeout, ignore, interval
+Deno.test({ name: 'deno test upstream: finally clearTimeout ignore and empty interval file', timeout: 20000 }, async () => {
+    await withTempDir('deno-test-misc', async (root) => {
+        const finallyFile = join(root, 'finally.ts');
+        await Deno.writeTextFile(finallyFile, `
+Deno.test("error", function () {
+  const timer = setTimeout(() => null, 10000);
+  try { throw new Error("fail"); } finally { clearTimeout(timer); }
+});
+Deno.test("success", function () {});
+`);
+        const r1 = await new Deno.Command(Deno.execPath(), {
+            args: ['test', finallyFile, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
+        }).output();
+        const t1 = new TextDecoder().decode(r1.stdout) + new TextDecoder().decode(r1.stderr);
+        strictEqual(r1.code, 1, t1);
+        ok(/fail error|Error: fail/i.test(t1), t1);
+        ok(/ok success/i.test(t1), t1);
+
+        const ignoreFile = join(root, 'ignore.ts');
+        await Deno.writeTextFile(ignoreFile, `
+for (let i = 0; i < 3; i++) {
+  Deno.test({ name: "test " + i, ignore: true, fn() { throw new Error("unreachable"); } });
+}
+Deno.test.ignore({ name: "test ignore", fn() { throw new Error("unreachable"); } });
+`);
+        const r2 = await new Deno.Command(Deno.execPath(), {
+            args: ['test', ignoreFile, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
+        }).output();
+        const t2 = new TextDecoder().decode(r2.stdout) + new TextDecoder().decode(r2.stderr);
+        strictEqual(r2.code, 0, t2);
+        ok(/skip|ignored|PASS/i.test(t2), t2);
+
+        const intervalFile = join(root, 'interval.ts');
+        await Deno.writeTextFile(intervalFile, `setInterval(function () {}, 0);`);
+        const r3 = await new Deno.Command(Deno.execPath(), {
+            args: ['test', intervalFile, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
+        }).output();
+        const t3 = new TextDecoder().decode(r3.stdout) + new TextDecoder().decode(r3.stderr);
+        strictEqual(r3.code, 0, t3);
+    });
 });

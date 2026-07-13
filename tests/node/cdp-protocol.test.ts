@@ -4,9 +4,9 @@ import { CDPDispatcher, CDPError, CdpErrorCode } from '../../src/inspector/worke
 import { ProtocolDomain } from '../../src/inspector/domains/protocol';
 import { RuntimeDomain } from '../../src/inspector/domains/runtime';
 import { TargetDomain } from '../../src/inspector/domains/target';
-import { PageDomain } from '../../src/inspector/domains/page';
 import { ConsoleDomain } from '../../src/inspector/domains/console';
 import { InspectorProtocolClient } from '../../cno/src/node/inspector/client';
+import type { DebuggerDomain } from '../../src/inspector/domains/debugger';
 import type { WorkerEndpoint } from '../../src/inspector/transport/worker-endpoint';
 
 Deno.test('cdp: unknown methods use protocol method-not-found code', async () => {
@@ -27,14 +27,9 @@ Deno.test('cdp: protocol support domain answers common DevTools probes', async (
 
     const schema = await dispatcher.dispatch('Schema.getDomains', {}) as { domains: Array<{ name: string }> };
     ok(schema.domains.some((domain) => domain.name === 'Runtime'));
-
-    const version = await dispatcher.dispatch('Browser.getVersion', {}) as { product: string; protocolVersion: string };
-    strictEqual(version.protocolVersion, '1.3');
-    ok(version.product.startsWith('cno/'));
-
-    const document = await dispatcher.dispatch('DOM.getDocument', {}) as { root: { nodeName: string; nodeId: number } };
-    strictEqual(document.root.nodeName, '#document');
-    strictEqual(document.root.nodeId, 1);
+    ok(schema.domains.some((domain) => domain.name === 'Debugger'));
+    // Browser/Page/DOM identity was intentionally dropped; stay Node-shaped.
+    ok(!schema.domains.some((domain) => domain.name === 'Page'));
 });
 
 Deno.test('cdp: Runtime.queryObjects returns the RPC RemoteObject shape', async () => {
@@ -69,8 +64,7 @@ Deno.test('cdp: superseded DevTools sockets cannot dispatch commands', async () 
     const rpc = { call: () => ({}) } as unknown as WorkerEndpoint;
     const debuggerDomain = { setConnected: () => {} } as unknown as DebuggerDomain;
     const runtimeDomain = { setConnected: () => {} } as unknown as RuntimeDomain;
-    const pageDomain = { setConnected: () => {}, onConnected: () => {} } as unknown as PageDomain;
-    const deps = { channel, dispatcher, rpc, entryUrl: 'about:blank', debuggerDomain, runtimeDomain, pageDomain };
+    const deps = { channel, dispatcher, rpc, entryUrl: 'about:blank', debuggerDomain, runtimeDomain };
 
     const oldSocket = newFakeSocket();
     const activeSocket = newFakeSocket();
@@ -100,7 +94,6 @@ Deno.test('cdp: malformed params return InvalidParams instead of dispatching wit
     const rpc = { call: () => ({}) } as unknown as WorkerEndpoint;
     const debuggerDomain = { setConnected: () => {} } as unknown as DebuggerDomain;
     const runtimeDomain = { setConnected: () => {} } as unknown as RuntimeDomain;
-    const pageDomain = { setConnected: () => {}, onConnected: () => {} } as unknown as PageDomain;
     const socket = newFakeSocket();
     handleDevToolsConnection(socket as unknown as WebSocket, {
         channel,
@@ -109,7 +102,6 @@ Deno.test('cdp: malformed params return InvalidParams instead of dispatching wit
         entryUrl: 'about:blank',
         debuggerDomain,
         runtimeDomain,
-        pageDomain,
     });
 
     socket.receive({ id: 1, method: 'Runtime.evaluate', params: ['not-object'] });
@@ -164,23 +156,8 @@ Deno.test('cdp: Target domain reports the same target type as discovery', async 
     const targets = await dispatcher.dispatch('Target.getTargets', {}) as {
         targetInfos: Array<{ type: string }>
     };
-    strictEqual(targets.targetInfos[0]?.type, 'page');
-});
-
-Deno.test('cdp: Page.disable does not forget parsed script resources', async () => {
-    const dispatcher = new CDPDispatcher();
-    const rpc = { call: () => ({ content: '', base64Encoded: false }) } as unknown as WorkerEndpoint;
-    const page = new PageDomain(dispatcher, () => {}, rpc);
-
-    page.onScriptParsed('file:///tmp/main.ts');
-    await dispatcher.dispatch('Page.enable', {});
-    await dispatcher.dispatch('Page.disable', {});
-    await dispatcher.dispatch('Page.enable', {});
-
-    const tree = await dispatcher.dispatch('Page.getResourceTree', {}) as {
-        frameTree: { resources: Array<{ url: string }> }
-    };
-    ok(tree.frameTree.resources.some((resource) => resource.url === 'file:///tmp/main.ts'));
+    // discovery listEntry.type is "node" (Node-shaped inspector surface)
+    strictEqual(targets.targetInfos[0]?.type, 'node');
 });
 
 Deno.test('cdp: node inspector client preserves protocol error codes', async () => {

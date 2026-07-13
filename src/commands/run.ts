@@ -20,6 +20,8 @@ interface RunOpts {
     flags: Record<string, string | boolean>;
     rawArgs: Args;
     config?: Partial<ConfigOptions>;
+    /** When false, import.meta.main stays false (Deno.test modules). Default true. */
+    asMain?: boolean;
 }
 
 function isJspackFile(entry: string): boolean {
@@ -309,15 +311,44 @@ async function runNodePreloads(runtime: ReturnType<typeof createRuntime>, execAr
     }
 }
 
+function applyLocationFlag(flags: Record<string, string | boolean>): void {
+    // specs/run/_070_location: --location=URL configures globalThis.location via CNO_LOCATION.
+    const loc = flags['location'];
+    if (typeof loc === 'string' && loc.length > 0) {
+        try { os.setenv('CNO_LOCATION', loc); } catch { /* */ }
+        // Polyfill may already be loaded; re-apply if helper is present.
+        try {
+            const apply = Reflect.get(globalThis, '__cno_applyLocation');
+            if (typeof apply === 'function') apply(loc);
+        } catch { /* */ }
+    }
+}
+
 export async function runFile(opts: RunOpts): Promise<void> {
+    applyLocationFlag(opts.flags);
     const isStdin = opts.file === '-';
     loadEnvFiles(collectValueFlags(opts.rawArgs.actionArgs, new Set(['env', 'env-file'])), (msg) => console.error(`Warning ${msg}`));
-    const { entry, dir } = isStdin
+    let { entry, dir } = isStdin
         ? { entry: `${os.cwd}/$deno$stdin.${sourceLangFromFlags(opts.flags)}`, dir: os.cwd }
         : entryAndDir(opts.file);
-    const fileCfg = loadConfigFile(dir);
-    const cliCfg  = flagsToConfig(opts.flags);
+    // Symlinked bins (node_modules/.bin → store) need realpath so relative
+    // requires resolve inside the package, not under .bin/.
+    if (!isStdin) {
+        try {
+            if (fs.exists(entry)) {
+                const real = fs.realpath(entry);
+                if (real && real !== entry) {
+                    entry = real;
+                    dir = entryAndDir(entry).dir;
+                }
+            }
+        } catch { /* keep original entry */ }
+    }
     const isPack = !isStdin && isJspackFile(entry);
+    // A portable pack must not inherit deno.json/tsconfig/package settings
+    // from whichever directory happens to contain it at run time.
+    const fileCfg = isPack ? {} : loadConfigFile(dir);
+    const cliCfg  = flagsToConfig(opts.flags);
 
     const cfg: Partial<ConfigOptions> = {
         ...fileCfg,
@@ -371,11 +402,17 @@ export async function runFile(opts: RunOpts): Promise<void> {
         setArgs(opts.rawArgs);
         await runDenoPreloads(runtime, opts.rawArgs.actionArgs);
         await runNodePreloads(runtime, opts.rawArgs.internalArgs);
+        const asMain = opts.asMain !== false;
         let mod: Awaited<ReturnType<typeof runtime.loadEntry>>;
         if (isPack) {
-            const { manifest } = loadPack(entry, runtime.resolver, runtime.compiler.esm.jsc, runtime.config.cacheDir);
+            const packStarted = Date.now();
+            const { manifest } = loadPack(entry, runtime.resolver);
+            const preparedAt = Date.now();
             Reflect.set(globalThis, '__mainScript', entryUrl(manifest.entry));
-            mod = await runtime.loadEntry(manifest.entry, {}, manifest.modules[manifest.entry]?.lang ?? '');
+            mod = asMain
+                ? await runtime.loadEntry(manifest.entry, {}, manifest.modules[manifest.entry]?.lang ?? '')
+                : await runtime.loadModule(manifest.entry, {}, manifest.modules[manifest.entry]?.lang ?? '');
+            log.debug('pack', () => `prepare=${preparedAt - packStarted}ms link=${Date.now() - preparedAt}ms`);
         } else {
             Reflect.set(globalThis, '__mainScript', entryUrl(entry));
             const resolved = isStdin ? { entry, npmBin: false } : resolveNpmRunEntry(runtime, entry, dir);
@@ -383,17 +420,22 @@ export async function runFile(opts: RunOpts): Promise<void> {
             const sourceLang = sourceLangFromFlags(opts.flags);
             const entryLang = entryLangFromFlags(opts.flags);
             const npmBinSourceEntry = resolved.npmBin && extname(runEntry) === '';
-            const sourceOpts: { lang: string; format?: ModuleFormat } = npmBinSourceEntry
+            const sourceOpts: { lang: string; format?: ModuleFormat; main?: boolean } = npmBinSourceEntry
                 ? { lang: 'js', format: 'cjs' }
                 : { lang: sourceLang };
+            if (!asMain) sourceOpts.main = false;
             const useSourceEntry = isStdin || npmBinSourceEntry || (!resolved.npmBin && shouldLoadSourceEntry(runEntry, opts.flags));
             mod = isStdin
-                ? runtime.loadSourceEntry(await readStdinSource(), entry, {}, { lang: sourceLang })
+                ? runtime.loadSourceEntry(await readStdinSource(), entry, {}, { lang: sourceLang, main: asMain })
                 : useSourceEntry
                 ? runtime.loadSourceEntry(readEntrySource(runEntry), runEntry, {}, sourceOpts)
-                : await runtime.loadEntry(runEntry, {}, entryLang);
+                : asMain
+                ? await runtime.loadEntry(runEntry, {}, entryLang)
+                : await runtime.loadModule(runEntry, {}, entryLang);
         }
+        const evalStarted = Date.now();
         await mod.eval();
+        if (isPack) log.debug('pack', () => `eval=${Date.now() - evalStarted}ms`);
     } catch (e) {
         if (isInternalWorkerClose(e)) throw e;
         fatal(e, entry);

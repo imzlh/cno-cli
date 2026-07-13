@@ -47,7 +47,16 @@ Deno.test('URL: file URL origin is null', () => {
     strictEqual(u.origin, 'null');
 });
 
-// --- 5. URLSearchParams: + decodes to space --------------------------------
+// --- 5. WHATWG serializes U+0020 as %20 in path and query ------------------
+
+Deno.test('URL: serializes spaces in pathname and search as %20', () => {
+    const u = new URL('https://example.com/a b?x=a b');
+    strictEqual(u.pathname, '/a%20b');
+    strictEqual(u.search, '?x=a%20b');
+    strictEqual(u.href, 'https://example.com/a%20b?x=a%20b');
+});
+
+// --- 6. URLSearchParams: + decodes to space --------------------------------
 
 Deno.test('URL: + in query decodes to space', () => {
     const u = new URL('http://x/?q=a+b');

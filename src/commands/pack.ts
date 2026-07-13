@@ -1,4 +1,5 @@
-import { createRuntime, cwd, loadConfigFile, writePack, basename, extname, dirname, joinPaths, resolvePath, isAbsolute, fmtBytes } from '../../cts/src/api';
+import { createRuntime, cwd, loadConfigFile, writePack, basename, extname, dirname, joinPaths, resolvePath, isAbsolute, fmtBytes, summarizePackSizes } from '../../cts/src/api';
+import type { PackManifest } from '../../cts/src/api';
 import { C } from '../help';
 import { entryAndDir } from '../utils';
 import { buildCacheConfig } from './cache-utils';
@@ -85,12 +86,27 @@ export async function runPack(files: string[], flags: Record<string, string | bo
             const size = fs.stat(outPath).size;
             console.log(`${C.green('✔')} Packed ${Object.keys(manifest.modules).length} modules (${fmtBytes(size)})`);
             console.log(`  ${C.dim('Out:')} ${resolvePath(outPath)}`);
+            printSizeBreakdown(manifest);
         }
     } catch (e) {
         console.error(`${C.warn('⚠')} Pack failed: ${e instanceof Error ? e.message : String(e)}`);
         os.exit(1);
     } finally {
         runtime.cleanup();
+    }
+}
+
+/** Print packed size share from unique blob ranges (workspace / npm / jsr / …). */
+function printSizeBreakdown(manifest: PackManifest): void {
+    const { total, rows } = summarizePackSizes(manifest);
+    if (total <= 0 || rows.length === 0) return;
+
+    const labelW = Math.min(40, Math.max(...rows.map(r => r.name.length), 9));
+    console.log(`  ${C.dim('Size:')}`);
+    for (const { name, bytes } of rows) {
+        const pct = ((bytes / total) * 100).toFixed(1);
+        const label = name.length > labelW ? `${name.slice(0, labelW - 1)}…` : name.padEnd(labelW);
+        console.log(`    ${label}  ${fmtBytes(bytes).padStart(8)}  ${pct.padStart(5)}%`);
     }
 }
 

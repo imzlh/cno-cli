@@ -114,8 +114,8 @@ export class DebuggerDomain extends Domain {
 			const q = this.extract<SetBreakpointByUrlParams>(p)
 			const rawUrl = q.url ?? this.urlFromRegex(q.urlRegex)
 			if (!rawUrl) return { breakpointId: '', locations: [] }
-			const lineNumber = q.lineNumber;
-			const columnNumber = q.columnNumber;
+			const lineNumber = this.requireLineNumber(q.lineNumber)
+			const columnNumber = q.columnNumber
 			const resolved = this.resolveScriptPath(rawUrl)
 			const url = resolved.path
 			const breakpointId = `bp-${this.nextBpId++}`
@@ -131,6 +131,7 @@ export class DebuggerDomain extends Domain {
 		this.on('Debugger.setBreakpoint', (p) => {
 			const q = this.extract<DebuggerSetBreakpointParams>(p)
 			const loc = this.parseLocation(q.location)
+			this.requireLineNumber(loc.lineNumber)
 			const url = this.normalizeUrl(loc.scriptId)
 			const breakpointId = `bp-${this.nextBpId++}`
 			const line = loc.lineNumber + 1
@@ -411,5 +412,13 @@ export class DebuggerDomain extends Domain {
 			default:
 				throw new CDPError(CdpErrorCode.InvalidParams, `Unsupported pause-on-exceptions state: ${state}`)
 		}
+	}
+
+	// CDP lineNumber is 0-based; negative or non-integer is InvalidParams.
+	private requireLineNumber(lineNumber: unknown): number {
+		if (typeof lineNumber !== 'number' || !Number.isInteger(lineNumber) || lineNumber < 0) {
+			throw new CDPError(CdpErrorCode.InvalidParams, `Invalid breakpoint lineNumber: ${String(lineNumber)}`)
+		}
+		return lineNumber
 	}
 }

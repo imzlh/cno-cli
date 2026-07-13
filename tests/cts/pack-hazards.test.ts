@@ -15,22 +15,24 @@ import {
     type PackManifest,
 } from '../../cts/src/api/index.ts';
 import { attributeViewId, specScheme } from '../../cts/src/pack/identity.ts';
+import { sizeBucketForModule, summarizePackSizes } from '../../cts/src/pack/size.ts';
 import { moduleViewRef } from '../../cts/src/types.ts';
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
-const nativeCrypto = import.meta.use('crypto');
 
-async function runCno(args: string[], cwd: string): Promise<{ code: number; output: string }> {
+async function runCno(args: string[], cwd: string, cacheDir?: string): Promise<{ code: number; output: string }> {
     const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+    const env: Record<string, string> = {
+        ALL_PROXY: '', HTTPS_PROXY: '', HTTP_PROXY: '',
+        all_proxy: '', https_proxy: '', http_proxy: '',
+        NO_PROXY: '*', no_proxy: '*',
+    };
+    if (cacheDir) env.CTS_CACHE_DIR = cacheDir;
     const output = await new Deno.Command(execPath, {
         args,
         cwd,
-        env: {
-            ALL_PROXY: '', HTTPS_PROXY: '', HTTP_PROXY: '',
-            all_proxy: '', https_proxy: '', http_proxy: '',
-            NO_PROXY: '*', no_proxy: '*',
-        },
+        env,
         stdout: 'piped',
         stderr: 'piped',
     }).output();
@@ -38,32 +40,6 @@ async function runCno(args: string[], cwd: string): Promise<{ code: number; outp
         code: output.code,
         output: decoder.decode(output.stdout) + decoder.decode(output.stderr),
     };
-}
-
-function packExtractDir(packBytes: Uint8Array): string {
-    let cacheDir: string | undefined;
-    try { cacheDir = Deno.env.get('CTS_CACHE_DIR') || undefined; } catch { /* */ }
-    if (!cacheDir) {
-        let home = '';
-        try { home = Deno.env.get('HOME') ?? ''; } catch { /* */ }
-        cacheDir = join(home, '.cts');
-    }
-    const hash = nativeCrypto.hexEncode(nativeCrypto.sha256(packBytes));
-    return join(cacheDir, 'pack-extract', hash);
-}
-
-function replaceAsciiOnce(bytes: Uint8Array, from: string, to: string): void {
-    const needle = encoder.encode(from);
-    const replacement = encoder.encode(to);
-    strictEqual(replacement.byteLength, needle.byteLength);
-    outer: for (let i = 0; i <= bytes.byteLength - needle.byteLength; i++) {
-        for (let j = 0; j < needle.byteLength; j++) {
-            if (bytes[i + j] !== needle[j]) continue outer;
-        }
-        bytes.set(replacement, i);
-        return;
-    }
-    throw new Error(`Could not find ${from}`);
 }
 
 Deno.test('pack identity: attribute views use ctsview, not path suffixes', () => {
@@ -76,6 +52,46 @@ Deno.test('pack identity: attribute views use ctsview, not path suffixes', () =>
     strictEqual(specScheme('npm:foo@1'), 'npm');
     strictEqual(specScheme('./rel'), null);
     strictEqual(specScheme('C:/win'), null);
+});
+
+Deno.test('pack size: buckets and unique-range aggregation', () => {
+    strictEqual(sizeBucketForModule('pack:/src/entry.ts'), 'workspace');
+    strictEqual(sizeBucketForModule('pack:/lib/util.ts?x=1'), 'workspace');
+    strictEqual(sizeBucketForModule('pack:npm/lodash@4.17.21/index.js'), 'npm:lodash@4.17.21');
+    strictEqual(sizeBucketForModule('pack:npm/@scope/pkg@1.0.0/dist/a.js'), 'npm:@scope/pkg@1.0.0');
+    strictEqual(sizeBucketForModule('pack:jsr/@std/path@1.0.0/mod.ts'), 'jsr:@std/path@1.0.0');
+    // Writer embeds https://host/path as pack:https///host/path
+    strictEqual(sizeBucketForModule('pack:https///example.com/a/b.js'), 'https://example.com');
+    strictEqual(sizeBucketForModule('pack:http///cdn.example/x.js?v=1'), 'http://cdn.example');
+    strictEqual(sizeBucketForModule('pack:local/abc/file.ts'), 'local');
+
+    // Shared source range must be counted once (bytecode + one source payload).
+    const manifest: PackManifest = {
+        entry: 'pack:/a.ts',
+        bytecodeVersion: 'test',
+        edges: {},
+        modules: {
+            'pack:/a.ts': {
+                localPath: 'pack:/a.ts', format: 'esm', fileKind: 'source',
+                offset: 0, length: 100, sourceOffset: 1000, sourceLength: 50,
+            },
+            'pack:/b.ts': {
+                localPath: 'pack:/b.ts', format: 'esm', fileKind: 'source',
+                offset: 100, length: 20, sourceOffset: 1000, sourceLength: 50,
+            },
+            'pack:npm/foo@1.0.0/index.js': {
+                localPath: 'pack:npm/foo@1.0.0/index.js', format: 'esm', fileKind: 'source',
+                offset: 200, length: 30, sourceOffset: 2000, sourceLength: 10,
+            },
+        },
+    };
+    const { total, rows } = summarizePackSizes(manifest);
+    // 100 + 50 + 20 + 30 + 10 = 210 (shared source 50 once)
+    strictEqual(total, 210);
+    strictEqual(rows[0]!.name, 'workspace');
+    strictEqual(rows[0]!.bytes, 170);
+    strictEqual(rows[1]!.name, 'npm:foo@1.0.0');
+    strictEqual(rows[1]!.bytes, 40);
 });
 
 Deno.test('pack integrity: full-byte compare rejects same-length tamper', () => {
@@ -100,11 +116,12 @@ Deno.test('pack integrity: full-byte compare rejects same-length tamper', () => 
 });
 
 Deno.test({
-    name: 'pack hazards: sourceOnly modules, ABI fallback, and same-length source tamper heal',
+    name: 'pack hazards: sourceOnly modules, ABI fallback, and memory-only load',
     timeout: 120000,
 }, async () => {
     const projectDir = makePosixTempDir('pack-hazard-proj');
     const runDir = makePosixTempDir('pack-hazard-run');
+    const cacheDir = makePosixTempDir('pack-hazard-cache');
     try {
         writeFileSync(join(projectDir, 'payload.ts'), `export const marker: string = 'HAZARD_SOURCE_OK_';\n`);
         writeFileSync(join(projectDir, 'entry.ts'), `
@@ -115,7 +132,7 @@ console.log('SRC', marker);
 console.log('DONE');
 `.trimStart());
 
-        const packed = await runCno(['pack', 'entry.ts', '-q', '-o', 'h.jspack', '--no-oxc'], projectDir);
+        const packed = await runCno(['pack', 'entry.ts', '-q', '-o', 'h.jspack', '--no-oxc'], projectDir, cacheDir);
         strictEqual(packed.code, 0, packed.output);
         const packPath = join(projectDir, 'h.jspack');
         const packBytes = new Uint8Array(readFileSync(packPath));
@@ -132,49 +149,30 @@ console.log('DONE');
         ok(payloadEntries.length >= 1, 'payload module missing');
 
         Deno.copyFileSync(packPath, join(runDir, 'h.jspack'));
-        const warm = await runCno([join(runDir, 'h.jspack')], runDir);
+        const warm = await runCno([join(runDir, 'h.jspack')], runDir, cacheDir);
         strictEqual(warm.code, 0, warm.output);
         strictEqual(warm.output.includes('VIEW true'), true, warm.output);
         strictEqual(warm.output.includes('SRC HAZARD_SOURCE_OK_'), true, warm.output);
-
-        // Same-length tamper of extracted source must heal from container blob.
-        const extractDir = packExtractDir(packBytes);
-        let payloadPath = '';
-        for (const ent of Deno.readDirSync(extractDir)) {
-            if (ent.isFile && ent.name.includes('payload')) {
-                payloadPath = join(extractDir, ent.name);
-                break;
-            }
-        }
-        ok(payloadPath, 'extracted payload missing');
-        const original = new Uint8Array(readFileSync(payloadPath));
-        const tampered = original.slice();
-        replaceAsciiOnce(tampered, 'HAZARD_SOURCE_OK_', 'HAZARD_SOURCE_BAD');
-        writeFileSync(payloadPath, tampered);
-        ok(hasExpectedContent(payloadPath, tampered));
-        ok(!hasExpectedContent(payloadPath, original), 'same-length tamper must fail full-byte check');
-
-        const healed = await runCno([join(runDir, 'h.jspack')], runDir);
-        strictEqual(healed.code, 0, healed.output);
-        strictEqual(healed.output.includes('VIEW true'), true, healed.output);
-        strictEqual(healed.output.includes('SRC HAZARD_SOURCE_OK_'), true, healed.output);
-        strictEqual(healed.output.includes('HAZARD_SOURCE_BAD'), false, healed.output);
+        strictEqual(existsSync(join(cacheDir, 'pack-extract')), false,
+            'memory pack load must not create pack-extract');
 
         // ABI mismatch: force source fallback path (still sourceOnly-safe).
         const abi: PackManifest = structuredClone(decoded.manifest);
         abi.bytecodeVersion = 'incompatible-hazard-abi';
         const abiPath = join(runDir, 'h-abi.jspack');
         writeFileSync(abiPath, encodePack(abi, decoded.blob));
-        const abiRun = await runCno([abiPath], runDir);
+        const abiRun = await runCno([abiPath], runDir, cacheDir);
         strictEqual(abiRun.code, 0, abiRun.output);
         strictEqual(abiRun.output.includes('VIEW true'), true, abiRun.output);
         strictEqual(abiRun.output.includes('DONE'), true, abiRun.output);
+        strictEqual(existsSync(join(cacheDir, 'pack-extract')), false);
 
         // cno pack must not leave a project cts.lock (cache-owned side effect).
         strictEqual(existsSync(join(projectDir, 'cts.lock')), false);
     } finally {
         Deno.removeSync(projectDir, { recursive: true });
         Deno.removeSync(runDir, { recursive: true });
+        Deno.removeSync(cacheDir, { recursive: true });
     }
 });
 

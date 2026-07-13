@@ -1,4 +1,4 @@
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert';
 import {
     existsSync,
     lstatSync,
@@ -32,7 +32,7 @@ function edge(parentSpecPath: string, name: string, childSpecPath: string, child
     return { parentSpecPath, name, childSpecPath, childLocalPath };
 }
 
-Deno.test('cts linker: soft mode links only project root packages and writes manifest', async () => {
+Deno.test('cts linker: soft mode symlinks project roots and nested store edges', async () => {
     const root = makePosixTempDir('linker-soft');
     try {
         const cacheDir = joinPaths(root, 'cache');
@@ -52,15 +52,18 @@ Deno.test('cts linker: soft mode links only project root packages and writes man
         const linked = joinPaths(projectDir, 'node_modules', 'alpha');
         ok(lstatSync(join(linked)).isSymbolicLink());
         strictEqual(readlinkSync(join(linked)), alphaDir);
-        ok(!existsSync(join(alphaDir, 'node_modules', 'beta')));
+        // Nested edges land under the store package (Node walks realpath).
+        const nested = join(alphaDir, 'node_modules', 'beta');
+        ok(lstatSync(nested).isSymbolicLink());
+        strictEqual(readlinkSync(nested), betaDir);
         deepStrictEqual(JSON.parse(readFileSync(join(projectDir, 'node_modules', '.cts-node-modules.json'), 'utf8')), ['alpha']);
-        deepStrictEqual(progress, [[0, 1], [1, 1]]);
+        deepStrictEqual(progress, [[0, 2], [1, 2], [2, 2]]);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
 });
 
-Deno.test('cts linker: hard mode materializes nested package edges and prunes stale roots', async () => {
+Deno.test('cts linker: hard mode materializes nested edges; prunes project roots only', async () => {
     const root = makePosixTempDir('linker-hard');
     try {
         const cacheDir = joinPaths(root, 'cache');
@@ -71,8 +74,9 @@ Deno.test('cts linker: hard mode materializes nested package edges and prunes st
         mkdirSync(join(projectDir, 'node_modules', 'old'), { recursive: true });
         writeFileSync(join(projectDir, 'node_modules', 'old', 'stale.txt'), 'stale\n');
         writeFileSync(join(projectDir, 'node_modules', '.cts-node-modules.json'), JSON.stringify(['old']));
-        mkdirSync(join(alphaDir, 'node_modules', 'stale'), { recursive: true });
-        writeFileSync(join(alphaDir, 'node_modules', 'stale', 'old.txt'), 'stale\n');
+        // Install-owned nested link must survive materialize (not wiped).
+        mkdirSync(join(alphaDir, 'node_modules', 'install-peer'), { recursive: true });
+        writeFileSync(join(alphaDir, 'node_modules', 'install-peer', 'package.json'), '{"name":"install-peer"}');
 
         await materializeNodeModules([
             edge(`${projectDir}/<entry>`, 'alpha', 'npm:alpha@1.0.0/index.js', joinPaths(alphaDir, 'index.js')),
@@ -85,9 +89,34 @@ Deno.test('cts linker: hard mode materializes nested package edges and prunes st
         ok(existsSync(join(alphaDir, 'node_modules', 'beta', 'package.json')));
         strictEqual(readFileSync(join(alphaDir, 'node_modules', 'beta', 'index.js'), 'utf8'), 'export const beta = 2;\n');
         ok(!existsSync(join(projectDir, 'node_modules', 'old')));
-        ok(!existsSync(join(alphaDir, 'node_modules', 'stale')));
+        ok(existsSync(join(alphaDir, 'node_modules', 'install-peer', 'package.json')));
         ok(!existsSync(join(alphaDir, 'node_modules', 'alpha')));
         deepStrictEqual(JSON.parse(readFileSync(join(projectDir, 'node_modules', '.cts-node-modules.json'), 'utf8')), ['alpha']);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts linker: soft mode fails closed when store package is missing', async () => {
+    const root = makePosixTempDir('linker-fail-closed');
+    try {
+        const cacheDir = joinPaths(root, 'cache');
+        const projectDir = joinPaths(root, 'project');
+        mkdirSync(join(projectDir), { recursive: true });
+        // Edge points at npm:ghost@1.0.0 but nothing was extracted into the store.
+        await rejects(
+            () => materializeNodeModules([
+                edge(`${projectDir}/<cache>`, 'ghost', 'npm:ghost@1.0.0/index.js', joinPaths(cacheDir, 'npm', 'ghost@1.0.0', 'index.js')),
+            ], 'soft', cacheDir, projectDir),
+            (e: unknown) => {
+                ok(e instanceof Error);
+                ok(/node_modules materialization failed/.test(e.message));
+                ok(/failed to link ghost/.test(e.message));
+                return true;
+            },
+        );
+        ok(!existsSync(join(projectDir, 'node_modules', 'ghost')));
+        ok(!existsSync(join(projectDir, 'node_modules', '.cts-node-modules.json')));
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

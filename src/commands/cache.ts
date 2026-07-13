@@ -2,6 +2,7 @@ import { createRuntime, cwd, loadConfigFile } from '../../cts/src/api';
 import { C } from '../help';
 import { entryAndDir } from '../utils';
 import { buildCacheConfig, collectSpecifiers } from './cache-utils';
+import { ensureNodePolyfills } from './setup';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
@@ -25,6 +26,8 @@ export async function runCache(files: string[], flags: Record<string, string | b
     const projectDir = cwd();
     const fileCfg = loadConfigFile(projectDir);
     const cfg = buildCacheConfig(fileCfg, flags);
+    // npm lifecycle scripts (`node postinstall.mjs`) resolve node: against cacheDir/node
+    await ensureNodePolyfills(typeof cfg.cacheDir === 'string' ? cfg.cacheDir : undefined);
     const runtime = createRuntime(cfg, projectDir);
 
     const entries: string[] = [];
@@ -57,6 +60,7 @@ async function runCacheNoArgs(flags: Record<string, string | boolean>): Promise<
     const dir = os.cwd;
     const fileCfg = loadConfigFile(dir);
     const cfg = buildCacheConfig(fileCfg, flags);
+    await ensureNodePolyfills(typeof cfg.cacheDir === 'string' ? cfg.cacheDir : undefined);
     const runtime = createRuntime(cfg, dir);
     const specs = collectSpecifiers(dir);
 

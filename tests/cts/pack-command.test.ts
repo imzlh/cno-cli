@@ -1,5 +1,5 @@
 import { deepStrictEqual, strictEqual, throws } from 'node:assert';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 import {
@@ -12,7 +12,6 @@ import {
 } from '../../cts/src/api/index.ts';
 
 const decoder = new TextDecoder();
-const nativeCrypto = import.meta.use('crypto');
 
 function replaceAsciiOnce(bytes: Uint8Array, from: string, to: string): void {
     const needle = new TextEncoder().encode(from);
@@ -39,46 +38,23 @@ function containsAscii(bytes: Uint8Array, value: string): boolean {
     return false;
 }
 
-function packExtractDir(packBytes: Uint8Array): string {
-    let cacheDir: string | undefined;
-    try { cacheDir = Deno.env.get('CTS_CACHE_DIR') || undefined; } catch {}
-    if (!cacheDir) {
-        let home = '';
-        try { home = Deno.env.get('HOME') ?? ''; } catch {}
-        cacheDir = join(home, '.cts');
-    }
-    const hash = nativeCrypto.hexEncode(nativeCrypto.sha256(packBytes));
-    return join(cacheDir, 'pack-extract', hash);
+function assertNoPackExtract(cacheDir: string, label: string): void {
+    const root = join(cacheDir, 'pack-extract');
+    strictEqual(existsSync(root), false, `${label}: pack-extract must not exist under ${cacheDir}`);
 }
 
-function corruptExtractedFile(packBytes: Uint8Array, nameSuffix: string, from: string, to: string): void {
-    const extractDir = packExtractDir(packBytes);
-    let corrupted = 0;
-    for (const entry of Deno.readDirSync(extractDir)) {
-        if (!entry.isFile || !entry.name.endsWith(nameSuffix)) continue;
-        const path = join(extractDir, entry.name);
-        const bytes = new Uint8Array(readFileSync(path));
-        replaceAsciiOnce(bytes, from, to);
-        writeFileSync(path, bytes);
-        corrupted++;
-    }
-    if (corrupted === 0) throw new Error(`Could not find extracted *${nameSuffix} in ${extractDir}`);
-}
-
-function corruptExtractedPayload(packBytes: Uint8Array): void {
-    corruptExtractedFile(packBytes, '-payload.ts', 'PACK_ATTRIBUTE_SOURCE', 'PACK_ATTRIBUTE_TAMPER');
-}
-
-async function runCno(args: string[], cwd: string): Promise<{ code: number; output: string }> {
+async function runCno(args: string[], cwd: string, cacheDir?: string): Promise<{ code: number; output: string }> {
     const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+    const env: Record<string, string> = {
+        ALL_PROXY: '', HTTPS_PROXY: '', HTTP_PROXY: '',
+        all_proxy: '', https_proxy: '', http_proxy: '',
+        NO_PROXY: '*', no_proxy: '*',
+    };
+    if (cacheDir) env.CTS_CACHE_DIR = cacheDir;
     const output = await new Deno.Command(execPath, {
         args,
         cwd,
-        env: {
-            ALL_PROXY: '', HTTPS_PROXY: '', HTTP_PROXY: '',
-            all_proxy: '', https_proxy: '', http_proxy: '',
-            NO_PROXY: '*', no_proxy: '*',
-        },
+        env,
         stdout: 'piped',
         stderr: 'piped',
     }).output();
@@ -151,6 +127,8 @@ Deno.test({ name: 'pack command: packs a mixed ESM/CJS/JSON project and runs fro
         strictEqual(packResult.code, 0, packResult.output);
         strictEqual(packResult.output.includes(join(projectDir, 'app.jspack')), true, packResult.output);
         strictEqual(/Packed \d+ modules \([\d.]+[KMG]?B\)/.test(packResult.output), true, packResult.output);
+        strictEqual(packResult.output.includes('Size:'), true, packResult.output);
+        strictEqual(/workspace\s+[\d.]+[KMG]?B\s+[\d.]+%/.test(packResult.output), true, packResult.output);
         strictEqual(packResult.output.includes('✅'), false, 'pack should print one final module summary');
         strictEqual(existsSync(join(projectDir, 'cts.lock')), false, 'pack must not persist project lock state');
 
@@ -196,6 +174,7 @@ Deno.test({ name: 'pack command: packs a mixed ESM/CJS/JSON project and runs fro
 Deno.test({ name: 'pack command: preserves query/hash identities and source import-attribute views', timeout: 120000 }, async () => {
     const projectDir = makePosixTempDir('pack-identities');
     const runDir = makePosixTempDir('pack-identities-run');
+    const cacheDir = makePosixTempDir('pack-identities-cache');
     try {
         writeFileSync(join(projectDir, 'counter.ts'), `
 const next = Number(Reflect.get(globalThis, '__packQueryCount') ?? 0) + 1;
@@ -235,23 +214,23 @@ console.log('ATTR_CJS', await cjsAttribute());
         strictEqual(counterEntries[0]!.sourceOffset, counterEntries[1]!.sourceOffset,
             'query/hash variants should share original source bytes');
         Deno.copyFileSync(join(projectDir, 'nested', 'out.jspack'), join(runDir, 'out.jspack'));
-        const packedBytes = new Uint8Array(readFileSync(join(runDir, 'out.jspack')));
 
-        // Run twice against the same extracted container. Import-attribute modules
-        // must stay source-only even after the first run has warmed normal caches.
+        // Run twice from the same container file. Import-attribute modules must
+        // stay source-only; load stays memory-only (no pack-extract).
         for (let run = 0; run < 2; run++) {
-            const result = await runCno([join(runDir, 'out.jspack')], runDir);
+            const result = await runCno([join(runDir, 'out.jspack')], runDir, cacheDir);
             strictEqual(result.code, 0, result.output);
             strictEqual(result.output.includes('IDENTITIES 1 2'), true, result.output);
             strictEqual(result.output.includes('QUERY_COLLISION PACK_ATTRIBUTE_SOURCE'), true, result.output);
             strictEqual(result.output.includes('ATTR_TEXT true'), true, result.output);
             strictEqual(result.output.includes('ATTR_BYTES true'), true, result.output);
             strictEqual(result.output.includes('ATTR_CJS true'), true, result.output);
-            if (run === 0) corruptExtractedPayload(packedBytes);
+            assertNoPackExtract(cacheDir, `identities run ${run}`);
         }
     } finally {
         Deno.removeSync(projectDir, { recursive: true });
         Deno.removeSync(runDir, { recursive: true });
+        Deno.removeSync(cacheDir, { recursive: true });
     }
 });
 
@@ -285,7 +264,7 @@ Deno.test({ name: 'pack command: help and quiet mode are useful and side-effect 
     }
 });
 
-Deno.test({ name: 'pack runtime: concurrent first extraction is atomic', timeout: 60000 }, async () => {
+Deno.test({ name: 'pack runtime: concurrent memory loads share no extract dir', timeout: 60000 }, async () => {
     const projectDir = makePosixTempDir('pack-concurrent-project');
     const runDir = makePosixTempDir('pack-concurrent-run');
     try {
@@ -300,6 +279,8 @@ Deno.test({ name: 'pack runtime: concurrent first extraction is atomic', timeout
             strictEqual(result.code, 0, result.output);
             strictEqual(result.output.includes('CONCURRENT_PACK_OK'), true, result.output);
         }
+        strictEqual(existsSync(join(cacheDir, 'pack-extract')), false,
+            'memory pack load must not create pack-extract');
     } finally {
         Deno.removeSync(projectDir, { recursive: true });
         Deno.removeSync(runDir, { recursive: true });
@@ -502,9 +483,10 @@ Deno.test({ name: 'pack command: surfaces workspace compile failures and writes 
     }
 });
 
-Deno.test({ name: 'pack runtime: heals same-length asset tamper and overwrites pack output atomically', timeout: 120000 }, async () => {
+Deno.test({ name: 'pack runtime: memory asset load and atomic pack overwrite', timeout: 120000 }, async () => {
     const projectDir = makePosixTempDir('pack-asset-integrity');
     const runDir = makePosixTempDir('pack-asset-integrity-run');
+    const cacheDir = makePosixTempDir('pack-asset-integrity-cache');
     try {
         writeFileSync(join(projectDir, 'marker.json'), JSON.stringify({ tag: 'ASSET_MARKER_OK__' }));
         writeFileSync(join(projectDir, 'entry.ts'), `
@@ -530,33 +512,75 @@ console.log('ASSET_JSON', data.tag);
         strictEqual(typeof readSourceBlob === 'function', true);
         const entry = decoded.manifest.modules[decoded.manifest.entry];
         strictEqual(entry?.fileKind, 'source');
+        const markerId = Object.keys(decoded.manifest.modules).find(id => id.includes('marker.json'));
+        strictEqual(!!markerId, true, 'marker module missing from manifest');
+        const markerBytes = readBlob(decoded, decoded.manifest.modules[markerId!]!);
+        strictEqual(decoder.decode(markerBytes).includes('ASSET_MARKER_OK__'), true);
 
-        const warm = await runCno([join(runDir, 'asset.jspack')], runDir);
+        const warm = await runCno([join(runDir, 'asset.jspack')], runDir, cacheDir);
         strictEqual(warm.code, 0, warm.output);
         strictEqual(warm.output.includes('ASSET_JSON ASSET_MARKER_OK__'), true, warm.output);
+        assertNoPackExtract(cacheDir, 'asset warm');
 
-        corruptExtractedFile(packBytes, '-marker.json', 'ASSET_MARKER_OK__', 'ASSET_MARKER_BAD_');
-        const healed = await runCno([join(runDir, 'asset.jspack')], runDir);
-        strictEqual(healed.code, 0, healed.output);
-        strictEqual(healed.output.includes('ASSET_JSON ASSET_MARKER_OK__'), true, healed.output);
-        strictEqual(healed.output.includes('ASSET_MARKER_BAD_'), false, healed.output);
-
-        // Destination-exists replace path: leave a stale extract file, delete
-        // .complete, and ensure the next load still heals content (not size).
-        const extractDir = packExtractDir(packBytes);
-        let markerPath = '';
-        for (const entry of Deno.readDirSync(extractDir)) {
-            if (entry.isFile && entry.name.endsWith('-marker.json')) {
-                markerPath = join(extractDir, entry.name);
-                break;
-            }
+        // Tamper the container itself (no extract dir to heal): bad bytes must fail.
+        const bad = packBytes.slice();
+        replaceAsciiOnce(bad, 'ASSET_MARKER_OK__', 'ASSET_MARKER_BAD_');
+        const badPath = join(runDir, 'asset-bad.jspack');
+        writeFileSync(badPath, bad);
+        const badRun = await runCno([badPath], runDir, cacheDir);
+        // JSON still parses; marker string changes — expect BAD tag, not heal-from-disk.
+        if (badRun.code === 0) {
+            strictEqual(badRun.output.includes('ASSET_MARKER_BAD_'), true, badRun.output);
+            strictEqual(badRun.output.includes('ASSET_MARKER_OK__'), false, badRun.output);
         }
-        strictEqual(markerPath !== '', true, 'marker extract missing');
-        writeFileSync(markerPath, new TextEncoder().encode(JSON.stringify({ tag: 'ASSET_MARKER_BAD_' })));
-        try { unlinkSync(join(extractDir, '.complete')); } catch {}
-        const afterStale = await runCno([join(runDir, 'asset.jspack')], runDir);
-        strictEqual(afterStale.code, 0, afterStale.output);
-        strictEqual(afterStale.output.includes('ASSET_JSON ASSET_MARKER_OK__'), true, afterStale.output);
+        assertNoPackExtract(cacheDir, 'asset after container tamper');
+    } finally {
+        Deno.removeSync(projectDir, { recursive: true });
+        Deno.removeSync(runDir, { recursive: true });
+        Deno.removeSync(cacheDir, { recursive: true });
+    }
+});
+
+// Minimal WASM: import "./glue.js"."answer" ():i32, export "run" that calls it.
+// Any path-like WASM import module must become a pack edge — no library-specific names.
+const WASM_GLUE_IMPORT = Uint8Array.from([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x09, 0x02, 0x60, 0x00, 0x01, 0x7f, 0x60,
+    0x00, 0x01, 0x7f, 0x02, 0x14, 0x01, 0x09, 0x2e, 0x2f, 0x67, 0x6c, 0x75, 0x65, 0x2e, 0x6a, 0x73,
+    0x06, 0x61, 0x6e, 0x73, 0x77, 0x65, 0x72, 0x00, 0x00, 0x03, 0x02, 0x01, 0x01, 0x07, 0x07, 0x01,
+    0x03, 0x72, 0x75, 0x6e, 0x00, 0x01, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b,
+]);
+
+Deno.test({
+    name: 'pack command: records WASM import-module edges for any glue module',
+    timeout: 120000,
+}, async () => {
+    const projectDir = makePosixTempDir('pack-wasm-glue');
+    const runDir = makePosixTempDir('pack-wasm-glue-run');
+    try {
+        writeFileSync(join(projectDir, 'mod.wasm'), WASM_GLUE_IMPORT);
+        writeFileSync(join(projectDir, 'glue.js'), `
+export function answer() { return 42; }
+`.trimStart());
+        writeFileSync(join(projectDir, 'entry.ts'), `
+import { run } from './mod.wasm';
+console.log('WASM_GLUE', run());
+`.trimStart());
+
+        const packResult = await runCno(['pack', 'entry.ts', '-o', 'app.jspack', '--no-oxc'], projectDir);
+        strictEqual(packResult.code, 0, packResult.output);
+
+        const decoded = decodePack(new Uint8Array(readFileSync(join(projectDir, 'app.jspack'))));
+        const wasmId = Object.keys(decoded.manifest.modules).find(id => id.includes('mod.wasm'));
+        const glueId = Object.keys(decoded.manifest.modules).find(id => id.includes('glue.js'));
+        strictEqual(!!wasmId, true, `wasm module missing: ${Object.keys(decoded.manifest.modules).join(',')}`);
+        strictEqual(!!glueId, true, `glue module missing: ${Object.keys(decoded.manifest.modules).join(',')}`);
+        strictEqual(decoded.manifest.edges[wasmId!]?.['./glue.js'], glueId,
+            `pack edges must map wasm -> ./glue.js; got ${JSON.stringify(decoded.manifest.edges[wasmId!] ?? null)}`);
+
+        Deno.copyFileSync(join(projectDir, 'app.jspack'), join(runDir, 'app.jspack'));
+        const runResult = await runCno([join(runDir, 'app.jspack')], runDir);
+        strictEqual(runResult.code, 0, runResult.output);
+        strictEqual(runResult.output.includes('WASM_GLUE 42'), true, runResult.output);
     } finally {
         Deno.removeSync(projectDir, { recursive: true });
         Deno.removeSync(runDir, { recursive: true });

@@ -2,7 +2,7 @@ import { ok, strictEqual } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { connect, createServer, type Server, type Socket } from 'node:net';
 import { createServer as createTlsServer } from 'node:tls';
-import { connectTcp } from '../../cno/src/utils/http.ts';
+import { connectHttp, connectTcp } from '../../cno/src/utils/http.ts';
 import { setRawConnectionHook } from '../../cno/src/utils/network-hooks.ts';
 import { createProxyConnector, shouldBypassProxy, type ProxyConfig, type ProxyType } from '../../cno/src/utils/proxy.ts';
 
@@ -14,7 +14,7 @@ class SocketReader {
     private error: Error | null = null;
 
     constructor(private readonly socket: Socket) {
-        socket.on('data', chunk => { this.buffer = Buffer.concat([this.buffer, chunk]); this.wake(); });
+        socket.on('data', this.onData);
         socket.on('error', error => { this.error = error; this.wake(); });
         socket.on('close', () => { this.error ??= new Error('socket closed'); this.wake(); });
     }
@@ -43,6 +43,19 @@ class SocketReader {
         this.buffer = this.buffer.subarray(end);
         return result;
     }
+
+    /** Detach from socket and return any unread bytes (e.g. TLS ClientHello after CONNECT). */
+    takeRest(): Buffer {
+        this.socket.removeListener('data', this.onData);
+        const rest = this.buffer;
+        this.buffer = Buffer.alloc(0);
+        return rest;
+    }
+
+    private onData = (chunk: Buffer) => {
+        this.buffer = Buffer.concat([this.buffer, chunk]);
+        this.wake();
+    };
 }
 
 interface ListeningServer { server: Server; port: number; }
@@ -103,6 +116,7 @@ async function startHttpProxy(secure = false): Promise<(ListeningServer & { conn
     const forwards: string[] = [];
     const authorizations: string[] = [];
     const handler = (socket: Socket) => {
+        // SocketReader consumes only the first request head; then we pipe the rest.
         const reader = new SocketReader(socket);
         void reader.readUntil(Buffer.from('\r\n\r\n')).then(request => {
             const text = request.toString();
@@ -119,12 +133,17 @@ async function startHttpProxy(secure = false): Promise<(ListeningServer & { conn
             const port = authority ? Number(authority.slice(separator + 1)) : Number(target!.port || 80);
             const upstream = connect(port, host);
             upstream.once('connect', () => {
+                // Detach reader and pause before 200 so TLS ClientHello cannot race past us.
+                const leftover = reader.takeRest();
+                socket.pause();
                 if (authority) socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
                 else {
                     const originTarget = `${target!.pathname}${target!.search}`;
                     upstream.write(request.toString().replace(absoluteTarget!, originTarget));
                 }
+                if (leftover.length) upstream.write(leftover);
                 socket.pipe(upstream).pipe(socket);
+                socket.resume();
             });
             upstream.once('error', () => socket.destroy());
         }).catch(() => socket.destroy());
@@ -206,15 +225,22 @@ function useProxy(type: ProxyType, port: number, extras: Partial<ProxyConfig> = 
 }
 
 async function readRawTarget(port: number, hostname = '127.0.0.1'): Promise<string> {
-    const socket = await connectTcp(new URL(`http://${hostname}:${port}/raw`));
-    await socket.write(new TextEncoder().encode(`GET /raw HTTP/1.1\r\nHost: ${hostname}\r\n\r\n`));
+    // HTTP proxies need absolute-form request-target (connectHttp.requestTarget).
+    const url = new URL(`http://${hostname}:${port}/raw`);
+    const connection = await connectHttp(url);
+    const target = connection.requestTarget ?? `${url.pathname}${url.search}`;
+    let head = `GET ${target} HTTP/1.1\r\nHost: ${hostname}\r\n`;
+    if (connection.proxyAuthorization) {
+        head += `Proxy-Authorization: ${connection.proxyAuthorization}\r\n`;
+    }
+    await connection.socket.write(new TextEncoder().encode(`${head}\r\n`));
     let response = '';
     while (!response.includes('proxy-ok')) {
-        const chunk = await socket.read(256);
+        const chunk = await connection.socket.read(256);
         if (!chunk) break;
         response += new TextDecoder().decode(chunk);
     }
-    socket.close();
+    connection.socket.close();
     return response;
 }
 

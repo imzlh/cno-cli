@@ -216,6 +216,20 @@ async function installRemote(dstBase: string): Promise<void> {
     if (fail > 0) throw new Error('Some files failed to download');
 }
 
+// Marker file for "node polyfills installed in this cache dir".
+// Lifecycle scripts (`node ./postinstall.mjs`) need these paths.
+function nodePolyfillMarker(cacheDir: string): string {
+    return join(cacheDir, 'node', 'fs', 'index.ts');
+}
+
+function nodePolyfillsPresent(cacheDir: string): boolean {
+    try {
+        return fs.stat(nodePolyfillMarker(cacheDir)).isFile;
+    } catch {
+        return false;
+    }
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 export async function runSetup(flags: Record<string, string | boolean>): Promise<void> {
@@ -237,4 +251,14 @@ export async function runSetup(flags: Record<string, string | boolean>): Promise
     const cleared = clearJsc(dstBase);
     if (cleared > 0) log.debug('setup', () => `Cleared ${cleared} stale node polyfill bytecode files`);
     console.log(`Node polyfills ready at: ${dstBase}`);
+}
+
+/** Install node polyfills only when missing (cache/exec lifecycle needs them). */
+export async function ensureNodePolyfills(cacheDir?: string): Promise<void> {
+    const flags: Record<string, string | boolean> = {};
+    if (cacheDir) flags['cache-dir'] = cacheDir;
+    const dir = resolveCacheDir(flags);
+    if (nodePolyfillsPresent(dir)) return;
+    log.debug('setup', () => `node polyfills missing under ${dir}; running setup`);
+    await runSetup(flags);
 }

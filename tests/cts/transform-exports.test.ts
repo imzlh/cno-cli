@@ -39,6 +39,20 @@ Deno.test('cts: transformer strips shebang before transform', () => {
         'transformed body must remain');
 });
 
+Deno.test('cts: transformer loads OXC lazily only for transformable source', () => {
+    const t = new Transformer();
+    let loads = 0;
+    t.setOxcLoader(() => {
+        loads++;
+        return null;
+    });
+    strictEqual(t.transform('export const value = 1;', 'plain.js'), 'export const value = 1;');
+    strictEqual(loads, 0);
+    t.transform('export const value: number = 1;', 'typed.ts');
+    t.transform('export const other: number = 2;', 'other.ts');
+    strictEqual(loads, 1);
+});
+
 // --- 3. OXC uses the runtime language for extensionless source entries -----
 
 Deno.test('cts: OXC uses explicit language for extensionless source entries', () => {
@@ -55,6 +69,19 @@ Deno.test('cts: OXC uses explicit language for extensionless source entries', ()
     t.setOxc(oxc);
     strictEqual(t.transform('import { type FileSystem } from "pkg";', '/tmp/git', 'ts'), 'export const ok = true;');
     strictEqual(kind, 'ts');
+});
+
+// --- Sucrase enum IIFE must not const-bind a member that shadows the param --
+// QuickJS rejects `function (A) { const A = 0; ... }` as redefinition.
+// export enum A { A, B } is common; OXC path is fine, Sucrase fallback was not.
+
+Deno.test('cts: sucrase export enum member same as name is valid JS for QuickJS', () => {
+    const t = new Transformer({ sourceMaps: false });
+    t.setOxcLoader(() => null); // force Sucrase fallback (no oxc.so / --no-oxc)
+    const out = t.transform('export enum A { A, B }\nexport const v = A.A;\n', 'enum.ts');
+    ok(!/\(\s*A\s*\)\s*\{[^}]*\bconst\s+A\b/.test(out), `must not shadow IIFE param:\n${out}`);
+    ok(out.includes('A[A["A"]') || out.includes("A[A['A']") || out.includes('A["A"]'), out);
+    ok(!out.includes('export enum'), out);
 });
 
 // --- 4. Sucrase sourcemaps stay local/offline ------------------------------
@@ -348,6 +375,12 @@ Deno.test('cts: resolveExports returns null for an unmapped subpath', () => {
 Deno.test('cts: normalizeBinField accepts string bin', () => {
     const m = normalizeBinField('mypkg', './bin/cli.js');
     strictEqual(m['mypkg'], './bin/cli.js');
+});
+
+Deno.test('cts: normalizeBinField string bin uses unscoped command name', () => {
+    const m = normalizeBinField('@babel/parser', './bin/babel-parser.js');
+    strictEqual(m['parser'], './bin/babel-parser.js');
+    strictEqual(m['@babel/parser'], undefined);
 });
 
 Deno.test('cts: getBinMap reads bin field from package.json', () => {
