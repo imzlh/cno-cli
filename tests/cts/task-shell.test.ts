@@ -4,7 +4,15 @@ import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 import { LockStore } from '../../cts/src/lock.ts';
 import { parseShellCommand, isShellOperator, resolveUnixBinEntry, resolveWinBinEntry } from '../../cts/src/shell.ts';
-import { planLifecycleScript, resolveLifecycleCommandArgv, runLifecyclePlan, type LifecycleCommand } from '../../cts/src/runtime/lifecycle.ts';
+import {
+    applyShellBuiltin,
+    emulateShellBuiltin,
+    planLifecycleScript,
+    resolveLifecycleCommandArgv,
+    runLifecyclePlan,
+    type LifecycleCommand,
+    type LifecycleSession,
+} from '../../cts/src/runtime/lifecycle.ts';
 import { loadTasks } from '../../cts/src/task.ts';
 import { cwd, joinPaths, normalizePath } from '../../cts/src/utils/path.ts';
 import { entryAndDir } from '../../src/utils.ts';
@@ -62,6 +70,77 @@ Deno.test('cts lifecycle: plans node fallback scripts without shelling the whole
         { argv: ['/bin/cno', 'run', 'scripts/prebuild.js'], op: '||' },
         { argv: ['node-gyp', 'rebuild'] },
     ]);
+});
+
+// es5-ext style: `node -e … || exit 0` must not bare-spawn `exit` (ENOENT→127).
+Deno.test('cts lifecycle: plans node -e || exit 0 with emulatable exit builtin', () => {
+    const plan = planLifecycleScript(
+        `node -e "try{require('./_postinstall')}catch(e){}" || exit 0`,
+        { exePath: '/bin/cno', shell: 'sh', shellArg: '-c' },
+    );
+    strictEqual(plan.fallback, false);
+    deepStrictEqual(plan.commands, [
+        { argv: ['/bin/cno', 'eval', "try{require('./_postinstall')}catch(e){}"], op: '||' },
+        { argv: ['exit', '0'] },
+    ]);
+    strictEqual(emulateShellBuiltin(['exit', '0']), 0);
+    strictEqual(emulateShellBuiltin(['true']), 0);
+    strictEqual(emulateShellBuiltin(['false']), 1);
+    strictEqual(emulateShellBuiltin(['node-gyp']), null);
+});
+
+// cd/export/unset stay in multi-seg plans (no whole-script shell fallback).
+Deno.test('cts lifecycle: plans cd and export without shell fallback', () => {
+    const opts = { exePath: '/bin/cno', shell: 'sh', shellArg: '-c' as const };
+    const cdPlan = planLifecycleScript('cd sub && node install.js', opts);
+    strictEqual(cdPlan.fallback, false);
+    deepStrictEqual(cdPlan.commands, [
+        { argv: ['cd', 'sub'], op: '&&' },
+        { argv: ['/bin/cno', 'run', 'install.js'] },
+    ]);
+
+    const expPlan = planLifecycleScript('export FOO=bar && node -e "console.log(1)"', opts);
+    strictEqual(expPlan.fallback, false);
+    deepStrictEqual(expPlan.commands, [
+        { argv: ['export', 'FOO=bar'], op: '&&' },
+        { argv: ['/bin/cno', 'eval', 'console.log(1)'] },
+    ]);
+
+    const unsetPlan = planLifecycleScript('export FOO=1 && unset FOO && node x.js', opts);
+    strictEqual(unsetPlan.fallback, false);
+    deepStrictEqual(unsetPlan.commands.map((c) => c.argv[0]), ['export', 'unset', '/bin/cno']);
+});
+
+// Interpretive apply: token walk, not regex on the raw script.
+Deno.test('cts lifecycle: applyShellBuiltin mutates session cwd and env', () => {
+    const root = makePosixTempDir('lc-builtin-apply');
+    try {
+        const sub = joinPaths(root, 'sub');
+        mkdirSync(join(sub), { recursive: true });
+        const session: LifecycleSession = { cwd: root, env: { FOO: 'old', KEEP: '1' } };
+
+        strictEqual(applyShellBuiltin(['cd', 'sub'], session), 0);
+        strictEqual(session.cwd, normalizePath(sub));
+
+        strictEqual(applyShellBuiltin(['export', 'FOO=bar', 'BAZ=qux'], session), 0);
+        strictEqual(session.env.FOO, 'bar');
+        strictEqual(session.env.BAZ, 'qux');
+        strictEqual(session.env.KEEP, '1');
+
+        strictEqual(applyShellBuiltin(['unset', 'FOO'], session), 0);
+        strictEqual(session.env.FOO, undefined);
+        strictEqual(session.env.KEEP, '1');
+
+        // failed cd does not change cwd
+        const before = session.cwd;
+        strictEqual(applyShellBuiltin(['cd', 'no-such-dir-xyz'], session), 1);
+        strictEqual(session.cwd, before);
+
+        // invalid export name fails closed
+        strictEqual(applyShellBuiltin(['export', '1bad=x'], session), 1);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
 });
 
 Deno.test('cts lifecycle: keeps single non-node and shell-only syntax on shell fallback', () => {
@@ -159,6 +238,71 @@ Deno.test('cts lifecycle: executes && || ; with shell-compatible short-circuitin
         ],
     }, run({ cleanup: 1, build: 0 })), 0);
     deepStrictEqual(calls, ['cleanup', 'build']);
+
+    // Failed node + || exit 0 → overall 0 without spawning exit.
+    calls.length = 0;
+    strictEqual(await runLifecyclePlan({
+        fallback: false,
+        commands: [
+            { argv: ['prebuild'], op: '||' },
+            { argv: ['exit', '0'] },
+        ],
+    }, run({ prebuild: 1 })), 0);
+    deepStrictEqual(calls, ['prebuild']);
+});
+
+// Session state: cd/export apply before spawn; failed cd blocks && next.
+Deno.test('cts lifecycle: runLifecyclePlan carries cwd/env and short-circuits failed cd', async () => {
+    const root = makePosixTempDir('lc-session-carry');
+    try {
+        const sub = joinPaths(root, 'pkg');
+        mkdirSync(join(sub), { recursive: true });
+        const session: LifecycleSession = { cwd: root, env: { FOO: '0' } };
+        const seen: Array<{ argv0: string; cwd: string; foo?: string }> = [];
+
+        const spawn = async (command: LifecycleCommand, sess: LifecycleSession): Promise<number> => {
+            seen.push({ argv0: command.argv[0] ?? '', cwd: sess.cwd, foo: sess.env.FOO });
+            return 0;
+        };
+
+        const plan = planLifecycleScript('cd pkg && export FOO=bar && node install.js', {
+            exePath: '/bin/cno',
+            shell: 'sh',
+            shellArg: '-c',
+        });
+        strictEqual(plan.fallback, false);
+        strictEqual(await runLifecyclePlan(plan, spawn, session), 0);
+        deepStrictEqual(seen, [
+            { argv0: '/bin/cno', cwd: normalizePath(sub), foo: 'bar' },
+        ]);
+        strictEqual(session.cwd, normalizePath(sub));
+        strictEqual(session.env.FOO, 'bar');
+
+        // failed cd → && does not run next
+        seen.length = 0;
+        const bad = planLifecycleScript('cd missing-dir-xyz && node install.js', {
+            exePath: '/bin/cno',
+            shell: 'sh',
+            shellArg: '-c',
+        });
+        const sess2: LifecycleSession = { cwd: root, env: {} };
+        strictEqual(await runLifecyclePlan(bad, spawn, sess2), 1);
+        deepStrictEqual(seen, []);
+        strictEqual(sess2.cwd, root);
+
+        // || export after failure still runs export
+        const sess3: LifecycleSession = { cwd: root, env: {} };
+        strictEqual(await runLifecyclePlan({
+            fallback: false,
+            commands: [
+                { argv: ['false'], op: '||' },
+                { argv: ['export', 'Z=1'] },
+            ],
+        }, spawn, sess3), 0);
+        strictEqual(sess3.env.Z, '1');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
 });
 
 Deno.test('cts shell: unix bin resolver accepts direct node shebang scripts', () => {

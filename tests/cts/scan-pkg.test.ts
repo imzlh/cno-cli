@@ -2,7 +2,12 @@ import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
-import { extractImports, hasTopLevelEsmSyntax, isScannablePath, isTsLikePath, isWasmPath } from '../../cts/src/scan.ts';
+import {
+    extractImports,
+    isScannablePath,
+    isTsLikePath,
+    isWasmPath,
+} from '../../cts/src/scan.ts';
 import {
     clearPkgCache,
     createCtx,
@@ -80,30 +85,12 @@ Deno.test('cts scan: finds from-clause after a long named import list', () => {
     ]));
 });
 
-Deno.test('cts scan: hasTopLevelEsmSyntax detects static import/export only', () => {
-    ok(hasTopLevelEsmSyntax('export function add(a, b) { return a + b; }\n'));
-    ok(hasTopLevelEsmSyntax('import x from "./x.js";\n'));
-    ok(hasTopLevelEsmSyntax('import.meta.url;\n'));
-    strictEqual(hasTopLevelEsmSyntax('const x = require("./x");\n'), false);
-    strictEqual(hasTopLevelEsmSyntax('const m = import("./dyn.js");\n'), false);
-    strictEqual(hasTopLevelEsmSyntax('exports.add = (a, b) => a + b;\n'), false);
-    // Nested / comments must not force ESM (CJS dual packages).
-    strictEqual(hasTopLevelEsmSyntax('function f() { export const x = 1; }\n'), false);
-    strictEqual(hasTopLevelEsmSyntax('// import x from "./x.js";\nconst y = 1;\n'), false);
-    strictEqual(hasTopLevelEsmSyntax('const s = "import x from \'./x.js\'";\n'), false);
-    // Large CJS body must stay sub-second (old full Sucrase path was multi-second).
-    const heavy = 'exports.x = ' + Array.from({ length: 500 }, (_, i) =>
-        `{ k${i}: ${i} }`).join(' + ') + ';\n';
-    const t0 = Date.now();
-    strictEqual(hasTopLevelEsmSyntax(heavy), false);
-    ok(Date.now() - t0 < 200, `hasTopLevelEsmSyntax too slow: ${Date.now() - t0}ms`);
-});
-
 Deno.test('cts scan: path helpers match scan extension policy', () => {
-    for (const path of ['a.ts', 'a.tsx', 'a.js', 'a.jsx', 'a.mjs', 'a.cjs', 'a.d.ts']) {
+    // .mts/.cts are TS-family sources and must be scanned (require/import graph).
+    for (const path of ['a.ts', 'a.tsx', 'a.js', 'a.jsx', 'a.mjs', 'a.cjs', 'a.mts', 'a.cts', 'a.d.ts', 'a.d.cts']) {
         ok(isScannablePath(path), path);
     }
-    for (const path of ['a.cts', 'a.mts', 'a.d.cts', 'a.json', 'a.wasm']) {
+    for (const path of ['a.json', 'a.wasm']) {
         strictEqual(isScannablePath(path), false, path);
     }
     for (const path of ['a.ts', 'a.tsx', 'a.mts', 'a.mtsx', 'a.cts', 'a.ctsx']) {
@@ -144,7 +131,7 @@ Deno.test('cts pkg: detectFormat follows extension, package type and deno defaul
         mkdirSync(packageDir, { recursive: true });
         writeFileSync(joinPaths(packageDir, 'package.json'), JSON.stringify({ name: 'pkg' }));
         strictEqual(detectFormat(write(packageDir, 'index.js')), 'cjs');
-        strictEqual(detectFormat(write(packageDir, 'esm.js', 'export const value = 1;\n')), 'esm');
+        strictEqual(detectFormat(write(packageDir, 'esm.js', 'export const value = 1;\n')), 'cjs');
     } finally {
         clearPkgCache();
         rmSync(root, { recursive: true, force: true });

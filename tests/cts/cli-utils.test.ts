@@ -279,7 +279,9 @@ Deno.test('cts LRU: get updates recency and set evicts least-recently-used', () 
 
 Deno.test('cts misc: hash and cache filenames are stable', () => {
     strictEqual(hashString('hello'), '4f9f2cab');
-    strictEqual(cacheFilename('https://example.test/a/b/mod.ts?x=1'), '7b990bea.ts');
+    // Query is part of the identity key (path-only hash was '7b990bea').
+    strictEqual(cacheFilename('https://example.test/a/b/mod.ts?x=1'), '353d30eb.ts');
+    strictEqual(cacheFilename('https://example.test/a/b/mod.ts'), '7b990bea.ts');
     strictEqual(cacheFilename('https://example.test/pkg'), 'e0b5d81c.js');
     strictEqual(cacheFilename('not a url'), hashString('not a url'));
 });
@@ -292,6 +294,9 @@ Deno.test('cts misc: bytes and semver matching cover common range forms', () => 
     strictEqual(latestVersion(['1.0.0', '1.0.1-beta', '1.0.1']), '1.0.1');
     strictEqual(matchLatestVersion(['1.0.0', '1.2.0', '2.0.0'], '^1.0.0'), '1.2.0');
     strictEqual(matchLatestVersion(['0.1.0', '0.1.5', '0.2.0'], '^0.1.0'), '0.1.5');
+    strictEqual(matchLatestVersion(['0.0.5', '0.4.0', '1.0.0'], '^0'), '0.4.0');
+    strictEqual(matchLatestVersion(['0.0.5', '0.1.0'], '^0.0'), '0.0.5');
+    strictEqual(matchLatestVersion(['0.0.3', '0.0.4'], '^0.0.3'), '0.0.3');
     strictEqual(matchLatestVersion(['1.2.0', '1.2.9', '1.3.0'], '1.2'), '1.2.9');
     strictEqual(matchLatestVersion(['1.5.0', '1.5.1', '2.0.0', '2.0.2'], '>= 1.5.0 < 2'), '1.5.1');
     strictEqual(matchLatestVersion(['19.2.7', '19.3.0-canary-a757cb76-20251002'], '^19.2.7'), '19.2.7');

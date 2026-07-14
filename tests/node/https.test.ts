@@ -45,6 +45,10 @@ Deno.test('https: STATUS_CODES populated', () => {
 Deno.test('https: METHODS is an array', () => {
     ok(Array.isArray(https.METHODS));
     ok(https.METHODS.includes('GET'));
+    // Same public Node surface as http.METHODS (alphabetical + QUERY).
+    strictEqual(https.METHODS.length, 35);
+    ok(https.METHODS.includes('QUERY'));
+    strictEqual(https.METHODS[0], 'ACL');
 });
 
 // --- 7. https.Agent is a constructor ---------------------------------------

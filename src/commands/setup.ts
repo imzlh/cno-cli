@@ -105,6 +105,57 @@ function walkTs(dir: string, prefix = ''): string[] {
     return out;
 }
 
+/** Copy package files needed for runtime resolution (skip build artifacts). */
+function walkHttpPackageFiles(dir: string, prefix = ''): string[] {
+    const out: string[] = [];
+    try {
+        for (const name of fs.readdir(dir)) {
+            if (name === 'node_modules' || name === '.git' || name === 'dist' || name === 'build') continue;
+            if (isJscArtifact(name)) continue;
+            const full = join(dir, name);
+            const rel = prefix ? join(prefix, name) : name;
+            const st = fs.stat(full);
+            if (st.isDirectory) {
+                out.push(...walkHttpPackageFiles(full, rel));
+                continue;
+            }
+            // Source + package metadata; not C/Rust build trees under ext-*.
+            if (
+                name === 'package.json'
+                || name.endsWith('.ts')
+                || name.endsWith('.d.ts')
+                || name.endsWith('.json')
+                || name.endsWith('.js')
+            ) {
+                out.push(rel);
+            }
+        }
+    } catch { /* not readable */ }
+    return out;
+}
+
+function copyTreeIfNewer(srcBase: string, dstBase: string, files: string[]): { copied: number; skip: number } {
+    let copied = 0, skip = 0;
+    for (const rel of files) {
+        const src = join(srcBase, rel);
+        const dst = join(dstBase, rel);
+        try {
+            const srcMtime = fs.stat(src).mtim;
+            try {
+                if (fs.stat(dst).mtim >= srcMtime) { skip++; continue; }
+            } catch { /* missing dst */ }
+            copyFile(src, dst);
+            unlinkQuietly(dst + '.jsc');
+            unlinkQuietly(dst + '.jsc.mt');
+            log.debug('oxc', () => `  COPY  ${rel}`);
+            copied++;
+        } catch (e) {
+            console.error(`  FAIL  ${rel}: ${e instanceof Error ? e.message : e}`);
+        }
+    }
+    return { copied, skip };
+}
+
 function isJscArtifact(name: string): boolean {
     return name.endsWith('.jsc') || name.endsWith('.jsc.mt');
 }
@@ -147,29 +198,62 @@ function findLocalNodeSource(start: string): string | null {
     return null;
 }
 
+/**
+ * Locate workspace `http/` next to cno polyfills.
+ * node source: <root>/cno/src/node or <root>/src/node → http at <root>/http or sibling.
+ */
+function findLocalHttpPackage(nodeSrc: string): string | null {
+    const candidates = [
+        join(nodeSrc, '../../../http'),   // cno/src/node → repo/http
+        join(nodeSrc, '../../http'),      // src/node → repo/http
+        join(nodeSrc, '../../../../http'),
+    ];
+    for (const dir of candidates) {
+        try {
+            const pkgPath = join(normalize(dir), 'package.json');
+            const raw = engine.decodeString(fs.readFile(pkgPath));
+            const pkg = JSON.parse(raw) as { name?: string };
+            if (pkg.name === '@cnojs/http') return normalize(dir);
+        } catch { /* try next */ }
+    }
+    return null;
+}
+
+function readPackageVersion(pkgDir: string): string {
+    try {
+        const raw = engine.decodeString(fs.readFile(join(pkgDir, 'package.json')));
+        const pkg = JSON.parse(raw) as { version?: string };
+        if (typeof pkg.version === 'string' && pkg.version) return pkg.version;
+    } catch { /* default */ }
+    return '1.0.0';
+}
+
+/**
+ * Polyfills import `@cnojs/http/*` via the npm store. Local `cno setup` only
+ * refreshed node/ before — keep the store package in lockstep with workspace http.
+ */
+function installLocalHttpToStore(httpSrc: string, cacheDir: string): void {
+    const version = readPackageVersion(httpSrc);
+    const dstBase = join(cacheDir, 'npm', `@cnojs/http@${version}`);
+    mkdirp(dstBase);
+    const files = walkHttpPackageFiles(httpSrc);
+    if (files.length === 0) {
+        console.error(`@cnojs/http: no files under ${httpSrc}`);
+        return;
+    }
+    const { copied, skip } = copyTreeIfNewer(httpSrc, dstBase, files);
+    // New exports / sources invalidate any prior bytecode beside the store tree.
+    clearJsc(dstBase);
+    console.log(`@cnojs/http@${version} store: ${copied} copied, ${skip} up-to-date → ${dstBase}`);
+}
+
 // ── Local: copy .ts files from srcBase → dstBase ────────────────────────────
 
 function installLocal(srcBase: string, dstBase: string): void {
     const files = walkTs(srcBase);
     if (files.length === 0) throw new Error(`No .ts files found in ${srcBase}`);
 
-    let copied = 0, skip = 0;
-    for (const rel of files) {
-        const src = join(srcBase, rel);
-        const dst = join(dstBase, rel);
-        try {
-            const srcMtime = fs.stat(src).mtim;
-            try {
-                if (fs.stat(dst).mtim >= srcMtime) { skip++; continue; }
-            } catch {}
-            copyFile(src, dst);
-            unlinkQuietly(dst + '.jsc');
-            log.debug('oxc', () => `  COPY  ${rel}`);
-            copied++;
-        } catch (e) {
-            console.error(`  FAIL  ${rel}: ${e instanceof Error ? e.message : e}`);
-        }
-    }
+    const { copied, skip } = copyTreeIfNewer(srcBase, dstBase, files);
     console.log(`Local install: ${copied} copied, ${skip} up-to-date`);
 }
 
@@ -243,6 +327,13 @@ export async function runSetup(flags: Record<string, string | boolean>): Promise
         log.debug('setup', () => `Installing from local source: ${localSrc}`);
         log.debug('setup', () => `Destination: ${dstBase}`);
         installLocal(localSrc, dstBase);
+        const httpSrc = findLocalHttpPackage(localSrc);
+        if (httpSrc) {
+            log.debug('setup', () => `Syncing @cnojs/http from ${httpSrc}`);
+            installLocalHttpToStore(httpSrc, cacheDir);
+        } else {
+            log.debug('setup', () => 'Local @cnojs/http package not found beside node source');
+        }
     } else {
         log.debug('setup', () => 'Local source not found, fetching from GitHub (imzlh/cno)...');
         await installRemote(dstBase);

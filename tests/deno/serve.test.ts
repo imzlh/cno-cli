@@ -247,6 +247,71 @@ Deno.test({ name: 'deno: Deno.serve lifecycle exposes addr onListen finished abo
     }
 });
 
+// Client abort mid-stream must not call onError / invent a 500.
+Deno.test({
+    name: 'deno: Deno.serve client abort mid-response does not invoke onError',
+    timeout: 10000,
+}, async () => {
+    if (!await canListenTcp()) return;
+
+    const onErrorHits: unknown[] = [];
+    const controller = new AbortController();
+    let firstChunk: () => void;
+    const firstChunkGate = new Promise<void>((r) => { firstChunk = r; });
+
+    const server = Deno.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        signal: controller.signal,
+        onError(error) {
+            onErrorHits.push(error);
+            return new Response('should-not-run', { status: 500 });
+        },
+    }, () => {
+        // Streaming body so the peer can leave before end().
+        const body = new ReadableStream<Uint8Array>({
+            start(ctrl) {
+                const enc = new TextEncoder();
+                ctrl.enqueue(enc.encode('chunk1'));
+                firstChunk();
+                const tick = () => {
+                    try {
+                        ctrl.enqueue(enc.encode('x'.repeat(8 * 1024)));
+                        setTimeout(tick, 0);
+                    } catch {
+                        // Controller closed after client abort.
+                    }
+                };
+                setTimeout(tick, 0);
+            },
+            cancel() {
+                // Peer cancel is expected.
+            },
+        });
+        return new Response(body, {
+            status: 200,
+            headers: { 'Content-Type': 'text/plain' },
+        });
+    });
+
+    try {
+        const port = server.addr.port;
+        const res = await fetch(`http://127.0.0.1:${port}/stream-abort`);
+        ok(res.body);
+        const reader = res.body.getReader();
+        await reader.read();
+        await firstChunkGate;
+        await reader.cancel();
+        // Let the server drain the write/EPIPE path.
+        await sleep(150);
+        strictEqual(onErrorHits.length, 0, `onError must not fire on peer disconnect: ${onErrorHits}`);
+    } finally {
+        controller.abort();
+        try { await withTimeout(server.finished); } catch {}
+        try { await server.shutdown(); } catch {}
+    }
+});
+
 Deno.test({
     name: 'deno: Deno.serve supports Unix domain socket path and reports Unix addr',
     ignore: Deno.build.os === 'windows',

@@ -2270,8 +2270,8 @@ Deno.test({ name: 'cli stage upstream npm: dual package import and cjs subpath r
     });
 });
 
-// specs/node/detect_es_module_defined_as_cjs + specs/run/package_json_type/commonjs/basic main_esm
-Deno.test({ name: 'cli stage upstream: CJS package .js with ESM syntax loads as ESM', timeout: 20000 }, async () => {
+// CTS intentionally does not implement Deno's source-content ESM detection.
+Deno.test({ name: 'cli stage: CJS package .js is never reclassified from source syntax', timeout: 20000 }, async () => {
     await withTempDir('cli-detect-esm-as-cjs', async (root) => {
         const untyped = join(root, 'node_modules', 'package');
         await Deno.mkdir(untyped, { recursive: true });
@@ -2282,8 +2282,8 @@ Deno.test({ name: 'cli stage upstream: CJS package .js with ESM syntax loads as 
             console.log(add(1, 2));
         `);
         const untypedResult = await runCno(['run', 'main.ts'], root);
-        strictEqual(untypedResult.code, 0, untypedResult.stderr);
-        strictEqual(untypedResult.stdout.trim(), '3');
+        ok(untypedResult.code !== 0);
+        ok(untypedResult.stderr.includes('unsupported keyword: export'));
 
         const typed = join(root, 'pkg-commonjs');
         await Deno.mkdir(typed, { recursive: true });
@@ -2298,8 +2298,7 @@ Deno.test({ name: 'cli stage upstream: CJS package .js with ESM syntax loads as 
             console.log(add(1, 2));
         `);
         const esm = await runCno(['run', 'main_esm.js'], typed);
-        strictEqual(esm.code, 0, esm.stderr);
-        strictEqual(esm.stdout.trim(), '3');
+        ok(esm.code !== 0);
         const cjs = await runCno(['run', 'main_cjs.js'], typed);
         strictEqual(cjs.code, 0, cjs.stderr);
         strictEqual(cjs.stdout.trim(), '3');

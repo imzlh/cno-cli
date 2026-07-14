@@ -191,3 +191,220 @@ Deno.test({ name: 'http: removeHeader before writeHead drops the header', timeou
         await close(server);
     }
 });
+
+// --- 9. client abort mid-body: no server 'error', no unhandled rejection ---
+
+Deno.test({
+    name: 'http: client abort mid-response does not emit server error',
+    timeout: 10000,
+}, async () => {
+    const serverErrors: unknown[] = [];
+    let writeStarted: () => void;
+    const writeGate = new Promise<void>((r) => { writeStarted = r; });
+
+    const server = http.createServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/plain', 'Transfer-Encoding': 'chunked' });
+        // Keep writing until the peer leaves (Vite HMR style streaming).
+        const tick = () => {
+            if (res.writableEnded) return;
+            res.write('x'.repeat(16 * 1024), (err) => {
+                if (err) return;
+                writeStarted();
+                setTimeout(tick, 0);
+            });
+        };
+        tick();
+    });
+    server.on('error', (err) => { serverErrors.push(err); });
+
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+
+        await new Promise<void>((resolve, reject) => {
+            const req = http.get(`http://127.0.0.1:${addr.port}/`, (res) => {
+                res.once('data', () => {
+                    // Drop the client as soon as the first chunk arrives.
+                    req.destroy();
+                    resolve();
+                });
+            });
+            req.once('error', () => resolve());
+            setTimeout(() => reject(new Error('client abort timeout')), 5000);
+        });
+
+        // Let the server drain the EPIPE / close path.
+        await writeGate;
+        await new Promise((r) => setTimeout(r, 100));
+
+        strictEqual(serverErrors.length, 0, `server must not emit disconnect as error: ${serverErrors}`);
+    } finally {
+        await close(server);
+    }
+});
+
+// --- 10. req.socket is HTTP-owned: address ok, write rejected, no dual I/O ---
+
+Deno.test({
+    name: 'http: req.socket is facade with address and no dual-write',
+    timeout: 10000,
+}, async () => {
+    let socketLocalPort = 0;
+    let writeCode: string | undefined;
+    let writeDone: () => void;
+    const writeGate = new Promise<void>((r) => { writeDone = r; });
+
+    const server = http.createServer((req, res) => {
+        const sock = req.socket;
+        ok(sock, 'req.socket must exist');
+        const addr = sock.address();
+        if (addr && typeof addr === 'object' && 'port' in addr) {
+            socketLocalPort = addr.port;
+        }
+        // Absorb socket 'error' so the dual-write fault is not unhandled.
+        sock.once('error', () => {});
+        // Core owns the wire — app write must fail with a structured code.
+        sock.write('hijack', (err) => {
+            writeCode = err && typeof err === 'object' && 'code' in err
+                ? String(Reflect.get(err, 'code'))
+                : undefined;
+            writeDone();
+        });
+        res.end('ok');
+    });
+
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        const result = await get(`http://127.0.0.1:${addr.port}/`);
+        strictEqual(result.status, 200);
+        strictEqual(result.body, 'ok');
+        await writeGate;
+        ok(socketLocalPort > 0, 'facade address() must report local port');
+        strictEqual(writeCode, 'ERR_SOCKET_HTTP_SERVER');
+    } finally {
+        await close(server);
+    }
+});
+
+// --- 11. closeAllConnections tears down active clients ---
+
+Deno.test({
+    name: 'http: closeAllConnections aborts active keep-alive client',
+    timeout: 10000,
+}, async () => {
+    let server: http.Server;
+    const gotRequest = new Promise<void>((resolve) => {
+        server = http.createServer((_req, res) => {
+            res.writeHead(200, { 'Content-Type': 'text/plain', Connection: 'keep-alive' });
+            res.end('alive');
+            resolve();
+        });
+    });
+
+    await listen(server!);
+    try {
+        const addr = server!.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+
+        const net = await import('node:net');
+        const sock = net.connect(addr.port, '127.0.0.1');
+        const closed = new Promise<void>((resolve) => {
+            sock.once('close', () => resolve());
+            sock.once('error', () => resolve());
+        });
+        await new Promise<void>((resolve, reject) => {
+            sock.once('connect', () => {
+                sock.write('GET / HTTP/1.1\r\nHost: h\r\nConnection: keep-alive\r\n\r\n');
+                resolve();
+            });
+            sock.once('error', reject);
+        });
+        await gotRequest;
+        // Drain one response so the connection is tracked and idle keep-alive.
+        await new Promise<void>((resolve) => {
+            sock.once('data', () => resolve());
+        });
+
+        server!.closeAllConnections();
+        await Promise.race([
+            closed,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('closeAllConnections timeout')), 3000)),
+        ]);
+    } finally {
+        await close(server!);
+    }
+});
+
+// --- 12. client closes mid-request-body: coded EOF, no server 'error' ---
+
+Deno.test({
+    name: 'http: client abort mid-request-body does not emit server error',
+    timeout: 10000,
+}, async () => {
+    const serverErrors: unknown[] = [];
+    let bodyError: unknown;
+    let bodyDone: () => void;
+    const bodyGate = new Promise<void>((r) => { bodyDone = r; });
+
+    const server = http.createServer(async (req, res) => {
+        try {
+            for await (const _ of req) { /* drain until peer leaves */ }
+        } catch (err) {
+            bodyError = err;
+        } finally {
+            bodyDone();
+        }
+        if (!res.headersSent) res.writeHead(200);
+        res.end('ok');
+    });
+    server.on('error', (err) => { serverErrors.push(err); });
+
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+
+        // Open a raw TCP client: partial Content-Length body, then RST/FIN.
+        const net = await import('node:net');
+        await new Promise<void>((resolve, reject) => {
+            const sock = net.connect(addr.port, '127.0.0.1', () => {
+                sock.write(
+                    'POST /upload HTTP/1.1\r\n' +
+                    'Host: 127.0.0.1\r\n' +
+                    'Content-Length: 100\r\n' +
+                    '\r\n' +
+                    'partial',
+                );
+                // Peer gone before the rest of the body arrives.
+                setTimeout(() => {
+                    sock.destroy();
+                    resolve();
+                }, 30);
+            });
+            sock.once('error', () => resolve());
+            setTimeout(() => reject(new Error('mid-body abort timeout')), 5000);
+        });
+
+        await bodyGate;
+        await new Promise((r) => setTimeout(r, 50));
+
+        strictEqual(serverErrors.length, 0, `server must not emit body-EOF as error: ${serverErrors}`);
+        // Peer left mid-body: stream ends quietly (aborted/complete). A throw is ok
+        // only when it carries a structured disconnect code — never a bare message.
+        if (bodyError !== undefined) {
+            const code = bodyError instanceof Error
+                ? Reflect.get(bodyError, 'code')
+                : undefined;
+            ok(
+                code === 'EOF' || code === 'ECONNRESET' || code === 'EPIPE' ||
+                code === 'ECONNABORTED' || typeof code === 'number',
+                `body error must carry structured code, got ${String(bodyError)} code=${String(code)}`,
+            );
+        }
+    } finally {
+        await close(server);
+    }
+});

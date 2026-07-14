@@ -10,14 +10,13 @@
 import { log } from '../../../cts/src/api'
 import type { CallFrame, PausedEvent, Scope } from '../shared/cdp'
 import { remapConsoleFrameDetailed, type SourceMapLookup } from '../shared/console-utils'
-import { BreakReason, Step, native, type LocalVariable, type StepCode } from '../shared/native'
+import { BreakReason, FrameOffset, Step, native, type LocalVariable, type StepCode } from '../shared/native'
 import { isUserFile } from '../shared/user-files'
 import { WorkerEvent } from '../shared/wire'
 import type { MainEndpoint } from '../transport/main-endpoint'
 import type { Serializer } from './remote-object'
 
 const BACKTRACE_GROUP = 'backtrace'
-const EVAL_FRAME_OFFSET = 4
 const sourcemap = import.meta.use('sourcemap') as SourceMapLookup
 
 const createScopeObject = (): Record<string, unknown> => Object.create(null)
@@ -100,16 +99,16 @@ export class PauseController {
 		let hasThisVal = false
 		let frameInfo: { file: string; line: number; column: number; func: { name?: string } } | null = null
 		try {
-			locals = native.getLocalVariables(level + EVAL_FRAME_OFFSET)
+			locals = native.getLocalVariables(level + FrameOffset.OnBreak)
 		} catch (e) {
 			log.debug('debug', () => `getLocalVariables(${level}) threw: ${e}`)
 		}
 		try {
-			thisVal = native.evalInFrame(level + EVAL_FRAME_OFFSET, 'this')
+			thisVal = native.evalInFrame(level + FrameOffset.OnBreak, 'this')
 			hasThisVal = true
 		} catch { }
 		try {
-			frameInfo = native.getFrameInfo(level + EVAL_FRAME_OFFSET)
+			frameInfo = native.getFrameInfo(level + FrameOffset.OnBreak)
 		} catch { }
 
 		const localObj = createScopeObject()

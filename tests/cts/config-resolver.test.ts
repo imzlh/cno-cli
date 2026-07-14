@@ -13,7 +13,7 @@ import { NpmHandler } from '../../cts/src/resolve/protocols/npm.ts';
 import { ModuleResolver } from '../../cts/src/resolve/index.ts';
 import { isRemote, JscCache } from '../../cts/src/source/cache.ts';
 import { moduleRef, moduleViewRef } from '../../cts/src/types.ts';
-import { dirname, joinPaths } from '../../cts/src/utils/path.ts';
+import { dirname, joinPaths, parentDirKey } from '../../cts/src/utils/path.ts';
 
 function decodeBytes(data: Uint8Array | ArrayBuffer): string {
     return decodeUtf8(new Uint8Array(data));
@@ -113,6 +113,45 @@ Deno.test('cts config: loadConfigFile merges tsconfig deno import maps and packa
 //         rmSync(root, { recursive: true, force: true });
 //     }
 // });
+
+Deno.test('cts path: parentDirKey collapses same-dir file parents', () => {
+    strictEqual(parentDirKey('/proj/a.js'), '/proj');
+    strictEqual(parentDirKey('/proj/b.js'), '/proj');
+    strictEqual(parentDirKey('file:///proj/a.js'), '/proj');
+    strictEqual(parentDirKey('file:///proj/b.js?x=1'), '/proj');
+    // Scheme parents without a real path segment stay intact (dirname would be '.').
+    strictEqual(parentDirKey('npm:pkg@1.0.0'), 'npm:pkg@1.0.0');
+    strictEqual(parentDirKey('npm:pkg@1.0.0/mod.js'), 'npm:pkg@1.0.0');
+});
+
+Deno.test('cts resolver: same-dir relative edges share exact resolve cache', () => {
+    const root = makePosixTempDir('exact-resolve-cache');
+    try {
+        mkdirSync(root, { recursive: true });
+        writeFileSync(join(root, 'util.js'), 'export const u = 1;\n');
+        writeFileSync(join(root, 'a.js'), "import './util.js';\n");
+        writeFileSync(join(root, 'b.js'), "import './util.js';\n");
+
+        const resolver = new ModuleResolver(createConfig({
+            cacheDir: joinPaths(root, 'cache'),
+            enableOxc: false,
+            silent: true,
+            disableLock: true,
+        }), root, true);
+
+        const fromA = resolver.resolve('./util.js', joinPaths(root, 'a.js'));
+        const fromB = resolver.resolve('./util.js', joinPaths(root, 'b.js'));
+        const again = resolver.resolve('./util.js', joinPaths(root, 'a.js'));
+
+        strictEqual(fromA.localPath, joinPaths(root, 'util.js'));
+        strictEqual(fromB.localPath, fromA.localPath);
+        // Same object identity → exact-hit cache (not a fresh ModuleInfo).
+        ok(fromA === fromB, 'same-dir relative resolve must reuse exact cache entry');
+        ok(fromA === again, 'repeat resolve from same parent file must reuse exact cache entry');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
 
 Deno.test('cts resolver: tsconfig paths resolve relative to baseUrl', () => {
     const root = makePosixTempDir('path-alias-base-url');
@@ -519,7 +558,7 @@ Deno.test('cts npm: cached packages still queue lifecycle scripts during cache',
     }
 });
 
-Deno.test('cts resolver: stale remote lock entries from another cache dir are not usable', () => {
+Deno.test('cts resolver: trusts remote lock entries without revalidation', () => {
     const root = makePosixTempDir('stale-remote-lock');
     try {
         const cacheDir = joinPaths(root, 'cache');
@@ -555,14 +594,13 @@ Deno.test('cts resolver: stale remote lock entries from another cache dir are no
         } as any, root, false);
         const info = resolver.resolve(spec, `${root}/entry.ts`);
 
-        ok(info.localPath !== stale, `stale lock path reused: ${info.localPath}`);
-        ok(Deno.statSync(info.localPath).isFile);
+        strictEqual(info.localPath, stale);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
 });
 
-Deno.test('cts resolver: stale npm lock entries with mismatched format are not usable', () => {
+Deno.test('cts resolver: trusts locked npm path and format without revalidation', () => {
     const root = makePosixTempDir('stale-npm-format-lock');
     try {
         const cacheDir = joinPaths(root, 'cache');
@@ -606,8 +644,8 @@ Deno.test('cts resolver: stale npm lock entries with mismatched format are not u
         } as any, root, false);
         const info = resolver.resolve('npm:format-fixture@1.0.0', parent);
 
-        strictEqual(info.localPath, joinPaths(pkgDir, 'index.js'));
-        strictEqual(info.format, 'cjs');
+        strictEqual(info.localPath, joinPaths(pkgDir, 'mod.js'));
+        strictEqual(info.format, 'esm');
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

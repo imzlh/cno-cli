@@ -888,7 +888,131 @@ Deno.test({ name: 'http: STATUS_CODES and METHODS are populated', timeout: 10000
     ok(http.STATUS_CODES[200] === 'OK');
     ok(http.STATUS_CODES[404] === 'Not Found');
     ok(http.STATUS_CODES[500] === 'Internal Server Error');
+    ok(http.STATUS_CODES[201] === 'Created');
     ok(Array.isArray(http.METHODS));
     ok(http.METHODS.includes('GET'));
     ok(http.METHODS.includes('POST'));
+    // Node public surface: alphabetical, length 35, includes QUERY.
+    strictEqual(http.METHODS.length, 35);
+    ok(http.METHODS.includes('QUERY'));
+    strictEqual(http.METHODS[0], 'ACL');
+    // Sorted ascending (Node order); llhttp indices use a separate table.
+    for (let i = 1; i < http.METHODS.length; i++) {
+        ok(
+            http.METHODS[i - 1]! < http.METHODS[i]!,
+            `METHODS must be alphabetical: ${http.METHODS[i - 1]} before ${http.METHODS[i]}`,
+        );
+    }
+});
+
+// --- Client Connection / shouldKeepAlive (Node wire vs getHeader) ----------
+
+Deno.test({
+    name: 'http: agent false sends Connection close without exposing getHeader',
+    timeout: 10000,
+}, async () => {
+    let seenConn: string | undefined;
+    let seenRawClose = false;
+    const server = http.createServer((req, res) => {
+        seenConn = typeof req.headers.connection === 'string'
+            ? req.headers.connection.toLowerCase()
+            : undefined;
+        const raw = req.rawHeaders;
+        for (let i = 0; i < raw.length; i += 2) {
+            if (String(raw[i]).toLowerCase() === 'connection' && String(raw[i + 1]).toLowerCase() === 'close') {
+                seenRawClose = true;
+            }
+        }
+        res.end('ok');
+    });
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        await new Promise<void>((resolve, reject) => {
+            const req = http.get({
+                host: '127.0.0.1',
+                port: addr.port,
+                agent: false,
+            }, (res) => {
+                strictEqual(req.getHeader('connection'), undefined);
+                strictEqual(req.shouldKeepAlive, false);
+                res.resume();
+                res.on('end', () => resolve());
+            });
+            req.on('error', reject);
+        });
+        strictEqual(seenConn, 'close');
+        ok(seenRawClose, 'server rawHeaders must include Connection: close');
+    } finally {
+        await close(server);
+    }
+});
+
+Deno.test({
+    name: 'http: keepAlive agent shouldKeepAlive true and reuses second request',
+    timeout: 10000,
+}, async () => {
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    const server = http.createServer((_req, res) => {
+        res.end('ok');
+    });
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        const once = () => new Promise<{ reused: boolean; keepAlive: boolean; connHdr: unknown }>((resolve, reject) => {
+            const req = http.get({ host: '127.0.0.1', port: addr.port, agent }, (res) => {
+                const snap = {
+                    reused: req.reusedSocket,
+                    keepAlive: req.shouldKeepAlive,
+                    connHdr: req.getHeader('connection'),
+                };
+                res.resume();
+                res.on('end', () => setTimeout(() => resolve(snap), 15));
+            });
+            req.on('error', reject);
+        });
+        const a = await once();
+        strictEqual(a.reused, false);
+        strictEqual(a.keepAlive, true);
+        strictEqual(a.connHdr, undefined);
+        const b = await once();
+        strictEqual(b.reused, true);
+        strictEqual(b.keepAlive, true);
+        strictEqual(b.connHdr, undefined);
+    } finally {
+        agent.destroy();
+        await close(server);
+    }
+});
+
+// --- Response Keep-Alive header + STATUS_CODES phrase ----------------------
+
+Deno.test({
+    name: 'http: keep-alive response carries Keep-Alive timeout and status phrase',
+    timeout: 10000,
+}, async () => {
+    const server = http.createServer((_req, res) => {
+        res.statusCode = 201;
+        res.end('created');
+    });
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        await new Promise<void>((resolve, reject) => {
+            http.get({ host: '127.0.0.1', port: addr.port }, (res) => {
+                strictEqual(res.statusCode, 201);
+                strictEqual(res.statusMessage, 'Created');
+                strictEqual(String(res.headers.connection ?? '').toLowerCase(), 'keep-alive');
+                const ka = String(res.headers['keep-alive'] ?? '');
+                ok(/timeout=\d+/i.test(ka), `Keep-Alive must include timeout=, got: ${ka}`);
+                res.resume();
+                res.on('end', () => resolve());
+            }).on('error', reject);
+        });
+    } finally {
+        await close(server);
+    }
 });

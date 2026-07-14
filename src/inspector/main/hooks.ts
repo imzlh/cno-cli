@@ -28,6 +28,7 @@ import {
 	type ServeResponseInfo,
 } from '../../../cno/src/utils/network-hooks'
 import type { ModuleInfo } from '../../../cts/src/api'
+import { getMemoryFile } from '../../../cts/src/api'
 import { toPosixPath } from '../../../cts/src/api'
 import { native } from '../shared/native'
 import { remapConsoleFrame, type SourceMapLookup } from '../shared/console-utils'
@@ -123,7 +124,9 @@ export class Hooks {
 			let length = 0
 			let endLine = 0
 			try {
-				const buf = fs.readFile(sourcePath)
+				// pack:/VFS localPaths are not on disk — prefer active store.
+				const mem = getMemoryFile(sourcePath)
+				const buf = mem !== undefined ? mem : fs.readFile(sourcePath)
 				const str = engine.decodeString(buf)
 				length = str.length
 				endLine = (str.match(/\n/g) ?? []).length

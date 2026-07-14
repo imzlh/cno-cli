@@ -90,13 +90,13 @@ Deno.test('cts node protocol: registered resolver bypasses cache filesystem look
     }
 });
 
-Deno.test('cts node protocol: ignores stale lock paths from another cache dir', () => {
+Deno.test('cts node protocol: trusts locked paths without cache-dir revalidation', () => {
     const root = makePosixTempDir('node-protocol-lock');
     try {
         const oldCache = joinPaths(root, 'old-cache');
         const newCache = joinPaths(root, 'new-cache');
         const oldPath = writePolyfill(oldCache, 'fs/utils');
-        const newPath = writePolyfill(newCache, 'fs/utils');
+        writePolyfill(newCache, 'fs/utils');
 
         const store = new LockStore(root, false);
         store.load();
@@ -111,7 +111,7 @@ Deno.test('cts node protocol: ignores stale lock paths from another cache dir', 
         store.close();
 
         const resolver = new ModuleResolver(createConfig({ cacheDir: newCache }), root, true);
-        strictEqual(resolver.resolve('node:fs/utils', '/entry.ts').localPath, newPath);
+        strictEqual(resolver.resolve('node:fs/utils', '/entry.ts').localPath, oldPath);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

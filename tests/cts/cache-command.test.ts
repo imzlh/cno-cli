@@ -297,6 +297,159 @@ Deno.test({ name: 'cache command: fails when a lifecycle script exits non-zero',
     }
 });
 
+Deno.test({ name: 'cache command: runs remaining lifecycle scripts after a failure', timeout: 30000 }, async () => {
+    const root = makePosixTempDir('cache-lifecycle-multi-fail');
+    try {
+        const cacheDir = joinPaths(root, 'cache');
+        const okDir = joinPaths(cacheDir, 'npm', 'ok-pkg@1.0.0');
+        const okMarker = joinPaths(okDir, 'lifecycle-ok.txt');
+        for (const [name, code] of [['fail-a', 3], ['ok-pkg', 0], ['fail-b', 9]] as const) {
+            const pkgDir = joinPaths(cacheDir, 'npm', `${name}@1.0.0`);
+            mkdirSync(pkgDir, { recursive: true });
+            writeFileSync(join(pkgDir, 'index.js'), 'module.exports = 1;\n');
+            writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+                name,
+                version: '1.0.0',
+                main: 'index.js',
+                scripts: {
+                    install: code === 0
+                        ? `node -e "import.meta.use('fs').writeFile('${okMarker}', import.meta.use('engine').encodeString('ran'))"`
+                        : `node -e "import.meta.use('os').exit(${code})"`,
+                },
+            }));
+        }
+        writeFileSync(join(root, 'package.json'), JSON.stringify({
+            dependencies: {
+                'fail-a': '1.0.0',
+                'ok-pkg': '1.0.0',
+                'fail-b': '1.0.0',
+            },
+        }));
+
+        const result = await runCacheCommand(root, cacheDir);
+
+        strictEqual(result.code, 1, result.output);
+        strictEqual(/2 lifecycle script\(s\) failed/.test(result.output), true, result.output);
+        strictEqual(/install fail-a@1\.0\.0 exited with code 3/.test(result.output), true, result.output);
+        strictEqual(/install fail-b@1\.0\.0 exited with code 9/.test(result.output), true, result.output);
+        // Successful scripts still run even when earlier packages fail.
+        strictEqual(existsSync(okMarker), true, result.output);
+        strictEqual(readFileSync(okMarker, 'utf8'), 'ran');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+// Host PATH without node must still run `node install.js` via cno rewrite / PATH shim.
+Deno.test({
+    name: 'cache command: lifecycle node scripts work without host node on PATH',
+    ignore: Deno.build.os === 'windows',
+    timeout: 30000,
+    async fn() {
+        const root = makePosixTempDir('cache-lifecycle-no-host-node');
+        try {
+            const cacheDir = joinPaths(root, 'cache');
+            const pkgDir = joinPaths(cacheDir, 'npm', 'needs-node@1.0.0');
+            const marker = joinPaths(pkgDir, 'ran.txt');
+            mkdirSync(pkgDir, { recursive: true });
+            // Real npm packages use require/fs; keep CJS so `cno run` matches Node.
+            writeFileSync(join(pkgDir, 'install.js'), [
+                "const fs = require('fs');",
+                "const path = require('path');",
+                `fs.writeFileSync(path.join(__dirname, 'ran.txt'), 'ok');`,
+                '',
+            ].join('\n'));
+            writeFileSync(join(pkgDir, 'index.js'), 'module.exports = 1;\n');
+            writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+                name: 'needs-node',
+                version: '1.0.0',
+                main: 'index.js',
+                scripts: { postinstall: 'node install.js' },
+            }));
+            // es5-ext style: failure then || exit 0 must not bare-spawn exit → 127.
+            const softDir = joinPaths(cacheDir, 'npm', 'soft-exit@1.0.0');
+            mkdirSync(softDir, { recursive: true });
+            writeFileSync(join(softDir, 'index.js'), 'module.exports = 1;\n');
+            writeFileSync(join(softDir, 'package.json'), JSON.stringify({
+                name: 'soft-exit',
+                version: '1.0.0',
+                main: 'index.js',
+                scripts: {
+                    postinstall: `node -e "process.exit(1)" || exit 0`,
+                },
+            }));
+            writeFileSync(join(root, 'package.json'), JSON.stringify({
+                dependencies: { 'needs-node': '1.0.0', 'soft-exit': '1.0.0' },
+            }));
+
+            prepareLocalSetupSource(root);
+            const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+            const output = await new Deno.Command(execPath, {
+                args: [
+                    'cache',
+                    '--silent',
+                    '--no-oxc',
+                    `--cache-dir=${cacheDir}`,
+                    `--lock-dir=${root}`,
+                ],
+                cwd: root,
+                env: {
+                    CTS_SILENT: 'true',
+                    // Keep a minimal PATH so `sh` works for shell fallbacks, but no host node.
+                    PATH: '/usr/bin:/bin',
+                    HOME: root,
+                },
+                stdout: 'piped',
+                stderr: 'piped',
+            }).output();
+            const text = decoder.decode(output.stdout) + decoder.decode(output.stderr);
+            strictEqual(output.code, 0, text);
+            strictEqual(existsSync(marker), true, text);
+            strictEqual(readFileSync(marker, 'utf8'), 'ok');
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+// Missing binary: fail closed with argv/ENOENT diagnostic (not a silent bare 127).
+Deno.test({
+    name: 'cache command: missing lifecycle binary reports diagnostic',
+    ignore: Deno.build.os === 'windows',
+    timeout: 30000,
+    async fn() {
+        const root = makePosixTempDir('cache-lifecycle-missing-bin');
+        try {
+            const cacheDir = joinPaths(root, 'cache');
+            const pkgDir = joinPaths(cacheDir, 'npm', 'missing-bin@1.0.0');
+            mkdirSync(pkgDir, { recursive: true });
+            writeFileSync(join(pkgDir, 'index.js'), 'module.exports = 1;\n');
+            writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+                name: 'missing-bin',
+                version: '1.0.0',
+                main: 'index.js',
+                scripts: {
+                    install: 'cno-lifecycle-bin-that-does-not-exist-xyz',
+                },
+            }));
+            writeFileSync(join(root, 'package.json'), JSON.stringify({
+                dependencies: { 'missing-bin': '1.0.0' },
+            }));
+
+            const result = await runCacheCommand(root, cacheDir);
+            strictEqual(result.code, 1, result.output);
+            strictEqual(/install missing-bin@1\.0\.0 exited with code 127/.test(result.output), true, result.output);
+            strictEqual(
+                /command:|not found|ENOENT|cno-lifecycle-bin-that-does-not-exist-xyz/i.test(result.output),
+                true,
+                result.output,
+            );
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
 Deno.test({ name: 'cache command: fails when dependency scanning reports errors', timeout: 30000 }, async () => {
     const root = makePosixTempDir('cache-scan-fail');
     try {

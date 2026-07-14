@@ -7,7 +7,7 @@
  * Results are turned into RemoteObjects by the shared Serializer.
  */
 
-import { native } from '../shared/native'
+import { FrameOffset, native } from '../shared/native'
 import { containsAwait } from '../domains/side-effect'
 import type {
 	CompileScriptResponse,
@@ -183,10 +183,6 @@ function byValue(val: unknown): RemoteObject {
 	return { type, value: jsonSafeValue(val) }
 }
 
-/** Base frame offset — the number of JS frames between the onBreak call site
- *  (buildCallFrame) and the user's code. */
-const EVAL_FRAME_OFFSET = 9
-
 export class Evaluator {
 	private readonly compiledScripts = new Map<string, { mod: CModuleEngine.Module; persist: boolean }>()
 
@@ -200,7 +196,8 @@ export class Evaluator {
 				return this.errorResult(new Error('Cannot evaluate `await` expression while paused'))
 			}
 			const level = Number(q.callFrameId ?? 0) || 0
-			const val = native.evalInFrame(level + EVAL_FRAME_OFFSET, q.expression)
+			// FrameOffset.PausedEval: service loop + evaluateSync (see shared/native).
+			const val = native.evalInFrame(level + FrameOffset.PausedEval, q.expression)
 			if (q.returnByValue) return { result: byValue(val) }
 			return { result: this.serializer.serialize(val, group, { preview: !!q.generatePreview }) }
 		} catch (e) {
@@ -218,7 +215,7 @@ export class Evaluator {
 					return this.errorResult(new Error('Cannot evaluate `await` expression while paused'))
 				}
 				const level = Number(q.callFrameId ?? 0) || 0
-				val = native.evalInFrame(level + EVAL_FRAME_OFFSET, q.expression)
+				val = native.evalInFrame(level + FrameOffset.PausedEval, q.expression)
 			} else {
 				val = await evalWithCapturedCompletion(q.expression)
 				if (q.awaitPromise && isThenable(val)) val = await val
@@ -331,11 +328,11 @@ export class Evaluator {
 				} catch {
 					return undefined
 				}
-				}
-				// Unknown unserializable value — log and return undefined rather than silently swallowing.
-				try { nativeConsole.warn(`unknown unserializableValue: ${u}`) } catch { /* ignore */ }
-				return undefined
 			}
+			// Unknown unserializable value — log and return undefined rather than silently swallowing.
+			try { nativeConsole.warn(`unknown unserializableValue: ${u}`) } catch { /* ignore */ }
+			return undefined
+		}
 		return a.value
 	}
 

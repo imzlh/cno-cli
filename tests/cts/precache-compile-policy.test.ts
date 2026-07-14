@@ -47,7 +47,7 @@ Deno.test('precache policy: compileModules uses stub loader (no full-graph resol
     ok(!stubBody.includes('this.resolver'), 'stub resolve does not touch ModuleResolver');
 
     const parseSrc = readFileSync(new URL('../../cts/src/parse.ts', import.meta.url), 'utf8');
-    ok(parseSrc.includes('active engine.onModule hooks'), 'parse documents onModule dependency');
+    ok(parseSrc.includes('stub onModule'), 'parse documents onModule dependency');
 });
 
 /** Native addons are not JS source — never enqueue for bytecode precompile. */
@@ -56,11 +56,25 @@ Deno.test('precache policy: isPrecompilePath rejects .node', () => {
     const fn = runtimeSrc.indexOf('function isPrecompilePath');
     ok(fn > 0, 'isPrecompilePath defined');
     // Guard must return false before extension allow-list for ".node".
-    const body = runtimeSrc.slice(fn, fn + 900);
+    const body = runtimeSrc.slice(fn, fn + 1200);
     ok(body.includes('return false'), 'has early false returns');
     // char codes for ".node": 46,110,111,100,101 — keeps the check allocation-free.
     ok(body.includes('=== 110') && body.includes('=== 111') && body.includes('=== 100') && body.includes('=== 101'),
         '.node suffix rejected via charCode checks');
+    // .mts/.cts are TS-family runtime sources (not only plain .ts).
+    ok(body.includes('third === 109') && body.includes('third === 99'),
+        '.mts/.cts included in precompile allow-list');
+    ok(body.includes('isTypeDecl'), 'type declarations excluded via isTypeDecl');
+});
+
+/** CJS precompile must strip TS via transformForCjs — workers only ESM-transform. */
+Deno.test('precompile policy: CJS modules use transformForCjs on main thread', () => {
+    const parseSrc = readFileSync(new URL('../../cts/src/parse.ts', import.meta.url), 'utf8');
+    ok(parseSrc.includes('prepareForCache'), 'prepareForCache helper exists');
+    ok(parseSrc.includes('transformForCjs'), 'CJS path uses transformForCjs');
+    ok(parseSrc.includes("format === 'cjs'"), 'CJS modules detected by format');
+    ok(parseSrc.includes('compileOnMain') || parseSrc.includes('mainThread'),
+        'CJS stays on main thread (not worker ESM transform)');
 });
 
 Deno.test('public API surface: only ParseDriver / isParseWorker worker symbols', () => {

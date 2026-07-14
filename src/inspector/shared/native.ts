@@ -67,6 +67,25 @@ export const ChannelReq = {
 	Resume: native.REQ_RESUME,
 } as const;
 
+/**
+ * JS stack levels between `current_stack_frame` and user code for frame APIs
+ * (`getLocalVariables` / `evalInFrame` / `setVariable`). Level 0 is the active
+ * frame at the call site; these skip inspector/engine frames only.
+ *
+ * Values differ by call depth — do not collapse to one constant:
+ *   onBreak/buildCallFrame  → fewer frames (pause handler only)
+ *   setVariableValue RPC    → service loop + handler
+ *   evaluateOnCallFrame RPC → same + Evaluator.evaluateSync
+ */
+export const FrameOffset = {
+	/** From PauseController.buildCallFrame (inside onBreak). */
+	OnBreak: 4,
+	/** From setVariableValue while serviceWhilePaused is blocked. */
+	PausedSetVariable: 8,
+	/** From evaluateSync / evaluate(paused) while serviceWhilePaused is blocked. */
+	PausedEval: 9,
+} as const;
+
 // ── Derived native value types (kept in lock-step with the C API) ──────────────
 
 /** One entry of native.getLocalVariables(level). */

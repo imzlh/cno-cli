@@ -29,15 +29,22 @@ const INITIAL_PAUSE_SETTLE_MS = 50
 interface KnownScript {
 	scriptId: string
 	url: string
+	/** Host/VFS localPath when it differs from scriptId (CJS frames use this). */
+	sourcePath?: string
 	length?: number
 	endLine?: number
 	normalizedUrl: string
 	normalizedScriptId: string
+	normalizedSourcePath?: string
 }
 
 interface CdpBreakpoint {
+	/** Primary path sent to native (prefer engine module name = scriptId). */
 	url: string
+	/** Alternate native path (localPath) when ESM name ≠ CJS filename. */
+	altUrl?: string
 	matchUrl: string
+	matchAltUrl?: string
 	line: number
 	col?: number
 }
@@ -85,7 +92,7 @@ export class DebuggerDomain extends Domain {
 			this.clearPendingPaused()
 			for (const id of this.cdpBreakpoints.keys()) {
 				const bp = this.cdpBreakpoints.get(id)
-				if (bp) await this.rpc.call('removeBreakpoint', { url: bp.url, line: bp.line })
+				if (bp) await this.removeNativeBreakpoint(bp)
 			}
 			this.cdpBreakpoints.clear()
 			if (this.pauseOnExceptionsState !== 'none') {
@@ -105,9 +112,16 @@ export class DebuggerDomain extends Domain {
 		this.on('Debugger.stepInto', () => this.doResume(Step.Into))
 		this.on('Debugger.stepOut', () => this.doResume(Step.Out))
 
-		this.on('Debugger.setBreakpointsActive', (p) => {
-			this.breakpointsActive = this.bool(p, 'active')
-			return this.rpc.call('setBreakpointsActive', { active: this.breakpointsActive })
+		this.on('Debugger.setBreakpointsActive', async (p) => {
+			const active = this.bool(p, 'active')
+			// BPs set while inactive stay only in cdpBreakpoints — install on re-enable.
+			if (active && !this.breakpointsActive) {
+				for (const bp of this.cdpBreakpoints.values()) {
+					await this.installNativeBreakpoint(bp)
+				}
+			}
+			this.breakpointsActive = active
+			return this.rpc.call('setBreakpointsActive', { active })
 		})
 
 		this.on('Debugger.setBreakpointByUrl', (p) => {
@@ -117,12 +131,12 @@ export class DebuggerDomain extends Domain {
 			const lineNumber = this.requireLineNumber(q.lineNumber)
 			const columnNumber = q.columnNumber
 			const resolved = this.resolveScriptPath(rawUrl)
-			const url = resolved.path
 			const breakpointId = `bp-${this.nextBpId++}`
 			const line = lineNumber + 1
 			const col = columnNumber != null && columnNumber > 0 ? columnNumber + 1 : undefined
-			this.cdpBreakpoints.set(breakpointId, { url, matchUrl: this.normalizeUrl(url), line, col })
-			if (this.breakpointsActive) void this.rpc.call('addBreakpoint', { url, line, col })
+			const bp = this.makeBreakpoint(resolved.path, resolved.altPath, line, col)
+			this.cdpBreakpoints.set(breakpointId, bp)
+			if (this.breakpointsActive) void this.installNativeBreakpoint(bp)
 			return {
 				breakpointId,
 				locations: [{ scriptId: resolved.scriptId, lineNumber, columnNumber: columnNumber ?? 0 }],
@@ -132,12 +146,13 @@ export class DebuggerDomain extends Domain {
 			const q = this.extract<DebuggerSetBreakpointParams>(p)
 			const loc = this.parseLocation(q.location)
 			this.requireLineNumber(loc.lineNumber)
-			const url = this.normalizeUrl(loc.scriptId)
+			const resolved = this.resolveScriptPath(loc.scriptId)
 			const breakpointId = `bp-${this.nextBpId++}`
 			const line = loc.lineNumber + 1
 			const col = loc.columnNumber != null && loc.columnNumber > 0 ? loc.columnNumber + 1 : undefined
-			this.cdpBreakpoints.set(breakpointId, { url, matchUrl: this.normalizeUrl(url), line, col })
-			if (this.breakpointsActive) void this.rpc.call('addBreakpoint', { url, line, col })
+			const bp = this.makeBreakpoint(resolved.path, resolved.altPath, line, col)
+			this.cdpBreakpoints.set(breakpointId, bp)
+			if (this.breakpointsActive) void this.installNativeBreakpoint(bp)
 			return { breakpointId, actualLocation: loc }
 		})
 		this.on('Debugger.removeBreakpoint', async (p) => {
@@ -145,7 +160,7 @@ export class DebuggerDomain extends Domain {
 			const bp = this.cdpBreakpoints.get(id)
 			if (bp) {
 				this.cdpBreakpoints.delete(id)
-				await this.rpc.call('removeBreakpoint', { url: bp.url, line: bp.line })
+				await this.removeNativeBreakpoint(bp)
 			}
 			return {}
 		})
@@ -277,14 +292,50 @@ export class DebuggerDomain extends Domain {
 		return normalized
 	}
 
-	private resolveScriptPath(rawUrl: string): { path: string; scriptId: string } {
+	/**
+	 * Map a DevTools url/scriptId to native breakpoint paths.
+	 * ESM frames use scriptId (module name); CJS frames use localPath/sourcePath.
+	 */
+	private resolveScriptPath(rawUrl: string): { path: string; altPath?: string; scriptId: string } {
 		const normalized = this.normalizeUrl(rawUrl)
 		for (const script of this.knownScripts.values()) {
-			if (script.normalizedUrl === normalized || script.normalizedScriptId === normalized) {
-				return { path: script.scriptId, scriptId: script.scriptId }
+			if (
+				script.normalizedUrl === normalized
+				|| script.normalizedScriptId === normalized
+				|| (script.normalizedSourcePath !== undefined && script.normalizedSourcePath === normalized)
+			) {
+				const alt = script.sourcePath
+					&& this.normalizeUrl(script.sourcePath) !== this.normalizeUrl(script.scriptId)
+					? script.sourcePath
+					: undefined
+				return { path: script.scriptId, altPath: alt, scriptId: script.scriptId }
 			}
 		}
 		return { path: normalized, scriptId: normalized }
+	}
+
+	private makeBreakpoint(url: string, altUrl: string | undefined, line: number, col?: number): CdpBreakpoint {
+		const matchUrl = this.normalizeUrl(url)
+		const matchAltUrl = altUrl ? this.normalizeUrl(altUrl) : undefined
+		return {
+			url,
+			altUrl: matchAltUrl && matchAltUrl !== matchUrl ? altUrl : undefined,
+			matchUrl,
+			matchAltUrl: matchAltUrl && matchAltUrl !== matchUrl ? matchAltUrl : undefined,
+			line,
+			col,
+		}
+	}
+
+	private async installNativeBreakpoint(bp: CdpBreakpoint): Promise<void> {
+		await this.rpc.call('addBreakpoint', { url: bp.url, line: bp.line, col: bp.col })
+		// CJS debug frames use localPath; ESM uses module name — register both.
+		if (bp.altUrl) await this.rpc.call('addBreakpoint', { url: bp.altUrl, line: bp.line, col: bp.col })
+	}
+
+	private async removeNativeBreakpoint(bp: CdpBreakpoint): Promise<void> {
+		await this.rpc.call('removeBreakpoint', { url: bp.url, line: bp.line })
+		if (bp.altUrl) await this.rpc.call('removeBreakpoint', { url: bp.altUrl, line: bp.line })
 	}
 
 	private parseLocation(location: unknown): { scriptId: string; lineNumber: number; columnNumber?: number } {
@@ -307,13 +358,16 @@ export class DebuggerDomain extends Domain {
 	}
 
 	onScriptParsed(data: ScriptParsedPayload): void {
+		const sourcePath = data.sourcePath && data.sourcePath !== data.scriptId ? data.sourcePath : undefined
 		const script: KnownScript = {
 			scriptId: data.scriptId,
 			url: data.url,
+			sourcePath,
 			length: data.length,
 			endLine: data.endLine,
 			normalizedUrl: this.normalizeUrl(data.url),
 			normalizedScriptId: this.normalizeUrl(data.scriptId),
+			normalizedSourcePath: sourcePath ? this.normalizeUrl(sourcePath) : undefined,
 		}
 		this.knownScripts.set(data.scriptId, script)
 		if (this.enabled) {
@@ -364,7 +418,9 @@ export class DebuggerDomain extends Domain {
 		const hitBreakpoints: string[] = []
 		const hitFile = this.normalizeUrl(p.hitFilename)
 		for (const [id, bp] of this.cdpBreakpoints) {
-			if (bp.matchUrl === hitFile && bp.line === p.hitLine) hitBreakpoints.push(id)
+			const pathHit = bp.matchUrl === hitFile
+				|| (bp.matchAltUrl !== undefined && bp.matchAltUrl === hitFile)
+			if (pathHit && bp.line === p.hitLine) hitBreakpoints.push(id)
 		}
 		const callFrames: CallFrame[] = p.callFrames ?? []
 		const payload: {

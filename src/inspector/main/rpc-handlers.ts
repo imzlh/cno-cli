@@ -10,7 +10,8 @@
  * Every handler returns a concrete CDP shape; the endpoint forwards it verbatim.
  */
 
-import { native } from '../shared/native'
+import { getMemoryFile } from '../../../cts/src/api'
+import { FrameOffset, native } from '../shared/native'
 import type { RpcParams } from '../shared/rpc-contract'
 import type { MainEndpoint } from '../transport/main-endpoint'
 import type { Serializer } from './remote-object'
@@ -22,7 +23,12 @@ const engine = import.meta.use('engine')
 const fs = import.meta.use('fs')
 const os = import.meta.use('os')
 
-const EVAL_FRAME_OFFSET = 8
+/** Disk or active pack/VFS overlay (same path key as ModuleInfo.localPath). */
+function readScriptBytes(path: string): Uint8Array {
+	const mem = getMemoryFile(path)
+	if (mem !== undefined) return mem
+	return new Uint8Array(fs.readFile(path))
+}
 
 export interface RpcHandlerDeps {
 	serializer: Serializer
@@ -58,14 +64,14 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 
 		getScriptSource: (q) => {
 			try {
-				return { scriptSource: engine.decodeString(fs.readFile(hooks.scriptSourcePath(q.scriptId))) }
+				return { scriptSource: engine.decodeString(readScriptBytes(hooks.scriptSourcePath(q.scriptId))) }
 			} catch {
 				return { scriptSource: '' }
 			}
 		},
 		getResourceContent: (q) => {
 			try {
-				return { content: engine.decodeString(fs.readFile(hooks.scriptSourcePath(q.url))), base64Encoded: false }
+				return { content: engine.decodeString(readScriptBytes(hooks.scriptSourcePath(q.url))), base64Encoded: false }
 			} catch {
 				return { content: '', base64Encoded: false }
 			}
@@ -114,7 +120,8 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 		setVariableValue: (q) => {
 			const level = Number(q.callFrameId ?? 0) || 0
 			const scope = deps.pauseController.normalizeScope(String(q.callFrameId ?? '0'), q.scopeNumber ?? 0)
-			native.setVariable(EVAL_FRAME_OFFSET + level, q.variableName, evaluator.resolveArgument(q.newValue), scope)
+			// FrameOffset.PausedSetVariable: service loop only (no evaluateSync).
+			native.setVariable(FrameOffset.PausedSetVariable + level, q.variableName, evaluator.resolveArgument(q.newValue), scope)
 			return {}
 		},
 

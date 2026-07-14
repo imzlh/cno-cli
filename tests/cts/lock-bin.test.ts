@@ -22,8 +22,9 @@ Deno.test('cts lock: flush opens a fresh writable DB and persists pending entrie
         });
         store.setSource('pkg', '/project/main.ts', 'npm:pkg@1.0.0/mod.ts');
         store.setSourceByKey('custom\0key', 'npm:custom@1.0.0/index.ts');
+        store.setImports('npm:pkg@1.0.0/mod.ts', ['./dep.ts', 'node:fs']);
         store.addBin('pkg-cli', joinPaths(root, 'cache', 'pkg', 'cli.js'), 'pkg@1.0.0');
-        strictEqual(store.dirtyCount, 4);
+        strictEqual(store.dirtyCount, 5);
         store.flush();
         strictEqual(store.dirtyCount, 0);
         store.close();
@@ -39,6 +40,7 @@ Deno.test('cts lock: flush opens a fresh writable DB and persists pending entrie
             });
             strictEqual(read.getSource('pkg', '/project/main.ts'), 'npm:pkg@1.0.0/mod.ts');
             strictEqual(read.getSourceByKey('custom\0key'), 'npm:custom@1.0.0/index.ts');
+            deepStrictEqual(read.getImports('npm:pkg@1.0.0/mod.ts'), ['./dep.ts', 'node:fs']);
             deepStrictEqual(read.getBin('pkg-cli'), {
                 path: joinPaths(root, 'cache', 'pkg', 'cli.js'),
                 pkg: 'pkg@1.0.0',

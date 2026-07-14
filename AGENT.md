@@ -49,6 +49,7 @@ THERE ARE SOME WARNINGS YOU SHOULD BE AWARE OF:
    You can redesign 
  - cts: Do not optimize the module specially. For example, optimized to treat `vite.config.js` to esm.
  - cts: We assumed that cache in lock are correct, never try to add verify logic to cts source code.
+ - cts: Never infer ESM/CJS from source contents; use extensions, package metadata/conditions, or an explicit caller format.
  - after modifing codes and files that mentioned here, you are supposed to change the content below.
  - testing: if you only modified source in `cno/src/node/`(exclude `_internal/inject.ts`), only `cno setup` is required to refresh cache (don't forget to set cwd to the project!), or you should use `cmake -B build` to rebuild binary (TS will automately attach into the binary)
  - runtime/native: keep Node-like host symbol exports for TJS/N-API addons, but isolate `Deno.dlopen` FFI libraries from host symbols on Linux with a separate loader namespace.
@@ -214,9 +215,9 @@ cts/src/
 ├── flow.ts                     # Generator-based I/O flow (runSync, runAsync, StepType)
 ├── lock.ts                     # SQLite3 lock store (sources, modules, bins tables)
 ├── oxc.ts                      # Native OXC extension loader
-├── precompile.ts               # Thin re-export of parse.ts (ParseDriver transform-only)
-├── import-scanner.ts           # Import graph scan (main-thread oxc-first; Sucrase fallback)
-├── scan.ts                     # Sucrase extractImports + cheap hasImportAttributes / hasTopLevelEsmSyntax
+├── precompile.ts               # Thin re-export of parse.ts (ParseDriver worker scan/transform)
+├── import-scanner.ts           # OXC-first import extraction used by parse workers
+├── scan.ts                     # Sucrase extractImports + cheap hasImportAttributes detector
 ├── pack/                       # .jspack format validation, writer, extraction/reader
 ├── shell.ts                    # Shell command parser
 ├── task.ts                     # deno.json/package.json task runner
@@ -264,28 +265,24 @@ interface ConfigOptions {
 
 ### node_modules Materialization (`--npm-mode`, resolve/linker.ts)
 
-cts resolves npm packages directly against a flat content-addressed store
-(`<cacheDir>/npm/<name>@<version>/`) — no real `node_modules` is written to
-disk by default. Tools that do their own filesystem-based resolution (Vite,
-etc.) need one, so `cno cache` can optionally materialize it via
-`--npm-mode=<normal|soft|hard>` (default `normal` = current flat-only
-behavior, unchanged):
-- `soft` — directory-level symlinks/junctions into the flat store (Windows
-  uses `asyncfs.symlink(..., SymlinkType.JUNCTION)` to avoid needing admin
-  rights; junctions, unlike hard links, work cross-drive).
-- `hard` — per-file hard links into the store (falls back to a copy only
-  cross-volume), same idea as pnpm's store linking.
+cts resolves npm packages against a flat content-addressed store
+(`<cacheDir>/npm/<name>@<version>/`). **Install** owns store-internal soft
+links (`storePkg/node_modules/dep` → another store package). **Materialize
+never writes under the store** — only under the project `node_modules`.
 
-Built from `DepScanner`'s resolved parent→child edges (`ScanResult.edges` in
-`deps.ts`), captured live during the scan rather than re-derived from semver
-after the fact — re-deriving could pick a different-but-valid version than
-what was actually resolved, breaking singleton-sensitive packages. Regenerated
-on every `cno cache` run (last-writer-wins, no diffing); the in-store
-`node_modules/` is shared across all projects using the same cache dir.
-Link failures fail closed: missing store packages, EPERM, or other link errors
-throw from `materializeNodeModules` and abort `cno cache` (no green success
-after partial/zero links). Soft mode also rejects dangling symlinks to absent
-store dirs before creating them.
+`--npm-mode=<normal|soft|hard>` (default `normal` = no project tree):
+- `soft` — project-root symlinks/junctions into the flat store only. Nested
+  resolution walks install-owned soft links under each store package.
+- `hard` — pnpm-style project virtual store at `node_modules/.cts/`: each
+  `name@version` body is hard-linked **once** (store `node_modules` skipped);
+  dependency edges and project roots are soft links into that virtual store.
+  Shared deps share one body. Incremental: unchanged bodies (store
+  `package.json` size+mtime stamp) are skipped; store updates rebuild that
+  body; packages no longer in the graph are pruned from `.cts`. Store stays
+  read-only.
+
+Project roots come from `DepScanner` scan edges. Required missing store
+packages fail closed from `materializeNodeModules`.
 
 ### ModuleCompiler Details (compile/index.ts)
 
@@ -409,7 +406,12 @@ deciding whether the parent GC can free the worker-side bookkeeping structs.
 LockStore uses SQLite3 (`cts.lock`) with tables:
 - `sources` — spec→specPath mapping (L1 cache)
 - `modules` — specPath→ModuleInfo (L2 cache)
+- `imports` — specPath→static import specifiers for warm `cno cache` scans
 - `bins` — binary name→local path
+
+Lock rows are authoritative and are not revalidated during resolution. Pack
+uses its own `fullGraph` scanner callback and never substitutes cached imports
+for the source graph being packed.
 
 ### Lock Location & Persistence (`resolveLockTarget` in runtime/index.ts)
 
@@ -1301,14 +1303,14 @@ IF YOU WANT TO USE, PLEASE USE `import.meta.use()` AS SHARED NAMESPACE TO DELIVE
 - `dnsCache` — TTL from DNS response
 
 ### Precompile
-- Worker-parallel OXC (native) / Sucrase (fallback) transform
+- Worker-parallel OXC (native) / Sucrase (fallback) import scan and transform
 - Workers return SharedArrayBuffer-backed code and source-map bytes; transform results carry only the task id plus payload.
 - The main thread must register source maps, then call `new engine.Module(...).dump()`; QuickJS dependency resolution is runtime-local, so neither step may move to a worker.
 - Each worker has at most two ordered transform tasks in flight, overlapping OXC work with the serialized QJS/disk lane without unbounded result buffering.
 - Plain `.js`/`.mjs`/`.cjs` modules compile directly from bytes on the main thread; malformed legacy encodings fall back to the string path.
 - Default workers reserve one core for main-thread QJS compile: inline on low/one-core, up to two on normal, cores minus one on high; `CTS_WORKERS` overrides this.
-- Import scan runs on the main thread via `ImportScanner` (oxc-first, Sucrase fallback) — never on the transform worker pool (old scan+10s-kill dual path caused silent incomplete graphs)
-- Transform workers only: 60s per-task safety timeout; no scan tasks in `ParseDriver`
+- Scan tasks have no wall-clock kill; worker/IPC failures restart the worker and retry the task without main-thread fallback or per-file blame.
+- Transform tasks retain a 60s safety timeout; exhausted infrastructure retries fail the worker batch, not an arbitrary source file.
 - BFS `wake()` in `deps.ts` only fires on `enqueue` or `pending===0`, not on every `finally` — otherwise idle workers busy-loop
 
 ### Networking
