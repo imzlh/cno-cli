@@ -55,6 +55,32 @@ Deno.test('timers: Immediate ref state toggles like Node', () => {
     }
 });
 
+Deno.test('timers: setImmediate runs after queued microtasks', async () => {
+    const order: string[] = [];
+    const done = new Promise<void>((resolve) => {
+        timers.setImmediate(() => {
+            order.push('immediate');
+            resolve();
+        });
+    });
+    queueMicrotask(() => order.push('microtask'));
+    await done;
+    strictEqual(order.join(','), 'microtask,immediate');
+});
+
+Deno.test('timers: cleared and fired Immediate handles are unreferenced', async () => {
+    const cleared = timers.setImmediate(() => {});
+    timers.clearImmediate(cleared);
+    strictEqual(cleared.hasRef(), false);
+    strictEqual(cleared.ref().hasRef(), false);
+
+    let fired: NodeJS.Immediate | undefined;
+    await new Promise<void>((resolve) => {
+        fired = timers.setImmediate(resolve);
+    });
+    strictEqual(fired?.hasRef(), false);
+});
+
 // --- 4. clearTimeout of already-fired timer is safe ------------------------
 
 Deno.test('timers: clearTimeout after fire is safe', () => {
@@ -126,6 +152,14 @@ Deno.test('timers.promises: setTimeout resolves', async () => {
 Deno.test('timers.promises: setImmediate resolves', async () => {
     const v = await timersP.setImmediate('imm');
     strictEqual(v, 'imm');
+});
+
+Deno.test('timers.promises: setImmediate runs after queued microtasks', async () => {
+    const order: string[] = [];
+    const immediate = timersP.setImmediate().then(() => order.push('immediate'));
+    queueMicrotask(() => order.push('microtask'));
+    await immediate;
+    strictEqual(order.join(','), 'microtask,immediate');
 });
 
 // --- 10. timers.promises.setInterval yields values --------------------------
@@ -202,6 +236,14 @@ Deno.test('timers.promises.scheduler: yield resumes asynchronously', async () =>
     order.push('after');
     await p;
     strictEqual(order.join(','), 'sync,after,yield');
+});
+
+Deno.test('timers.promises.scheduler: yield runs after queued microtasks', async () => {
+    const order: string[] = [];
+    const yielded = timersP.scheduler.yield().then(() => order.push('yield'));
+    queueMicrotask(() => order.push('microtask'));
+    await yielded;
+    strictEqual(order.join(','), 'microtask,yield');
 });
 
 // --- 15. global setTimeout/setInterval are the same as module exports -------

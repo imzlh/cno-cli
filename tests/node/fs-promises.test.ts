@@ -1,5 +1,6 @@
 import { strictEqual, ok } from 'node:assert';
 import { Buffer } from 'node:buffer';
+import { Dirent } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -103,7 +104,10 @@ Deno.test('fsp: readdir with withFileTypes returns Dirent objects', async () => 
         const ents = await fsp.readdir(TMP, { withFileTypes: true });
         ok(Array.isArray(ents));
         ok(ents.length >= 3);
-        for (const e of ents) ok(typeof e.name === 'string');
+        for (const e of ents) {
+            ok(e instanceof Dirent);
+            ok(typeof e.name === 'string');
+        }
         ok(ents.find((e) => e.name === 'd')?.isDirectory());
         ok(ents.find((e) => e.name === 'f1')?.isFile());
     } finally {

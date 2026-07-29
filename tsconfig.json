@@ -11,9 +11,9 @@
         "moduleResolution": "bundler",
         "resolveJsonModule": true,
         "allowSyntheticDefaultImports": true,
-        // "types": [],
+        // Empty typeRoots: do not auto-load all @types/* (DOM/node globals clash
+        // with cno webapi polyfills). Node ambients come from include below.
         "typeRoots": [],
-        // For nodejs:
         "lib": [
             "esnext",
         ],
@@ -22,8 +22,6 @@
             "@cnojs/quic": ["./ext-quic/"],
             "cts": ["./cts/src/main.ts"]
         },
-        // "types": ["node"],
-        // and npm install -D @types/node
         // Other Outputs
         "sourceMap": true,
         "declaration": true,
@@ -48,6 +46,12 @@
         "skipLibCheck": true,
         "allowJs": true
     },
-    "include": ["src/**/*.ts", "cno/lib.deno.d.ts", "./circu.js/types/*", "node_modules/@types/node/**/*", "./cno/src/type/*", "./cno/types/**/*.ts"],
+    "include": [
+        "src/**/*.ts",
+        "cno/lib.deno.d.ts",
+        "./circu.js/types/*",
+        "./cno/src/type/*",
+        "./cno/types/**/*.ts"
+    ],
     "exclude": ["node_modules", "dist", "build", "build_release"]
 }

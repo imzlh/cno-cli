@@ -60,10 +60,18 @@ Deno.test({ name: 'fs: readdir returns entries and Dirent names', timeout: 10000
         ok(names.includes('dir'));
 
         const dirents = fs.readdirSync(root, { withFileTypes: true });
-        for (const d of dirents) ok(typeof d.name === 'string' && d.name.length > 0);
+        for (const d of dirents) {
+            ok(d instanceof fs.Dirent);
+            ok(typeof d.name === 'string' && d.name.length > 0);
+        }
         ok(dirents.find((d) => d.name === 'dir')?.isDirectory());
         ok(dirents.find((d) => d.name === 'one.txt')?.isFile());
     });
+});
+
+Deno.test('fs: FileReadStream and FileWriteStream alias the stream constructors', () => {
+    strictEqual(fs.FileReadStream, fs.ReadStream);
+    strictEqual(fs.FileWriteStream, fs.WriteStream);
 });
 
 Deno.test({ name: 'fs: readFile on missing path throws ENOENT', timeout: 10000 }, () => {

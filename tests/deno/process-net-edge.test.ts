@@ -74,12 +74,15 @@ Deno.test('deno stdio: standard streams expose stable shape without consuming in
     strictEqual(typeof Deno.stderr.isTerminal(), 'boolean');
     ok(Deno.stderr.writable instanceof WritableStream);
 
-    if (Deno.stdout.isTerminal()) {
+    if ([Deno.stdin, Deno.stdout, Deno.stderr].some((stream) => stream.isTerminal())) {
         const size = Deno.consoleSize();
         ok(Number.isFinite(size.rows));
         ok(Number.isFinite(size.columns));
     } else {
-        throws(() => Deno.consoleSize(), /Only TTY streams have a size/);
+        throws(
+            () => Deno.consoleSize(),
+            /stdin, stdout, and stderr are not connected to a terminal/,
+        );
     }
 });
 

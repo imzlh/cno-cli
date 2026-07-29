@@ -76,8 +76,11 @@ export class FetchDomain extends Domain {
 		this.on('Fetch.enable', (p) => {
 			this.enabled = true
 			this.handleAuthRequests = this.bool(p, 'handleAuthRequests')
+			// CDP: omitted `patterns` means intercept everything. An empty list
+			// would make matchesAnyPattern() reject every request instead.
 			const rawPatterns = Array.isArray(p.patterns) ? p.patterns.filter(isRecord) : []
-			this.patterns = rawPatterns.map((pat) => ({
+			const effective = rawPatterns.length > 0 ? rawPatterns : [{}]
+			this.patterns = effective.map((pat) => ({
 				urlRegex: globToRegex(typeof pat.urlPattern === 'string' ? pat.urlPattern : '*'),
 				resourceType: typeof pat.resourceType === 'string' ? pat.resourceType : undefined,
 				requestStage: typeof pat.requestStage === 'string' ? pat.requestStage : 'Request',

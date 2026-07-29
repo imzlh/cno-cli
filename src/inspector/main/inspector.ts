@@ -90,7 +90,7 @@ export class Inspector {
 		const serializer = new Serializer()
 		const evaluator = new Evaluator(serializer)
 		const hooks = new Hooks(endpoint, serializer)
-		const pause = new PauseController(endpoint, serializer, () => this.connected)
+		const pause = new PauseController(endpoint, serializer, () => this.connected, (file) => hooks.frameLocationFor(file))
 		this.endpoint = endpoint
 		this.serializer = serializer
 		this.hooks = hooks

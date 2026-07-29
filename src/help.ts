@@ -36,10 +36,7 @@ ${C.bold('COMMANDS')}
   ${C.cyan('pack')}   ${C.cyan('<file>')} [-o ${C.dim('<out.jspack>')}]     Pack an entry and its deps into a portable ${C.cyan('.jspack')} container
   ${C.cyan('repl')}                           Start an interactive TypeScript REPL
   ${C.cyan('setup')}                          Install NodeJS modules. Please run in cno repo dir
-  ${C.cyan('fmt')}    [paths…]                Format source files            ${C.dim('(not yet)')}
-  ${C.cyan('lint')}   [paths…]                Lint source files              ${C.dim('(not yet)')}
   ${C.cyan('test')}   [paths…]                Run test files matching ${C.cyan('[._]test.[jt]sx?')}
-  ${C.cyan('upgrade')}                        Update extensions / self       ${C.dim('(not yet)')}
 
   ${C.dim(`If the first argument is a file path, ${C.cyan('cno run')} is implied.`)}
 

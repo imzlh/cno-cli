@@ -1,4 +1,4 @@
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
@@ -66,6 +66,7 @@ Deno.test('cts scan: extracts runtime imports and skips type-only references', (
 Deno.test('cts scan: dedupes imports and ignores invalid source', () => {
     deepStrictEqual(extractImports('const x = 1;'), []);
     deepStrictEqual(extractImports('import {'), []);
+    throws(() => extractImports('import {', true, true));
     deepStrictEqual(extractImports(`
         import './same';
         export * from './same';
@@ -174,6 +175,132 @@ Deno.test('cts pkg: resolveExports honors import/require conditions and wildcard
     }
 });
 
+Deno.test('cts pkg: package maps preserve declaration order and explicit blocks', () => {
+    const root = makePosixTempDir('pkg-exports-order');
+    try {
+        write(root, 'default.js');
+        write(root, 'import.js');
+        write(root, 'private.js');
+        write(root, 'fallback/private.js');
+        write(root, 'specific/item.js');
+        write(root, 'generated/item/item.js');
+        write(root, 'extensionless.js');
+        write(root, 'sync.js');
+        write(root, 'addon.node');
+        write(root, 'with-suffix.js');
+        writeFileSync(joinPaths(root, 'package.json'), JSON.stringify({
+            type: 'module',
+            exports: {
+                '.': {
+                    default: './default.js',
+                    import: './import.js',
+                },
+                './private': null,
+                './feature/*': './specific/*',
+                './double/*': './generated/*/*.js',
+                './*': './fallback/*',
+                './extensionless': './extensionless',
+                './sync': {
+                    'module-sync': './sync.js',
+                    import: './import.js',
+                },
+                './addon': {
+                    'node-addons': './addon.node',
+                    default: './default.js',
+                },
+                './with-suffix': './with-suffix.js?mode=x#frag',
+                './empty*': './fallback/*',
+                './many**': './fallback/*',
+            },
+            imports: {
+                '#ordered': {
+                    default: './default.js',
+                    import: './import.js',
+                },
+                '#private': null,
+                '#external': 'dep/subpath',
+                '#exact': './internal',
+                '#with-suffix': './with-suffix.js?mode=x#frag',
+                '#many**': './fallback/*.js',
+                '#*': './fallback/*.js',
+            },
+        }));
+
+        clearPkgCache();
+        const ctx = createCtx(root)!;
+        strictEqual(resolveExports(ctx, '.')?.path, joinPaths(root, 'default.js'));
+        strictEqual(resolveExports(ctx, './private'), null, 'exact null must block wildcard fallback');
+        strictEqual(resolveExports(ctx, './feature/item.js')?.path, joinPaths(root, 'specific/item.js'));
+        strictEqual(resolveExports(ctx, './double/item')?.path, joinPaths(root, 'generated/item/item.js'));
+        strictEqual(resolveExports(ctx, './extensionless')?.path, joinPaths(root, 'extensionless'));
+        strictEqual(resolveExports(ctx, './sync')?.path, joinPaths(root, 'sync.js'));
+        strictEqual(resolveExports(ctx, './addon')?.path, joinPaths(root, 'addon.node'));
+        strictEqual(resolveExports(ctx, './with-suffix')?.path, joinPaths(root, 'with-suffix.js'));
+        strictEqual(resolveExports(ctx, './with-suffix')?.specifierSuffix, '?mode=x#frag');
+        strictEqual(resolveExports(ctx, './empty')?.path, joinPaths(root, 'fallback/empty'),
+            'empty wildcard matches must fall through to the catch-all');
+        strictEqual(resolveExports(ctx, './many-value')?.path, joinPaths(root, 'fallback/many-value'),
+            'keys with multiple wildcards must fall through to the catch-all');
+        strictEqual(resolveImports(ctx, '#ordered')?.path, joinPaths(root, 'default.js'));
+        strictEqual(resolveImports(ctx, '#private'), null, 'exact imports null must block wildcard fallback');
+        strictEqual(resolveImports(ctx, '#external')?.path, 'dep/subpath');
+        strictEqual(resolveImports(ctx, '#external')?.externalSpecifier, true);
+        strictEqual(resolveImports(ctx, '#exact')?.path, joinPaths(root, 'internal'),
+            'imports targets must not use extension probing');
+        strictEqual(resolveImports(ctx, '#with-suffix')?.path, joinPaths(root, 'with-suffix.js'));
+        strictEqual(resolveImports(ctx, '#with-suffix')?.specifierSuffix, '?mode=x#frag');
+        strictEqual(resolveImports(ctx, '#many-value')?.path, joinPaths(root, 'fallback/many-value.js'),
+            'valid fallback wildcard must win after rejecting a multi-wildcard key');
+    } finally {
+        clearPkgCache();
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts pkg: package map errors and array fallbacks match Node', () => {
+    const root = makePosixTempDir('pkg-map-errors');
+    try {
+        write(root, 'ok.js');
+        const setPackage = (exports: unknown, type = 'module') => {
+            writeFileSync(joinPaths(root, 'package.json'), JSON.stringify({ type, exports }));
+            clearPkgCache();
+            return createCtx(root)!;
+        };
+        const hasCode = (code: string) => (error: NodeJS.ErrnoException) => {
+            strictEqual(error.code, code);
+            return true;
+        };
+
+        throws(() => resolveExports(setPackage({
+            '.': './ok.js',
+            default: './ok.js',
+        }), '.'), hasCode('ERR_INVALID_PACKAGE_CONFIG'));
+
+        throws(() => resolveExports(setPackage({
+            '.': { import: '../bad.js', default: './ok.js' },
+        }), '.'), hasCode('ERR_INVALID_PACKAGE_TARGET'));
+
+        strictEqual(resolveExports(setPackage({
+            '.': ['../bad.js', './ok.js'],
+        }), '.')?.path, joinPaths(root, 'ok.js'));
+        strictEqual(resolveExports(setPackage({
+            '.': ['../bad.js', null],
+        }), '.'), null);
+
+        throws(() => resolveExports(setPackage({ '.': './foo%2fbar.js' }), '.'),
+            hasCode('ERR_INVALID_MODULE_SPECIFIER'));
+
+        const requireCtx = setPackage({ '.': { require: './ok.js' } });
+        const requireJs = resolveExports({ ...requireCtx, forceCjs: true }, '.');
+        strictEqual(requireJs?.format, 'esm', 'require condition must not override package type');
+        const importJs = resolveExports(setPackage({ '.': { import: './ok.js' } }, 'commonjs'), '.');
+        strictEqual(importJs?.format, 'cjs', 'import condition must not override package type');
+    } finally {
+        clearPkgCache();
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test('cts pkg: resolveImports handles direct and wildcard package imports', () => {
     const root = makePosixTempDir('pkg-imports');
     try {
@@ -194,6 +321,12 @@ Deno.test('cts pkg: resolveImports handles direct and wildcard package imports',
         strictEqual(resolveImports(ctx, '#lib/foo')?.path, joinPaths(root, 'lib/foo.js'));
         strictEqual(resolveImports(ctx, '#/add')?.path, joinPaths(root, 'src/add.js'));
         strictEqual(resolveImports(ctx, '#none'), null);
+        for (const spec of ['#', '#foo/']) {
+            throws(() => resolveImports(ctx, spec), (error: NodeJS.ErrnoException) => {
+                strictEqual(error.code, 'ERR_INVALID_MODULE_SPECIFIER');
+                return true;
+            });
+        }
     } finally {
         clearPkgCache();
         rmSync(root, { recursive: true, force: true });
@@ -206,7 +339,10 @@ Deno.test('cts pkg: resolveMain and resolveSubpath keep ESM subpaths strict but 
         write(root, 'module-entry.js');
         write(root, 'main-entry.cjs');
         write(root, 'sub/index.js');
-        write(root, 'extensionless');
+        write(root, 'extensionless', 'module.exports = 1;\n');
+        const untypedDir = joinPaths(root, 'untyped');
+        write(root, 'untyped/extensionless', 'export const value = 1;\n');
+        writeFileSync(joinPaths(untypedDir, 'package.json'), JSON.stringify({ name: 'untyped' }));
         writeFileSync(joinPaths(root, 'package.json'), JSON.stringify({
             type: 'module',
             module: './module-entry.js',
@@ -216,14 +352,19 @@ Deno.test('cts pkg: resolveMain and resolveSubpath keep ESM subpaths strict but 
         clearPkgCache();
         const esmCtx = createCtx(root)!;
         const cjsCtx = createCtx(root, { forceCjs: true })!;
+        const untypedCtx = createCtx(untypedDir)!;
         strictEqual(resolveMain(esmCtx)?.path, joinPaths(root, 'module-entry.js'));
         strictEqual(resolveMain(esmCtx)?.format, 'esm');
         strictEqual(resolveMain(cjsCtx)?.path, joinPaths(root, 'main-entry.cjs'));
         strictEqual(resolveMain(cjsCtx)?.format, 'cjs');
         strictEqual(resolveSubpath(esmCtx, './sub'), null);
         strictEqual(resolveSubpath(cjsCtx, './sub')?.path, joinPaths(root, 'sub/index.js'));
-        strictEqual(resolveSubpath(esmCtx, './extensionless')?.format, 'cjs');
+        strictEqual(resolveSubpath(esmCtx, './module-entry'), null);
+        strictEqual(resolveSubpath(cjsCtx, './module-entry')?.path, joinPaths(root, 'module-entry.js'));
+        strictEqual(resolveSubpath(esmCtx, './extensionless')?.format, 'esm');
+        strictEqual(resolveSubpath(cjsCtx, './extensionless')?.format, 'esm');
         strictEqual(resolveSubpath(esmCtx, './extensionless')?.fileKind, 'source');
+        strictEqual(resolveSubpath(untypedCtx, './extensionless')?.format, 'cjs');
         strictEqual(resolveSubpath(esmCtx, './missing'), null);
     } finally {
         clearPkgCache();
@@ -231,7 +372,7 @@ Deno.test('cts pkg: resolveMain and resolveSubpath keep ESM subpaths strict but 
     }
 });
 
-Deno.test('cts pkg: resolveExports tries array fallbacks in order', () => {
+Deno.test('cts pkg: exports arrays preserve the first valid target URL', () => {
     const root = makePosixTempDir('pkg-array-exports');
     try {
         write(root, 'ok.js');
@@ -243,7 +384,7 @@ Deno.test('cts pkg: resolveExports tries array fallbacks in order', () => {
 
         clearPkgCache();
         const ctx = createCtx(root)!;
-        strictEqual(resolveExports(ctx, '.')?.path, joinPaths(root, 'ok.js'));
+        strictEqual(resolveExports(ctx, '.')?.path, joinPaths(root, 'missing.js'));
     } finally {
         clearPkgCache();
         rmSync(root, { recursive: true, force: true });

@@ -3,8 +3,8 @@ import { Readable, pipeline } from 'node:stream';
 import * as zlib from 'node:zlib';
 import { decodeUtf8, encodeUtf8 } from '../_helpers/bytes.ts';
 
-// zlib: tricky cases are (1) sync round-trip for gzip/deflate/raw,
-// (2) brotli round-trip if present, (3) empty-buffer edge, (4) large buffer.
+// zlib: (1) gzip/deflate/raw sync round-trip, (2) brotli when native present,
+// (3) empty-buffer, (4) large buffer. Brotli soft-skip only if C lacked brotli.
 
 Deno.test('zlib: gzipSync then gunzipSync round-trips', () => {
     const s = 'the quick brown fox jumps over the lazy dog';
@@ -49,29 +49,32 @@ Deno.test('zlib: large buffer round-trips', () => {
     ok(uint8Equal(back, big));
 });
 
-Deno.test('zlib: brotli compress then decompress round-trips', () => {
-    if (typeof zlib.brotliCompressSync !== 'function' || typeof zlib.brotliDecompressSync !== 'function') {
-        return;
-    }
-    const s = 'brotli payload';
-    let c: Uint8Array;
+function brotliNativeAvailable(): boolean {
     try {
-        c = zlib.brotliCompressSync(encodeUtf8(s));
+        const probe = zlib.brotliCompressSync(Buffer.from('probe'));
+        ok(Buffer.isBuffer(probe) && probe.length > 0);
+        return true;
     } catch (e: any) {
-        if (/not supported/i.test(String(e?.message ?? e))) return;
+        if (/not supported/i.test(String(e?.message ?? e))) return false;
         throw e;
     }
+}
+
+Deno.test('zlib: brotli compress then decompress round-trips', () => {
+    if (!brotliNativeAvailable()) return;
+    const s = 'brotli payload ' + 'x'.repeat(200);
+    const c = zlib.brotliCompressSync(encodeUtf8(s));
+    ok(Buffer.isBuffer(c));
+    ok(c.length > 0);
+    ok(c.length < encodeUtf8(s).length + 64);
     const back = zlib.brotliDecompressSync(c);
     strictEqual(decodeUtf8(back), s);
+    // empty + empty-ish edges
+    strictEqual(zlib.brotliDecompressSync(zlib.brotliCompressSync(new Uint8Array(0))).length, 0);
 });
 
 Deno.test('zlib upstream: BrotliCompress and BrotliDecompress classes stream data', async () => {
-    try {
-        zlib.brotliCompressSync(Buffer.from('probe'));
-    } catch (e: any) {
-        if (/not supported/i.test(String(e?.message ?? e))) return;
-        throw e;
-    }
+    if (!brotliNativeAvailable()) return;
 
     const brotliCompress = new zlib.BrotliCompress();
     const brotliDecompress = new zlib.BrotliDecompress();
@@ -187,6 +190,140 @@ Deno.test('zlib: streaming gunzip pipeline finishes split gzip payload', async (
 
 Deno.test('zlib: callback APIs require a callback', () => {
     throws(() => (zlib.gzip as any)(Buffer.from('x')), TypeError);
+});
+
+Deno.test('zlib upstream: createUnzip auto-detects split gzip and zlib headers', async () => {
+    for (const compressed of [zlib.gzipSync('gzip-data'), zlib.deflateSync('zlib-data')]) {
+        const unzip = zlib.createUnzip();
+        const chunks: Buffer[] = [];
+        unzip.on('data', chunk => chunks.push(Buffer.from(chunk)));
+        const done = new Promise<void>((resolve, reject) => {
+            unzip.on('end', resolve);
+            unzip.on('error', reject);
+        });
+        unzip.write(compressed.subarray(0, 1));
+        unzip.write(compressed.subarray(1, 3));
+        unzip.end(compressed.subarray(3));
+        await done;
+        ok(['gzip-data', 'zlib-data'].includes(Buffer.concat(chunks).toString()));
+    }
+});
+
+Deno.test('zlib upstream: Brotli streams preserve state across input chunks', async () => {
+    if (!brotliNativeAvailable()) return;
+    const compress = zlib.createBrotliCompress({
+        params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 },
+    });
+    const decompress = zlib.createBrotliDecompress();
+    const output: Buffer[] = [];
+    decompress.on('data', chunk => output.push(Buffer.from(chunk)));
+    const done = new Promise<void>((resolve, reject) => {
+        decompress.on('end', resolve);
+        compress.on('error', reject);
+        decompress.on('error', reject);
+    });
+    compress.pipe(decompress);
+    compress.write('hello');
+    compress.write(' ');
+    compress.end('world');
+    await done;
+    strictEqual(Buffer.concat(output).toString(), 'hello world');
+});
+
+Deno.test('zlib upstream: BrotliDecompress accepts a split compressed frame', async () => {
+    if (!brotliNativeAvailable()) return;
+    const compressed = zlib.brotliCompressSync('split-brotli-payload');
+    const decompress = zlib.createBrotliDecompress();
+    const output: Buffer[] = [];
+    decompress.on('data', chunk => output.push(Buffer.from(chunk)));
+    const done = new Promise<void>((resolve, reject) => {
+        decompress.on('end', resolve);
+        decompress.on('error', reject);
+    });
+    decompress.write(compressed.subarray(0, 2));
+    decompress.write(compressed.subarray(2, 7));
+    decompress.end(compressed.subarray(7));
+    await done;
+    strictEqual(Buffer.concat(output).toString(), 'split-brotli-payload');
+});
+
+Deno.test('zlib upstream: flush, reset, params, and close are functional', async () => {
+    const deflate = zlib.createDeflate();
+    const compressed: Buffer[] = [];
+    deflate.on('data', chunk => compressed.push(Buffer.from(chunk)));
+    const done = new Promise<void>((resolve, reject) => {
+        deflate.on('end', resolve);
+        deflate.on('error', reject);
+    });
+    deflate.write('first');
+    await new Promise<void>(resolve => deflate.flush(zlib.constants.Z_SYNC_FLUSH, resolve));
+    await new Promise<void>(resolve => deflate.params(1, zlib.constants.Z_DEFAULT_STRATEGY, resolve));
+    deflate.end('-second');
+    await done;
+    strictEqual(zlib.inflateSync(Buffer.concat(compressed)).toString(), 'first-second');
+
+    const reusable = zlib.createDeflate();
+    reusable._processChunk(Buffer.from('discarded'), zlib.constants.Z_NO_FLUSH);
+    reusable.reset();
+    const head = reusable._processChunk(Buffer.from('kept'), zlib.constants.Z_NO_FLUSH);
+    const tail = reusable._processChunk(Buffer.alloc(0), zlib.constants.Z_FINISH);
+    strictEqual(zlib.inflateSync(Buffer.concat([head, tail])).toString(), 'kept');
+
+    for (const closable of [
+        zlib.createDeflate(),
+        zlib.createInflate(),
+        zlib.createGzip(),
+        zlib.createGunzip(),
+        zlib.createDeflateRaw(),
+        zlib.createInflateRaw(),
+        zlib.createUnzip(),
+    ]) {
+        await new Promise<void>(resolve => closable.close(resolve));
+        strictEqual(closable.destroyed, true);
+    }
+});
+
+Deno.test('zlib upstream: callback validates options synchronously and fires asynchronously', async () => {
+    throws(() => zlib.gzip('x', { level: 100 }, () => {}), RangeError);
+    let synchronous = true;
+    await new Promise<void>((resolve, reject) => {
+        zlib.gzip('x', (error) => {
+            if (error) return reject(error);
+            strictEqual(synchronous, false);
+            resolve();
+        });
+        synchronous = false;
+    });
+});
+
+Deno.test('zlib upstream: advanced options apply or fail explicitly', () => {
+    const payload = Buffer.from('strategy-check '.repeat(100));
+    const filtered = zlib.deflateSync(payload, {
+        level: 4,
+        strategy: zlib.constants.Z_FILTERED,
+        memLevel: 4,
+    });
+    strictEqual(zlib.inflateSync(filtered).toString(), payload.toString());
+    throws(() => zlib.deflateSync(payload, { dictionary: Buffer.from('dict') }), /not supported/);
+    throws(() => zlib.createInflate({ windowBits: 12 }), /windowBits/);
+});
+
+Deno.test('zlib upstream: Brotli validates operations and passes large-window params', () => {
+    if (!brotliNativeAvailable()) return;
+    throws(() => zlib.createBrotliCompress({ flush: zlib.constants.Z_FULL_FLUSH }), RangeError);
+    throws(() => zlib.brotliCompressSync('x', { finishFlush: 9 }), RangeError);
+
+    const compressed = zlib.brotliCompressSync('large-window', {
+        params: {
+            [zlib.constants.BROTLI_PARAM_QUALITY]: 4,
+            [zlib.constants.BROTLI_PARAM_LGWIN]: 25,
+            [zlib.constants.BROTLI_PARAM_LARGE_WINDOW]: 1,
+        },
+    });
+    const decompressed = zlib.brotliDecompressSync(compressed, {
+        params: { [zlib.constants.BROTLI_DECODER_PARAM_LARGE_WINDOW]: 1 },
+    });
+    strictEqual(decompressed.toString(), 'large-window');
 });
 
 function uint8Equal(a: Uint8Array, b: Uint8Array): boolean {

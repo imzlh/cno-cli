@@ -70,6 +70,23 @@ Deno.test('ReadableStream upstream: cancel passes reason to underlying source', 
     strictEqual((await r.read()).done, true);
 });
 
+Deno.test('ReadableStream upstream: cancel closes pending reads before source cleanup settles', async () => {
+    let finishCancel!: () => void;
+    const cancelGate = new Promise<void>((resolve) => { finishCancel = resolve; });
+    const stream = new ReadableStream({
+        cancel() {
+            return cancelGate;
+        },
+    });
+    const reader = stream.getReader();
+    const pendingRead = reader.read();
+    const cancel = reader.cancel('stop');
+
+    deepStrictEqual(await pendingRead, { value: undefined, done: true });
+    finishCancel();
+    await cancel;
+});
+
 Deno.test('ReadableStream upstream: releaseLock rejects pending read', async () => {
     const rs = new ReadableStream({ start() {} });
     const reader = rs.getReader();
@@ -163,6 +180,32 @@ Deno.test('WritableStream upstream: abort forwards reason to underlying sink', a
     await writer.abort('sink-abort-reason');
     strictEqual(abortReason, 'sink-abort-reason');
     await rejects(writer.write('after-abort'), 'sink-abort-reason');
+});
+
+Deno.test('WritableStream upstream: stream abort respects writer lock ownership', async () => {
+    let abortReason: unknown;
+    const stream = new WritableStream({
+        abort(reason) {
+            abortReason = reason;
+        },
+    });
+    const writer = stream.getWriter();
+
+    await rejects(stream.abort('wrong-owner'), TypeError);
+    strictEqual(abortReason, undefined);
+    await writer.abort('writer-owner');
+    strictEqual(abortReason, 'writer-owner');
+});
+
+Deno.test('WritableStream upstream: released writer promises reject', async () => {
+    const stream = new WritableStream();
+    const writer = stream.getWriter();
+    writer.releaseLock();
+
+    await rejects(writer.ready, TypeError);
+    await rejects(writer.closed, TypeError);
+    strictEqual(stream.locked, false);
+    await stream.abort('cleanup');
 });
 
 // --- 10. TransformStream: transforms chunks -------------------------------

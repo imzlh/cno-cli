@@ -10,12 +10,12 @@ set(CJSC_PATH      "" CACHE FILEPATH "Pre-built host cjsc executable")
 set(CNO_EXT_DIR    "" CACHE PATH     "Pre-built native extensions dir (.so/.dll)")
 
 # ── Static extensions ─────────────────────────────────────────────────────────
-set(_EXT_SRCS "" CACHE INTERNAL "")
-set(_EXT_INCS "" CACHE INTERNAL "")
-set(_EXT_LIBS "" CACHE INTERNAL "")
-set(_EXT_NAMES "" CACHE INTERNAL "")
-set(_EXT_INITS "" CACHE INTERNAL "")
-set(_EXT_SAFE  "" CACHE INTERNAL "")
+set(_EXT_SRCS "")
+set(_EXT_INCS "")
+set(_EXT_LIBS "")
+set(_EXT_NAMES "")
+set(_EXT_INITS "")
+set(_EXT_SAFE  "")
 
 macro(_cno_add_ext name init safe src inc)
     list(APPEND _EXT_SRCS  "${src}")
@@ -47,29 +47,63 @@ if(CNO_EMBED_EXT_QUIC)
         message(FATAL_ERROR "CNO_EMBED_EXT_QUIC: missing submodule at ${_QUICLY}")
     endif()
     find_package(OpenSSL REQUIRED)
+    # quicly.a is protocol-only (picotls sources live only in quicly's cli/tests).
+    # Build a private picotls static lib — do not add_subdirectory(picotls):
+    # both trees define a `cli` target and collide.
+    set(WITH_DTRACE OFF CACHE BOOL "" FORCE)
+    set(BUILD_FUZZER OFF CACHE BOOL "" FORCE)
+    set(_PICOTLS "${_QUICLY}/deps/picotls")
+    if(NOT EXISTS "${_PICOTLS}/lib/picotls.c")
+        message(FATAL_ERROR "CNO_EMBED_EXT_QUIC: missing picotls sources at ${_PICOTLS}")
+    endif()
+    if(NOT TARGET cno_picotls)
+        add_library(cno_picotls STATIC
+            "${_PICOTLS}/lib/picotls.c"
+            "${_PICOTLS}/lib/pembase64.c"
+            "${_PICOTLS}/lib/hpke.c"
+            "${_PICOTLS}/lib/openssl.c")
+        target_include_directories(cno_picotls PUBLIC
+            "${_PICOTLS}/include"
+            ${OPENSSL_INCLUDE_DIR})
+        target_link_libraries(cno_picotls PUBLIC
+            OpenSSL::Crypto OpenSSL::SSL ${CMAKE_DL_LIBS})
+        set_target_properties(cno_picotls PROPERTIES
+            POSITION_INDEPENDENT_CODE ON)
+    endif()
     add_subdirectory("${_QUICLY}" "${CMAKE_BINARY_DIR}/quicly")
-    list(APPEND _EXT_LIBS quicly OpenSSL::SSL OpenSSL::Crypto)
+    list(APPEND _EXT_LIBS
+        quicly cno_picotls
+        OpenSSL::SSL OpenSSL::Crypto)
     _cno_add_ext("@cnojs/quic" "qc_ns_init" "false"
         "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic/native.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic")
     list(APPEND _EXT_INCS
         "${_QUICLY}/include"
-        "${_QUICLY}/deps/picotls/include"
-        "${_QUICLY}/deps/picotls/picotlsvs/picotls")
+        "${_PICOTLS}/include"
+        "${_PICOTLS}/picotlsvs/picotls")
     if(WIN32)
         list(APPEND _EXT_INCS "${_QUICLY}/windows-compat/include")
     endif()
-    message(STATUS "[cno] embed ext-quic (in-tree quicly)")
+    message(STATUS "[cno] embed ext-quic (quicly + cno_picotls)")
 endif()
 
 if(_EXT_SRCS)
-    set(CJS_EXTRA_SOURCES            "${_EXT_SRCS}"   CACHE INTERNAL "")
-    set(CJS_EXTRA_INCLUDE_DIRS       "${_EXT_INCS}"   CACHE INTERNAL "")
-    set(CJS_EXTRA_LIBS               "${_EXT_LIBS}"   CACHE INTERNAL "")
-    set(CJS_EXTRA_DEFINES            "CJS_STATIC_LINK" CACHE INTERNAL "")
-    set(CJS_EXTRA_MODULE_NAMES       "${_EXT_NAMES}"  CACHE INTERNAL "")
-    set(CJS_EXTRA_MODULE_INITS       "${_EXT_INITS}"  CACHE INTERNAL "")
-    set(CJS_EXTRA_MODULE_WORKER_SAFE "${_EXT_SAFE}"   CACHE INTERNAL "")
+    set(CJS_EXTRA_SOURCES            "${_EXT_SRCS}"   CACHE INTERNAL "" FORCE)
+    set(CJS_EXTRA_INCLUDE_DIRS       "${_EXT_INCS}"   CACHE INTERNAL "" FORCE)
+    set(CJS_EXTRA_LIBS               "${_EXT_LIBS}"   CACHE INTERNAL "" FORCE)
+    set(CJS_EXTRA_DEFINES            "CJS_STATIC_LINK" CACHE INTERNAL "" FORCE)
+    set(CJS_EXTRA_MODULE_NAMES       "${_EXT_NAMES}"  CACHE INTERNAL "" FORCE)
+    set(CJS_EXTRA_MODULE_INITS       "${_EXT_INITS}"  CACHE INTERNAL "" FORCE)
+    set(CJS_EXTRA_MODULE_WORKER_SAFE "${_EXT_SAFE}"   CACHE INTERNAL "" FORCE)
+    set(_CNO_GENERATED_EXTRA ON CACHE INTERNAL "" FORCE)
+elseif(_CNO_GENERATED_EXTRA)
+    foreach(_var IN ITEMS
+            CJS_EXTRA_SOURCES CJS_EXTRA_INCLUDE_DIRS CJS_EXTRA_LIBS
+            CJS_EXTRA_DEFINES CJS_EXTRA_MODULE_NAMES CJS_EXTRA_MODULE_INITS
+            CJS_EXTRA_MODULE_WORKER_SAFE)
+        unset(${_var} CACHE)
+    endforeach()
+    set(_CNO_GENERATED_EXTRA OFF CACHE INTERNAL "" FORCE)
 endif()
 
 # ── Blob path — must be resolved before add_subdirectory(circu.js) ────────────

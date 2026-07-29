@@ -1,5 +1,5 @@
 import { deepStrictEqual, strictEqual, ok, throws } from 'node:assert';
-import { spawn, exec, execFile, fork, spawnSync } from 'node:child_process';
+import { ChildProcess, spawn, exec, execFile, fork, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { join } from 'node:path';
 import * as fs from 'node:fs';
@@ -46,6 +46,20 @@ Deno.test({ name: 'child_process: child.pid is a positive number', timeout: 1000
     const child = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000);']);
     ok(typeof child.pid === 'number' && child.pid > 0);
     child.kill('SIGKILL');
+});
+
+Deno.test('child_process: exports a usable ChildProcess constructor', () => {
+    const child = new ChildProcess();
+    ok(child instanceof ChildProcess);
+    strictEqual(child.pid, 0);
+});
+
+Deno.test({ name: 'child_process: fork defaults to inherited stdio and accepts options as second argument', timeout: 10000 }, async () => {
+    const child = fork('0', { silent: false, execArgv: ['eval'] });
+    strictEqual(child.stdin, null);
+    strictEqual(child.stdout, null);
+    strictEqual(child.stderr, null);
+    await new Promise<void>((resolve) => child.once('close', () => resolve()));
 });
 
 Deno.test({ name: 'child_process: exec returns stdout/stderr to callback', timeout: 10000 }, async () => {
@@ -387,6 +401,7 @@ Deno.test({ name: 'child_process upstream: kill can be called repeatedly without
         const script = join(dir, 'loop.js');
         fs.writeFileSync(script, 'setInterval(() => {}, 1000);\n');
         const child = fork(script, [], {
+            silent: true,
             env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
         });
         try {
@@ -416,6 +431,7 @@ Deno.test({ name: 'child_process upstream: fork buffers child messages until lis
         `);
 
         const child = fork(script, [], {
+            silent: true,
             env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
         });
         const messages: unknown[] = [];
@@ -444,6 +460,7 @@ Deno.test({ name: 'child_process: fork child exits after IPC listener is removed
         `);
 
         const child = fork(script, [], {
+            silent: true,
             env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
         });
         const timeout = setTimeout(() => {
@@ -481,6 +498,7 @@ Deno.test({ name: 'child_process upstream: fork json IPC serializes typed array 
         `);
 
         const child = fork(script, [], {
+            silent: true,
             env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
         });
         const message = await new Promise<any>((resolve, reject) => {
@@ -512,6 +530,7 @@ Deno.test({ name: 'child_process upstream: fork advanced IPC preserves structure
         `);
 
         const child = fork(script, [], {
+            silent: true,
             env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
             serialization: 'advanced',
         });
@@ -541,6 +560,7 @@ Deno.test({ name: 'child_process upstream: send after IPC close reports ERR_IPC_
         fs.writeFileSync(script, 'process.disconnect();\n');
 
         const child = fork(script, [], {
+            silent: true,
             env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
         });
         const code = await new Promise<string | undefined>((resolve, reject) => {
@@ -650,6 +670,7 @@ Deno.test({ name: 'child_process upstream: fork execArgv conditions affect child
 
         const run = (execArgv?: string[]) => new Promise<any>((resolve, reject) => {
             const child = fork(script, [], {
+                silent: true,
                 cwd: dir,
                 execArgv,
                 env: { ...process.env, CTS_DISABLE_CACHE: 'true' },

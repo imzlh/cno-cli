@@ -22,10 +22,13 @@ Deno.test('cjs: require() of async ESM throws instead of returning partial names
 });
 
 // --- 2. require() of sync ESM returns live namespace with default ----------
-
+//
+// Node semantics: require(esm) yields the module namespace, NOT the bare
+// default. A `default` export additionally makes Node tag it __esModule.
 Deno.test('cjs: require() of sync ESM exposes default export', () => {
     const m = require('./fixtures/cjs-require-esm/vite.config.js');
-    deepStrictEqual(m, { kind: 'esm-js', answer: 42 });
+    deepStrictEqual(m.default, { kind: 'esm-js', answer: 42 });
+    strictEqual(m.__esModule, true);
 });
 
 // --- 3. require() of ESM is cached: same object on repeat require ---------
@@ -42,6 +45,23 @@ Deno.test('cjs: require() of ESM exposes named exports', () => {
     const m = require('./fixtures/cjs-require-esm/named.js');
     strictEqual(m.a, 1);
     strictEqual(m.b, 2);
+});
+
+// --- 4b. a default export must NOT hide the named exports -----------------
+//
+// Node returns the full namespace, so both `default` and every named export
+// stay reachable, and the bindings remain live.
+Deno.test('cjs: require() of ESM keeps named exports alongside default', () => {
+    const m = require('./fixtures/cjs-require-esm/default-and-named.js');
+    deepStrictEqual(m.default, { kind: 'the-default' });
+    strictEqual(m.named, 'the-named');
+    strictEqual(m.__esModule, true);
+    ok(Object.keys(m).includes('named'), 'named export must be enumerable');
+
+    // Live binding: mutating through the exported fn is visible on the view.
+    strictEqual(m.counter, 0);
+    m.bump();
+    strictEqual(m.counter, 1, 'namespace view must stay live, not a snapshot');
 });
 
 // --- 5. circular CJS: partial exports visible during cycle -----------------

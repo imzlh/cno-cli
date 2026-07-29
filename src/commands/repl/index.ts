@@ -1,15 +1,14 @@
-import { createRuntime, loadConfigFile, Transformer, joinPaths, cwd, uname, errMsg } from '../../../cts/src/api';
+import { createRuntime, loadConfigFile, Transformer, joinPaths, cwd, uname } from '../../../cts/src/api';
 import { version } from '../../version';
 import { CnoRepl } from './runner';
+import { HISTORY_DB_NAME, HISTORY_TEXT_NAME } from './history';
 import { Inspector } from '../../inspector';
 import { installInspectorBridge, uninstallInspectorBridge } from '../../inspector/bridge';
 import { parseInspectFlags } from '../inspect';
 
 const os = import.meta.use('os');
-const console = import.meta.use('console');
 const fs = import.meta.use('fs');
 const engine = import.meta.use('engine');
-const asyncfs = import.meta.use('asyncfs');
 
 function getEnv(name: string): string | null {
     try {
@@ -24,8 +23,21 @@ function homeDir(): string | null {
         const win = uname.sysname.includes('Windows');
         const v = getEnv(win ? 'USERPROFILE' : 'HOME');
         if (!v) return null;
-        return fs.realpath(v);
+        try {
+            return fs.realpath(v);
+        } catch {
+            // HOME may not resolve (sandbox, missing dir); keep the raw path.
+            return v;
+        }
     } catch { return null; }
+}
+
+function exists(path: string): boolean {
+    try {
+        return fs.exists(path);
+    } catch {
+        return false;
+    }
 }
 
 export async function runRepl(flags: Record<string, string | boolean>): Promise<void> {
@@ -63,35 +75,28 @@ export async function runRepl(flags: Record<string, string | boolean>): Promise<
     const transform = (code: string): string =>
         transformer.transform(code, '<repl>.ts');
 
-    // 4. History.
+    // 4. History — SQLite under HOME; migrate legacy text if DB is empty.
     const home = homeDir();
-    const histPath = home ? joinPaths(home, '.cno_history') : null;
+    const histPath = home ? joinPaths(home, HISTORY_DB_NAME) : undefined;
+    const legacyText = home ? joinPaths(home, HISTORY_TEXT_NAME) : null;
 
     const repl = new CnoRepl({
         transform,
         banner: `cno REPL v${version}. ".help" for help, ".q" to quit.\n`,
+        historyPath: histPath,
     });
 
-    if (histPath) {
+    if (legacyText && exists(legacyText)) {
         try {
-            const buf   = await asyncfs.readFile(histPath);
-            const lines = engine.decodeString(buf).split('\n').filter((l: string) => l.length);
-            repl.importHistory(lines);
-        } catch { /* no history yet */ }
+            repl.historyStore.migrateFromTextFile(legacyText);
+        } catch { /* best-effort */ }
     }
 
-    // 5. Run, then persist history.
+    // 5. Run; cleanup closes the history DB.
     await repl.start();
     repl.cleanup();
     await dbg?.detach();
     uninstallInspectorBridge();
-    if (histPath) {
-        try {
-            fs.writeFile(histPath, engine.encodeString(repl.exportHistory().join('\n')), 0o600);
-        } catch (e) {
-            console.error(`cno: failed to write ${histPath}: ${errMsg(e)}`);
-        }
-    }
 }
 
 async function startInspector(flags: Record<string, string | boolean>): Promise<Inspector | null> {

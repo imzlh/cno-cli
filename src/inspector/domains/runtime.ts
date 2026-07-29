@@ -19,22 +19,7 @@ import type {
 import type { WorkerEndpoint } from '../transport/worker-endpoint'
 import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
 import { Domain } from './base'
-import { isSideEffectFree } from './side-effect'
-
-function sideEffectException(): Record<string, unknown> {
-	const description = 'EvalError: Possible side-effect in debug-evaluate'
-	const exception = { type: 'object', subtype: 'error', className: 'EvalError', description }
-	return {
-		result: exception,
-		exceptionDetails: {
-			text: 'Uncaught',
-			exceptionId: 1,
-			lineNumber: -1,
-			columnNumber: -1,
-			exception,
-		},
-	}
-}
+import { isSideEffectFree, sideEffectException } from './side-effect'
 
 export class RuntimeDomain extends Domain {
 	private enabled = false
@@ -60,10 +45,14 @@ export class RuntimeDomain extends Domain {
 		})
 		this.on('Runtime.disable', () => {
 			this.enabled = false
+			void this.rpc.call('releaseObjectGroup', { objectGroup: 'console' })
 			return this.rpc.call('releaseObjectGroup', { objectGroup: 'runtime' })
 		})
 		this.on('Runtime.runIfWaitingForDebugger', () => this.rpc.call('runtimeReady', {}))
-		this.on('Runtime.discardConsoleEntries', () => ({}))
+		// CDP: discards collected console entries. Console arguments are interned
+		// into the 'console' object group, which nothing else ever releases.
+		this.on('Runtime.discardConsoleEntries', () =>
+			this.rpc.call('releaseObjectGroup', { objectGroup: 'console' }))
 
 		this.on('Runtime.evaluate', (p) => {
 			const q = this.extract<RuntimeEvaluateParams>(p)
@@ -177,6 +166,9 @@ export class RuntimeDomain extends Domain {
 
 	setConnected(connected: boolean): void {
 		this.connected = connected
-		if (!connected) void this.rpc.call('releaseObjectGroup', { objectGroup: 'runtime' })
+		if (!connected) {
+			void this.rpc.call('releaseObjectGroup', { objectGroup: 'console' })
+			void this.rpc.call('releaseObjectGroup', { objectGroup: 'runtime' })
+		}
 	}
 }

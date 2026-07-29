@@ -24,11 +24,12 @@
   "license": "MIT",
   "packageManager": "pnpm@10.17.1",
   "dependencies": {
+    "@cnojs/http": "workspace:./http",
     "node-buffer": "npm:buffer@^6.0.3",
-    "ts-interface-checker": "^1.0.2",
-    "@cnojs/http": "workspace:./http"
+    "ts-interface-checker": "^1.0.2"
   },
   "devDependencies": {
+    "@types/node": "^26.1.1",
     "esbuild": "^0.28.0",
     "typescript": "^6.0.3"
   }

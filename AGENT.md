@@ -97,7 +97,8 @@ export default function () {}   // exports directly
 | `crypto` | Cryptography | `md5`, `sha256`, `hmac`, `aes`, `rsa`, `ecdsa` |
 | `http` | HTTP parser | llhttp-based request/response parsing |
 | `ssl` | TLS/SSL | OpenSSL wrapper, `Context`, `Pipe` |
-| `zlib` | Compression | `deflate`, `inflate`, `gzip`, `gunzip`, `brotli` |
+| `zlib` | Compression | `deflate`, `inflate`, `gzip`, `gunzip` |
+| `brotli` | Brotli compression | `compress`, `decompress`, `createCompress`, `createDecompress` (built with libbrotli; check `available`) |
 | `ffi` | FFI | `UvLib`, `FfiCif`, `call` C functions from JS |
 | `worker` | Workers | `Worker`, `MessagePipe`, thread spawning |
 | `dns` | DNS | `resolve`, `resolveSync` with TTL cache |
@@ -388,6 +389,41 @@ and give the resulting `ArrayBuffer`/`Uint8Array` a `tjs__free`-based finalizer
 instead of the default tracked one. Only the *after_work* callback (runs back
 on the main thread) may touch `js_*`/QuickJS APIs.
 
+**A third allocator exists: plain libc `malloc`/`free`.** `tjs__*` is
+`mi_*` under `CJS__HAS_MIMALLOC`, so freeing a `tjs__malloc`'d pointer with
+libc `free` (or vice versa) corrupts the heap outright — not just the tracked
+counter. Never mix the three families; match every free to its allocator.
+
+### uv_close / Finalizer Rendezvous
+
+A struct embedding a `uv_handle_t` has **two** owners: the JS wrapper
+(finalizer) and libuv (`uv_close` cb). Neither may free unilaterally — the
+close cb can fire while the JS wrapper is still reachable (e.g. after an
+explicit `close()`), and the finalizer can run while a close is still in
+flight. Use the two-flag pattern (`closed` + `finalized`, as in
+`mod_fswatch.c` / `mod_worker.c` msgpipe): each side sets its own flag and
+frees only if the other flag is already set. Testing `uv_is_closing()` in the
+finalizer is **not** a substitute — it says a close is pending, not that the
+cb has run.
+
+For a struct shared with a *thread* (not just the loop), the "who frees"
+decision must be a single atomic read-modify-write **under the lock**. Setting
+a flag outside the lock and then re-reading the peer's state is a double-free
+race (see `worker_gc_claim_free` / `worker_thread_claim_free`).
+
+Handle-completion callbacks (`uv__write_cb` and friends) must bail out on
+`s->finalized || !qrt || qrt->freeing` **before** calling into JS: teardown
+cancels pending requests with `UV_ECANCELED`, so these callbacks do fire
+against a dying runtime. Release the request with an `_rt` variant that frees
+the promise and JSValues via `JS_FreeValueRT`/`TJS_FreePromiseRT`.
+
+### C Function argc/argv Discipline
+
+QuickJS pads `argv` only up to the **declared length** in the
+`JS_CFUNC*_DEF(name, length, ...)` entry. Reading `argv[n]` where
+`n >= length` is an out-of-bounds stack read, even for `JS_IsUndefined()`
+checks. Either declare the real arity or guard with `argc >= n + 1`.
+
 ### uv_run Discipline
 
 Never call `uv_run` outside `vm.c` (main loop) and `engine.waitIO()`.
@@ -400,6 +436,38 @@ Close handles with `uv_close`; callbacks fire in `TJS_FreeRuntime` → `uv_loop_
 done. The worker clears `wrt` before returning because it still runs
 `TJS_FreeRuntime()` during teardown. Use an explicit exited/joined state when
 deciding whether the parent GC can free the worker-side bookkeeping structs.
+
+### DynBuf Eval Length Convention
+
+`tjs__load_file` appends **no** NUL terminator, so `dbuf.size` is exactly the
+content length. `JS_Eval`/`TJS_EvalModuleContent` take the content length
+(excluding the terminator), so whether `- 1` is correct depends on when
+`.size` was sampled:
+
+- sampled **before** `dbuf_putc(&dbuf, '\0')` → pass it as-is (`utils.c`)
+- sampled **after** the putc → pass `.size - 1` (`modules.c:373`)
+
+Getting this wrong truncates the last byte of every script and underflows to
+`SIZE_MAX` on an empty file.
+
+### One-Time Init & Per-Thread Statics
+
+Module `*_init` functions run once **per context**, including on worker
+threads. Any process-global one-time init inside them (e.g.
+`curl_global_init`, mutex creation) must go through `uv_once` — a plain
+`static int initialized` flag is a data race. Mutable file-scope state that is
+logically per-runtime (console counters/timers, group indent) must be
+`thread_local`; only genuinely shared state (e.g. `stdout_mutex`) stays global.
+`dlmopen`/`Lmid_t` are glibc-only — guard with `__GLIBC__`, not `__linux__`
+(musl builds break otherwise).
+
+### Untrusted-Input Parser Progress
+
+Parsers over attacker-supplied text (source maps, bjson, XML) must guarantee
+the scan pointer advances every iteration. `decode_vlq` returns failure
+*without* consuming the offending byte, so a `while (*p)` loop that only
+`break`s out of the inner loop spins forever on a stray character. On a
+malformed segment, skip to the next known separator.
 
 ### Lock File Format (SQLite3)
 
@@ -788,6 +856,13 @@ export const promises = {
 
 Current note: standard fetch requests are curl-backed. The raw socket layer
 is primarily for long-lived protocol transports such as SSE/WebSocket.
+
+**Server HTTP/2**: `http/src/server.ts` registers `h2` when `h2Available()`;
+TLS contexts advertise ALPN from `config.protocols` (`defaultAlpnProtocols`).
+`Deno.serve` with `cert`+`key` offers `[HTTP2, HTTP11]` when ext-h2 is linked;
+cleartext remains HTTP/1.1 only. `node:http2.createSecureServer` uses
+`tls` + ALPN `h2` and steals the completed `TLSSocket` into `TcpSocket`
+(with `sslPipe`) for nghttp2. Missing native H2 fails closed (no silent H1).
 
 ### TcpSocket Details
 
@@ -1243,7 +1318,7 @@ cts src/main.ts run script.ts
 ### Bytecode Cache
 
 - Local modules: `~/.cts/local/<hash-prefix>/<hash>.jsc` with an mtime sidecar
-- Remote modules: `.jsc` and `.jsc.mt` beside the cached source
+- Remote modules: `.jsc` and `.jsc.mt` beside cache-owned sources; workspace/symlink targets use the hashed local cache so source trees stay untouched
 - Packed modules: one mapped buffer + lazy 0-copy views; on-demand deserialize; `sourceOnly` skips bytecode
 - Version mismatch auto-clears
 

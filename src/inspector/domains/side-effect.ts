@@ -191,3 +191,19 @@ export function isSideEffectFree(expr: string): boolean {
 	}
 	return true
 }
+
+/** CDP result for a rejected side-effecting eval (Runtime + Debugger share it). */
+export function sideEffectException(): Record<string, unknown> {
+	const description = 'EvalError: Possible side-effect in debug-evaluate'
+	const exception = { type: 'object', subtype: 'error', className: 'EvalError', description }
+	return {
+		result: exception,
+		exceptionDetails: {
+			text: 'Uncaught',
+			exceptionId: 1,
+			lineNumber: -1,
+			columnNumber: -1,
+			exception,
+		},
+	}
+}

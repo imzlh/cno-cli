@@ -36,6 +36,8 @@ export class PauseController {
 		private readonly endpoint: MainEndpoint,
 		private readonly serializer: Serializer,
 		private readonly isConnected: () => boolean,
+		/** Physical file → the scriptId/url announced by Debugger.scriptParsed. */
+		private readonly frameLocation: (file: string) => { scriptId: string; url: string },
 	) { }
 
 	/** Native onBreak callback. Returns 0 to continue execution. */
@@ -165,15 +167,20 @@ export class PauseController {
 		const id = String(level)
 		this.scopeChainLengths.set(id, scopeChain.length)
 
+		// scriptParsed announces scriptId=specPath (e.g. npm:foo@1/index.js);
+		// using the physical path here would never match, so DevTools could not
+		// resolve the frame to a script for any non-local module.
+		const loc = this.frameLocation(fFile)
+
 		const callFrame: CallFrame = {
 			callFrameId: id,
 			functionName: frameName,
 			location: {
-				scriptId: fFile,
+				scriptId: loc.scriptId,
 				lineNumber: fLine - 1,
 				columnNumber: fCol - 1,
 			},
-			url: fFile,
+			url: loc.url,
 			scopeChain,
 		}
 		if (hasThisVal && thisVal !== undefined) {

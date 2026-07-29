@@ -1,3 +1,9 @@
+import type { TokenStyle } from './types';
+import { COLOR, STYLE_MAP } from './types';
+import { JSColorizer } from './colorizer';
+import { CompletionEngine } from './completion';
+import { HistoryStore } from './history';
+
 const os = import.meta.use('os');
 const streams = import.meta.use('streams');
 const engine = import.meta.use('engine');
@@ -9,23 +15,6 @@ const error = import.meta.use('error');
 Reflect.set(globalThis, 'console', console);
 
 // ==================== Types ====================
-
-type TokenStyle =
-    | 'comment' | 'string' | 'regex' | 'number' | 'keyword'
-    | 'function' | 'type' | 'identifier' | 'error' | 'default'
-    | 'directive';
-
-interface HighlightResult {
-    state: string;
-    level: number;
-    styles: TokenStyle[];
-}
-
-interface CompletionResult {
-    completions: string[];
-    position: number;
-    context: unknown;
-}
 
 interface KeyCommand {
     (input: string): Promise<CommandResult | void> | CommandResult | void;
@@ -56,339 +45,12 @@ type CommandResult =
     | { type: 'cancel' }
     | { type: 'exit' };
 
-// ==================== Utilities ====================
-
-const COLOR = {
-    reset: '\x1b[0m',
-    black: '\x1b[30m', red: '\x1b[31m', green: '\x1b[32m',
-    yellow: '\x1b[33m', blue: '\x1b[34m', magenta: '\x1b[35m',
-    cyan: '\x1b[36m', white: '\x1b[37m', gray: '\x1b[90m',
-    brightRed: '\x1b[91m', brightGreen: '\x1b[92m', brightYellow: '\x1b[93m',
-    brightBlue: '\x1b[94m', brightMagenta: '\x1b[95m', brightCyan: '\x1b[96m',
-    brightWhite: '\x1b[97m',
-} as const;
-
-const STYLE_MAP: Record<TokenStyle, keyof typeof COLOR> = {
-    default: 'brightGreen', comment: 'gray', string: 'brightCyan',
-    regex: 'cyan', number: 'green', keyword: 'brightWhite',
-    function: 'brightYellow', type: 'brightMagenta', identifier: 'brightGreen',
-    error: 'red', directive: 'gray'
-};
 function getenv(env: string): string | null {
     try {
         return os.getenv(env) ?? null;
     } catch {
         return null;
     }
-}
-
-// ==================== Highlighter (Optimized) ====================
-
-class JSColorizer {
-    static #KEYWORDS = new Set([
-        'break', 'case', 'catch', 'continue', 'debugger', 'default', 'delete', 'do',
-        'else', 'finally', 'for', 'function', 'if', 'in', 'instanceof', 'new',
-        'return', 'switch', 'this', 'throw', 'try', 'typeof', 'while', 'with',
-        'class', 'const', 'enum', 'import', 'export', 'extends', 'super',
-        'implements', 'interface', 'let', 'package', 'private', 'protected',
-        'public', 'static', 'yield', 'undefined', 'null', 'true', 'false',
-        'Infinity', 'NaN', 'eval', 'arguments', 'await', 'async', 'of', 'void'
-    ]);
-
-    static #NO_REGEX = new Set([
-        'this', 'super', 'undefined', 'null', 'true', 'false',
-        'Infinity', 'NaN', 'arguments'
-    ]);
-
-    static #DIRECTIVES = new Set(['help', 'h', 'x', 'd', 't', 'c', 'q', 'quit', 'u']);
-
-    static #TYPES = new Set(['void', 'let', 'var', 'const']);
-
-    #str = '';
-    #index = 0;
-    #length = 0;
-    #start = 0;
-    #styles: TokenStyle[] = [];
-    #stateStack = '';
-    #braceLevel = 0;
-    #canBeRegex = true;
-    #currentStyle: TokenStyle | null = null;
-
-    colorize(input: string, state = '', level = 0): HighlightResult {
-        this.#str = input;
-        this.#index = 0;
-        this.#length = input.length;
-        this.#stateStack = state;
-        this.#braceLevel = level;
-        this.#canBeRegex = true;
-        this.#styles = [];
-
-        while (this.#index < this.#length) {
-            this.#currentStyle = null;
-            this.#start = this.#index;
-            const char = this.#str[this.#index++];
-            if (char === undefined) break;
-
-            switch (char) {
-                case ' ': case '\t': case '\r': case '\n': continue;
-                case '+': case '-':
-                    if (this.#peek() === char) this.#index++;
-                    else this.#canBeRegex = true;
-                    continue;
-                case '/':
-                    if (this.#peek() === '*') this.#parseBlockComment();
-                    else if (this.#peek() === '/') this.#parseLineComment();
-                    else if (this.#canBeRegex) {
-                        this.#parseRegex();
-                        this.#canBeRegex = false;
-                    } else {
-                        this.#canBeRegex = true;
-                        continue;
-                    }
-                    break;
-                case "'": case '"': case '`':
-                    this.#parseString(char);
-                    this.#canBeRegex = false;
-                    break;
-                case '(': case '[': case '{':
-                    this.#canBeRegex = true;
-                    this.#braceLevel++;
-                    this.#pushState(char);
-                    continue;
-                case ')': case ']': case '}':
-                    this.#canBeRegex = false;
-                    if (this.#braceLevel > 0 && this.#isBalanced(this.#lastState(), char)) {
-                        this.#braceLevel--;
-                        this.#popState();
-                        continue;
-                    }
-                    this.#currentStyle = 'error';
-                    break;
-                default:
-                    if (this.#isDigit(char)) {
-                        this.#parseNumber();
-                        this.#canBeRegex = false;
-                    } else if (this.#isWordChar(char) || char === '$') {
-                        this.#parseIdentifier();
-                    } else {
-                        this.#canBeRegex = true;
-                        continue;
-                    }
-            }
-
-            if (this.#currentStyle) this.#fillStyle(this.#start, this.#index);
-        }
-
-        this.#fillStyle(this.#length, this.#length);
-        return { state: this.#stateStack, level: this.#braceLevel, styles: this.#styles };
-    }
-
-    #peek() { return this.#str[this.#index]; }
-    #pushState(c: string) { this.#stateStack += c; }
-    #lastState() { return this.#stateStack.at(-1) ?? ''; }
-    #popState() { this.#stateStack = this.#stateStack.slice(0, -1); }
-    #isDigit(c: string) { return /[0-9]/.test(c); }
-    #isWordChar(c: string) { return /[a-zA-Z0-9_$]/.test(c); }
-    #isBalanced(a: string, b: string) {
-        return (a === '(' && b === ')') || (a === '[' && b === ']') || (a === '{' && b === '}');
-    }
-
-    #parseBlockComment() {
-        this.#currentStyle = 'comment';
-        this.#pushState('/');
-        for (this.#index++; this.#index < this.#length - 1; this.#index++) {
-            if (this.#str[this.#index] === '*' && this.#str[this.#index + 1] === '/') {
-                this.#index += 2;
-                this.#popState();
-                break;
-            }
-        }
-    }
-
-    #parseLineComment() {
-        this.#currentStyle = 'comment';
-        for (this.#index++; this.#index < this.#length && this.#str[this.#index] !== '\n'; this.#index++);
-    }
-
-    #parseString(delim: string) {
-        this.#currentStyle = 'string';
-        this.#pushState(delim);
-        while (this.#index < this.#length) {
-            const c = this.#str[this.#index++];
-            if (c === '\n' && delim !== '`') {
-                this.#currentStyle = 'error';
-                continue;
-            }
-            if (c === '\\') {
-                if (this.#index < this.#length) this.#index++;
-            } else if (c === delim) {
-                this.#popState();
-                break;
-            }
-        }
-    }
-
-    #parseRegex() {
-        this.#currentStyle = 'regex';
-        this.#pushState('/');
-        while (this.#index < this.#length) {
-            const c = this.#str[this.#index++];
-            if (c === '\n') {
-                this.#currentStyle = 'error';
-                continue;
-            }
-            if (c === '\\') {
-                if (this.#index < this.#length) this.#index++;
-                continue;
-            }
-            if (this.#lastState() === '[') {
-                if (c === ']') this.#popState();
-                continue;
-            }
-            if (c === '[') {
-                this.#pushState('[');
-                if (this.#peek() === '[' || this.#peek() === ']') this.#index++;
-                continue;
-            }
-            if (c === '/') {
-                this.#popState();
-                while (this.#index < this.#length && this.#isWordChar(this.#str[this.#index] ?? '')) this.#index++;
-                break;
-            }
-        }
-    }
-
-    #parseNumber() {
-        this.#currentStyle = 'number';
-        while (this.#index < this.#length) {
-            const c = this.#str[this.#index];
-            if (c === undefined) break;
-            if (this.#isWordChar(c) || c === '.' || c === '+' || c === '-') {
-                if (c === '.' && (this.#index === this.#length - 1 || this.#str[this.#index + 1] === '.')) break;
-                this.#index++;
-            } else break;
-        }
-    }
-
-    #parseIdentifier() {
-        if (this.#start > 0 && this.#str[this.#start - 1] === '.' && this.#braceLevel === 0) {
-            this.#canBeRegex = true;
-            while (this.#index < this.#length && this.#isWordChar(this.#str[this.#index] ?? '')) this.#index ++;
-
-            const word = this.#str.substring(this.#start, this.#index);
-            if (JSColorizer.#DIRECTIVES.has(word)) {
-                this.#currentStyle = 'directive';
-                return;
-            }
-            this.#index = this.#start;
-        }
-
-        // Check for keywords
-        this.#canBeRegex = true;
-        while (this.#index < this.#length && this.#isWordChar(this.#str[this.#index] ?? '')) this.#index++;
-
-        const word = this.#str.substring(this.#start, this.#index);
-        if (JSColorizer.#KEYWORDS.has(word)) {
-            this.#currentStyle = 'keyword';
-            if (JSColorizer.#NO_REGEX.has(word)) this.#canBeRegex = false;
-            return;
-        }
-
-        // Check if function call
-        let next = this.#index;
-        while (next < this.#length && this.#str[next] === ' ') next++;
-        if (this.#str[next] === '(') {
-            this.#currentStyle = 'function';
-            return;
-        }
-
-        this.#currentStyle = JSColorizer.#TYPES.has(word) ? 'type' : 'identifier';
-        if (this.#currentStyle === 'identifier') this.#canBeRegex = false;
-    }
-
-    #fillStyle(from: number, to: number) {
-        while (this.#styles.length < from) this.#styles.push('default');
-        while (this.#styles.length < to) this.#styles.push(this.#currentStyle ?? 'default');
-    }
-}
-
-// ==================== Completion Engine ====================
-
-class CompletionEngine {
-    getCompletions(line: string, pos: number): CompletionResult {
-        const word = this.#getContextWord(line, pos);
-        const ctxObj = this.#getContextObject(line, pos - word.length);
-        const completions = this.#enumerateProperties(ctxObj, word);
-
-        return { completions, position: word.length, context: ctxObj };
-    }
-
-    #getContextWord(line: string, pos: number): string {
-        let s = '';
-        while (pos > 0 && this.#isWordChar(line[pos - 1] ?? '')) s = line[--pos] + s;
-        return s;
-    }
-
-    #getContextObject(line: string, pos: number): unknown {
-        const prev = line[pos - 1];
-        if (pos <= 0 || prev === undefined || ' ~!%^&*(-+={[|:;,<>?/'.includes(prev)) return globalThis;
-        if (line[pos - 1] !== '.') return undefined;
-
-        pos--;
-        const c = line[pos - 1];
-        switch (c) {
-            case undefined: return '';
-            case "'": case '"': return 'a';
-            case ']': return [];
-            case '}': return {};
-            case '/': return / /;
-            default:
-                if (this.#isWordChar(c)) {
-                    const base = this.#getContextWord(line, pos);
-                    switch (base) {
-                        case 'true': return true;
-                        case 'false': return false;
-                        case 'null': return null;
-                        case 'this': return globalThis;
-                        case 'undefined': return undefined;
-                        case 'NaN': return NaN;
-                        case 'Infinity': return Infinity;
-                        default: break;
-                    }
-                    if (!Number.isNaN(+base)) return +base;
-                    // Check for regex flags
-                    if (pos - base.length >= 2 && line[pos - base.length - 1] === '/') {
-                        return new RegExp('', base);
-                    }
-                    const obj = this.#getContextObject(line, pos - base.length);
-                    if (obj == null) return obj;
-                    return Reflect.get(Object(obj), base);
-                }
-                return {};
-        }
-    }
-
-    #enumerateProperties(obj: unknown, prefix: string): string[] {
-        const seen = new Set<string>();
-        const results: string[] = [];
-
-        for (let i = 0, curr = obj; i < 10 && curr != null; i++, curr = Object.getPrototypeOf(curr)) {
-            for (const key of Object.getOwnPropertyNames(curr)) {
-                if (typeof key === 'string' && !/^\d+$/.test(key) && key.startsWith(prefix) && !seen.has(key)) {
-                    seen.add(key);
-                    results.push(key);
-                }
-            }
-        }
-
-        return results.sort((a, b) => {
-            if (a[0] === '_' && b[0] !== '_') return 1;
-            if (b[0] === '_' && a[0] !== '_') return -1;
-            return a.localeCompare(b);
-        });
-    }
-
-    #isWordChar(c: string) { return /[a-zA-Z0-9_$]/.test(c); }
 }
 
 // ==================== REPL Core ====================
@@ -402,12 +64,16 @@ export interface CnoReplOptions {
     ps1?: string;
     /** Continuation prompt. Overrides REPL_PS2. */
     ps2?: string;
+    /** SQLite history DB path; each line is written immediately. */
+    historyPath?: string;
+    /** Cap history length (default 1000). */
+    historyLimit?: number;
+    /** Optional pre-built store (tests). */
+    history?: HistoryStore;
 }
 
 export class CnoRepl {
-    #history: string[] = [];
-    #historyIndex = 0;
-    #historyDraft = '';
+    #history: HistoryStore;
     #clipboard = '';
     #colorizer = new JSColorizer();
     #completer = new CompletionEngine();
@@ -428,10 +94,12 @@ export class CnoRepl {
     #stdin: CModuleStreams.Pipe | CModuleStreams.Stream;
     #stdout: CModuleStreams.Pipe | CModuleStreams.Stream;
     #isatty: boolean = false;
+    #reading = false;
     #termWidth = 80;
     #termCursorX = 0;   // cursor X after prompt (start of input area)
     #inputRows = 0;     // rendered rows below the prompt line
     #cursorRow = 0;     // current cursor row below the prompt line
+    #sigintHandle: CModuleSignals.SignalHandler | undefined;
 
     // Configuration
     #config: {
@@ -441,6 +109,8 @@ export class CnoRepl {
 
     // Input handling
     #readlineResolver: ((value: string | null) => void) | null = null;
+    #pendingLines: string[] = [];
+    #inputResumeResolver: (() => void) | null = null;
     #escState: 'normal' | 'esc' | 'csi' | 'osc' | 'paste' = 'normal';
     #escBuffer = '';
     #pasteBuffer = '';
@@ -448,6 +118,10 @@ export class CnoRepl {
 
     constructor(opts: CnoReplOptions = {}) {
         this.#transform = opts.transform ?? ((c) => c);
+        this.#history = opts.history ?? new HistoryStore({
+            path: opts.historyPath ?? null,
+            limit: opts.historyLimit,
+        });
         this.#config = {
             ps1: opts.ps1 ?? getenv('REPL_PS1') ?? 'cno > ',
             ps2: opts.ps2 ?? getenv('REPL_PS2') ?? '  ... ',
@@ -478,9 +152,39 @@ export class CnoRepl {
             console.warn('stdin is not a TTY, some features may not work');
         }
 
-        // Cleanup on exit
+        // Intercept SIGINT so Ctrl+C / terminal-close does not reach the
+        // default handler (process kill) before the REPL can stop the pending
+        // read cleanly. Without this, libuv cancels the active uv_read_start
+        // and the onread callback surfaces EIO as an error.
+        try {
+            const sig = import.meta.use('signals');
+            if (sig) {
+                let debounce = 0;
+                this.#sigintHandle = sig.signal(sig.signals.SIGINT, () => {
+                    if (this.#running && !this.#evaluating) {
+                        this.#stopReadingQuietly();
+                    }
+                    const now = Date.now();
+                    if (now - debounce < 300) {
+                        // Double-press within 300ms: force exit
+                        this.cleanup();
+                        os.exit(130);
+                        return;
+                    }
+                    debounce = now;
+                    this.handleCtrlC();
+                });
+            }
+        } catch {
+            // signal module unavailable — rely on raw-VT \x03 delivery only
+        }
+
+        // Cleanup on exit (TTY restore + close history DB)
         this.#onExit(() => {
-        // Disable bracketed paste mode before exiting
+            this.#history.close();
+            try {
+                this.#sigintHandle?.close();
+            } catch {}
             if (this.#isatty) {
                 try {
                     sfs.write(os.STDOUT_FILENO, engine.encodeString('\x1b[?2004l'));
@@ -503,31 +207,46 @@ export class CnoRepl {
     // ==================== Async Input Handling ====================
 
     async #readLineLoop(): Promise<void> {
-        try {
-            while (this.#running) {
-                const line = await this.#readLine();
-                if (line === null) {
-                    // null means cancelled (Ctrl+C) — just loop for next line
-                    if (!this.#running) break;
-                    continue;
-                }
-                await this.#handleCommand(line);
+        while (this.#running) {
+            let line: string | null;
+            try {
+                line = await this.#readLine();
+            } catch (e) {
+                this.#printError(e);
+                this.#releaseInputQueue();
+                continue;
             }
-        } catch (e) {
-            this.#printError(e);
+            if (line === null) {
+                // null means cancelled (Ctrl+C) — just loop for next line
+                this.#releaseInputQueue();
+                if (!this.#running) break;
+                continue;
+            }
+            try {
+                await this.#handleCommand(line);
+            } catch (e) {
+                // Directives such as `.load` can fail independently of eval.
+                // Keep the interactive session alive after reporting them.
+                this.#printError(e);
+            } finally {
+                // Pause input after each submitted line until evaluation ends.
+                this.#releaseInputQueue();
+            }
         }
     }
 
     async #readLine(): Promise<string | null> {
         this.#cmd = '';
         this.#cursorPos = 0;
-        this.#historyIndex = this.#history.length;
-        this.#historyDraft = '';
+        this.#history.resetCursor();
         this.#inputRows = 0;
         this.#cursorRow = 0;
         // Start fresh on a new line — no matter where external output left the cursor
         this.#printPrompt();
         this.#flush();
+        this.#startReadingQuietly();
+        const queued = this.#pendingLines.shift();
+        if (queued !== undefined) return queued;
         return new Promise((resolve) => {
             this.#readlineResolver = resolve;
         });
@@ -535,11 +254,42 @@ export class CnoRepl {
 
     // Pending async command queue — ensures onread callbacks are serialised
     #cmdQueue: Promise<void> = Promise.resolve();
+    /** True while draining a read chunk; key cmds run inline (no re-queue). */
+    #processingInput = false;
+    #syncKeyCmds: Array<{ cmd: KeyCommand; input: string }> = [];
+
+    #releaseInputQueue(): void {
+        const resolver = this.#inputResumeResolver;
+        this.#inputResumeResolver = null;
+        resolver?.();
+    }
+
+    #waitForInputQueue(): Promise<void> {
+        if (!this.#running) return Promise.resolve();
+        return new Promise((resolve) => { this.#inputResumeResolver = resolve; });
+    }
 
     #stopReadingQuietly(): void {
+        if (!this.#reading) return;
         try {
             this.#stdin.stopRead();
-        } catch {}
+        } catch {} finally {
+            this.#reading = false;
+        }
+    }
+
+    #startReadingQuietly(): void {
+        if (!this.#running || this.#reading) return;
+        try {
+            this.#stdin.startRead();
+            this.#reading = true;
+        } catch (err) {
+            if (this.#isTerminalDisconnect(err)) {
+                this.#finishInput();
+                return;
+            }
+            throw err;
+        }
     }
 
     #finishInput(): void {
@@ -549,6 +299,7 @@ export class CnoRepl {
             this.#readlineResolver = null;
             resolver(null);
         }
+        this.#releaseInputQueue();
         this.#stopReadingQuietly();
     }
 
@@ -562,7 +313,10 @@ export class CnoRepl {
             if (!res) {
                 // A detached POSIX PTY reports EIO instead of EOF.
                 if (!err || this.#isTerminalDisconnect(err)) {
-                    this.#finishInput();
+                    // Preserve ordering with data callbacks already queued.
+                    this.#cmdQueue = this.#cmdQueue
+                        .then(() => this.#finishInput())
+                        .catch((e) => this.#printError(e));
                     return;
                 }
                 console.error('Failed to read from console:', err ?? 'EOF');
@@ -572,22 +326,29 @@ export class CnoRepl {
             }
             const bytes = res.slice(); // copy before async gap
             this.#cmdQueue = this.#cmdQueue.then(async () => {
-                for (let i = 0; i < bytes.length && this.#running; i++) {
-                    const byte = bytes[i];
-                    if (byte !== undefined) this.#handleByte(byte);
+                this.#processingInput = true;
+                try {
+                    for (let i = 0; i < bytes.length && this.#running; i++) {
+                        const byte = bytes[i];
+                        if (byte !== undefined) this.#handleByte(byte);
+                        // Flush key commands before the next byte so a piped
+                        // "line\\n.q\\n" chunk does not glue into one #cmd.
+                        while (this.#syncKeyCmds.length > 0 && this.#running) {
+                            const item = this.#syncKeyCmds.shift();
+                            if (!item) break;
+                            await this.#executeCommand(item.cmd, item.input);
+                        }
+                    }
+                } finally {
+                    this.#processingInput = false;
                 }
-                if (!this.#running) this.#stdin.stopRead();
+                if (!this.#running) this.#stopReadingQuietly();
+            }).catch((e) => {
+                this.#printError(e);
+                this.#releaseInputQueue();
             });
         };
-        try {
-            this.#stdin.startRead();
-        } catch (err) {
-            if (this.#isTerminalDisconnect(err)) {
-                this.#finishInput();
-                return;
-            }
-            throw err;
-        }
+        this.#startReadingQuietly();
     }
 
     #handleByte(byte: number): void {
@@ -686,42 +447,62 @@ export class CnoRepl {
         if (this.#quoteFlag) {
             if ([...char].length === 1) this.#insert(char);
             this.#quoteFlag = false;
-            this.#cmdQueue = this.#cmdQueue.then(() => this.#update());
+            if (this.#processingInput) this.#update();
+            else this.#cmdQueue = this.#cmdQueue.then(() => this.#update());
             return;
         }
 
         const cmd = this.#keyMap.get(char);
         if (cmd) {
-            this.#cmdQueue = this.#cmdQueue.then(() => this.#executeCommand(cmd, char));
+            this.#queueKeyCommand(cmd, char);
         } else if ([...char].length === 1 && char >= ' ') {
             this.#insert(char);
-            this.#cmdQueue = this.#cmdQueue.then(() => this.#update());
+            if (this.#processingInput) this.#update();
+            else this.#cmdQueue = this.#cmdQueue.then(() => this.#update());
         } else {
             this.#alert();
         }
     }
 
     #processEscSequence(seq: string): void {
-        const cmd = this.#keyMap.get(seq) ?? this.#keyMap.get(seq.slice(1));
+        // SS3 (application keypad) cursor keys \x1bO<X> map onto the CSI form \x1b[<X>.
+        const key = seq.startsWith('\x1bO') ? '\x1b[' + seq.slice(2) : seq;
+        const cmd = this.#keyMap.get(key) ?? this.#keyMap.get(key.slice(1));
         if (cmd) {
-            this.#cmdQueue = this.#cmdQueue.then(() => this.#executeCommand(cmd, seq));
+            this.#queueKeyCommand(cmd, seq);
         } else {
             this.#alert();
         }
     }
 
+    #queueKeyCommand(cmd: KeyCommand, input: string): void {
+        if (this.#processingInput) {
+            this.#syncKeyCmds.push({ cmd, input });
+            return;
+        }
+        this.#cmdQueue = this.#cmdQueue.then(() => this.#executeCommand(cmd, input));
+    }
+
     async #executeCommand(cmd: KeyCommand, input: string): Promise<void> {
-        this.#lastCommand = input;
+        const previousValue = this.#cmd;
         const result = await cmd.call(this, input);
+        this.#lastCommand = input === '\t' && this.#cmd !== previousValue ? '' : input;
 
         switch (result?.type) {
             case 'submit':
-                this.#historyIndex = this.#history.length;
+                this.#history.resetCursor();
+                // Clear so more bytes in this onread chunk start a fresh line.
+                this.#cmd = '';
+                this.#cursorPos = 0;
+                const resume = this.#waitForInputQueue();
                 if (this.#readlineResolver) {
                     const resolver = this.#readlineResolver;
                     this.#readlineResolver = null;
                     resolver(result.value);
+                } else {
+                    this.#pendingLines.push(result.value);
                 }
+                await resume;
                 break;
             case 'cancel':
                 if (this.#readlineResolver) {
@@ -735,9 +516,14 @@ export class CnoRepl {
                 break;
             case 'exit':
                 this.#running = false;
+                this.#cmd = '';
+                this.#cursorPos = 0;
                 if (this.#readlineResolver) {
-                    this.#readlineResolver(null);
+                    const resolver = this.#readlineResolver;
+                    this.#readlineResolver = null;
+                    resolver(null);
                 }
+                this.#releaseInputQueue();
                 this.cleanup();
                 break;
             default:
@@ -820,8 +606,9 @@ export class CnoRepl {
         this.#flush();
         this.#inputRows = 0;
         this.#cursorRow = 0;
-        if (this.#cmd.length && this.#history[this.#history.length - 1] !== this.#cmd) {
-            this.#history.push(this.#cmd);
+        // Pure meta directives (.q / .help / …) are not worth replaying.
+        if (this.#cmd.length && !/^\.[a-z]+\s*$/i.test(this.#cmd)) {
+            this.#history.append(this.#cmd);
         }
         return { type: 'submit', value: this.#cmd } as const;
     }
@@ -842,6 +629,7 @@ export class CnoRepl {
     #insert(str: string): void {
         this.#cmd = this.#cmd.slice(0, this.#cursorPos) + str + this.#cmd.slice(this.#cursorPos);
         this.#cursorPos += str.length;
+        this.#lastCommand = '';
     }
 
     #deleteChar(dir: number): void {
@@ -859,35 +647,35 @@ export class CnoRepl {
 
     #transpose(): void {
         if (this.#cursorPos === 0 || this.#cmd.length < 2) return;
-        const pos = this.#cursorPos === this.#cmd.length ? this.#cursorPos - 1 : this.#cursorPos;
-        const chars = [...this.#cmd];
-        const prev = chars[pos - 1];
-        const current = chars[pos];
-        if (prev === undefined || current === undefined) return;
-        [chars[pos - 1], chars[pos]] = [current, prev];
-        this.#cmd = chars.join('');
-        this.#cursorPos = pos + 1;
+        // At end of line readline transposes the last two characters.
+        let mid = this.#cursorPos;
+        if (mid === this.#cmd.length) {
+            mid--;
+            while (mid > 0 && this.#isTrailingSurrogate(this.#cmd[mid])) mid--;
+        }
+        if (mid === 0) return;
+        let start = mid - 1;
+        while (start > 0 && this.#isTrailingSurrogate(this.#cmd[start])) start--;
+        let end = mid + 1;
+        while (end < this.#cmd.length && this.#isTrailingSurrogate(this.#cmd[end])) end++;
+        const first = this.#cmd.slice(start, mid);
+        const second = this.#cmd.slice(mid, end);
+        this.#cmd = this.#cmd.slice(0, start) + second + first + this.#cmd.slice(end);
+        this.#cursorPos = end;
     }
 
     #prevHistory(): void {
-        if (this.#historyIndex > 0) {
-            if (this.#historyIndex === this.#history.length) {
-                this.#historyDraft = this.#cmd;
-            }
-            this.#historyIndex--;
-            this.#cmd = this.#history[this.#historyIndex] ?? '';
-            this.#cursorPos = this.#cmd.length;
-        }
+        const line = this.#history.prev(this.#cmd);
+        if (line === null) return;
+        this.#cmd = line;
+        this.#cursorPos = this.#cmd.length;
     }
 
     #nextHistory(): void {
-        if (this.#historyIndex < this.#history.length) {
-            this.#historyIndex++;
-            this.#cmd = this.#historyIndex === this.#history.length
-                ? this.#historyDraft
-                : this.#history[this.#historyIndex] ?? '';
-            this.#cursorPos = this.#cmd.length;
-        }
+        const line = this.#history.next();
+        if (line === null) return;
+        this.#cmd = line;
+        this.#cursorPos = this.#cmd.length;
     }
 
     #complete(): void {
@@ -1096,7 +884,7 @@ export class CnoRepl {
         // Always colorize from fresh state — `line` is the full accumulated expression,
         // so seeding with accumulated pstate/braceLevel would double-count openers.
         const highlight = this.#colorizer.colorize(line, '', 0);
-        if (highlight.state || highlight.level > 0) {
+        if (!highlight.invalid && (highlight.state || highlight.level > 0)) {
             this.#multilineExpr = line;
             this.#pstate = highlight.state;
             this.#braceLevel = highlight.level;
@@ -1117,7 +905,14 @@ export class CnoRepl {
                 return false;
             case 'load':
                 const file = rest.trim() || 'script.js';
-                await import(file.endsWith('.js') ? file : file + '.js');
+                // Dynamic imports without a leading `./` are treated as
+                // package specifiers by the resolver. `.load` is a local
+                // file command, so make a bare path explicitly relative and
+                // preserve the extension supplied by the user (TS included).
+                const specifier = /^(?:[a-z][a-z\d+.-]*:|[\\/]|\.\.?[\\/])/i.test(file)
+                    ? file
+                    : `./${file}`;
+                await import(specifier);
                 return false;
             case 'x': this.#config.hexMode = true; return false;
             case 'd': this.#config.hexMode = false; return false;
@@ -1152,10 +947,6 @@ export class CnoRepl {
                 return;
             }
             const result = (await engine.eval<EngineEvalResult>(code, '<eval>', engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)).value;
-
-            if (this.#config.showTime) {
-                this.#config.showTime = false;
-            }
 
             this.#print(COLOR.brightWhite);
             this.#flush();
@@ -1277,20 +1068,22 @@ export class CnoRepl {
         this.#multilineExpr = '';
         this.#pstate = '';
         this.#braceLevel = 0;
-        this.#historyIndex = this.#history.length;
-        this.#historyDraft = '';
+        this.#history.resetCursor();
         this.#inputRows = 0;
         this.#cursorRow = 0;
         this.#flush();
     }
 
     exportHistory() {
-        return this.#history;
+        return this.#history.lines();
     }
 
     importHistory(history: string[]) {
-        this.#history = history;
-        this.#historyIndex = this.#history.length;
-        this.#historyDraft = '';
+        this.#history.importLines(history);
+    }
+
+    /** Underlying history store (for migrate / tests). */
+    get historyStore(): HistoryStore {
+        return this.#history;
     }
 }

@@ -267,3 +267,65 @@ Deno.test('stream: unshift prepends data for readable and duplex streams', () =>
     strictEqual(String(duplex.read(1)), 'a');
     strictEqual(String(duplex.read(1)), 'b');
 });
+
+Deno.test('stream upstream: read size and readableLength use bytes, not chunk count', () => {
+    const readable = new Readable({ read() {} });
+    readable.push(Buffer.from('abc'));
+    readable.push(Buffer.from('def'));
+    readable.push(null);
+
+    strictEqual(readable.readableLength, 6);
+    strictEqual(String(readable.read(2)), 'ab');
+    strictEqual(readable.readableLength, 4);
+    strictEqual(String(readable.read(3)), 'cde');
+    strictEqual(readable.readableLength, 1);
+    strictEqual(String(readable.read()), 'f');
+});
+
+Deno.test('stream upstream: encoding counts characters and flushes trailing input at EOF', () => {
+    const readable = new Readable({ encoding: 'utf8', read() {} });
+    readable.push(Buffer.from('你好'));
+    strictEqual(readable.readableEncoding, 'utf8');
+    strictEqual(readable.readableLength, 2);
+    strictEqual(readable.read(1), '你');
+
+    const trailing = new Readable({ read() {} });
+    trailing.setEncoding('utf8');
+    trailing.push(Buffer.from([0xe2]));
+    trailing.push(null);
+    strictEqual(trailing.readableLength, 1);
+    strictEqual(trailing.read(), '�');
+    strictEqual(trailing.read(), null);
+
+    const lateEncoding = new Readable({ read() {} });
+    lateEncoding.push(Buffer.from([0xe2]));
+    lateEncoding.push(null);
+    lateEncoding.setEncoding('utf8');
+    strictEqual(lateEncoding.read(), '�');
+    strictEqual(lateEncoding.read(), null);
+});
+
+Deno.test('stream upstream: Writable validates chunks and counts queued bytes', () => {
+    let finishWrite: (() => void) | undefined;
+    const writable = new Writable({
+        highWaterMark: 3,
+        write(_chunk, _encoding, callback) {
+            finishWrite = callback;
+        },
+    });
+
+    strictEqual(writable.write('abc'), false);
+    strictEqual(writable.writableLength, 3);
+    finishWrite?.();
+    strictEqual(writable.writableLength, 0);
+
+    throws(
+        () => writable.write({}),
+        (error: unknown) => error instanceof TypeError && Reflect.get(error, 'code') === 'ERR_INVALID_ARG_TYPE',
+    );
+    const objectWritable = new Writable({ objectMode: true, write(_chunk, _encoding, callback) { callback(); } });
+    throws(
+        () => objectWritable.write(null),
+        (error: unknown) => error instanceof TypeError && Reflect.get(error, 'code') === 'ERR_STREAM_NULL_VALUES',
+    );
+});

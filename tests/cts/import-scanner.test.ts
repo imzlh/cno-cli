@@ -1,4 +1,4 @@
-import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
@@ -54,6 +54,85 @@ Deno.test('ImportScanner primitive: oxc-first scan matches extractImports edges'
             ['./a.js', './b.js'],
         );
     } finally {
+        Deno.removeSync(root, { recursive: true });
+    }
+});
+
+Deno.test('extractImports cooks string specifiers and only scans global require calls', () => {
+    const escaped = String.raw`
+        import '\u002e/static.js';
+        export * from "\x2e/export.js";
+        import('\u{2e}/dynamic.js');
+        require('.\x2fcommon.cjs');
+    `;
+    deepStrictEqual(extractImports(escaped).sort(), [
+        './common.cjs',
+        './dynamic.js',
+        './export.js',
+        './static.js',
+    ]);
+
+    const shadowed = `
+        object.require('./property.js');
+        object?.require('./optional-property.js');
+        function withParam(require) { require('./parameter.js'); }
+        function withVar() {
+            require('./function-var.js');
+            var require = () => {};
+        }
+        {
+            const require = () => {};
+            require('./block.js');
+        }
+        require('./global.js');
+    `;
+    deepStrictEqual(extractImports(shadowed), ['./global.js']);
+
+    deepStrictEqual(extractImports(`
+        require('./top-level.js');
+        const require = () => {};
+    `), []);
+    deepStrictEqual(extractImports(`
+        import require from './loader.js';
+        require('./local.js');
+    `), ['./loader.js']);
+});
+
+Deno.test('ImportScanner strict mode preserves parse failures', () => {
+    const root = makePosixTempDir('import-scanner-strict');
+    try {
+        const file = join(root, 'broken.ts');
+        const wasmFile = join(root, 'broken.wasm');
+        writeFileSync(file, 'import {');
+        writeFileSync(wasmFile, Uint8Array.of(0x00, 0x61, 0x73, 0x6d, 0x01));
+        const scanner = new ImportScanner(null);
+        deepStrictEqual(scanner.scanFile(file), []);
+        throws(() => scanner.scanFile(file, undefined, true));
+        deepStrictEqual(scanner.scanFile(wasmFile), []);
+        throws(() => scanner.scanFile(wasmFile, undefined, true));
+        const oxc = tryLoadOxc();
+        ok(oxc, 'oxc extension required for strict scan gate');
+        throws(() => new ImportScanner(oxc).scanFile(file, undefined, true));
+    } finally {
+        Deno.removeSync(root, { recursive: true });
+    }
+});
+
+Deno.test('DepScanner: full graph reports malformed source instead of caching an empty graph', async () => {
+    const root = makePosixTempDir('dep-full-graph-parse');
+    const main = join(root, 'main.ts');
+    const cfg = createConfig({ cacheDir: join(root, 'cache'), enableOxc: false, silent: true });
+    let resolver: ModuleResolver | null = null;
+    try {
+        writeFileSync(main, 'import {');
+        resolver = new ModuleResolver(cfg, root, true);
+        const result = await new DepScanner(
+            resolver, cfg, null, null, null, { fullGraph: true },
+        ).scan(main, main);
+        strictEqual(result.errors.length, 1);
+        ok((result.errors[0]?.error.length ?? 0) > 0);
+    } finally {
+        resolver?.lockStore.close();
         Deno.removeSync(root, { recursive: true });
     }
 });

@@ -40,6 +40,31 @@ function edge(parentSpecPath: string, name: string, childSpecPath: string, child
     return { parentSpecPath, name, childSpecPath, childLocalPath };
 }
 
+Deno.test('cts linker: invalid package names, bins, and stale manifests cannot escape project roots', async () => {
+    const root = makePosixTempDir('linker-containment');
+    try {
+        const cacheDir = joinPaths(root, 'cache');
+        const projectDir = joinPaths(root, 'project');
+        const victimDir = joinPaths(root, 'victim');
+        const alphaDir = seedPkg(cacheDir, 'alpha', '1.0.0', { 'index.js': 'export {}\n' }, {
+            bin: { '../../victim': './index.js', tool: '../outside.js' },
+        });
+        mkdirSync(victimDir, { recursive: true });
+        writeFileSync(join(victimDir, 'keep.txt'), 'keep\n');
+        mkdirSync(join(projectDir, 'node_modules'), { recursive: true });
+        writeFileSync(join(projectDir, 'node_modules', '.cts-node-modules.json'), JSON.stringify(['../../victim']));
+
+        await materializeNodeModules([
+            edge(`${projectDir}/<entry>`, '../../victim', 'npm:alpha@1.0.0/index.js', joinPaths(alphaDir, 'index.js')),
+        ], 'soft', cacheDir, projectDir);
+
+        strictEqual(readFileSync(join(victimDir, 'keep.txt'), 'utf8'), 'keep\n');
+        ok(!existsSync(join(projectDir, 'node_modules', '.bin', 'tool')));
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test('cts linker: soft mode only links project roots (store untouched)', async () => {
     const root = makePosixTempDir('linker-soft');
     try {

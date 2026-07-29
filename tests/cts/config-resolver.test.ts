@@ -1,5 +1,5 @@
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { decodeUtf8 } from '../_helpers/bytes.ts';
 import { makePosixTempDir } from '../_helpers/temp.ts';
@@ -72,9 +72,9 @@ Deno.test('cts config: loadConfigFile merges tsconfig deno import maps and packa
             '@deno/*': ['./deno/*'],
         });
         deepStrictEqual(cfg.importMap, {
-            'pkg-alias': './pkg.ts',
+            'pkg-alias': joinPaths(root, 'pkg.ts'),
             'std/': 'https://deno.land/std/',
-            'mapped/': './mapped/',
+            'mapped/': joinPaths(root, 'mapped/'),
         });
         strictEqual(cfg.nodeModulesMode, 'soft');
     } finally {
@@ -82,37 +82,164 @@ Deno.test('cts config: loadConfigFile merges tsconfig deno import maps and packa
     }
 });
 
-// Deno.test('cts resolver upstream: ESM package subpaths do not add extensions or directory indexes', () => {
-//     const root = makePosixTempDir('resolver-esm-package-subpath-strict');
-//     try {
-//         const pkgDir = join(root, 'node_modules', 'package');
-//         mkdirSync(join(pkgDir, 'dir'), { recursive: true });
-//         writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: 'package' }));
-//         writeFileSync(join(pkgDir, 'module.js'), 'export const value = 1;\n');
-//         writeFileSync(join(pkgDir, 'esm.mjs'), 'export const value = 2;\n');
-//         writeFileSync(join(pkgDir, 'commonjs.cjs'), 'module.exports.value = 3;\n');
-//         writeFileSync(join(pkgDir, 'dir', 'index.js'), 'export default 4;\n');
-//         writeFileSync(join(pkgDir, 'extensionless'), 'module.exports.value = 5;\n');
+Deno.test('cts config: external import map targets resolve from the map file', () => {
+    const root = makePosixTempDir('external-import-map-base');
+    try {
+        const mapDir = joinPaths(root, 'config', 'maps');
+        const target = joinPaths(mapDir, 'targets', 'dep.ts');
+        mkdirSync(join(mapDir, 'targets'), { recursive: true });
+        mkdirSync(join(root, 'src'), { recursive: true });
+        writeFileSync(join(root, 'deno.json'), JSON.stringify({
+            importMap: './config/maps/import_map.json',
+        }));
+        writeFileSync(join(mapDir, 'import_map.json'), JSON.stringify({
+            imports: { dep: './targets/dep.ts' },
+        }));
+        writeFileSync(target, 'export const value = 1;\n');
 
-//         const resolver = new ModuleResolver(createConfig({ cacheDir: joinPaths(root, '.cache') }), root, true);
-//         const parent = joinPaths(root, 'entry.mjs');
+        const fileCfg = loadConfigFile(joinPaths(root, 'src'));
+        strictEqual(fileCfg.importMap?.dep, target);
 
-//         throws(() => resolver.resolve('package/module2', parent), /Cannot resolve "module2"/);
-//         throws(() => resolver.resolve('package/esm', parent), /Cannot resolve "esm"/);
-//         throws(() => resolver.resolve('package/commonjs', parent), /Cannot resolve "commonjs"/);
-//         throws(() => resolver.resolve('package/dir', parent), /Cannot resolve "dir"/);
+        const resolver = new ModuleResolver(createConfig({
+            ...fileCfg,
+            cacheDir: joinPaths(root, 'cache'),
+            disableLock: true,
+            enableOxc: false,
+            silent: true,
+        }), root, true);
+        const info = resolver.resolve('dep', joinPaths(root, 'src', 'entry.ts'));
+        strictEqual(info.localPath, target);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
 
-//         const exact = resolver.resolve('package/extensionless', parent);
-//         strictEqual(exact.localPath, joinPaths(pkgDir, 'extensionless'));
-//         strictEqual(exact.format, 'cjs');
+Deno.test('cts resolver: import map suffixes stay out of mapped physical paths', async () => {
+    const root = makePosixTempDir('import-map-suffix');
+    try {
+        const mapDir = joinPaths(root, 'config');
+        const target = joinPaths(mapDir, 'targets', 'dep.ts');
+        mkdirSync(join(mapDir, 'targets'), { recursive: true });
+        writeFileSync(join(root, 'deno.json'), JSON.stringify({ importMap: './config/import_map.json' }));
+        writeFileSync(join(mapDir, 'import_map.json'), JSON.stringify({
+            imports: {
+                exact: './targets/dep.ts?mode=exact#fragment',
+                'prefix/': './targets/',
+            },
+        }));
+        writeFileSync(target, 'export const value = 1;\n');
 
-//         const cjsParent = joinPaths(root, 'entry.cjs');
-//         strictEqual(resolver.resolve('package/module', cjsParent, { cjs: true }).localPath, joinPaths(pkgDir, 'module.js'));
-//         strictEqual(resolver.resolve('package/dir', cjsParent, { cjs: true }).localPath, joinPaths(pkgDir, 'dir', 'index.js'));
-//     } finally {
-//         rmSync(root, { recursive: true, force: true });
-//     }
-// });
+        const resolver = new ModuleResolver(createConfig({
+            ...loadConfigFile(root),
+            cacheDir: joinPaths(root, 'cache'),
+            disableLock: true,
+            enableOxc: false,
+            silent: true,
+        }), root, true);
+        const exact = resolver.resolve('exact', joinPaths(root, 'entry.ts'));
+        const prefix = await resolver.resolveAsync(
+            'prefix/dep.ts?mode=prefix#fragment',
+            joinPaths(root, 'entry.ts'),
+        );
+
+        strictEqual(exact.localPath, target);
+        strictEqual(exact.specPath, `${target}?mode=exact#fragment`);
+        strictEqual(prefix.localPath, target);
+        strictEqual(prefix.specPath, `${target}?mode=prefix#fragment`);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts resolver: import map scopes use longest parent match with global fallback', () => {
+    const root = makePosixTempDir('import-map-scopes');
+    try {
+        mkdirSync(join(root, 'src', 'nested'), { recursive: true });
+        writeFileSync(join(root, 'deno.json'), JSON.stringify({
+            imports: {
+                dep: './global.ts',
+                fallback: './global-fallback.ts',
+            },
+            scopes: {
+                './src/': {
+                    dep: './scoped.ts',
+                    'outer-only': './outer.ts',
+                },
+                './src/nested/': { dep: './nested.ts' },
+            },
+        }));
+        writeFileSync(join(root, 'global.ts'), 'export const source = "global";\n');
+        writeFileSync(join(root, 'global-fallback.ts'), 'export const source = "fallback";\n');
+        writeFileSync(join(root, 'scoped.ts'), 'export const source = "scoped";\n');
+        writeFileSync(join(root, 'nested.ts'), 'export const source = "nested";\n');
+        writeFileSync(join(root, 'outer.ts'), 'export const source = "outer";\n');
+
+        const fileCfg = loadConfigFile(joinPaths(root, 'src', 'nested'));
+        const resolver = new ModuleResolver(createConfig({
+            ...fileCfg,
+            cacheDir: joinPaths(root, 'cache'),
+            disableLock: true,
+            enableOxc: false,
+            silent: true,
+        }), root, true);
+
+        strictEqual(
+            resolver.resolve('dep', joinPaths(root, 'src', 'entry.ts')).localPath,
+            joinPaths(root, 'scoped.ts'),
+        );
+        strictEqual(
+            resolver.resolve('dep', `file://${joinPaths(root, 'src', 'nested', 'entry.ts')}`).localPath,
+            joinPaths(root, 'nested.ts'),
+        );
+        strictEqual(
+            resolver.resolve('fallback', joinPaths(root, 'src', 'nested', 'entry.ts')).localPath,
+            joinPaths(root, 'global-fallback.ts'),
+        );
+        strictEqual(
+            resolver.resolve('outer-only', joinPaths(root, 'src', 'nested', 'entry.ts')).localPath,
+            joinPaths(root, 'outer.ts'),
+        );
+        strictEqual(
+            resolver.resolve('dep', joinPaths(root, 'outside.ts')).localPath,
+            joinPaths(root, 'global.ts'),
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts resolver upstream: ESM package subpaths do not add extensions or directory indexes', () => {
+    const root = makePosixTempDir('resolver-esm-package-subpath-strict');
+    try {
+        const pkgDir = join(root, 'node_modules', 'package');
+        mkdirSync(join(pkgDir, 'dir'), { recursive: true });
+        writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: 'package', type: 'module' }));
+        writeFileSync(join(pkgDir, 'module.js'), 'export const value = 1;\n');
+        writeFileSync(join(pkgDir, 'esm.mjs'), 'export const value = 2;\n');
+        writeFileSync(join(pkgDir, 'commonjs.cjs'), 'module.exports.value = 3;\n');
+        writeFileSync(join(pkgDir, 'dir', 'index.js'), 'export default 4;\n');
+        writeFileSync(join(pkgDir, 'extensionless'), 'module.exports.value = 5;\n');
+
+        const resolver = new ModuleResolver(createConfig({ cacheDir: joinPaths(root, '.cache') }), root, true);
+        const parent = joinPaths(root, 'entry.mjs');
+
+        throws(() => resolver.resolve('package/module2', parent), /Cannot resolve "module2"/);
+        throws(() => resolver.resolve('package/module', parent), /Cannot resolve "module"/);
+        throws(() => resolver.resolve('package/esm', parent), /Cannot resolve "esm"/);
+        throws(() => resolver.resolve('package/commonjs', parent), /Cannot resolve "commonjs"/);
+        throws(() => resolver.resolve('package/dir', parent), /Cannot resolve "dir"/);
+
+        const exact = resolver.resolve('package/extensionless', parent);
+        strictEqual(exact.localPath, joinPaths(pkgDir, 'extensionless'));
+        strictEqual(exact.format, 'esm');
+
+        const cjsParent = joinPaths(root, 'entry.cjs');
+        strictEqual(resolver.resolve('package/module', cjsParent, { cjs: true }).localPath, joinPaths(pkgDir, 'module.js'));
+        strictEqual(resolver.resolve('package/dir', cjsParent, { cjs: true }).localPath, joinPaths(pkgDir, 'dir', 'index.js'));
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
 
 Deno.test('cts path: parentDirKey collapses same-dir file parents', () => {
     strictEqual(parentDirKey('/proj/a.js'), '/proj');
@@ -213,6 +340,40 @@ Deno.test('cts resolver: package imports use default condition from local packag
     }
 });
 
+Deno.test('cts resolver: package imports can redirect to an external package', () => {
+    const root = makePosixTempDir('pkg-imports-external');
+    try {
+        const depDir = joinPaths(root, 'node_modules', 'pkg-imports-dep');
+        mkdirSync(depDir, { recursive: true });
+        writeFileSync(join(root, 'package.json'), JSON.stringify({
+            name: 'pkg-imports-owner',
+            version: '1.0.0',
+            imports: { '#dep': 'pkg-imports-dep' },
+            dependencies: { 'pkg-imports-dep': '1.0.0' },
+        }));
+        writeFileSync(join(root, 'main.ts'), 'import value from "#dep";\n');
+        writeFileSync(join(depDir, 'package.json'), JSON.stringify({
+            name: 'pkg-imports-dep',
+            version: '1.0.0',
+            main: './index.js',
+        }));
+        writeFileSync(join(depDir, 'index.js'), 'module.exports = 42;\n');
+
+        const resolver = new ModuleResolver(createConfig({
+            cacheDir: joinPaths(root, 'cache'),
+            enableOxc: false,
+            silent: true,
+        }), root, true);
+        const info = resolver.resolve('#dep', joinPaths(root, 'main.ts'));
+
+        strictEqual(info.localPath, joinPaths(depDir, 'index.js'));
+        strictEqual(info.specPath, 'npm:pkg-imports-dep@1.0.0/index.js');
+        strictEqual(info.format, 'cjs');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test('cts npm: package imports missing entries expose Node error code', () => {
     const root = makePosixTempDir('pkg-imports-missing');
     try {
@@ -285,6 +446,68 @@ Deno.test('cts npm: package exports without matching condition do not fall back 
     }
 });
 
+Deno.test('cts npm: canonical exported targets reload without reopening deep imports', () => {
+    const root = makePosixTempDir('pkg-canonical-export-target');
+    try {
+        const cacheDir = joinPaths(root, 'cache');
+        const pkgDir = joinPaths(cacheDir, 'npm', 'canonical-package@1.0.0');
+        mkdirSync(joinPaths(pkgDir, 'src'), { recursive: true });
+        writeFileSync(joinPaths(pkgDir, 'package.json'), JSON.stringify({
+            name: 'canonical-package',
+            version: '1.0.0',
+            type: 'module',
+            exports: {
+                './feature': './src/feature.js',
+            },
+        }));
+        writeFileSync(joinPaths(pkgDir, 'src/feature.js'), 'export { value } from "./internal.js";\n');
+        writeFileSync(joinPaths(pkgDir, 'src/internal.js'), 'export const value = 1;\n');
+
+        const resolver = new ModuleResolver(createConfig({
+            cacheDir,
+            enableOxc: false,
+            silent: true,
+        }), root, true);
+        const feature = resolver.resolve('npm:canonical-package@1.0.0/feature', joinPaths(root, 'entry.mjs'));
+        strictEqual(feature.specPath, 'npm:canonical-package@1.0.0/src/feature.js');
+        strictEqual(resolver.getInfo(feature.specPath).localPath, joinPaths(pkgDir, 'src/feature.js'));
+
+        throws(
+            () => resolver.resolve('npm:canonical-package@1.0.0/src/feature.js', joinPaths(root, 'entry.mjs')),
+            (error: NodeJS.ErrnoException) => error.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED',
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts npm: package export suffixes stay out of physical paths', () => {
+    const root = makePosixTempDir('pkg-export-suffix');
+    try {
+        const pkgDir = joinPaths(root, 'node_modules', 'suffix-package');
+        mkdirSync(pkgDir, { recursive: true });
+        writeFileSync(joinPaths(pkgDir, 'package.json'), JSON.stringify({
+            name: 'suffix-package',
+            version: '1.0.0',
+            type: 'module',
+            exports: './index.js?mode=x#frag',
+        }));
+        writeFileSync(joinPaths(pkgDir, 'index.js'), 'export const value = 1;\n');
+
+        const resolver = new ModuleResolver(createConfig({
+            cacheDir: joinPaths(root, 'cache'),
+            enableOxc: false,
+            silent: true,
+        }), root, true);
+        const info = resolver.resolve('suffix-package', joinPaths(root, 'entry.mjs'));
+
+        strictEqual(info.localPath, joinPaths(pkgDir, 'index.js'));
+        strictEqual(info.specPath, 'npm:suffix-package@1.0.0/index.js?mode=x#frag');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test('cts npm: version after package subpath is an invalid specifier', () => {
     const root = makePosixTempDir('npm-version-after-subpath');
     try {
@@ -302,6 +525,136 @@ Deno.test('cts npm: version after package subpath is an invalid specifier', () =
                 return true;
             },
         );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts npm: legacy package subpaths cannot escape the package directory', () => {
+    const root = makePosixTempDir('npm-subpath-containment');
+    try {
+        const cacheDir = joinPaths(root, 'cache');
+        const pkgDir = joinPaths(cacheDir, 'npm', 'package@1.0.0');
+        mkdirSync(joinPaths(pkgDir, 'nested'), { recursive: true });
+        writeFileSync(joinPaths(pkgDir, 'package.json'), JSON.stringify({
+            name: 'package',
+            version: '1.0.0',
+        }));
+        writeFileSync(joinPaths(cacheDir, 'npm', 'outside.js'), 'export default "outside";\n');
+
+        const resolver = new ModuleResolver(createConfig({
+            cacheDir,
+            cachedOnly: true,
+            enableOxc: false,
+            silent: true,
+        }), root, true);
+        for (const specifier of [
+            'npm:package@1.0.0/../outside.js',
+            'npm:package@1.0.0/nested/../../outside.js',
+            'npm:package@1.0.0/..\\outside.js',
+        ]) {
+            throws(
+                () => resolver.resolve(specifier, joinPaths(root, 'entry.ts')),
+                (error: Error) => {
+                    strictEqual(error.kind, ErrorKind.InvalidSpecifier);
+                    ok(String(error.message).includes('Unsafe npm package subpath'));
+                    return true;
+                },
+            );
+        }
+        const npm = new NpmHandler(createConfig({ cacheDir, cachedOnly: true, silent: true }));
+        throws(() => npm.localPath('npm:package@..\\..\\victim'), /Unsafe npm package version/);
+        strictEqual(npm.resolveBin('tool\\..\\victim', root), null);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts npm: dependency bin metadata cannot unlink or link outside the package', () => {
+    const root = makePosixTempDir('npm-bin-containment');
+    try {
+        const cacheDir = joinPaths(root, 'cache');
+        const parentDir = joinPaths(cacheDir, 'npm', 'parent@1.0.0');
+        const depDir = joinPaths(cacheDir, 'npm', 'dep@1.0.0');
+        mkdirSync(parentDir, { recursive: true });
+        mkdirSync(joinPaths(depDir, 'bin'), { recursive: true });
+        writeFileSync(joinPaths(parentDir, 'package.json'), JSON.stringify({
+            name: 'parent',
+            version: '1.0.0',
+            main: 'index.js',
+            dependencies: { dep: '1.0.0' },
+        }));
+        writeFileSync(joinPaths(parentDir, 'index.js'), 'module.exports = 1;\n');
+        writeFileSync(joinPaths(parentDir, 'victim'), 'keep\n');
+        writeFileSync(joinPaths(depDir, 'package.json'), JSON.stringify({
+            name: 'dep',
+            version: '1.0.0',
+            main: 'index.js',
+            bin: {
+                '../../victim': './bin/cli.js',
+                tool: './bin/escape.js',
+                lexical: '../outside.js',
+            },
+        }));
+        writeFileSync(joinPaths(depDir, 'index.js'), 'module.exports = 2;\n');
+        writeFileSync(joinPaths(depDir, 'bin', 'cli.js'), '#!/usr/bin/env node\n');
+        writeFileSync(joinPaths(cacheDir, 'npm', 'outside.js'), 'outside\n');
+        symlinkSync(joinPaths(cacheDir, 'npm', 'outside.js'), joinPaths(depDir, 'bin', 'escape.js'));
+
+        const resolver = new ModuleResolver(createConfig({
+            cacheDir,
+            cachedOnly: true,
+            disableLock: true,
+            ignoreScripts: true,
+            enableOxc: false,
+            silent: true,
+        }), root, true);
+        resolver.resolve('npm:parent@1.0.0', joinPaths(root, 'entry.ts'), { cjs: true });
+
+        strictEqual(readFileSync(joinPaths(parentDir, 'victim'), 'utf8'), 'keep\n');
+        ok(!existsSync(joinPaths(parentDir, 'node_modules', '.bin', 'tool')));
+        ok(!existsSync(joinPaths(parentDir, 'node_modules', '.bin', 'lexical')));
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts npm: invalid dependency names cannot select cache or link paths', () => {
+    const root = makePosixTempDir('npm-dependency-name-containment');
+    try {
+        const cacheDir = joinPaths(root, 'cache');
+        const parentDir = joinPaths(cacheDir, 'npm', 'parent@1.0.0');
+        const escapedDir = joinPaths(cacheDir, 'victim@1.0.0');
+        mkdirSync(parentDir, { recursive: true });
+        mkdirSync(escapedDir, { recursive: true });
+        writeFileSync(joinPaths(parentDir, 'package.json'), JSON.stringify({
+            name: 'parent',
+            version: '1.0.0',
+            main: 'index.js',
+            dependencies: { '../../victim': '1.0.0' },
+        }));
+        writeFileSync(joinPaths(parentDir, 'index.js'), 'module.exports = 1;\n');
+        writeFileSync(joinPaths(escapedDir, 'package.json'), JSON.stringify({
+            name: 'victim',
+            version: '1.0.0',
+            main: 'index.js',
+        }));
+        writeFileSync(joinPaths(escapedDir, 'index.js'), 'module.exports = 2;\n');
+        writeFileSync(joinPaths(escapedDir, 'sentinel'), 'keep\n');
+
+        const resolver = new ModuleResolver(createConfig({
+            cacheDir,
+            cachedOnly: true,
+            disableLock: true,
+            ignoreScripts: true,
+            enableOxc: false,
+            silent: true,
+        }), root, true);
+        throws(
+            () => resolver.resolve('npm:parent@1.0.0', joinPaths(root, 'entry.ts'), { cjs: true }),
+            /Invalid npm package name/,
+        );
+        strictEqual(readFileSync(joinPaths(escapedDir, 'sentinel'), 'utf8'), 'keep\n');
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

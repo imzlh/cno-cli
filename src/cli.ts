@@ -22,6 +22,8 @@ function isSubcommand(value: string): value is CnoSubcommand {
     return SUBCOMMANDS.has(value);
 }
 
+// Flag-shaped shorthands (-h / -v / -e). Not listed in help either when they
+// only mirror an existing subcommand name.
 const ALIASES: Partial<Record<string, CnoSubcommand>> = {
     '-h': 'help',
     '--help': 'help',
@@ -168,7 +170,7 @@ function splitNodeRuntimeTokens(tokens: string[], inspectWithoutValueIsInternal 
         if (token === undefined) break;
         if (token === '-C') {
             internal.push(token);
-            if (tokens[i + 1] !== undefined) {
+            if (shouldConsumeValueFlagToken(tokens[i + 1])) {
                 internal.push(tokens[i + 1]!);
                 i++;
             }
@@ -198,7 +200,7 @@ function splitNodeRuntimeTokens(tokens: string[], inspectWithoutValueIsInternal 
             continue;
         }
         internal.push(token);
-        if (eq === -1 && tokens[i + 1] !== undefined) {
+        if (eq === -1 && shouldConsumeValueFlagToken(tokens[i + 1])) {
             internal.push(tokens[i + 1]);
             i++;
         }
@@ -239,7 +241,9 @@ export function parseArgv(argv: string[]): ParsedCli {
     function shouldStopParsingFlagsAfterPositional(): boolean {
         // run/implicit-run: first positional is the script.
         // exec: first positional is the package/bin name (pnpx-style); rest is for that bin.
-        return cmd === null || cmd === 'run' || cmd === 'exec';
+        // task: the first positional is the task name; all following tokens
+        // belong to the task command (including flags unknown to cno).
+        return cmd === null || cmd === 'run' || cmd === 'exec' || cmd === 'task';
     }
 
     function consumeEvalAlias(print: boolean): void {
@@ -269,7 +273,9 @@ export function parseArgv(argv: string[]): ParsedCli {
         // End of cno option parsing. Everything after this belongs to the
         // selected command; the first token becomes the run/test/cache target.
         if (a === '--') {
-            if (cmdDecided && cmd !== null && cmd !== 'run' && cmd !== 'pack') {
+            if (cmd === 'test') {
+                // `cno test [paths...] -- [args...]` must preserve the boundary
+                // so the test runner can separate discovery roots from Deno.args.
                 positional.push(a);
             } else if (!cmdDecided) {
                 cmd = null;

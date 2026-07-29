@@ -773,6 +773,7 @@ export class NetworkDomain extends Domain {
 	private cacheUnavailableResponseBody(requestId: string, mimeType?: string): void {
 		const existing = this.responseBodyCache.get(requestId)
 		if (existing) this.responseBodyCacheBytes -= existing.total
+		this.responseBodyCache.delete(requestId)
 		while (this.responseBodyCache.size >= MAX_CACHED_BODIES && this.responseBodyCache.size > 0) {
 			const oldest = this.responseBodyCache.keys().next().value
 			if (oldest === undefined) break

@@ -1,5 +1,6 @@
 import { deepStrictEqual, strictEqual, ok, throws } from 'node:assert';
 import * as crypto from 'node:crypto';
+import { Readable, pipeline } from 'node:stream';
 
 // --- 1. AES-256-CBC cipher/decipher round-trip -----------------------------
 
@@ -80,6 +81,90 @@ Deno.test('crypto upstream: AES-GCM multiple updates and invalid inputs match No
 
     throws(() => crypto.createCipheriv('aes-128-gcm', Buffer.alloc(15), Buffer.alloc(12)), /Invalid key length/);
     throws(() => crypto.createCipheriv('aes-256-gcm', Buffer.alloc(31), Buffer.alloc(12)), /Invalid key length/);
+});
+
+Deno.test('crypto upstream: CBC cipher and decipher work as Transform streams', async () => {
+    const key = Buffer.alloc(16);
+    const iv = Buffer.alloc(16);
+    const cipher = crypto.createCipheriv('aes-128-cbc', key, iv, { highWaterMark: 321 });
+    const encryptedChunks: Buffer[] = [];
+    cipher.on('data', chunk => encryptedChunks.push(Buffer.from(chunk)));
+
+    strictEqual(cipher.readableHighWaterMark, 321);
+    strictEqual(cipher.writableHighWaterMark, 321);
+    await new Promise<void>((resolve, reject) => {
+        pipeline(Readable.from([Buffer.from('stream-'), Buffer.from('cbc')]), cipher, error => {
+            if (error) reject(error);
+            else resolve();
+        });
+    });
+
+    throws(() => cipher.update('late'), /unsupported state/);
+    let finalError: (Error & { code?: string }) | undefined;
+    try {
+        cipher.final();
+    } catch (error) {
+        if (error instanceof Error) finalError = error;
+    }
+    strictEqual(finalError?.code, 'ERR_CRYPTO_INVALID_STATE');
+
+    const encrypted = Buffer.concat(encryptedChunks);
+    const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv, { highWaterMark: 654 });
+    const decryptedChunks: Buffer[] = [];
+    decipher.on('data', chunk => decryptedChunks.push(Buffer.from(chunk)));
+    await new Promise<void>((resolve, reject) => {
+        pipeline(Readable.from([encrypted.subarray(0, 5), encrypted.subarray(5)]), decipher, error => {
+            if (error) reject(error);
+            else resolve();
+        });
+    });
+    strictEqual(Buffer.concat(decryptedChunks).toString(), 'stream-cbc');
+});
+
+Deno.test('crypto upstream: GCM streams preserve AAD and auth tag options', async () => {
+    const key = Buffer.alloc(16);
+    const iv = Buffer.alloc(12);
+    const aad = Buffer.from('stream-aad');
+    const cipher = crypto.createCipheriv('aes-128-gcm', key, iv, {
+        authTagLength: 12,
+        highWaterMark: 987,
+    });
+    const encryptedChunks: Buffer[] = [];
+    cipher.on('data', chunk => encryptedChunks.push(Buffer.from(chunk)));
+
+    strictEqual(cipher.readableHighWaterMark, 987);
+    strictEqual(cipher.writableHighWaterMark, 987);
+    throws(() => cipher.getAuthTag(), /Invalid state/);
+    cipher.setAAD(aad);
+    await new Promise<void>((resolve, reject) => {
+        pipeline(Readable.from([Buffer.from('stream-'), Buffer.from('gcm')]), cipher, error => {
+            if (error) reject(error);
+            else resolve();
+        });
+    });
+
+    const tag = cipher.getAuthTag();
+    strictEqual(tag.byteLength, 12);
+    const encrypted = Buffer.concat(encryptedChunks);
+    const decipher = crypto.createDecipheriv('aes-128-gcm', key, iv, {
+        authTagLength: 12,
+        highWaterMark: 789,
+    });
+    const decryptedChunks: Buffer[] = [];
+    decipher.setAAD(aad);
+    decipher.setAuthTag(tag);
+    decipher.on('data', chunk => decryptedChunks.push(Buffer.from(chunk)));
+    await new Promise<void>((resolve, reject) => {
+        pipeline(Readable.from([encrypted.subarray(0, 3), encrypted.subarray(3)]), decipher, error => {
+            if (error) reject(error);
+            else resolve();
+        });
+    });
+    strictEqual(Buffer.concat(decryptedChunks).toString(), 'stream-gcm');
+    throws(
+        () => crypto.createCipheriv('aes-128-gcm', key, iv, { authTagLength: 7 }),
+        /Invalid authentication tag length/,
+    );
 });
 
 Deno.test('crypto upstream: RSA publicEncrypt/privateDecrypt round-trips KeyObjects', () => {
@@ -688,6 +773,28 @@ Deno.test('crypto upstream: randomFill callback fills only the requested range',
     ok(bytes.subarray(5).some((byte) => byte !== 0));
 });
 
+Deno.test('crypto upstream: randomFill callback is asynchronous', async () => {
+    const buffer = Buffer.alloc(4);
+    let synchronous = true;
+    await new Promise<void>((resolve, reject) => {
+        crypto.randomFill(buffer, (error) => {
+            try {
+                strictEqual(error, null);
+                strictEqual(synchronous, false);
+                resolve();
+            } catch (caught) {
+                reject(caught);
+            }
+        });
+        synchronous = false;
+    });
+});
+
+Deno.test('crypto upstream: randomFill rejects negative fractional size', () => {
+    throws(() => crypto.randomFillSync(Buffer.alloc(4), 0, -0.5), RangeError);
+    throws(() => crypto.randomFill(Buffer.alloc(4), 0, -0.5, () => {}), RangeError);
+});
+
 Deno.test('crypto: timingSafeEqual accepts ArrayBuffer views and enforces lengths/types', () => {
     const left = Buffer.from([212, 213]);
     const right = Buffer.from([0, 0, 212, 213]).subarray(2);
@@ -728,6 +835,105 @@ Deno.test('crypto: one-shot hash and cipher metadata expose supported algorithms
     );
     strictEqual(crypto.getCipherInfo('aes128')?.name, 'aes-128-cbc');
     strictEqual(crypto.getCipherInfo('missing-cipher'), undefined);
+});
+
+Deno.test('crypto upstream: Hash.copy branches the current digest state', () => {
+    const common = crypto.createHash('sha256').update('prefix:');
+    const left = common.copy().update('left').digest('hex');
+    const right = common.copy().update('right').digest('hex');
+    strictEqual(left, crypto.createHash('sha256').update('prefix:left').digest('hex'));
+    strictEqual(right, crypto.createHash('sha256').update('prefix:right').digest('hex'));
+    strictEqual(common.update('base').digest('hex'), crypto.createHash('sha256').update('prefix:base').digest('hex'));
+    throws(() => common.copy(), /Digest already called/);
+
+    const shake = crypto.createHash('shake-128').update('shared');
+    strictEqual(shake.copy().update('a').digest('hex'), crypto.createHash('shake-128').update('shareda').digest('hex'));
+});
+
+Deno.test('crypto upstream: SHAKE outputLength and digest stream options match Node', () => {
+    const shake = crypto.createHash('shake128', { outputLength: 7, highWaterMark: 1234 });
+    strictEqual(shake.readableHighWaterMark, 1234);
+    strictEqual(shake.writableHighWaterMark, 1234);
+    strictEqual(shake.update('abc').digest().length, 7);
+    strictEqual(
+        crypto.createHash('shake256', { outputLength: 96 }).update('abc').digest('hex').length,
+        192,
+    );
+    throws(() => crypto.createHash('shake128', { outputLength: -1 }), RangeError);
+    throws(() => crypto.createHash('sha256', { outputLength: 7 }), RangeError);
+
+    const hmac = crypto.createHmac('sha256', 'secret', { highWaterMark: 4321 });
+    strictEqual(hmac.readableHighWaterMark, 4321);
+    strictEqual(hmac.writableHighWaterMark, 4321);
+});
+
+Deno.test('crypto upstream: Hash and Hmac work as Transform streams', async () => {
+    const hash = crypto.createHash('sha256');
+    const hashChunks: Buffer[] = [];
+    hash.on('data', chunk => hashChunks.push(Buffer.from(chunk)));
+    const hashDone = new Promise<void>((resolve, reject) => {
+        hash.on('end', resolve);
+        hash.on('error', reject);
+    });
+    hash.write('stream-');
+    hash.end('hash');
+    await hashDone;
+    strictEqual(Buffer.concat(hashChunks).toString('hex'), crypto.createHash('sha256').update('stream-hash').digest('hex'));
+
+    const hmac = crypto.createHmac('sha512-224', 'secret');
+    const hmacChunks: Buffer[] = [];
+    hmac.on('data', chunk => hmacChunks.push(Buffer.from(chunk)));
+    const hmacDone = new Promise<void>((resolve, reject) => {
+        hmac.on('end', resolve);
+        hmac.on('error', reject);
+    });
+    hmac.write('stream-');
+    hmac.end('hmac');
+    await hmacDone;
+    strictEqual(Buffer.concat(hmacChunks).toString('hex'), crypto.createHmac('sha512-224', 'secret').update('stream-hmac').digest('hex'));
+});
+
+Deno.test('crypto upstream: createECDH supports encoded points and setPrivateKey', () => {
+    for (const curve of ['prime256v1', 'secp384r1', 'secp521r1', 'secp256k1']) {
+        const alice = crypto.createECDH(curve);
+        const bob = crypto.createECDH(curve);
+        const alicePublic = alice.generateKeys();
+        const bobPublic = bob.generateKeys();
+        strictEqual(alice.computeSecret(bobPublic).toString('hex'), bob.computeSecret(alicePublic).toString('hex'));
+
+        const compressed = alice.getPublicKey('hex', 'compressed');
+        strictEqual(
+            crypto.ECDH.convertKey(compressed, curve, 'hex', 'hex', 'uncompressed'),
+            alicePublic.toString('hex'),
+        );
+
+        const restored = crypto.createECDH(curve);
+        restored.setPrivateKey(alice.getPrivateKey());
+        strictEqual(restored.getPublicKey('hex'), alicePublic.toString('hex'));
+        strictEqual(restored.computeSecret(bobPublic, undefined, 'hex'), alice.computeSecret(bobPublic, undefined, 'hex'));
+    }
+});
+
+Deno.test('crypto upstream: ECDH invalid points expose the Node error code', () => {
+    const ecdh = crypto.createECDH('prime256v1');
+    ecdh.generateKeys();
+    let caught: (Error & { code?: string }) | undefined;
+    try {
+        ecdh.computeSecret(Buffer.alloc(65));
+    } catch (error) {
+        caught = error as Error & { code?: string };
+    }
+    strictEqual(caught?.code, 'ERR_CRYPTO_ECDH_INVALID_PUBLIC_KEY');
+    ok(caught?.message.includes('Public key is not valid'));
+});
+
+Deno.test('crypto upstream: diffieHellman accepts generated EC KeyObjects', () => {
+    const alice = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const bob = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const left = crypto.diffieHellman({ privateKey: alice.privateKey, publicKey: bob.publicKey });
+    const right = crypto.diffieHellman({ privateKey: bob.privateKey, publicKey: alice.publicKey });
+    strictEqual(left.toString('hex'), right.toString('hex'));
+    strictEqual(alice.privateKey.asymmetricKeyDetails?.namedCurve, 'P-256');
 });
 
 Deno.test('crypto upstream: hkdfSync uses ArrayBufferView bytes and enforces info limit', () => {

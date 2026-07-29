@@ -149,6 +149,11 @@ export class Hooks {
 		return scriptId
 	}
 
+	/** Map a physical file to the scriptId/url announced via scriptParsed. */
+	frameLocationFor(file: string): { scriptId: string; url: string } {
+		return this.scriptFrameLocation(file)
+	}
+
 	private scriptFrameLocation(file: string): { scriptId: string; url: string } {
 		for (const [specPath, sourcePath] of this.scriptSourcePaths) {
 			if (sameScriptPath(file, specPath) || sameScriptPath(file, sourcePath)) {
@@ -730,11 +735,13 @@ export class Hooks {
 
 	private ensureFetchBodyCapacity(requestId: string, incomingBytes: number): boolean {
 		const maxBytes = this.maxPendingBodyBytes()
-		while (this.fetchBodyBufferBytes + incomingBytes > maxBytes && this.fetchBodyBuffers.size > 0) {
-			const oldest = this.fetchBodyBuffers.keys().next().value
-			if (oldest === undefined) break
-			if (oldest === requestId && this.fetchBodyBuffers.size === 1) break
-			this.dropFetchRequestBody(oldest)
+		// Never evict requestId itself: the caller already holds its buffer and
+		// would keep appending to an orphaned object, permanently inflating
+		// fetchBodyBufferBytes with bytes no drop path can ever subtract.
+		for (const id of [...this.fetchBodyBuffers.keys()]) {
+			if (this.fetchBodyBufferBytes + incomingBytes <= maxBytes) break
+			if (id === requestId) continue
+			this.dropFetchRequestBody(id)
 		}
 		if (this.fetchBodyBufferBytes + incomingBytes <= maxBytes) return true
 		this.dropFetchRequestBody(requestId)
@@ -743,11 +750,10 @@ export class Hooks {
 
 	private ensureServeBodyCapacity(requestId: string, incomingBytes: number): boolean {
 		const maxBytes = this.maxPendingBodyBytes()
-		while (this.serveBodyBufferBytes + incomingBytes > maxBytes && this.serveBodyBuffers.size > 0) {
-			const oldest = this.serveBodyBuffers.keys().next().value
-			if (oldest === undefined) break
-			if (oldest === requestId && this.serveBodyBuffers.size === 1) break
-			this.dropServeRequestBody(oldest)
+		for (const id of [...this.serveBodyBuffers.keys()]) {
+			if (this.serveBodyBufferBytes + incomingBytes <= maxBytes) break
+			if (id === requestId) continue
+			this.dropServeRequestBody(id)
 		}
 		if (this.serveBodyBufferBytes + incomingBytes <= maxBytes) return true
 		this.dropServeRequestBody(requestId)

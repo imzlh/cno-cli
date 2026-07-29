@@ -168,6 +168,41 @@ Deno.test({ name: 'cli stage: run and implicit run pass script arguments after e
     });
 });
 
+Deno.test({ name: 'cli stage: test passes arguments after the option terminator', timeout: 10000 }, async () => {
+    await withTempDir('cli-test-args', async (root) => {
+        const testFile = join(root, 'args_test.ts');
+        await Deno.writeTextFile(testFile, `
+            import { deepStrictEqual } from 'node:assert';
+            Deno.test('receives script args', () => {
+                console.log('TEST_ARGS:' + JSON.stringify(Deno.args));
+                deepStrictEqual(Deno.args, ['fixture', '--filter=user-value']);
+            });
+        `);
+
+        const result = await runCno([
+            'test',
+            testFile,
+            '--filter=receives',
+            '--',
+            'fixture',
+            '--filter=user-value',
+        ], root);
+        strictEqual(result.code, 0, result.stderr);
+        ok(result.stdout.includes('TEST_ARGS:["fixture","--filter=user-value"]'), result.stdout);
+    });
+});
+
+Deno.test({ name: 'cli stage: test reports module evaluation errors', timeout: 10000 }, async () => {
+    await withTempDir('cli-test-module-error', async (root) => {
+        const testFile = join(root, 'broken_test.ts');
+        await Deno.writeTextFile(testFile, `throw new Error('MODULE_EVALUATION_FAILED');\n`);
+
+        const result = await runCno(['test', testFile], root);
+        strictEqual(result.code, 1, result.stdout + result.stderr);
+        ok(result.stderr.includes('MODULE_EVALUATION_FAILED'), result.stdout + result.stderr);
+    });
+});
+
 Deno.test({ name: 'cli stage: run supports local query hash imports and BOM sources', timeout: 10000 }, async () => {
     await withTempDir('cli-run-local-specs', async (root) => {
         await Deno.writeTextFile(join(root, 'hello.js'), 'console.log("HELLO-JS");\n');
@@ -1268,6 +1303,15 @@ Deno.test({ name: 'cli stage: exec resolves bins from CTS cache, not local node_
     });
 });
 
+Deno.test({ name: 'cli stage: exec without a command prints usage instead of resolving the repl sentinel', timeout: 10000 }, async () => {
+    await withTempDir('cli-exec-missing-command', async (root) => {
+        const result = await runCno(['exec'], root);
+        strictEqual(result.code, 1, result.stderr);
+        ok(result.stderr.includes('Usage: cno exec <command> [args…]'), result.stderr);
+        ok(!result.stderr.includes('Could not be resolved'), result.stderr);
+    });
+});
+
 Deno.test({ name: 'cli stage upstream npm: dynamic import from npm can load local TS URLs', timeout: 20000 }, async () => {
     await withTempDir('cli-npm-dynamic-import-local-ts', async (root) => {
         const cacheDir = join(root, 'cache');
@@ -2098,6 +2142,21 @@ Deno.test({ name: 'cli stage upstream npm: npm specifier can match local node_mo
     });
 });
 
+/** Read lines from the REPL SQLite history DB (oldest → newest). */
+function readReplHistoryDb(home: string): string[] {
+    const sqlite3 = import.meta.use('sqlite3');
+    const path = join(home, '.cno_history.sqlite');
+    const db = sqlite3.open(path, sqlite3.O_READONLY);
+    try {
+        const rows = db.prepare('SELECT line FROM history ORDER BY id ASC').all();
+        return rows
+            .map((r: { line?: unknown }) => r.line)
+            .filter((l: unknown): l is string => typeof l === 'string' && l.length > 0);
+    } finally {
+        try { db.close(); } catch { /* */ }
+    }
+}
+
 Deno.test({ name: 'cli stage: repl .q exits through cleanup and writes history', timeout: 10000 }, async () => {
     await withTempDir('cli-repl-history', async (root) => {
         const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
@@ -2120,8 +2179,97 @@ Deno.test({ name: 'cli stage: repl .q exits through cleanup and writes history',
         const output = await child.output();
         strictEqual(output.code, 0, decodeUtf8(output.stderr));
 
-        const history = await Deno.readTextFile(join(root, '.cno_history'));
-        ok(history.includes('1 + 1'), history);
+        const lines = readReplHistoryDb(root);
+        ok(lines.includes('1 + 1'), lines.join('\n'));
+        ok(!lines.some((l) => l.includes('.q')), `directives must not land in history: ${lines.join('|')}`);
+        // Primary store is SQLite, not the legacy text file.
+        let textExists = false;
+        try {
+            await Deno.stat(join(root, '.cno_history'));
+            textExists = true;
+        } catch { /* expected missing */ }
+        ok(!textExists, 'legacy .cno_history text should not be the primary store');
+    });
+});
+
+Deno.test({ name: 'cli stage: repl reloads prior history on next session', timeout: 15000 }, async () => {
+    await withTempDir('cli-repl-history-reload', async (root) => {
+        const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+        const env = {
+            CTS_SILENT: 'true',
+            HOME: root,
+        };
+
+        // Seed a prior session.
+        {
+            const child = new Deno.Command(execPath, {
+                args: ['repl'],
+                cwd: root,
+                stdin: 'piped',
+                stdout: 'piped',
+                stderr: 'piped',
+                env,
+            }).spawn();
+            const writer = child.stdin.getWriter();
+            await writer.write(new TextEncoder().encode('const seed = 42\n.q\n'));
+            await writer.close();
+            const output = await child.output();
+            strictEqual(output.code, 0, decodeUtf8(output.stderr));
+        }
+
+        const seeded = readReplHistoryDb(root);
+        ok(seeded.includes('const seed = 42'), seeded.join('\n'));
+
+        // Second session should append, keeping the prior line.
+        {
+            const child = new Deno.Command(execPath, {
+                args: ['repl'],
+                cwd: root,
+                stdin: 'piped',
+                stdout: 'piped',
+                stderr: 'piped',
+                env,
+            }).spawn();
+            const writer = child.stdin.getWriter();
+            await writer.write(new TextEncoder().encode('const next = 7\n.q\n'));
+            await writer.close();
+            const output = await child.output();
+            strictEqual(output.code, 0, decodeUtf8(output.stderr));
+        }
+
+        const history = readReplHistoryDb(root);
+        ok(history.includes('const seed = 42'), history.join('\n'));
+        ok(history.includes('const next = 7'), history.join('\n'));
+    });
+});
+
+Deno.test({ name: 'cli stage: repl persists history immediately after each line', timeout: 10000 }, async () => {
+    await withTempDir('cli-repl-history-flush', async (root) => {
+        const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+        const child = new Deno.Command(execPath, {
+            args: ['repl'],
+            cwd: root,
+            stdin: 'piped',
+            stdout: 'piped',
+            stderr: 'piped',
+            env: {
+                CTS_SILENT: 'true',
+                HOME: root,
+            },
+        }).spawn();
+
+        const writer = child.stdin.getWriter();
+        await writer.write(new TextEncoder().encode('99 + 1\n'));
+        // Give the REPL a moment to evaluate + SQLite INSERT before killing.
+        await new Promise((r) => setTimeout(r, 400));
+        try {
+            child.kill('SIGKILL');
+        } catch { /* already exited */ }
+        await writer.close().catch(() => {});
+        await child.output().catch(() => {});
+
+        const history = readReplHistoryDb(root);
+        ok(history.includes('99 + 1'), history.join('\n'));
     });
 });
 

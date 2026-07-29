@@ -1,4 +1,5 @@
 import { loadTasks, LockStore, fatal, joinPaths, normalizePath, isAbsolute, toPosixPath, dirname } from '../../cts/src/api';
+import { runTaskChild, taskShellArgv, taskShellEnv } from '../../cts/src/task';
 import { C } from '../help';
 
 const os = import.meta.use('os');
@@ -64,19 +65,16 @@ export async function runTask(args: string[], flags: Record<string, string | boo
                 return;
             }
             // No tasks config: still run ad-hoc shell (Deno allows task --eval without named tasks).
-            const process = import.meta.use('process');
             let isWin = false;
             try { isWin = /win/i.test(os.uname().sysname); } catch { /* */ }
-            const argv = isWin ? ['cmd.exe', '/c', evalFlag] : ['sh', '-c', evalFlag];
+            const argv = isWin ? ['cmd.exe', '/c', evalFlag] : taskShellArgv(evalFlag);
             const cwd = runCwd ?? startDir;
             console.log(`Task  ${evalFlag}`);
-            const child = process.spawn(argv, {
-                stdin: 'inherit', stdout: 'inherit', stderr: 'inherit',
-                env: { ...os.environ(), PWD: cwd, INIT_CWD: invocationCwd },
+            const code = await runTaskChild(
+                argv,
+                { ...os.environ(), ...taskShellEnv({ INIT_CWD: invocationCwd }, cwd) },
                 cwd,
-            });
-            const info = await child.wait();
-            const code = info.exit_status ?? 0;
+            );
             if (code !== 0) os.exit(code);
         } finally {
             lockStore.close();

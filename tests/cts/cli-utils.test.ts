@@ -1,5 +1,6 @@
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { parseArgv } from '../../src/cli.ts';
+import { parseTestChildArgs } from '../../src/commands/test.ts';
 import {
     basename,
     canonicalizePath,
@@ -83,6 +84,15 @@ Deno.test('cli: implicit run keeps Node preload flags in execArgv', () => {
     deepStrictEqual(cli.rawArgs.args, ['--user']);
 });
 
+Deno.test('cli: missing Node flag values do not swallow the next option', () => {
+    const cli = parseArgv(['run', '--require', '--reload', 'main.ts']);
+    strictEqual(cli.flags.require, true);
+    strictEqual(cli.flags.reload, true);
+    deepStrictEqual(cli.rawArgs.internalArgs, ['--require']);
+    deepStrictEqual(cli.rawArgs.actionArgs, ['--reload']);
+    strictEqual(cli.rawArgs.entry, 'main.ts');
+});
+
 Deno.test('cli: value flags consume their value before the entry file', () => {
     const run = parseArgv(['run', '--config', 'deno.json', '--cache-dir', '.cache', 'main.ts', '--user']);
     strictEqual(run.cmd, 'run');
@@ -160,6 +170,28 @@ Deno.test('cli: value flags can consume dash-prefixed non-option values', () => 
     strictEqual(nextFlag.rawArgs.entry, 'main.ts');
 });
 
+Deno.test('cli: task arguments after the task name are forwarded verbatim', () => {
+    const cli = parseArgv(['task', '--cwd', 'project', 'serve', '--host', '127.0.0.1', '--', '--debug']);
+    strictEqual(cli.cmd, 'task');
+    strictEqual(cli.flags.cwd, 'project');
+    deepStrictEqual(cli.positional, ['serve', '--host', '127.0.0.1', '--', '--debug']);
+    deepStrictEqual(cli.rawArgs.actionArgs, ['--cwd', 'project']);
+    strictEqual(cli.rawArgs.entry, 'serve');
+    deepStrictEqual(cli.rawArgs.args, ['--host', '127.0.0.1', '--', '--debug']);
+});
+
+Deno.test('cli: command-scoped help and version remain flags before a target', () => {
+    const help = parseArgv(['test', '--help']);
+    strictEqual(help.cmd, 'test');
+    strictEqual(help.flags.help, true);
+    deepStrictEqual(help.positional, []);
+
+    const version = parseArgv(['run', '--version']);
+    strictEqual(version.cmd, 'run');
+    strictEqual(version.flags.version, true);
+    deepStrictEqual(version.positional, []);
+});
+
 Deno.test('cli: option terminator stops cno flag parsing before entry', () => {
     const explicit = parseArgv(['run', '--no-lock', '--', 'main.ts', '--user-flag']);
     strictEqual(explicit.cmd, 'run');
@@ -176,6 +208,30 @@ Deno.test('cli: option terminator stops cno flag parsing before entry', () => {
     deepStrictEqual(implicit.rawArgs.actionArgs, ['--reload']);
     strictEqual(implicit.rawArgs.entry, '--dash-entry.ts');
     deepStrictEqual(implicit.rawArgs.args, ['arg']);
+});
+
+Deno.test('cli: option terminator is preserved only for test script args', () => {
+    const test = parseArgv(['test', 'tests/unit.test.ts', '--', '--case', 'one']);
+    deepStrictEqual(test.positional, ['tests/unit.test.ts', '--', '--case', 'one']);
+
+    const task = parseArgv(['task', '--', 'build']);
+    deepStrictEqual(task.positional, ['build']);
+    const exec = parseArgv(['exec', '--', 'tool']);
+    deepStrictEqual(exec.positional, ['tool']);
+    const cache = parseArgv(['cache', '--', 'main.ts']);
+    deepStrictEqual(cache.positional, ['main.ts']);
+});
+
+Deno.test('cli: test child separates runner flags from script args', () => {
+    const invocation = parseTestChildArgs([
+        '--filter=selected',
+        '--fail-fast',
+        '--',
+        'fixture',
+        '--filter=user-value',
+    ]);
+    deepStrictEqual(invocation.flags, { filter: 'selected', 'fail-fast': true });
+    deepStrictEqual(invocation.scriptArgs, ['fixture', '--filter=user-value']);
 });
 
 Deno.test('cli: exec keeps command args after option terminator', () => {

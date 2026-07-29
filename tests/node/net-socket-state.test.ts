@@ -1,4 +1,4 @@
-import { strictEqual, ok } from 'node:assert';
+import { strictEqual, ok, throws } from 'node:assert';
 import { rmSync } from 'node:fs';
 import * as net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -314,7 +314,9 @@ Deno.test({ name: 'net: server.maxConnections limits accepted sockets', timeout:
     const server = net.createServer();
     server.maxConnections = 1;
     let accepted = 0;
+    let dropped = 0;
     server.on('connection', (s) => { accepted++; s.resume(); });
+    server.on('drop', () => { dropped++; });
     await listen(server);
     try {
         const addr = server.address();
@@ -326,7 +328,8 @@ Deno.test({ name: 'net: server.maxConnections limits accepted sockets', timeout:
         a.destroy();
         b.destroy();
         await new Promise((r) => setTimeout(r, 200));
-        ok(accepted >= 1, 'at least one connection accepted');
+        strictEqual(accepted, 1, 'only one connection should be accepted');
+        strictEqual(dropped, 1, 'the excess connection should emit drop');
     } finally {
         await close(server);
     }
@@ -553,4 +556,131 @@ Deno.test('net: BlockList checks addresses ranges and subnets', () => {
     const rules = blockList.rules;
     rules.push('mutated');
     strictEqual(blockList.rules.length, 3);
+});
+
+Deno.test({ name: 'net: custom lookup resolves hostname and emits lookup before connect', timeout: 10000 }, async () => {
+    const server = net.createServer((socket) => socket.end());
+    await listen(server);
+    try {
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('no port');
+        const events: string[] = [];
+        let lookupCalls = 0;
+
+        await new Promise<void>((resolve, reject) => {
+            const socket = net.createConnection({
+                port: address.port,
+                host: 'virtual.test',
+                lookup(_hostname, options, callback) {
+                    lookupCalls++;
+                    strictEqual(options.family, 0);
+                    queueMicrotask(() => callback(null, '127.0.0.1', 4));
+                },
+            });
+            socket.on('lookup', (_error, resolved, family, hostname) => {
+                events.push('lookup');
+                strictEqual(resolved, '127.0.0.1');
+                strictEqual(family, 4);
+                strictEqual(hostname, 'virtual.test');
+            });
+            socket.on('connect', () => events.push('connect'));
+            socket.on('ready', () => events.push('ready'));
+            socket.on('close', () => resolve());
+            socket.on('error', reject);
+        });
+
+        strictEqual(lookupCalls, 1);
+        strictEqual(events.join(','), 'lookup,connect,ready');
+    } finally {
+        await close(server);
+    }
+});
+
+Deno.test({ name: 'net: localAddress binds the client socket', timeout: 10000 }, async () => {
+    let remoteAddress = '';
+    const server = net.createServer((socket) => {
+        remoteAddress = socket.remoteAddress ?? '';
+        socket.end();
+    });
+    await listen(server);
+    try {
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('no port');
+        await new Promise<void>((resolve, reject) => {
+            const socket = net.createConnection({
+                port: address.port,
+                host: '127.0.0.1',
+                localAddress: '127.0.0.1',
+            });
+            socket.on('connect', () => strictEqual(socket.localAddress, '127.0.0.1'));
+            socket.on('close', resolve);
+            socket.on('error', reject);
+        });
+        strictEqual(remoteAddress, '127.0.0.1');
+    } finally {
+        await close(server);
+    }
+});
+
+Deno.test({ name: 'net: server.close waits for active sockets without destroying them', timeout: 10000 }, async () => {
+    const server = net.createServer((socket) => socket.resume());
+    await listen(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('no port');
+
+    const client = net.createConnection(address.port, '127.0.0.1');
+    await new Promise<void>((resolve, reject) => {
+        client.once('connect', resolve);
+        client.once('error', reject);
+    });
+
+    let closed = false;
+    const closePromise = new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+            if (error) reject(error);
+            else {
+                closed = true;
+                resolve();
+            }
+        });
+    });
+    strictEqual(server.listening, false);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    strictEqual(closed, false);
+    strictEqual(client.destroyed, false);
+
+    client.end();
+    await closePromise;
+});
+
+Deno.test({ name: 'net: object path form connects to Unix sockets', timeout: 10000 }, async () => {
+    const pipePath = join(tmpdir(), `cno-net-object-path-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`);
+    const server = net.createServer((socket) => socket.end('ok'));
+    try {
+        await new Promise<void>((resolve, reject) => {
+            server.once('error', reject);
+            server.listen({ path: pipePath }, resolve);
+        });
+        const body = await new Promise<string>((resolve, reject) => {
+            const chunks: Buffer[] = [];
+            const socket = net.createConnection({ path: pipePath });
+            socket.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+            socket.on('end', () => resolve(Buffer.concat(chunks).toString()));
+            socket.on('error', reject);
+        });
+        strictEqual(body, 'ok');
+    } finally {
+        await close(server);
+        try { rmSync(pipePath); } catch {}
+    }
+});
+
+Deno.test('net: IP validators and SocketAddress reject malformed input', () => {
+    strictEqual(net.isIPv4('01.2.3.4'), false);
+    strictEqual(net.isIPv6('1:2:3'), false);
+    strictEqual(net.isIPv6('1::2::3'), false);
+    strictEqual(net.isIPv6('::ffff:192.0.2.1'), true);
+    strictEqual(net.isIPv6('fe80::1%eth0'), true);
+    throws(() => new net.SocketAddress({ address: '::1', family: 'ipv4' }));
+    throws(() => new net.SocketAddress({ address: '127.0.0.1', family: 'ipv6' }));
 });

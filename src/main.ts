@@ -41,7 +41,7 @@ import { runRepl } from './commands/repl';
 import { runFile } from './commands/run';
 import { runSetup } from './commands/setup';
 import { printTaskList, runTask, taskExists } from './commands/task';
-import { parseTestChildFlags, runTest, TEST_CHILD_ENV, type TestChildMessage } from './commands/test';
+import { parseTestChildArgs, runTest, TEST_CHILD_ENV, type TestChildMessage } from './commands/test';
 import { C, showHelp, showVersion } from './help';
 import { disableCertVerify, startProxy, stopNetwork } from './network';
 
@@ -53,12 +53,6 @@ const fs = import.meta.use('fs');
 const console = import.meta.use('console');
 const worker = import.meta.use('worker');
 const os = import.meta.use('os');
-
-function notImplemented(name: string): never {
-    console.error(`${C.warn('!')} ${C.cyan('cno ' + name)} is not implemented yet.`);
-    os.exit(2);
-    throw new Error('unreachable');
-}
 
 function looksLikeFileTarget(raw: string): boolean {
     const normalized = toPosixPath(raw);
@@ -173,6 +167,16 @@ async function installProcessCleanup(): Promise<void> {
 async function dispatch(): Promise<void> {
     const cli = warnUnknownFlags(parseArgv(readArgv()));
 
+    // Pack owns its command-scoped help so it can document pack-only flags.
+    if (cli.cmd !== 'pack' && (cli.flags.help === true || cli.flags.h === true)) {
+        showHelp();
+        return;
+    }
+    if (cli.flags.version === true || cli.flags.v === true) {
+        showVersion();
+        return;
+    }
+
     // Set runtime argv for EVERY command (eval/repl/task/test/cache/…), not just
     // run — otherwise those paths fall back to the cno submodule's naive parser
     // and Deno.args / process.argv come out wrong.
@@ -210,11 +214,13 @@ async function dispatch(): Promise<void> {
         case 'task':
             return runTask(cli.positional, cli.flags);
         case 'exec': {
-            const bin = cli.rawArgs.entry;
-            const args = cli.rawArgs.args;
+            // `rawArgs.entry` defaults to `repl` for commands without an
+            // entry, so validate the actual exec positional explicitly.
+            const [bin, ...args] = cli.positional;
             if (!bin) {
                 console.error(`Usage: ${C.cyan('cno exec')} ${C.cyan('<command>')} [args…]`);
                 os.exit(1);
+                return;
             }
             const cacheDir = typeof cli.flags['cache-dir'] === 'string' ? cli.flags['cache-dir'] : undefined;
             const code = await spawnBinary(bin, args, {}, os.cwd, cacheDir);
@@ -227,10 +233,6 @@ async function dispatch(): Promise<void> {
             return runTest(cli.positional, cli.flags);
         case 'setup':
             return runSetup(cli.flags);
-        case 'fmt':
-        case 'lint':
-        case 'upgrade':
-            return notImplemented(cli.cmd);
         case 'run':
         case null: {
             // `cno run <file>` or `cno <file>` (implicit run).
@@ -265,10 +267,15 @@ async function dispatch(): Promise<void> {
 // Runs one test file and reports its result via `send` — shared by both the
 // worker-thread transport (workerEntry) and the child-process transport
 // (testChildEntry) so the two only differ in how the result gets back.
-async function runTestFileAndReport(file: string, flags: Record<string, string | boolean>, send: (msg: TestChildMessage) => void): Promise<void> {
+async function runTestFileAndReport(
+    file: string,
+    flags: Record<string, string | boolean>,
+    scriptArgs: string[],
+    send: (msg: TestChildMessage) => void,
+): Promise<void> {
     try {
         // Deno test modules are not "main"; import.meta.main is false under `deno test`.
-        await runFile({ file, args: [], flags, rawArgs: makeRunArgs(file), asMain: false });
+        await runFile({ file, args: scriptArgs, flags, rawArgs: makeRunArgs(file, scriptArgs), asMain: false });
         // Use the module-level startTest / getFailedTests exports directly
         const { startTest, getFailedTests } = await import('../cno/src/deno/index');
         const passed = await startTest(file, true, true, {
@@ -281,7 +288,7 @@ async function runTestFileAndReport(file: string, flags: Record<string, string |
     }
 }
 
-async function testChildEntry(file: string, flags: Record<string, string | boolean>): Promise<void> {
+async function testChildEntry(file: string, flags: Record<string, string | boolean>, scriptArgs: string[]): Promise<void> {
     const { IPCChannel } = await import('../cno/src/node/ipc_channel/mod');
     const streams = import.meta.use('streams');
     // fd 3 is where the native `process` module always hands a spawned child
@@ -291,7 +298,7 @@ async function testChildEntry(file: string, flags: Record<string, string | boole
     pipe.open(3);
     const channel = new IPCChannel(pipe);
     try {
-        await runTestFileAndReport(file, flags, (msg) => channel.send(msg));
+        await runTestFileAndReport(file, flags, scriptArgs, (msg) => channel.send(msg));
     } finally {
         channel.close();
     }
@@ -312,7 +319,7 @@ async function workerEntry(): Promise<void> {
     if (testEntry) {
         const pipe = worker.pipe;
         if (!pipe) throw new Error('test worker pipe was not created');
-        await runTestFileAndReport(String(testEntry), {}, (msg) => pipe.postMessage(msg));
+        await runTestFileAndReport(String(testEntry), {}, [], (msg) => pipe.postMessage(msg));
         return;
     }
 
@@ -348,7 +355,13 @@ async function mainEntry(): Promise<void> {
         if (isTestChild) os.unsetenv(TEST_CHILD_ENV); // must not leak to grandchildren
 
         if (worker.isWorker) await workerEntry();
-        else if (isTestChild) await testChildEntry(os.args[1], parseTestChildFlags(os.args.slice(2)));
+        else if (isTestChild) {
+            // Test children open a LockStore too; without this the finally
+            // below is a no-op and the SQLite handle leaks (cts.lock EINVAL).
+            await installProcessCleanup();
+            const invocation = parseTestChildArgs(os.args.slice(2));
+            await testChildEntry(os.args[1], invocation.flags, invocation.scriptArgs);
+        }
         else {
             await dispatch();
             let code: unknown;

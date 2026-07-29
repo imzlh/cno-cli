@@ -5,6 +5,7 @@ const os = import.meta.use('os');
 const console = import.meta.use('console');
 const process = import.meta.use('process');
 const fs = import.meta.use('fs');
+const timers = import.meta.use('timers');
 
 // Env sentinel selecting testChildEntry() in src/main.ts (unset on entry,
 // so it never leaks into a grandchild the test file spawns itself).
@@ -39,6 +40,23 @@ function killChildQuietly(child: { kill(): void }): void {
     } catch {
         // The child may already have exited after IPC close.
     }
+}
+
+async function settleChild(
+    child: { kill(): void },
+    waitPromise: Promise<CModuleProcess.ExitInfo>,
+): Promise<void> {
+    let timer: number | undefined;
+    const exited = await Promise.race([
+        waitPromise.then(() => true, () => true),
+        new Promise<boolean>((resolve) => {
+            timer = timers.setTimeout(() => resolve(false), 500);
+        }),
+    ]);
+    if (timer !== undefined) timers.clearTimeout(timer);
+    if (exited) return;
+    killChildQuietly(child);
+    await waitPromise.catch(() => {});
 }
 
 function* walkSync(dir: string): Generator<string> {
@@ -115,6 +133,12 @@ function parseFailedTests(value: unknown): FailedTest[] {
     });
 }
 
+function errorText(value: unknown): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (value instanceof Error) return String(value.stack ?? value.message);
+    return String(value);
+}
+
 function flagsToArgs(flags: Record<string, string | boolean>): string[] {
     const args: string[] = [];
     for (const [key, value] of Object.entries(flags)) {
@@ -154,6 +178,18 @@ export function parseTestChildFlags(args: string[]): Record<string, string | boo
     return flags;
 }
 
+export function parseTestChildArgs(args: string[]): {
+    flags: Record<string, string | boolean>;
+    scriptArgs: string[];
+} {
+    const separator = args.indexOf('--');
+    if (separator < 0) return { flags: parseTestChildFlags(args), scriptArgs: [] };
+    return {
+        flags: parseTestChildFlags(args.slice(0, separator)),
+        scriptArgs: args.slice(separator + 1),
+    };
+}
+
 function parseConcurrency(value: string | boolean | undefined): number {
     if (typeof value !== 'string') return 4;
     const parsed = Number(value);
@@ -161,13 +197,13 @@ function parseConcurrency(value: string | boolean | undefined): number {
     return parsed;
 }
 
-async function runOne(file: string, flags: Record<string, string | boolean>): Promise<TestResult> {
+async function runOne(file: string, flags: Record<string, string | boolean>, scriptArgs: string[]): Promise<TestResult> {
     const start = performance.now();
     applyCacheDirEnv(flags);
     const { IPCChannel } = await import('../../cno/src/node/ipc_channel/mod');
     let child: ReturnType<typeof process.spawn>;
     try {
-        child = process.spawn([os.exePath, file, ...flagsToArgs(flags)], {
+        child = process.spawn([os.exePath, file, ...flagsToArgs(flags), '--', ...scriptArgs], {
             stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', ipc: true,
             env: childEnv(flags),
         });
@@ -183,7 +219,10 @@ async function runOne(file: string, flags: Record<string, string | boolean>): Pr
             failedTests: [],
         };
     }
+    const waitPromise = child.wait();
     if (!child.ipc) {
+        killChildQuietly(child);
+        await waitPromise.catch(() => {});
         return {
             file,
             passed: false,
@@ -204,7 +243,7 @@ async function runOne(file: string, flags: Record<string, string | boolean>): Pr
         // are delivered, so a message sent just before exit is guaranteed to
         // have arrived here already — no need to race against child.wait().
         if (received === undefined) {
-            const info = await child.wait();
+            const info = await waitPromise;
             throw new Error(`test worker exited (code=${info.exit_status}, signal=${info.term_signal ?? 'none'}) without reporting a result`);
         }
         const failedTests = parseFailedTests(received.failedTests);
@@ -213,12 +252,16 @@ async function runOne(file: string, flags: Record<string, string | boolean>): Pr
         return { file, passed: false, duration: performance.now() - start, error: e, failedTests: [] };
     } finally {
         channel.close();
-        killChildQuietly(child);
-        await child.wait().catch(() => {});
+        await settleChild(child, waitPromise);
     }
 }
 
-async function runAll(files: string[], concurrency: number, flags: Record<string, string | boolean>): Promise<TestResult[]> {
+async function runAll(
+    files: string[],
+    concurrency: number,
+    flags: Record<string, string | boolean>,
+    scriptArgs: string[],
+): Promise<TestResult[]> {
     const results: TestResult[] = [];
     const queue = [...files];
     const workers: Promise<void>[] = [];
@@ -228,7 +271,7 @@ async function runAll(files: string[], concurrency: number, flags: Record<string
         while (queue.length) {
             const file = queue.shift();
             if (file === undefined) continue;
-            const result = await runOne(file, flags);
+            const result = await runOne(file, flags, scriptArgs);
             results.push(result);
             if (failFast && !result.passed) {
                 queue.length = 0;
@@ -247,9 +290,12 @@ async function runAll(files: string[], concurrency: number, flags: Record<string
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 export async function runTest(
-    paths: string[],
+    rawPaths: string[],
     flags: Record<string, string | boolean>,
 ): Promise<void> {
+    const separator = rawPaths.indexOf('--');
+    const paths = separator < 0 ? rawPaths : rawPaths.slice(0, separator);
+    const scriptArgs = separator < 0 ? [] : rawPaths.slice(separator + 1);
     const files = collectTests(paths);
 
     if (!files.length) {
@@ -269,7 +315,7 @@ export async function runTest(
     console.log(`${C.dim('Running')} ${files.length} test file${files.length === 1 ? '' : 's'} (concurrency=${concurrency})`);
     console.log('');
 
-    const results = await runAll(files, concurrency, flags);
+    const results = await runAll(files, concurrency, flags, scriptArgs);
 
     let passed = 0, failed = 0;
     const allFailed: Array<{ file: string; tests: FailedTest[] }> = [];
@@ -284,7 +330,11 @@ export async function runTest(
         const rel = r.file.startsWith(cwdPrefix) ? r.file.slice(cwdPrefix.length) : r.file;
         console.log(`  ${label}  ${rel}  ${ms}`);
         if (r.passed) passed++; else failed++;
-        if (r.failedTests.length) allFailed.push({ file: rel, tests: r.failedTests });
+        const fileError = errorText(r.error);
+        const failures = fileError
+            ? [{ name: 'test module failed', error: fileError }, ...r.failedTests]
+            : r.failedTests;
+        if (failures.length) allFailed.push({ file: rel, tests: failures });
     }
 
     // Aggregate "Failed tests:" on the main thread — matches Deno's output

@@ -8,3 +8,4 @@ dist/
 cts.lock
 *.lock
 example/
+*.node

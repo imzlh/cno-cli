@@ -140,6 +140,9 @@ Deno.test('inspector serializer: map previews expose entry previews and overflow
     strictEqual(remote.subtype, 'map');
     strictEqual(remote.preview?.entries?.length, 5);
     strictEqual(remote.preview?.overflow, true);
-    strictEqual(remote.preview?.entries?.[0]?.key?.type, 'object');
+    // CDP ObjectPreview.type is the RemoteObject type enum, so a primitive key
+    // reports its own type and carries the value as `description`.
+    strictEqual(remote.preview?.entries?.[0]?.key?.type, 'string');
+    strictEqual(remote.preview?.entries?.[0]?.key?.description, 'k0');
     strictEqual(remote.preview?.entries?.[0]?.value?.description, 'Object');
 });

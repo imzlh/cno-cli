@@ -112,6 +112,7 @@ Deno.test('cts node protocol: trusts locked paths without cache-dir revalidation
 
         const resolver = new ModuleResolver(createConfig({ cacheDir: newCache }), root, true);
         strictEqual(resolver.resolve('node:fs/utils', '/entry.ts').localPath, oldPath);
+        resolver.close();
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

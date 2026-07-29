@@ -63,7 +63,29 @@ export class Serializer {
 		return ro;
 	}
 
+	/** ObjectPreview for a non-object value, or null if `value` is an object. */
+	private primitivePreview(value: unknown): ObjectPreview | null {
+		const base = { overflow: false, properties: [] as ObjectPreview['properties'] };
+		switch (typeof value) {
+			case 'undefined': return { type: 'undefined', description: 'undefined', ...base };
+			case 'boolean':   return { type: 'boolean', description: String(value), ...base };
+			case 'string':    return { type: 'string', description: value, ...base };
+			case 'number':    return { type: 'number', description: serializeNumber(value).description ?? String(value), ...base };
+			case 'bigint':    return { type: 'bigint', description: `${value}n`, ...base };
+			case 'symbol':    return { type: 'symbol', description: safeString(value), ...base };
+			case 'function':  return { type: 'function', description: safeFnString(value as InspectableFunction), ...base };
+			default:          return null; // 'object' (incl. null, handled below)
+		}
+	}
+
 	buildPreview(value: unknown, subtype?: RemoteObjectSubtype, description?: string): ObjectPreview {
+		// Map/Set entry keys and values recurse here and are often primitives.
+		// CDP ObjectPreview.type is the full RemoteObject type enum, so report
+		// the real type — otherwise `new Map([[1,'a']])` previews as
+		// `Number => String` instead of `1 => "a"`.
+		const primitive = this.primitivePreview(value);
+		if (primitive) return primitive;
+
 		const sub = subtype ?? objectSubtype(value);
 		const desc = description ?? describeObject(value, sub, classNameOf(value));
 		const preview: ObjectPreview = { type: 'object', subtype: sub, description: desc, overflow: false, properties: [] };

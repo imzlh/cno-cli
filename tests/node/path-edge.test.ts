@@ -81,6 +81,18 @@ Deno.test('path: public methods reject non-string path arguments', () => {
     throws(() => path.posix.format(null as unknown as path.FormatInputPathObject), TypeError);
 });
 
+Deno.test('path: matchesGlob handles common patterns without runtime dependencies', () => {
+    strictEqual(path.posix.matchesGlob('src/main.ts', 'src/*.ts'), true);
+    strictEqual(path.posix.matchesGlob('src/lib/main.ts', 'src/*.ts'), false);
+    strictEqual(path.posix.matchesGlob('src/lib/main.ts', 'src/**/*.ts'), true);
+    strictEqual(path.posix.matchesGlob('src/main.js', 'src/*.{js,ts}'), true);
+    strictEqual(path.posix.matchesGlob('src/main.ts', 'src/main.?s'), true);
+    strictEqual(path.posix.matchesGlob('src/a.ts', 'src/[ab].ts'), true);
+    strictEqual(path.posix.matchesGlob('.env', '*'), false);
+    strictEqual(path.win32.matchesGlob('src\\lib\\main.ts', 'src\\**\\*.ts'), true);
+    throws(() => path.matchesGlob(1 as unknown as string, '*'), TypeError);
+});
+
 Deno.test('path: format inserts extension dots and preserves empty base directories', () => {
     strictEqual(path.posix.format({ dir: '/a', name: 'b', ext: 'js' }), '/a/b.js');
     strictEqual(path.win32.format({ dir: 'C:\\a', name: 'b', ext: 'js' }), 'C:\\a\\b.js');

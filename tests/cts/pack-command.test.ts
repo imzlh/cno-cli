@@ -43,12 +43,18 @@ function assertNoPackExtract(cacheDir: string, label: string): void {
     strictEqual(existsSync(root), false, `${label}: pack-extract must not exist under ${cacheDir}`);
 }
 
-async function runCno(args: string[], cwd: string, cacheDir?: string): Promise<{ code: number; output: string }> {
+async function runCno(
+    args: string[],
+    cwd: string,
+    cacheDir?: string,
+    extraEnv: Record<string, string> = {},
+): Promise<{ code: number; output: string }> {
     const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
     const env: Record<string, string> = {
         ALL_PROXY: '', HTTPS_PROXY: '', HTTP_PROXY: '',
         all_proxy: '', https_proxy: '', http_proxy: '',
         NO_PROXY: '*', no_proxy: '*',
+        ...extraEnv,
     };
     if (cacheDir) env.CTS_CACHE_DIR = cacheDir;
     const output = await new Deno.Command(execPath, {
@@ -177,7 +183,7 @@ Deno.test({ name: 'pack command: preserves query/hash identities and source impo
     const cacheDir = makePosixTempDir('pack-identities-cache');
     try {
         writeFileSync(join(projectDir, 'counter.ts'), `
-const next = Number(Reflect.get(globalThis, '__packQueryCount') ?? 0) + 1;
+const next: number = Number(Reflect.get(globalThis, '__packQueryCount') ?? 0) + 1;
 Reflect.set(globalThis, '__packQueryCount', next);
 export const value = next;
 `.trimStart());
@@ -218,7 +224,12 @@ console.log('ATTR_CJS', await cjsAttribute());
         // Run twice from the same container file. Import-attribute modules must
         // stay source-only; load stays memory-only (no pack-extract).
         for (let run = 0; run < 2; run++) {
-            const result = await runCno([join(runDir, 'out.jspack')], runDir, cacheDir);
+            const result = await runCno(
+                [join(runDir, 'out.jspack')],
+                runDir,
+                cacheDir,
+                run === 1 ? { CTS_DISABLE_CACHE: 'true' } : {},
+            );
             strictEqual(result.code, 0, result.output);
             strictEqual(result.output.includes('IDENTITIES 1 2'), true, result.output);
             strictEqual(result.output.includes('QUERY_COLLISION PACK_ATTRIBUTE_SOURCE'), true, result.output);
@@ -315,6 +326,47 @@ Deno.test({ name: 'pack command: extensionless entries match run language defaul
         const jsResult = await runCno([join(runDir, 'plain.jspack')], runDir);
         strictEqual(jsResult.code, 0, jsResult.output);
         strictEqual(jsResult.output.includes('EXTENSIONLESS_JS'), true, jsResult.output);
+    } finally {
+        Deno.removeSync(projectDir, { recursive: true });
+        Deno.removeSync(runDir, { recursive: true });
+    }
+});
+
+Deno.test({ name: 'pack command: preserves source kind and edges for extensionless npm exports', timeout: 120000 }, async () => {
+    const projectDir = makePosixTempDir('pack-extensionless-npm');
+    const runDir = makePosixTempDir('pack-extensionless-npm-run');
+    try {
+        const packageDir = join(projectDir, 'node_modules', 'pack-extensionless-npm');
+        mkdirSync(packageDir, { recursive: true });
+        writeFileSync(join(packageDir, 'package.json'), JSON.stringify({
+            name: 'pack-extensionless-npm',
+            version: '1.0.0',
+            type: 'module',
+            exports: './index',
+        }));
+        writeFileSync(join(packageDir, 'index'), `import { value } from './dep.js'; export { value };\n`);
+        writeFileSync(join(packageDir, 'dep.js'), `export const value = 'EXTENSIONLESS_NPM_OK';\n`);
+        writeFileSync(join(projectDir, 'entry.ts'), `import { value } from 'pack-extensionless-npm'; console.log(value);\n`);
+
+        const packed = await runCno(['pack', 'entry.ts', '-q', '-o', 'app.jspack', '--no-oxc'], projectDir);
+        strictEqual(packed.code, 0, packed.output);
+
+        const decoded = decodePack(new Uint8Array(readFileSync(join(projectDir, 'app.jspack'))));
+        const indexId = Object.keys(decoded.manifest.modules).find(
+            id => id.includes('pack-extensionless-npm') && id.endsWith('/index'),
+        );
+        const depId = Object.keys(decoded.manifest.modules).find(
+            id => id.includes('pack-extensionless-npm') && id.endsWith('/dep.js'),
+        );
+        strictEqual(!!indexId, true, `extensionless module missing: ${Object.keys(decoded.manifest.modules).join(',')}`);
+        strictEqual(!!depId, true, `extensionless dependency missing: ${Object.keys(decoded.manifest.modules).join(',')}`);
+        strictEqual(decoded.manifest.modules[indexId!]?.fileKind, 'source');
+        strictEqual(decoded.manifest.edges[indexId!]?.['./dep.js'], depId);
+
+        Deno.copyFileSync(join(projectDir, 'app.jspack'), join(runDir, 'app.jspack'));
+        const result = await runCno([join(runDir, 'app.jspack')], runDir);
+        strictEqual(result.code, 0, result.output);
+        strictEqual(result.output.includes('EXTENSIONLESS_NPM_OK'), true, result.output);
     } finally {
         Deno.removeSync(projectDir, { recursive: true });
         Deno.removeSync(runDir, { recursive: true });

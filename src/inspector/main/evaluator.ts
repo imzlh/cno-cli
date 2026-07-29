@@ -356,23 +356,31 @@ function serializeNumber(value: number): RemoteObject {
 }
 
 function jsonSafeValue(value: unknown): unknown {
-	const seen = new WeakSet<object>()
+	// Path-scoped, not visit-scoped: a value reachable twice via different
+	// branches is shared, not circular, and JSON.stringify duplicates it.
+	const path = new WeakSet<object>()
 	const convert = (v: unknown): unknown => {
 		if (typeof v === 'bigint') return `${v}n`
 		if (typeof v === 'symbol' || typeof v === 'function') return undefined
 		if (v === null || typeof v !== 'object') return v
-		if (seen.has(v)) return '[Circular]'
-		seen.add(v)
-		if (Array.isArray(v)) return v.map((item) => {
-			const converted = convert(item)
-			return converted === undefined ? null : converted
-			})
+		if (path.has(v)) return '[Circular]'
+		path.add(v)
+		try {
+			if (Array.isArray(v)) {
+				return v.map((item) => {
+					const converted = convert(item)
+					return converted === undefined ? null : converted
+				})
+			}
 			const out: Record<string, unknown> = {}
 			for (const key of Object.keys(v)) {
 				const converted = convert(Reflect.get(v, key))
 				if (converted !== undefined) out[key] = converted
 			}
-		return out
+			return out
+		} finally {
+			path.delete(v)
+		}
 	}
 	return convert(value)
 }

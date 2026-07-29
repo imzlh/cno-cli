@@ -1,5 +1,5 @@
-import { strictEqual, ok } from 'node:assert';
-import { Database, Statement, verbose } from 'node:sqlite3';
+import { strictEqual, ok, throws } from 'node:assert';
+import { Backup, Database, Statement, verbose, OPEN_READONLY } from 'node:sqlite3';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -249,4 +249,163 @@ Deno.test('sqlite3: verbose() returns sqlite3', () => {
 Deno.test('sqlite3: verbose() returns the sqlite3 module object', () => {
     const sqlite3 = require('node:sqlite3');
     strictEqual(verbose(), sqlite3);
+});
+
+Deno.test('sqlite3: Database.backup initializes before step copies rows', async () => {
+    const dir = Deno.makeTempDirSync({ prefix: 'cno-sqlite3-backup-' });
+    const srcPath = `${dir}/src.db`;
+    const destPath = `${dir}/dest.db`;
+    const db = new Database(srcPath);
+    try {
+        db.exec("CREATE TABLE t(x TEXT, n INT); INSERT INTO t VALUES ('hi', 1), ('yo', 2)");
+        let backup!: Backup;
+        backup = await new Promise<Backup>((resolve, reject) => {
+            const created = db.backup(destPath, function(this: Backup, err?: Error | null) {
+                if (err) {
+                    reject(err);
+                    return;
+                }
+                strictEqual(this, created);
+                strictEqual(this.completed, false);
+                strictEqual(this.pageCount, 0);
+                resolve(this);
+            });
+            strictEqual(created.completed, false);
+        });
+
+        let completedEvents = 0;
+        backup.on('completed', () => completedEvents++);
+        await new Promise<void>((resolve, reject) => {
+            strictEqual(backup.step(-1, function(this: Backup, err?: Error | null) {
+                strictEqual(this, backup);
+                if (err) reject(err);
+                else resolve();
+            }), backup);
+        });
+        strictEqual(backup.completed, true);
+        strictEqual(backup.failed, false);
+        strictEqual(backup.idle, true);
+        strictEqual(backup.remaining, 0);
+        ok(backup.pageCount > 0);
+        strictEqual(completedEvents, 1);
+
+        await new Promise<void>((resolve, reject) => {
+            backup.step(-1, (err?: Error | null) => err ? reject(err) : resolve());
+        });
+        strictEqual(completedEvents, 1);
+
+        for (let i = 0; i < 2; i++) {
+            await new Promise<void>((resolve, reject) => {
+                strictEqual(backup.finish(function(this: Backup, err?: Error | null) {
+                    strictEqual(this, backup);
+                    if (err) reject(err);
+                    else resolve();
+                }), backup);
+            });
+        }
+
+        const dest = new Database(destPath, OPEN_READONLY);
+        try {
+            const rows = await new Promise<Record<string, unknown>[]>((resolve, reject) => {
+                dest.all('SELECT * FROM t ORDER BY n', (err: unknown, result?: Record<string, unknown>[]) => {
+                    if (err) reject(err);
+                    else resolve(result ?? []);
+                });
+            });
+            strictEqual(rows.length, 2);
+            strictEqual(rows[0]?.x, 'hi');
+            strictEqual(rows[0]?.n, 1);
+            strictEqual(rows[1]?.x, 'yo');
+            strictEqual(rows[1]?.n, 2);
+        } finally {
+            dest.close();
+        }
+    } finally {
+        db.close();
+        Deno.removeSync(dir, { recursive: true });
+    }
+});
+
+Deno.test('sqlite3: Backup positive step completes once and rejects step after finish', async () => {
+    const dir = Deno.makeTempDirSync({ prefix: 'cno-sqlite3-bak2-' });
+    const srcPath = `${dir}/s.db`;
+    const destPath = `${dir}/d.db`;
+    const db = new Database(srcPath);
+    try {
+        db.exec("CREATE TABLE w(v TEXT); INSERT INTO w VALUES ('ok')");
+        const bak = new Backup(db, destPath);
+        const invalidPagesError = await new Promise<Error | null>((resolve) => {
+            bak.step(0, (err?: Error | null) => resolve(err ?? null));
+        });
+        ok(invalidPagesError instanceof RangeError);
+        strictEqual(bak.failed, false);
+        await new Promise<void>((resolve, reject) => {
+            bak.step(1, (err?: Error | null) => err ? reject(err) : resolve());
+        });
+        ok(bak.completed);
+        strictEqual(bak.remaining, 0);
+        ok(bak.pageCount > 0);
+        await new Promise<void>((resolve, reject) => {
+            bak.finish((err?: Error | null) => err ? reject(err) : resolve());
+        });
+        const afterFinishError = await new Promise<Error | null>((resolve) => {
+            bak.step(-1, (err?: Error | null) => resolve(err ?? null));
+        });
+        ok(afterFinishError instanceof Error);
+        strictEqual(afterFinishError?.message, 'Backup has already been finished');
+
+        const dest = new Database(destPath);
+        try {
+            const row = await new Promise<Record<string, unknown>>((resolve, reject) => {
+                dest.get('SELECT v FROM w', (err: unknown, r?: Record<string, unknown>) => {
+                    if (err) reject(err);
+                    else resolve(r ?? {});
+                });
+            });
+            strictEqual(row.v, 'ok');
+        } finally {
+            dest.close();
+        }
+    } finally {
+        db.close();
+        Deno.removeSync(dir, { recursive: true });
+    }
+});
+
+Deno.test('sqlite3: Backup.finish does not implicitly copy', async () => {
+    const dir = Deno.makeTempDirSync({ prefix: 'cno-sqlite3-bak-finish-' });
+    const srcPath = `${dir}/s.db`;
+    const destPath = `${dir}/d.db`;
+    const db = new Database(srcPath);
+    try {
+        db.exec('CREATE TABLE untouched(v TEXT)');
+        const backup = new Backup(db, destPath);
+        await new Promise<void>((resolve, reject) => {
+            backup.finish((err?: Error | null) => err ? reject(err) : resolve());
+        });
+        strictEqual(backup.completed, false);
+        strictEqual(backup.pageCount, 0);
+        throws(() => Deno.statSync(destPath), Deno.errors.NotFound);
+    } finally {
+        db.close();
+        Deno.removeSync(dir, { recursive: true });
+    }
+});
+
+Deno.test('sqlite3: Database.backup reports invalid path by throw or callback', async () => {
+    const db = new Database(':memory:');
+    try {
+        throws(() => db.backup(''), TypeError);
+        let failed!: Backup;
+        const error = await new Promise<Error | null>((resolve) => {
+            failed = db.backup('', function(this: Backup, err?: Error | null) {
+                strictEqual(this, failed);
+                resolve(err ?? null);
+            });
+        });
+        ok(error instanceof TypeError);
+        strictEqual(failed.failed, true);
+    } finally {
+        db.close();
+    }
 });

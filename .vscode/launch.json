@@ -58,21 +58,16 @@
             "type": "cppvsdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/stage/cno.exe",
-            // "args": ["run", "${file}"],
             "args": [
                 "run",
-                "C:/Users/iz/.cts/npm/vite@8.1.0/bin/vite.js"
+                "${file}"
             ],
             // "args": ["cache"],
             // "args": ["--inspect"],
             "stopAtEntry": false,
-            // "cwd": "${fileDirname}",
-            "cwd": "D:\\project\\NeWplayer",
+            "cwd": "${fileDirname}",
             "environment": [
-                {
-                    "name": "DEBUG",
-                    "value": "*"
-                }
+                // { "name": "DEBUG", "value": "*" }
             ],
             "console": "internalConsole",
         },

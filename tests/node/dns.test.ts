@@ -1,4 +1,4 @@
-import { ok, rejects, strictEqual, throws } from 'node:assert';
+import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert';
 import * as dns from 'node:dns';
 import * as dnsp from 'node:dns/promises';
 
@@ -113,20 +113,29 @@ Deno.test('dns: lookup accepts numeric family and rejects invalid family', async
     throws(() => dnsp.lookup('localhost', 5), TypeError);
 });
 
-Deno.test('dns: lookup accepts IPv4 and IPv6 string family values', async () => {
-    const ipv4 = await dnsp.lookup('127.0.0.1', { family: 'IPv4' });
-    strictEqual(Array.isArray(ipv4), false);
-    strictEqual((ipv4 as { address: string; family: number }).address, '127.0.0.1');
-    strictEqual((ipv4 as { address: string; family: number }).family, 4);
-
-    const ipv6 = await new Promise<{ address: string; family: number }>((resolve, reject) => {
-        dns.lookup('::1', { family: 'IPv6' }, (err, address, family) => {
-            if (err) reject(err);
-            else resolve({ address, family });
+Deno.test('dns: callback lookup accepts family names but promises lookup rejects them', async () => {
+    throws(() => dnsp.lookup('127.0.0.1', { family: 'IPv4' }), TypeError);
+    const result = await new Promise<{ address: string; family: number }>((resolve, reject) => {
+        dns.lookup('::1', { family: 'IPv6' }, (error, address, family) => {
+            if (error) reject(error); else resolve({ address, family });
         });
     });
-    strictEqual(ipv6.address, '::1');
-    strictEqual(ipv6.family, 6);
+    deepStrictEqual(result, { address: '::1', family: 6 });
+});
+
+Deno.test('dns: lookup returns literal IPs regardless of requested family', async () => {
+    deepStrictEqual(await dnsp.lookup('127.0.0.1', { family: 6 }), { address: '127.0.0.1', family: 4 });
+    deepStrictEqual(await dnsp.lookup('::1', { family: 4, all: true }), [{ address: '::1', family: 6 }]);
+
+    let synchronous = true;
+    const callbackResult = await new Promise<{ address: string; family: number }>((resolve, reject) => {
+        dns.lookup('127.0.0.1', { family: 6 }, (error, address, family) => {
+            strictEqual(synchronous, false);
+            if (error) reject(error); else resolve({ address, family });
+        });
+        synchronous = false;
+    });
+    deepStrictEqual(callbackResult, { address: '127.0.0.1', family: 4 });
 });
 
 Deno.test('dns: rejects invalid rrtype instead of silently querying A', async () => {
@@ -143,7 +152,7 @@ Deno.test('dns: validates servers and supports ipv6first result order', () => {
         throws(() => dns.setServers(['bad host']), TypeError);
         throws(() => dns.setServers(['127.0.0.1:abc']), TypeError);
         dns.setServers(['127.0.0.1:53', '[::1]:53']);
-        strictEqual(dns.getServers().join(','), '127.0.0.1,[::1]:53');
+        strictEqual(dns.getServers().join(','), '127.0.0.1,::1');
 
         const resolver = new dns.Resolver();
         throws(() => resolver.setServers(['bad host']), TypeError);
@@ -162,44 +171,39 @@ Deno.test('dns: validates servers and supports ipv6first result order', () => {
 // --- 8. lookupService uses local service database ---------------------------
 
 Deno.test('dns: lookupService resolves service name for local address', async () => {
+    let synchronous = true;
     const result = await new Promise<{ host: string; service: string }>((resolve, reject) => {
         dns.lookupService('127.0.0.1', 80, (err, host, service) => {
+            strictEqual(synchronous, false);
             if (err) reject(err);
             else resolve({ host, service });
         });
+        synchronous = false;
     });
     ok(typeof result.host === 'string' && result.host.length > 0);
     strictEqual(result.service, 'http');
 });
 
-Deno.test('dns upstream: lookupService promise APIs and not-found errors match callback API', async () => {
+Deno.test('dns: lookupService promise API and validation match Node', async () => {
     const promiseResult = await dnsp.lookupService('127.0.0.1', 80);
     strictEqual(typeof promiseResult.hostname, 'string');
     strictEqual(promiseResult.service, 'http');
-
-    let promiseError: NodeJS.ErrnoException | null = null;
-    try {
-        await dnsp.lookupService('10.0.0.0', 80);
-    } catch (error) {
-        promiseError = error as NodeJS.ErrnoException;
-    }
-    strictEqual(promiseError?.message, 'getnameinfo ENOTFOUND 10.0.0.0');
-    strictEqual(promiseError?.code, 'ENOTFOUND');
-    strictEqual(promiseError?.syscall, 'getnameinfo');
-
-    const callbackError = await new Promise<NodeJS.ErrnoException | null>((resolve) => {
-        dns.lookupService('10.0.0.0', 80, (err) => resolve(err));
-    });
-    strictEqual(callbackError?.message, 'getnameinfo ENOTFOUND 10.0.0.0');
-    strictEqual(callbackError?.code, 'ENOTFOUND');
-    strictEqual(callbackError?.syscall, 'getnameinfo');
+    throws(() => dnsp.lookupService('not-an-ip', 80), TypeError);
+    throws(() => dnsp.lookupService('127.0.0.1', 1.5), RangeError);
+    throws(() => dns.lookupService('not-an-ip', 80, () => {}), TypeError);
+    throws(() => dns.lookupService('127.0.0.1', 65536, () => {}), RangeError);
 });
 
 // --- 9. reverse on a known IP -----------------------------------------------
 
 Deno.test('dns.reverse on 127.0.0.1 returns hostnames', async () => {
+    let synchronous = true;
     const r = await new Promise<string[]>((resolve, reject) => {
-        dns.reverse('127.0.0.1', (err, a) => err ? reject(err) : resolve(a));
+        dns.reverse('127.0.0.1', (err, a) => {
+            strictEqual(synchronous, false);
+            if (err) reject(err); else resolve(a);
+        });
+        synchronous = false;
     });
     ok(Array.isArray(r) && r.length >= 0);
 });
@@ -209,6 +213,7 @@ Deno.test('dns.reverse on 127.0.0.1 returns hostnames', async () => {
 Deno.test('dns error codes are defined', () => {
     for (const k of ['NODATA', 'FORMERR', 'SERVFAIL', 'NOTFOUND', 'NOTIMP', 'REFUSED']) {
         ok(typeof (dns as typeof dns & Record<string, string>)[k] === 'string');
+        ok(typeof (dnsp as typeof dnsp & Record<string, string>)[k] === 'string');
     }
 });
 
@@ -223,4 +228,49 @@ Deno.test('dns: getDefaultResultOrder and setDefaultResultOrder round-trip', () 
     } finally {
         dns.setDefaultResultOrder(previous);
     }
+});
+
+Deno.test('dns: lookup validates boolean and hint options', async () => {
+    throws(() => dns.lookup('localhost', { all: 1 as unknown as boolean }, () => {}), TypeError);
+    throws(() => dns.lookup('localhost', { verbatim: 'yes' as unknown as boolean }, () => {}), TypeError);
+    throws(() => dns.lookup('localhost', { order: 'bad' as 'verbatim' }, () => {}), TypeError);
+    throws(() => dns.lookup('localhost', { hints: 1 }, () => {}), TypeError);
+    throws(() => dnsp.lookup('localhost', { all: 1 as unknown as boolean }), TypeError);
+    deepStrictEqual(await dnsp.lookup('127.0.0.1', { hints: 8.5 }), { address: '127.0.0.1', family: 4 });
+    deepStrictEqual(
+        await dnsp.lookup('127.0.0.1', { all: null as unknown as boolean, order: null as unknown as 'verbatim' }),
+        { address: '127.0.0.1', family: 4 },
+    );
+});
+
+Deno.test('dns: default and per-call result order affect lookup all', async () => {
+    const previous = dns.getDefaultResultOrder();
+    try {
+        dns.setDefaultResultOrder('ipv4first');
+        const ipv4First = await dnsp.lookup('localhost', { all: true });
+        ok(Array.isArray(ipv4First));
+        strictEqual(ipv4First[0]?.family, 4);
+
+        const ipv6First = await dnsp.lookup('localhost', { all: true, order: 'ipv6first' });
+        ok(Array.isArray(ipv6First));
+        strictEqual(ipv6First[0]?.family, 6);
+    } finally {
+        dns.setDefaultResultOrder(previous);
+    }
+});
+
+Deno.test('dns: Resolver exposes common callback and promise methods', () => {
+    const callbackResolver = new dns.Resolver();
+    const promiseResolver = new dnsp.Resolver();
+    const methods = [
+        'resolve', 'resolve4', 'resolve6', 'resolveAny', 'resolveCaa', 'resolveCname',
+        'resolveMx', 'resolveNaptr', 'resolveNs', 'resolvePtr', 'resolveSoa',
+        'resolveSrv', 'resolveTxt', 'reverse', 'cancel',
+    ] as const;
+    for (const method of methods) {
+        strictEqual(typeof callbackResolver[method], 'function', `callback Resolver.${method}`);
+        strictEqual(typeof promiseResolver[method], 'function', `promise Resolver.${method}`);
+    }
+    deepStrictEqual(callbackResolver.getServers(), dns.getServers());
+    deepStrictEqual(promiseResolver.getServers(), dns.getServers());
 });

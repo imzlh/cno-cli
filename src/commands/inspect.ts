@@ -40,5 +40,8 @@ function parseInspectHost(raw: string | boolean | undefined): string {
 		const host = match[1]?.trim()
 		return host || '127.0.0.1'
 	}
+	// No host:port match. A bare all-digits value is a port-only spec, so keep
+	// the default host; anything else is a host-only bind address.
+	if (!trimmed.includes(':') && !/^\d+$/.test(trimmed)) return trimmed
 	return '127.0.0.1'
 }

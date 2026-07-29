@@ -82,8 +82,13 @@ Deno.test('precompile policy: workers scan/transform; bytecode compile stays on 
     ok(runtimeSrc.includes('oxc-main'), 'precache log must report oxc-main scan path');
     const writerSrc = readFileSync(new URL('../../cts/src/pack/writer.ts', import.meta.url), 'utf8');
     ok(writerSrc.includes('new ParseDriver(oxc);'), 'pack must use the auxiliary worker pool');
-    ok(writerSrc.includes('parseDriver.scanFile(localPath, lang)'), 'pack entryLang scan must use ParseDriver.scanFile');
+    ok(writerSrc.includes('parseDriver.scanFile(localPath, lang, true)'),
+        'pack entryLang scan must use strict ParseDriver.scanFile');
     ok(writerSrc.includes('needsLangScan'), 'pack must only force parseImports when entryLang is set');
+    ok(depsSrc.includes('const fullGraph = this.options.fullGraph === true'),
+        'full graph scan must bypass cached import edges');
+    ok(depsSrc.includes('scanFileResult(localPath, undefined, fullGraph)'),
+        'full graph scan must reject unreadable or invalid source');
     ok(writerSrc.includes('oxc-main'), 'pack log must report oxc-main scan path');
     const cleanup = writerSrc.slice(writerSrc.lastIndexOf('} finally {'));
     ok(cleanup.indexOf('await parseDriver.terminate()') < cleanup.indexOf('prog?.stop()'),

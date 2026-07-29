@@ -44,6 +44,18 @@ Deno.test('fs.promises.FileHandle: read with offset does not overwrite prefix', 
     });
 });
 
+Deno.test('fs.promises.FileHandle: read at EOF reports zero bytes', async () => {
+    await withFile('read-eof.txt', 'abc', async (path) => {
+        const fh = await open(path, 'r');
+        try {
+            const result = await fh.read(Buffer.alloc(4), 0, 4, 3);
+            strictEqual(result.bytesRead, 0);
+        } finally {
+            await fh.close();
+        }
+    });
+});
+
 Deno.test('fs.promises.FileHandle: write at position', async () => {
     await withFile('c.txt', 'aaaaaa', async (path) => {
         const fh = await open(path, 'r+');
@@ -78,6 +90,12 @@ Deno.test('fs.promises.FileHandle: stat returns file size', async () => {
             const st = await fh.stat();
             strictEqual(st.size, 5);
             ok(st.isFile());
+
+            const bigintStats = await fh.stat({ bigint: true });
+            strictEqual(typeof bigintStats.size, 'bigint');
+            strictEqual(bigintStats.size, 5n);
+            strictEqual(typeof bigintStats.mtimeMs, 'bigint');
+            ok(bigintStats.isFile());
         } finally {
             await fh.close();
         }
@@ -90,6 +108,19 @@ Deno.test('fs.promises.FileHandle: fd is numeric and readFile supports encoding'
         try {
             ok(typeof fh.fd === 'number' && fh.fd > 0);
             strictEqual(await fh.readFile('utf8'), 'abcdef');
+        } finally {
+            await fh.close();
+        }
+    });
+});
+
+Deno.test('fs.promises.FileHandle: readFile starts at the current offset without zero padding', async () => {
+    await withFile('fd-readfile-offset.txt', 'abcdef', async (path) => {
+        const fh = await open(path, 'r');
+        try {
+            const prefix = Buffer.alloc(2);
+            strictEqual((await fh.read(prefix, 0, prefix.length, null)).bytesRead, 2);
+            strictEqual(await fh.readFile('utf8'), 'cdef');
         } finally {
             await fh.close();
         }
@@ -121,6 +152,25 @@ Deno.test('fs.promises.FileHandle: writev writes multiple buffers and reports by
             await fh.close().catch(() => {});
         }
         strictEqual(await readFile(path, 'utf8'), 'a1234f');
+    });
+});
+
+Deno.test('fs.promises.FileHandle: readv fills ArrayBufferView buffers and reports bytesRead', async () => {
+    await withFile('readv.txt', 'abcdef', async (path) => {
+        const fh = await open(path, 'r');
+        try {
+            const first = Buffer.alloc(2);
+            const secondBytes = new Uint8Array(3);
+            const second = new DataView(secondBytes.buffer);
+            const buffers = [first, second] as const;
+            const result = await fh.readv(buffers, 1);
+            strictEqual(result.bytesRead, 5);
+            strictEqual(result.buffers, buffers);
+            strictEqual(decodeUtf8(first), 'bc');
+            strictEqual(decodeUtf8(secondBytes), 'def');
+        } finally {
+            await fh.close();
+        }
     });
 });
 

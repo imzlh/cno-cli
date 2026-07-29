@@ -488,9 +488,14 @@ Deno.test('fs upstream: Dir constructor reads entries and supports callbacks ite
         deepStrictEqual(iterNames.sort(), ['bar.txt', 'empty', 'foo.txt']);
 
         let closeCalled = false;
-        new fs.Dir(root).close((err) => {
-            strictEqual(err, null);
-            closeCalled = true;
+        await new Promise<void>((resolve, reject) => {
+            new fs.Dir(root).close((err) => {
+                if (err) reject(err);
+                else {
+                    closeCalled = true;
+                    resolve();
+                }
+            });
         });
         strictEqual(closeCalled, true);
     });
@@ -517,7 +522,7 @@ Deno.test('fs upstream: readdir recursive returns relative paths for callback sy
 
         const dirents = fs.readdirSync(root, { recursive: true, withFileTypes: true });
         ok(dirents.some((entry) => entry.name === 'sub' && entry.isDirectory()));
-        ok(dirents.some((entry) => entry.name === join('sub', 'file2.txt') && entry.isFile()));
+        ok(dirents.some((entry) => entry.name === 'file2.txt' && entry.parentPath === join(root, 'sub') && entry.isFile()));
     });
 });
 
@@ -922,4 +927,350 @@ Deno.test('fs upstream: selected constants match platform values', () => {
         strictEqual(fs.constants.O_NOATIME, undefined);
         strictEqual(fs.constants.O_SYMLINK, undefined);
     }
+});
+
+Deno.test('fs upstream: rm force only ignores missing paths and rejects directories', async () => {
+    await withTempDir('fs-rm-force', async (root) => {
+        const empty = join(root, 'empty');
+        const nonEmpty = join(root, 'non-empty');
+        fs.mkdirSync(empty);
+        fs.mkdirSync(nonEmpty);
+        fs.writeFileSync(join(nonEmpty, 'file.txt'), 'x');
+
+        throws(() => fs.rmSync(empty, { force: true }), (error: NodeJS.ErrnoException) => {
+            strictEqual(error.code, 'ERR_FS_EISDIR');
+            return true;
+        });
+        await rejects(fsp.rm(nonEmpty, { force: true }), (error: NodeJS.ErrnoException) => {
+            strictEqual(error.code, 'ERR_FS_EISDIR');
+            return true;
+        });
+        await new Promise<void>((resolve, reject) => {
+            fs.rm(empty, { force: true }, (error) => {
+                try {
+                    strictEqual(error?.code, 'ERR_FS_EISDIR');
+                    resolve();
+                } catch (assertionError) {
+                    reject(assertionError);
+                }
+            });
+        });
+
+        fs.rmSync(join(root, 'missing'), { force: true });
+        await fsp.rm(join(root, 'missing-promise'), { force: true });
+    });
+});
+
+Deno.test('fs upstream: numeric O_CREAT without O_TRUNC preserves existing data', async () => {
+    await withTempDir('fs-numeric-create', async (root) => {
+        const syncPath = join(root, 'sync.txt');
+        fs.writeFileSync(syncPath, 'preserve');
+        const syncFd = fs.openSync(syncPath, fs.constants.O_RDONLY | fs.constants.O_CREAT);
+        fs.closeSync(syncFd);
+        strictEqual(fs.readFileSync(syncPath, 'utf8'), 'preserve');
+
+        const promisePath = join(root, 'promise.txt');
+        await fsp.writeFile(promisePath, 'preserve');
+        const handle = await fsp.open(promisePath, fs.constants.O_RDONLY | fs.constants.O_CREAT);
+        await handle.close();
+        strictEqual(await fsp.readFile(promisePath, 'utf8'), 'preserve');
+    });
+});
+
+Deno.test('fs upstream: readv and writev support sync and callback forms', async () => {
+    await withTempDir('fs-vector-io', async (root) => {
+        const file = join(root, 'vectors.txt');
+        fs.writeFileSync(file, 'abcdef');
+        const fd = fs.openSync(file, 'r+');
+        try {
+            const syncFirst = Buffer.alloc(2);
+            const syncSecondBytes = new Uint8Array(3);
+            const syncSecond = new DataView(syncSecondBytes.buffer);
+            strictEqual(fs.readvSync(fd, [syncFirst, syncSecond], 1), 5);
+            strictEqual(syncFirst.toString(), 'bc');
+            strictEqual(Buffer.from(syncSecondBytes).toString(), 'def');
+
+            const syncWriteBytes = new Uint8Array([0x33, 0x34]);
+            strictEqual(fs.writevSync(fd, [Buffer.from('12'), new DataView(syncWriteBytes.buffer)], 0), 4);
+
+            const callbackFirst = Buffer.alloc(2);
+            const callbackSecond = new Uint8Array(2);
+            const callbackReadBuffers = [callbackFirst, callbackSecond];
+            const callbackRead = await new Promise<{ bytesRead: number; buffers: readonly ArrayBufferView[] }>((resolve, reject) => {
+                fs.readv(fd, callbackReadBuffers, 0, (err, bytesRead, buffers) => {
+                    if (err) reject(err);
+                    else resolve({ bytesRead, buffers });
+                });
+            });
+            strictEqual(callbackRead.bytesRead, 4);
+            strictEqual(callbackRead.buffers, callbackReadBuffers);
+            strictEqual(callbackFirst.toString(), '12');
+            strictEqual(Buffer.from(callbackSecond).toString(), '34');
+
+            const callbackWriteBuffers = [Buffer.from('XY'), new Uint8Array([0x5a])];
+            const callbackWrite = await new Promise<{ bytesWritten: number; buffers: readonly ArrayBufferView[] }>((resolve, reject) => {
+                fs.writev(fd, callbackWriteBuffers, 2, (err, bytesWritten, buffers) => {
+                    if (err) reject(err);
+                    else resolve({ bytesWritten, buffers });
+                });
+            });
+            strictEqual(callbackWrite.bytesWritten, 3);
+            strictEqual(callbackWrite.buffers, callbackWriteBuffers);
+        } finally {
+            fs.closeSync(fd);
+        }
+        strictEqual(fs.readFileSync(file, 'utf8'), '12XYZf');
+    });
+});
+
+Deno.test('fs upstream: cp honors overwrite options and callback timing', async () => {
+    await withTempDir('fs-cp-options', async (root) => {
+        const source = join(root, 'source.txt');
+        const destination = join(root, 'destination.txt');
+        fs.writeFileSync(source, 'new');
+        fs.writeFileSync(destination, 'old');
+
+        fs.cpSync(source, destination, { force: false });
+        strictEqual(fs.readFileSync(destination, 'utf8'), 'old');
+        throws(
+            () => fs.cpSync(source, destination, { force: false, errorOnExist: true }),
+            (error: NodeJS.ErrnoException) => {
+                strictEqual(error.code, 'ERR_FS_CP_EEXIST');
+                strictEqual(error.syscall, 'cp');
+                strictEqual(error.path, destination);
+                return true;
+            },
+        );
+
+        let synchronous = true;
+        await new Promise<void>((resolve, reject) => {
+            fs.cp(source, destination, (error) => {
+                try {
+                    strictEqual(synchronous, false);
+                    strictEqual(error, null);
+                    resolve();
+                } catch (assertionError) {
+                    reject(assertionError);
+                }
+            });
+            synchronous = false;
+        });
+        strictEqual(fs.readFileSync(destination, 'utf8'), 'new');
+
+        const sourceDirectory = join(root, 'tree');
+        const destinationDirectory = join(root, 'copied-tree');
+        fs.mkdirSync(sourceDirectory);
+        fs.writeFileSync(join(sourceDirectory, 'keep.txt'), 'keep');
+        fs.writeFileSync(join(sourceDirectory, 'drop.txt'), 'drop');
+        await fsp.cp(sourceDirectory, destinationDirectory, {
+            recursive: true,
+            async filter(path) { return !path.endsWith('drop.txt'); },
+        });
+        strictEqual(await fsp.readFile(join(destinationDirectory, 'keep.txt'), 'utf8'), 'keep');
+        strictEqual(fs.existsSync(join(destinationDirectory, 'drop.txt')), false);
+
+        await rejects(
+            fsp.cp(sourceDirectory, join(sourceDirectory, 'nested'), { recursive: true }),
+            (error: NodeJS.ErrnoException) => {
+                strictEqual(error.code, 'ERR_FS_CP_EINVAL');
+                strictEqual(error.syscall, 'cp');
+                return true;
+            },
+        );
+        await rejects(
+            fsp.cp(sourceDirectory, join(root, 'not-recursive')),
+            (error: NodeJS.ErrnoException) => {
+                strictEqual(error.code, 'ERR_FS_EISDIR');
+                return true;
+            },
+        );
+    });
+});
+
+Deno.test({
+    name: 'fs upstream: cp preserves timestamps and supports symlink modes',
+    ignore: Deno.build.os === 'windows',
+    async fn() {
+        await withTempDir('fs-cp-symlink', async (root) => {
+            const source = join(root, 'source.txt');
+            const targetTime = new Date('2021-02-03T04:05:06.000Z');
+            fs.writeFileSync(source, 'contents');
+            fs.utimesSync(source, targetTime, targetTime);
+
+            const preserved = join(root, 'preserved.txt');
+            await fsp.cp(source, preserved, { preserveTimestamps: true });
+            strictEqual(
+                Math.trunc(fs.statSync(preserved).mtimeMs / 1000),
+                Math.trunc(targetTime.getTime() / 1000),
+            );
+
+            const link = join(root, 'source-link');
+            const copiedLink = join(root, 'copied-link');
+            const dereferenced = join(root, 'dereferenced.txt');
+            fs.symlinkSync('source.txt', link);
+            fs.cpSync(link, copiedLink, { verbatimSymlinks: true });
+            strictEqual(fs.lstatSync(copiedLink).isSymbolicLink(), true);
+            strictEqual(fs.readlinkSync(copiedLink), 'source.txt');
+
+            await fsp.cp(link, dereferenced, { dereference: true });
+            strictEqual(fs.lstatSync(dereferenced).isFile(), true);
+            strictEqual(fs.readFileSync(dereferenced, 'utf8'), 'contents');
+        });
+    },
+});
+
+Deno.test('fs upstream: glob supports sync callback and async iterator forms', async () => {
+    await withTempDir('fs-glob', async (root) => {
+        fs.mkdirSync(join(root, 'src', 'nested'), { recursive: true });
+        fs.writeFileSync(join(root, 'src', 'a.ts'), 'a');
+        fs.writeFileSync(join(root, 'src', 'b.js'), 'b');
+        fs.writeFileSync(join(root, 'src', 'nested', 'c.ts'), 'c');
+        fs.writeFileSync(join(root, '.hidden.ts'), 'hidden');
+
+        deepStrictEqual(
+            fs.globSync('src/**/*.{ts,js}', { cwd: root }).sort(),
+            ['src/a.ts', 'src/b.js', join('src', 'nested', 'c.ts')].sort(),
+        );
+        deepStrictEqual(
+            fs.globSync(['src/*.ts', 'src/*.{ts,js}'], { cwd: pathToFileURL(`${root}/`) }).sort(),
+            ['src/a.ts', 'src/b.js'].sort(),
+        );
+        deepStrictEqual(fs.globSync('src/!(a).js', { cwd: root }), ['src/b.js']);
+        deepStrictEqual(fs.globSync('src/nested/../*.js', { cwd: root }), ['src/b.js']);
+        deepStrictEqual(
+            fs.globSync('**/*', { cwd: root, exclude: ['src/nested/**'] }).sort(),
+            ['src', 'src/a.ts', 'src/b.js', 'src/nested'].sort(),
+        );
+
+        if (Deno.build.os !== 'windows') {
+            fs.symlinkSync('src', join(root, 'source-link'));
+            const withoutFollowing = fs.globSync('**/*.ts', { cwd: root });
+            strictEqual(withoutFollowing.some(path => path.startsWith('source-link/')), false);
+            const withFollowing = fs.globSync('**/*.ts', { cwd: root, followSymlinks: true });
+            ok(withFollowing.includes(join('source-link', 'a.ts')));
+            ok(withFollowing.includes(join('source-link', 'nested', 'c.ts')));
+        }
+
+        let synchronous = true;
+        const callbackMatches = await new Promise<string[]>((resolve, reject) => {
+            fs.glob('src/**/*.ts', { cwd: root }, (error, matches) => {
+                try {
+                    strictEqual(synchronous, false);
+                    if (error) reject(error);
+                    else resolve(matches as string[]);
+                } catch (assertionError) {
+                    reject(assertionError);
+                }
+            });
+            synchronous = false;
+        });
+        deepStrictEqual(callbackMatches.sort(), ['src/a.ts', join('src', 'nested', 'c.ts')].sort());
+
+        const iteratorMatches: string[] = [];
+        for await (const match of fsp.glob('src/**/*.ts', { cwd: root })) {
+            iteratorMatches.push(match as string);
+        }
+        deepStrictEqual(iteratorMatches.sort(), callbackMatches.sort());
+
+        const typedMatches = fs.globSync('src/**/*', { cwd: root, withFileTypes: true });
+        ok(typedMatches.every(entry => entry instanceof fs.Dirent));
+        const nestedFile = typedMatches.find(entry => entry.name === 'c.ts');
+        ok(nestedFile?.isFile());
+        strictEqual(nestedFile?.parentPath, join(root, 'src', 'nested'));
+    });
+});
+
+Deno.test('fs upstream: Dirent names honor readdir encoding', async () => {
+    await withTempDir('fs-dirent-encoding', async (root) => {
+        fs.writeFileSync(join(root, 'az'), 'x');
+        const syncEntry = fs.readdirSync(root, { encoding: 'buffer', withFileTypes: true })[0]!;
+        ok(Buffer.isBuffer(syncEntry.name));
+        strictEqual(syncEntry.name.toString(), 'az');
+        strictEqual(syncEntry.parentPath, root);
+
+        const bufferPathEntry = fs.readdirSync(Buffer.from(root), {
+            encoding: 'buffer',
+            withFileTypes: true,
+        })[0]!;
+        ok(Buffer.isBuffer(bufferPathEntry.parentPath));
+        strictEqual(Buffer.from(bufferPathEntry.parentPath).toString(), root);
+
+        const promiseEntry = (await fsp.readdir(root, { encoding: 'hex', withFileTypes: true }))[0]!;
+        strictEqual(promiseEntry.name, '617a');
+        strictEqual(promiseEntry.parentPath, root);
+
+        const callbackEntry = await new Promise<fs.Dirent<Buffer>>((resolve, reject) => {
+            fs.readdir(root, { encoding: 'buffer', withFileTypes: true }, (error, entries) => {
+                if (error) reject(error);
+                else resolve(entries[0] as fs.Dirent<Buffer>);
+            });
+        });
+        ok(Buffer.isBuffer(callbackEntry.name));
+        strictEqual(callbackEntry.name.toString(), 'az');
+
+        throws(
+            () => fs.readdirSync(root, { encoding: 'bogus' as BufferEncoding }),
+            (error: NodeJS.ErrnoException) => {
+                strictEqual(error.code, 'ERR_INVALID_ARG_VALUE');
+                return true;
+            },
+        );
+        throws(
+            () => fs.readdir(root, { encoding: 'bogus' as BufferEncoding }, () => {}),
+            (error: NodeJS.ErrnoException) => {
+                strictEqual(error.code, 'ERR_INVALID_ARG_VALUE');
+                return true;
+            },
+        );
+        await rejects(
+            fsp.readdir(root, { encoding: 'bogus' as BufferEncoding }),
+            (error: NodeJS.ErrnoException) => {
+                strictEqual(error.code, 'ERR_INVALID_ARG_VALUE');
+                return true;
+            },
+        );
+    });
+});
+
+Deno.test('fs upstream: disposable temp directories remove recursively and idempotently', async () => {
+    await withTempDir('fs-disposable-temp', async (root) => {
+        const syncDisposable = fs.mkdtempDisposableSync(join(root, 'sync-'));
+        fs.mkdirSync(join(syncDisposable.path, 'nested'));
+        fs.writeFileSync(join(syncDisposable.path, 'nested', 'file.txt'), 'x');
+        syncDisposable[Symbol.dispose]();
+        strictEqual(fs.existsSync(syncDisposable.path), false);
+        syncDisposable.remove();
+
+        const asyncDisposable = await fsp.mkdtempDisposable(join(root, 'async-'));
+        await fsp.writeFile(join(asyncDisposable.path, 'file.txt'), 'x');
+        await asyncDisposable[Symbol.asyncDispose]();
+        strictEqual(fs.existsSync(asyncDisposable.path), false);
+        await asyncDisposable.remove();
+    });
+});
+
+Deno.test('fs upstream: openAsBlob exposes file data and rejects reads after mutation', async () => {
+    await withTempDir('fs-open-blob', async (root) => {
+        const file = join(root, 'blob.txt');
+        fs.writeFileSync(file, 'hello');
+        const blob = await fs.openAsBlob(file, { type: 'TEXT/PLAIN' });
+        ok(blob instanceof Blob);
+        strictEqual(blob.size, 5);
+        strictEqual(blob.type, 'TEXT/PLAIN');
+        strictEqual(await blob.text(), 'hello');
+        strictEqual(await blob.slice(1, 4).text(), 'ell');
+
+        fs.writeFileSync(file, 'changed contents');
+        await rejects(blob.text(), (error: DOMException) => {
+            strictEqual(error.name, 'NotReadableError');
+            return true;
+        });
+        throws(
+            () => fs.openAsBlob(join(root, 'missing.txt')),
+            (error: NodeJS.ErrnoException) => {
+                strictEqual(error.code, 'ERR_INVALID_ARG_VALUE');
+                return true;
+            },
+        );
+    });
 });

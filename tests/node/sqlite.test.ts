@@ -345,31 +345,282 @@ Deno.test('sqlite: DatabaseSync isTransaction toggles around BEGIN/COMMIT', () =
     }
 });
 
-Deno.test('sqlite: unsupported DatabaseSync.function throws runtime-specific error', () => {
+Deno.test('sqlite: DatabaseSync.function registers UDF and SELECT uses it', () => {
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(':memory:');
-    let err: Error | null = null;
     try {
-        db.function();
-    } catch (error) {
-        err = error as Error;
+        db.exec('CREATE TABLE nums(x INTEGER); INSERT INTO nums VALUES (3), (5)');
+        db.function('js_double', (x: number) => x * 2);
+        const rows = db.prepare('SELECT js_double(x) AS d FROM nums ORDER BY x').all();
+        deepStrictEqual(rows, [{ d: 6, __proto__: null }, { d: 10, __proto__: null }]);
+
+        db.function('js_add', (a: number, b: number) => a + b);
+        strictEqual(db.prepare('SELECT js_add(?, ?) AS s').get(10, 7)?.s, 17);
+
+        db.function('greet', { deterministic: true }, (n: string) => `hi ${n}`);
+        strictEqual(db.prepare('SELECT greet(?) AS g').get('bob')?.g, 'hi bob');
+
+        db.function('sumall', { varargs: true }, (...args: number[]) => args.reduce((s, x) => s + x, 0));
+        strictEqual(db.prepare('SELECT sumall(1, 2, 3, 4) AS v').get()?.v, 10);
     } finally {
         db.close();
     }
-    ok(err instanceof Error);
-    strictEqual(err?.message, 'node:sqlite DatabaseSync.function is not implemented by this runtime');
 });
 
-Deno.test('sqlite: backup throws runtime-specific not-implemented error', () => {
-    const { backup } = require('node:sqlite');
-    let err: Error | null = null;
+Deno.test('sqlite: DatabaseSync.function rejects missing function argument', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
     try {
-        backup();
-    } catch (error) {
-        err = error as Error;
+        throws(() => (db.function as any)('x'), TypeError);
+        throws(() => (db.function as any)('', () => 1), TypeError);
+        throws(() => (db.function as any)('null_options', null, () => 1), TypeError);
+        throws(() => (db.function as any)('undefined_options', undefined, () => 1), TypeError);
+    } finally {
+        db.close();
     }
-    ok(err instanceof Error);
-    strictEqual(err?.message, 'node:sqlite backup is not implemented by this runtime');
+});
+
+Deno.test('sqlite: function options match Node boolean validation', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+        for (const name of ['deterministic', 'directOnly', 'varargs', 'useBigIntArguments']) {
+            for (const value of [null, 0, 1, 'true', {}]) {
+                throws(() => (db.function as any)(`invalid_${name}`, { [name]: value }, () => 1), TypeError);
+            }
+            (db.function as any)(`undefined_${name}`, { [name]: undefined }, () => 1);
+        }
+
+        const options: any[] = [];
+        Reflect.set(options, 'varargs', true);
+        db.function('array_options', options as any, (...values: number[]) => values.length);
+        strictEqual(db.prepare('SELECT array_options(1, 2, 3) AS value').get()?.value, 3);
+    } finally {
+        db.close();
+    }
+});
+
+Deno.test('sqlite: UDF arguments preserve embedded NUL and reject unsafe integers', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+        let textCodes: number[] = [];
+        db.function('inspect_text', (value: string) => {
+            textCodes = [...value].map(character => character.charCodeAt(0));
+            return value.length;
+        });
+        strictEqual(db.prepare("SELECT inspect_text(char(97, 0, 98)) AS value").get()?.value, 3);
+        deepStrictEqual(textCodes, [97, 0, 98]);
+
+        let calls = 0;
+        db.function('inspect_integer', (value: number) => {
+            calls++;
+            return String(value);
+        });
+        strictEqual(
+            db.prepare('SELECT inspect_integer(9007199254740991) AS value').get()?.value,
+            '9007199254740991',
+        );
+        throws(() => db.prepare('SELECT inspect_integer(9007199254740992)').get());
+        strictEqual(calls, 1);
+
+        db.function('inspect_bigint', { useBigIntArguments: true }, (value: bigint) => `${typeof value}:${value}`);
+        strictEqual(
+            db.prepare('SELECT inspect_bigint(9007199254740992) AS value').get()?.value,
+            'bigint:9007199254740992',
+        );
+    } finally {
+        db.close();
+    }
+});
+
+Deno.test('sqlite: UDF replacement and failed registration keep callback state valid', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+        for (let i = 0; i < 64; i++) db.function('replace_me', () => i);
+        strictEqual(db.prepare('SELECT replace_me() AS value').get()?.value, 63);
+
+        throws(() => db.function('x'.repeat(256), () => 1));
+        throws(() => db.aggregate('x'.repeat(256), { start: 0, step: (acc: number) => acc }));
+        strictEqual(db.prepare('SELECT replace_me() AS value').get()?.value, 63);
+    } finally {
+        db.close();
+    }
+});
+
+Deno.test('sqlite: directOnly functions reject indirect schema use', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+        db.function('secret_value', { directOnly: true }, () => 7);
+        db.exec('CREATE VIEW secret_view AS SELECT secret_value() AS value');
+        strictEqual(db.prepare('SELECT secret_value() AS value').get()?.value, 7);
+        throws(() => db.prepare('SELECT value FROM secret_view').get());
+    } finally {
+        db.close();
+    }
+});
+
+Deno.test('sqlite: backup copies rows to destination path', async () => {
+    const { DatabaseSync, backup } = require('node:sqlite');
+    const dir = Deno.makeTempDirSync({ prefix: 'cno-sqlite-backup-' });
+    const srcPath = `${dir}/src.db`;
+    const destPath = `${dir}/dest.db`;
+    const db = new DatabaseSync(srcPath);
+    try {
+        db.exec("CREATE TABLE t(x TEXT, n INT); INSERT INTO t VALUES ('hi', 1), ('yo', 2)");
+        const pages = await backup(db, destPath);
+        ok(typeof pages === 'number');
+        ok(pages > 0);
+
+        const dest = new DatabaseSync(destPath);
+        try {
+            deepStrictEqual(
+                dest.prepare('SELECT * FROM t ORDER BY n').all(),
+                [{ x: 'hi', n: 1, __proto__: null }, { x: 'yo', n: 2, __proto__: null }],
+            );
+        } finally {
+            dest.close();
+        }
+
+        // options source/target names (default main)
+        const dest2 = `${dir}/dest2.db`;
+        const pages2 = await backup(db, dest2, { source: 'main', target: 'main' });
+        ok(pages2 > 0);
+        const d2 = new DatabaseSync(dest2);
+        try {
+            strictEqual(d2.prepare('SELECT COUNT(*) AS c FROM t').get()?.c, 2);
+        } finally {
+            d2.close();
+        }
+    } finally {
+        db.close();
+        Deno.removeSync(dir, { recursive: true });
+    }
+});
+
+Deno.test('sqlite: backup rejects missing path', async () => {
+    const { DatabaseSync, backup } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+        let err: unknown = null;
+        try {
+            await (backup as any)(db);
+        } catch (e) {
+            err = e;
+        }
+        ok(err instanceof TypeError);
+    } finally {
+        db.close();
+    }
+});
+
+Deno.test('sqlite: DatabaseSync.aggregate registers UDF and SELECT uses it', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+        db.exec('CREATE TABLE nums(x INTEGER); INSERT INTO nums VALUES (1), (2), (3)');
+        db.aggregate('mysum', {
+            start: 0,
+            step: (acc: number, x: number) => acc + x,
+            result: (acc: number) => acc,
+        });
+        strictEqual(db.prepare('SELECT mysum(x) AS s FROM nums').get()?.s, 6);
+
+        // empty group still returns start via result
+        db.exec('DELETE FROM nums');
+        strictEqual(db.prepare('SELECT mysum(x) AS s FROM nums').get()?.s, 0);
+
+        db.exec("CREATE TABLE words(s TEXT); INSERT INTO words VALUES ('a'), ('b')");
+        db.aggregate('myjoin', {
+            start: () => [] as string[],
+            step: (acc: string[], x: string) => {
+                acc.push(x);
+                return acc;
+            },
+            result: (acc: string[]) => acc.join(','),
+        });
+        strictEqual(db.prepare('SELECT myjoin(s) AS j FROM words').get()?.j, 'a,b');
+    } finally {
+        db.close();
+    }
+});
+
+Deno.test('sqlite: DatabaseSync.aggregate rejects missing step', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+        throws(() => (db.aggregate as any)('x', { start: 0 }), TypeError);
+        throws(() => (db.aggregate as any)('', { start: 0, step: () => 0 }), TypeError);
+        throws(() => (db.aggregate as any)('null_inverse', { start: 0, step: () => 0, inverse: null }), TypeError);
+    } finally {
+        db.close();
+    }
+});
+
+Deno.test('sqlite: aggregate options match Node validation and result coercion', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+        for (const name of ['directOnly', 'varargs', 'useBigIntArguments']) {
+            for (const value of [null, 0, 1, 'true', {}]) {
+                throws(() => (db.aggregate as any)(`invalid_${name}`, {
+                    start: 0,
+                    step: (acc: number) => acc,
+                    [name]: value,
+                }), TypeError);
+            }
+        }
+
+        for (const [index, result] of [null, 0, 'ignored', {}].entries()) {
+            db.aggregate(`ignored_result_${index}`, {
+                start: 0,
+                step: (acc: number, value: number) => acc + value,
+                result,
+            });
+            strictEqual(db.prepare(`SELECT ignored_result_${index}(x) AS value FROM (
+                SELECT 1 AS x UNION ALL SELECT 2
+            )`).get()?.value, 3);
+        }
+
+        const options: any[] = [];
+        Reflect.set(options, 'start', 0);
+        Reflect.set(options, 'step', (acc: number, value: number) => acc + value);
+        db.aggregate('array_aggregate_options', options as any);
+        strictEqual(db.prepare('SELECT array_aggregate_options(4) AS value').get()?.value, 4);
+    } finally {
+        db.close();
+    }
+});
+
+Deno.test('sqlite: aggregate inverse supports sliding windows', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+        db.exec('CREATE TABLE nums(x INTEGER); INSERT INTO nums VALUES (1), (2), (3)');
+        db.aggregate('rolling_sum', {
+            start: 0,
+            step: (acc: number, value: number) => acc + value,
+            inverse: (acc: number, value: number) => acc - value,
+            result: (acc: number) => acc,
+        });
+        deepStrictEqual(
+            db.prepare(`
+                SELECT x, rolling_sum(x) OVER (
+                    ORDER BY x ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+                ) AS sum
+                FROM nums
+            `).all(),
+            [
+                { x: 1, sum: 1, __proto__: null },
+                { x: 2, sum: 3, __proto__: null },
+                { x: 3, sum: 5, __proto__: null },
+            ],
+        );
+    } finally {
+        db.close();
+    }
 });
 
 Deno.test('sqlite: Session constructor throws runtime-specific not-implemented error', () => {
@@ -382,4 +633,14 @@ Deno.test('sqlite: Session constructor throws runtime-specific not-implemented e
     }
     ok(err instanceof Error);
     strictEqual(err?.message, 'node:sqlite Session is not implemented by this runtime');
+});
+
+Deno.test('sqlite: createSession remains fail-closed', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+        throws(() => db.createSession(), /createSession is not implemented/);
+    } finally {
+        db.close();
+    }
 });

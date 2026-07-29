@@ -16,6 +16,7 @@ import type {
 	SetBreakpointByUrlParams,
 } from '../shared/cdp'
 import { isRecord } from '../shared/cdp'
+import { isSideEffectFree, sideEffectException } from './side-effect'
 import { Step, type StepCode } from '../shared/native'
 import type { PauseOnExceptionsState } from '../shared/rpc-contract'
 import type { ScriptParsedPayload } from '../shared/wire'
@@ -99,7 +100,10 @@ export class DebuggerDomain extends Domain {
 				this.pauseOnExceptionsState = 'none'
 				await this.rpc.call('setExceptionBreakpoint', { state: 'none' })
 			}
-			await this.rpc.call('releaseObjectGroup', { objectGroup: 'backtrace' })
+			// Disabling while paused must let the program continue (V8 does);
+			// otherwise the main thread stays parked at the safepoint forever.
+			if (this.paused) await this.doResume(Step.None)
+			else await this.rpc.call('releaseObjectGroup', { objectGroup: 'backtrace' })
 			return {}
 		})
 
@@ -179,6 +183,9 @@ export class DebuggerDomain extends Domain {
 				return { result: { type: 'undefined' }, exceptionDetails: { text: 'Not paused', exceptionId: 0 } }
 			}
 			const q = this.extract<DebuggerEvaluateOnCallFrameParams>(p)
+			// DevTools eager-evaluates as you type; without this gate a preview
+			// of `arr.pop()` would actually mutate the paused debuggee.
+			if (q.throwOnSideEffect && !isSideEffectFree(q.expression)) return sideEffectException()
 			return this.rpc.call('evaluate', {
 				expression: q.expression,
 				callFrameId: q.callFrameId,

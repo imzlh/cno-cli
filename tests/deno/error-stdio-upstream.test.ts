@@ -79,8 +79,8 @@ Deno.test('deno upstream: stdio zero-length reads and writes return zero', async
     strictEqual(Deno.stderr.writeSync(empty), 0);
 });
 
-Deno.test('deno upstream: consoleSize only reports dimensions for terminal stdout', () => {
-    if (Deno.stdout.isTerminal()) {
+Deno.test('deno upstream: consoleSize uses the first available terminal', () => {
+    if ([Deno.stdin, Deno.stdout, Deno.stderr].some((stream) => stream.isTerminal())) {
         const size = Deno.consoleSize();
         ok(Number.isInteger(size.columns));
         ok(Number.isInteger(size.rows));

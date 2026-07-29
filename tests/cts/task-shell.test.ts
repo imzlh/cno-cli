@@ -1,5 +1,5 @@
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 import { LockStore } from '../../cts/src/lock.ts';
@@ -13,7 +13,7 @@ import {
     type LifecycleCommand,
     type LifecycleSession,
 } from '../../cts/src/runtime/lifecycle.ts';
-import { loadTasks } from '../../cts/src/task.ts';
+import { loadTasks, runTaskChild, taskShellArgv } from '../../cts/src/task.ts';
 import { cwd, joinPaths, normalizePath } from '../../cts/src/utils/path.ts';
 import { entryAndDir } from '../../src/utils.ts';
 import { decodeUtf8 } from '../_helpers/bytes.ts';
@@ -56,6 +56,14 @@ Deno.test('cts shell: parser handles escapes, pipes and background separators', 
     ]);
     for (const op of ['&&', '||', ';', '|', '&']) ok(isShellOperator(op));
     ok(!isShellOperator('echo'));
+});
+
+Deno.test('cts shell: parser preserves empty args and POSIX quote escapes', () => {
+    const segments = parseShellCommand(String.raw`deno run args.ts '' "" 'a\b' "c\d" escaped\ space trailing\ `);
+    deepStrictEqual(segments, [{
+        bin: 'deno',
+        args: ['run', 'args.ts', '', '', String.raw`a\b`, String.raw`c\d`, 'escaped space', 'trailing '],
+    }]);
 });
 
 Deno.test('cts lifecycle: plans node fallback scripts without shelling the whole command', () => {
@@ -249,6 +257,35 @@ Deno.test('cts lifecycle: executes && || ; with shell-compatible short-circuitin
         ],
     }, run({ prebuild: 1 })), 0);
     deepStrictEqual(calls, ['prebuild']);
+
+    strictEqual(await runLifecyclePlan({
+        fallback: false,
+        commands: [
+            { argv: ['false'], op: '&&' },
+            { argv: ['skipped'], op: '||' },
+            { argv: ['fallback'] },
+        ],
+    }, run({ skipped: 0, fallback: 0 })), 0);
+    deepStrictEqual(calls, ['fallback']);
+
+    strictEqual(await runLifecyclePlan({
+        fallback: false,
+        commands: [
+            { argv: ['true'], op: '||' },
+            { argv: ['skipped'], op: '&&' },
+            { argv: ['required'] },
+        ],
+    }, run({ skipped: 1, required: 0 })), 0);
+    deepStrictEqual(calls, ['required']);
+
+    strictEqual(await runLifecyclePlan({
+        fallback: false,
+        commands: [
+            { argv: ['exit', '1'], op: '||' },
+            { argv: ['must-not-run'] },
+        ],
+    }, run({ 'must-not-run': 0 })), 1);
+    deepStrictEqual(calls, []);
 });
 
 // Session state: cd/export apply before spawn; failed cd blocks && next.
@@ -472,6 +509,113 @@ Deno.test({
 });
 
 Deno.test({
+    name: 'cts task: package scripts expose npm env and run node through cno',
+    ignore: Deno.build.os === 'windows',
+    async fn() {
+        const root = makePosixTempDir('task-package-npm-env');
+        const lock = new LockStore(root, true);
+        try {
+            writeFileSync(join(root, 'probe.cjs'), `
+                const { appendFileSync } = require('node:fs');
+                const env = process.env;
+                appendFileSync('events.jsonl', JSON.stringify({
+                    argv: process.argv.slice(2),
+                    execPath: process.execPath,
+                    event: env.npm_lifecycle_event,
+                    script: env.npm_lifecycle_script,
+                    packageJson: env.npm_package_json,
+                    packageName: env.npm_package_name,
+                    packageVersion: env.npm_package_version,
+                    configEnabled: env.npm_package_config_enabled,
+                    configNested: env.npm_package_config_nested_value,
+                    command: env.npm_command,
+                    exec: env.npm_execpath,
+                    nodeExec: env.npm_node_execpath,
+                    userAgent: env.npm_config_user_agent,
+                }) + '\\n');
+            `);
+            writeFileSync(join(root, 'package.json'), JSON.stringify({
+                name: 'task-env-probe',
+                version: '1.2.3',
+                config: { enabled: false, nested: { value: 2 } },
+                scripts: {
+                    preprobe: 'node probe.cjs pre',
+                    probe: 'node probe.cjs main',
+                    postprobe: 'node probe.cjs post',
+                },
+            }));
+
+            const loaded = loadTasks(root, lock);
+            ok(loaded);
+            strictEqual(await loaded.runner.run('probe', ['extra arg']), 0);
+            const events = readFileSync(join(root, 'events.jsonl'), 'utf8')
+                .trim().split('\n').map((line) => JSON.parse(line));
+            deepStrictEqual(events.map((event) => event.event), ['preprobe', 'probe', 'postprobe']);
+            deepStrictEqual(events.map((event) => event.argv), [['pre'], ['main', 'extra arg'], ['post']]);
+            const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+            for (const event of events) {
+                strictEqual(event.execPath.replace(/ \(deleted\)$/, ''), execPath);
+                strictEqual(event.packageJson, joinPaths(root, 'package.json'));
+                strictEqual(event.packageName, 'task-env-probe');
+                strictEqual(event.packageVersion, '1.2.3');
+                strictEqual(event.configEnabled, 'false');
+                strictEqual(event.configNested, '2');
+                strictEqual(event.command, 'run-script');
+                strictEqual(event.exec.replace(/ \(deleted\)$/, ''), execPath);
+                strictEqual(event.nodeExec.replace(/ \(deleted\)$/, ''), execPath);
+                ok(String(event.userAgent).startsWith('cno/'), String(event.userAgent));
+            }
+            deepStrictEqual(events.map((event) => event.script), [
+                'node probe.cjs pre',
+                'node probe.cjs main',
+                'node probe.cjs post',
+            ]);
+        } finally {
+            lock.close();
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+Deno.test({
+    name: 'cts task: shell assignments and nested shells resolve node and deno to cno',
+    ignore: Deno.build.os === 'windows',
+    async fn() {
+        const root = makePosixTempDir('task-runtime-shims');
+        const lock = new LockStore(root, true);
+        try {
+            writeFileSync(join(root, 'probe.cjs'), `
+                const { appendFileSync } = require('node:fs');
+                appendFileSync('runtime.jsonl', JSON.stringify({
+                    tag: process.argv[2],
+                    execPath: process.execPath,
+                    foo: process.env.FOO,
+                }) + '\\n');
+            `);
+            writeFileSync(join(root, 'deno.json'), JSON.stringify({
+                tasks: {
+                    probe: "FOO=outer node probe.cjs assigned-node && FOO=outer deno run probe.cjs assigned-deno && sh -c 'node probe.cjs nested-node'",
+                },
+            }));
+
+            const loaded = loadTasks(root, lock);
+            ok(loaded);
+            strictEqual(await loaded.runner.run('probe'), 0);
+            const events = readFileSync(join(root, 'runtime.jsonl'), 'utf8')
+                .trim().split('\n').map((line) => JSON.parse(line));
+            deepStrictEqual(events.map((event) => event.tag), ['assigned-node', 'assigned-deno', 'nested-node']);
+            const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+            for (const event of events) strictEqual(event.execPath.replace(/ \(deleted\)$/, ''), execPath);
+            strictEqual(events[0].foo, 'outer');
+            strictEqual(events[1].foo, 'outer');
+        } finally {
+            lock.close();
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+Deno.test({
     name: 'cts task: dependencies dedupe diamond graphs and reject cycles',
     ignore: Deno.build.os === 'windows',
     async fn() {
@@ -535,6 +679,66 @@ Deno.test({
             strictEqual(readFileSync(join(root, 'shell-out.txt'), 'utf8'), 'shell-ok');
         } finally {
             lock.close();
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+Deno.test({
+    name: 'cts task: shell quoting globs and mixed boolean lists match Deno',
+    ignore: Deno.build.os === 'windows',
+    async fn() {
+        const root = makePosixTempDir('task-shell-semantics');
+        const lock = new LockStore(root, true);
+        try {
+            writeFileSync(join(root, 'a.txt'), '');
+            writeFileSync(join(root, 'b.txt'), '');
+            writeFileSync(join(root, 'deno.json'), JSON.stringify({
+                tasks: {
+                    quotes: 'printf "<%s>\\n" "$FOO" \'$FOO\'',
+                    glob: 'printf "<%s>\\n" *.txt',
+                    fallback: 'false && echo BAD || echo GOOD',
+                    sequence: 'false && echo BAD ; echo GOOD',
+                },
+            }));
+
+            const quotes = await runCnoTask(['task', '-q', 'quotes'], root, { FOO: 'VALUE' });
+            strictEqual(quotes.code, 0, quotes.stderr);
+            strictEqual(quotes.stdout, '<VALUE>\n<$FOO>\n');
+
+            const glob = await runCnoTask(['task', '-q', 'glob'], root);
+            strictEqual(glob.code, 0, glob.stderr);
+            deepStrictEqual(glob.stdout.trim().split('\n').sort(), ['<a.txt>', '<b.txt>']);
+
+            const fallback = await runCnoTask(['task', '-q', 'fallback'], root);
+            strictEqual(fallback.code, 0, fallback.stderr);
+            strictEqual(fallback.stdout, 'GOOD\n');
+
+            const sequence = await runCnoTask(['task', '-q', 'sequence'], root);
+            strictEqual(sequence.code, 0, sequence.stderr);
+            strictEqual(sequence.stdout, 'GOOD\n');
+        } finally {
+            lock.close();
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+Deno.test({
+    name: 'cts task: deno run forwarding preserves empty and escaped arguments',
+    ignore: Deno.build.os === 'windows',
+    async fn() {
+        const root = makePosixTempDir('task-deno-run-args');
+        try {
+            writeFileSync(join(root, 'args.ts'), 'console.log(JSON.stringify(Deno.args));\n');
+            writeFileSync(join(root, 'deno.json'), JSON.stringify({
+                tasks: { args: String.raw`deno run args.ts '' "" 'a\b'` },
+            }));
+
+            const result = await runCnoTask(['task', '-q', 'args'], root);
+            strictEqual(result.code, 0, result.stderr);
+            deepStrictEqual(JSON.parse(result.stdout.trim()), ['', '', String.raw`a\b`]);
+        } finally {
             rmSync(root, { recursive: true, force: true });
         }
     },
@@ -656,6 +860,332 @@ Deno.test({
             const fail = await runCnoTask(['task', '-q', '--config', 'deno.json', 'fail5'], specDir);
             strictEqual(fail.code, 5);
             ok(fail.stdout.includes('10'), fail.stdout);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+Deno.test({
+    name: 'cts task cli: terminal signals handled by the foreground task do not kill its parent',
+    ignore: Deno.build.os !== 'linux',
+    async fn() {
+        const root = makePosixTempDir('task-sigint-parent');
+        try {
+            writeFileSync(join(root, 'deno.json'), JSON.stringify({
+                tasks: { hold: 'deno run -A child.ts' },
+            }));
+            writeFileSync(join(root, 'child.ts'), `
+                let resolveInt = () => {};
+                let resolveQuit = () => {};
+                let resolveTstp = () => {};
+                const interrupted = new Promise<void>((resolve) => { resolveInt = resolve; });
+                const quit = new Promise<void>((resolve) => { resolveQuit = resolve; });
+                const stopped = new Promise<void>((resolve) => { resolveTstp = resolve; });
+                const onInt = () => { console.log('CHILD_INT'); resolveInt(); };
+                const onQuit = () => { console.log('CHILD_QUIT'); resolveQuit(); };
+                const onTstp = () => { console.log('CHILD_TSTP'); resolveTstp(); };
+                Deno.addSignalListener('SIGINT', onInt);
+                Deno.addSignalListener('SIGQUIT', onQuit);
+                Deno.addSignalListener('SIGTSTP', onTstp);
+                const keepAlive = setInterval(() => {}, 1_000);
+                console.log('CHILD_READY');
+                await interrupted;
+                await quit;
+                await stopped;
+                clearInterval(keepAlive);
+                Deno.removeSignalListener('SIGINT', onInt);
+                Deno.removeSignalListener('SIGQUIT', onQuit);
+                Deno.removeSignalListener('SIGTSTP', onTstp);
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                console.log('CHILD_DONE');
+            `);
+
+            const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+            const command = [execPath, 'task', '-q', 'hold']
+                .map((value) => `'${value.replaceAll("'", "'\\''")}'`)
+                .join(' ');
+            const child = new Deno.Command('script', {
+                args: ['-qec', command, '/dev/null'],
+                cwd: root,
+                stdin: 'piped',
+                stdout: 'piped',
+                stderr: 'piped',
+                env: { CTS_SILENT: 'true' },
+            }).spawn();
+
+            const writer = child.stdin.getWriter();
+            const reader = child.stdout.getReader();
+            const chunks: Uint8Array[] = [];
+            let output = '';
+            const decoder = new TextDecoder();
+            const readyDeadline = Date.now() + 10_000;
+            const readUntil = async (marker: string) => {
+                while (!output.includes(marker)) {
+                    const remaining = readyDeadline - Date.now();
+                    ok(remaining > 0, `task child did not print ${marker}:\n${output}`);
+                    const result = await Promise.race([
+                        reader.read(),
+                        new Promise<never>((_, reject) =>
+                            setTimeout(() => reject(new Error(`task child ${marker} timeout`)), remaining)
+                        ),
+                    ]);
+                    ok(!result.done, `task child exited before ${marker}:\n${output}`);
+                    chunks.push(result.value);
+                    output += decoder.decode(result.value, { stream: true });
+                }
+            };
+            await readUntil('CHILD_READY');
+
+            await writer.write(Uint8Array.of(3));
+            await readUntil('CHILD_INT');
+            await writer.write(Uint8Array.of(28));
+            await readUntil('CHILD_QUIT');
+            await writer.write(Uint8Array.of(26));
+            await writer.close();
+            while (true) {
+                const result = await reader.read();
+                if (result.done) break;
+                chunks.push(result.value);
+            }
+            output = decodeUtf8(Uint8Array.from(chunks.flatMap((chunk) => [...chunk])));
+            const stderr = await child.stderr.text();
+            const status = await child.status;
+
+            strictEqual(status.code, 0, stderr + output);
+            ok(output.includes('CHILD_INT'), output);
+            ok(output.includes('CHILD_QUIT'), output);
+            ok(output.includes('CHILD_TSTP'), output);
+            ok(output.includes('CHILD_DONE'), output);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+Deno.test({
+    name: 'cts task shell fallback: terminal signal status follows the leaf command',
+    ignore: Deno.build.os !== 'linux',
+    async fn() {
+        const root = makePosixTempDir('task-shell-signal');
+        const caughtLeaf = join(root, 'caught.sh');
+        const defaultLeaf = join(root, 'default.sh');
+        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+        writeFileSync(caughtLeaf, [
+            "trap 'exit 0' HUP INT QUIT USR1 TERM TSTP TTIN TTOU IO",
+            ': > "$1"',
+            'while :; do sleep 1; done',
+            '',
+        ].join('\n'));
+        writeFileSync(defaultLeaf, [
+            ': > "$1"',
+            'exec sleep 30',
+            '',
+        ].join('\n'));
+
+        const runCase = async (
+            name: string,
+            signal: 'SIGHUP' | 'SIGINT' | 'SIGQUIT' | 'SIGUSR1' | 'SIGTERM' | 'SIGTSTP' | 'SIGTTIN' | 'SIGTTOU' | 'SIGIO',
+            catches: boolean,
+        ) => {
+            const ready = join(root, `${name}.ready`);
+            const leaf = catches ? caughtLeaf : defaultLeaf;
+            const child = new Deno.Command('setsid', {
+                args: taskShellArgv(`sh ${quote(leaf)} ${quote(ready)}`),
+                cwd: root,
+                stdin: 'null',
+                stdout: 'null',
+                stderr: 'piped',
+            }).spawn();
+            const statusPromise = child.status;
+            let settled = false;
+            try {
+                const readyDeadline = Date.now() + 5_000;
+                while (!existsSync(ready)) {
+                    ok(Date.now() < readyDeadline, `${name} leaf did not become ready`);
+                    await new Promise((resolve) => setTimeout(resolve, 10));
+                }
+                Deno.kill(-child.pid, signal);
+                const status = await Promise.race([
+                    statusPromise,
+                    new Promise<never>((_, reject) =>
+                        setTimeout(() => reject(new Error(`${name} shell did not exit`)), 5_000)
+                    ),
+                ]);
+                settled = true;
+                return { status, stderr: await child.stderr.text() };
+            } finally {
+                if (!settled) {
+                    try { Deno.kill(-child.pid, 'SIGKILL'); } catch {}
+                    await statusPromise.catch(() => {});
+                }
+            }
+        };
+
+        try {
+            for (const [name, signal, catches, expected] of [
+                ['caught-int', 'SIGINT', true, 0],
+                ['default-int', 'SIGINT', false, 130],
+                ['caught-quit', 'SIGQUIT', true, 0],
+                ['default-quit', 'SIGQUIT', false, 131],
+                ['caught-tstp', 'SIGTSTP', true, 0],
+                ['caught-ttin', 'SIGTTIN', true, 0],
+                ['caught-ttou', 'SIGTTOU', true, 0],
+            ] as const) {
+                const { status, stderr } = await runCase(name, signal, catches);
+                strictEqual(status.code, expected, `${name}: ${stderr}`);
+                strictEqual(status.signal, null, `${name}: ${stderr}`);
+            }
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+Deno.test({
+    name: 'cts task child: preserves the runtime SIGPIPE disposition',
+    ignore: Deno.build.os !== 'linux',
+    async fn() {
+        const sigpipeMask = 1n << 12n;
+        const ignoredSignals = () => {
+            const match = readFileSync('/proc/self/status', 'utf8').match(/^SigIgn:\s*([0-9a-f]+)$/m);
+            ok(match?.[1], 'missing SigIgn in /proc/self/status');
+            return BigInt(`0x${match[1]}`);
+        };
+
+        ok((ignoredSignals() & sigpipeMask) !== 0n, 'runtime must start with SIGPIPE ignored');
+        await runTaskChild(['/bin/true'], Deno.env.toObject(), Deno.cwd());
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        ok((ignoredSignals() & sigpipeMask) !== 0n, 'task child guard reset SIGPIPE to its default action');
+    },
+});
+
+Deno.test({
+    name: 'cts task child: caught process-group signals are decided by the leaf',
+    ignore: Deno.build.os !== 'linux',
+    async fn() {
+        const root = makePosixTempDir('task-child-signals');
+        const leaf = join(root, 'leaf.sh');
+        const runner = join(root, 'runner.ts');
+        const taskModule = decodeURIComponent(new URL('../../cts/src/task.ts', import.meta.url).pathname);
+        writeFileSync(leaf, [
+            "trap 'exit 0' INT QUIT TSTP TTIN TTOU",
+            ': > "$1"',
+            'while :; do sleep 1; done',
+            '',
+        ].join('\n'));
+        writeFileSync(runner, `
+            import { runTaskChild } from ${JSON.stringify(taskModule)};
+            const os = import.meta.use('os');
+            const code = await runTaskChild(
+                ['sh', Deno.args[0], Deno.args[1]],
+                os.environ(),
+                Deno.cwd(),
+            );
+            Deno.exit(code);
+        `);
+
+        try {
+            for (const signal of ['SIGINT', 'SIGQUIT', 'SIGTSTP', 'SIGTTIN', 'SIGTTOU'] as const) {
+                const ready = join(root, `${signal}.ready`);
+                const child = new Deno.Command('setsid', {
+                    args: [Deno.execPath(), 'run', runner, leaf, ready],
+                    cwd: root,
+                    stdin: 'null',
+                    stdout: 'null',
+                    stderr: 'piped',
+                }).spawn();
+                const statusPromise = child.status;
+                let settled = false;
+                try {
+                    const readyDeadline = Date.now() + 5_000;
+                    while (!existsSync(ready)) {
+                        ok(Date.now() < readyDeadline, `${signal} leaf did not become ready`);
+                        await new Promise((resolve) => setTimeout(resolve, 10));
+                    }
+                    Deno.kill(-child.pid, signal);
+                    const status = await Promise.race([
+                        statusPromise,
+                        new Promise<never>((_, reject) =>
+                            setTimeout(() => reject(new Error(`${signal} task child did not exit`)), 5_000)
+                        ),
+                    ]);
+                    settled = true;
+                    strictEqual(status.code, 0, `${signal}: ${await child.stderr.text()}`);
+                    strictEqual(status.signal, null, signal);
+                } finally {
+                    if (!settled) {
+                        try { Deno.kill(-child.pid, 'SIGKILL'); } catch {}
+                        await statusPromise.catch(() => {});
+                    }
+                }
+            }
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+Deno.test({
+    name: 'cts task child: direct non-terminal signals are not swallowed by the parent guard',
+    ignore: Deno.build.os !== 'linux',
+    async fn() {
+        const root = makePosixTempDir('task-child-direct-signal');
+        const leaf = join(root, 'leaf.sh');
+        const runner = join(root, 'runner.ts');
+        const taskModule = decodeURIComponent(new URL('../../cts/src/task.ts', import.meta.url).pathname);
+        writeFileSync(leaf, [
+            'printf "%s" "$$" > "$1"',
+            'while :; do sleep 1; done',
+            '',
+        ].join('\n'));
+        writeFileSync(runner, `
+            import { runTaskChild } from ${JSON.stringify(taskModule)};
+            const os = import.meta.use('os');
+            const code = await runTaskChild(
+                ['sh', Deno.args[0], Deno.args[1]],
+                os.environ(),
+                Deno.cwd(),
+            );
+            Deno.exit(code);
+        `);
+
+        try {
+            for (const signal of ['SIGHUP', 'SIGUSR1', 'SIGTERM'] as const) {
+                const pidFile = join(root, `${signal}.pid`);
+                const child = new Deno.Command(Deno.execPath(), {
+                    args: ['run', runner, leaf, pidFile],
+                    cwd: root,
+                    stdin: 'null',
+                    stdout: 'null',
+                    stderr: 'piped',
+                }).spawn();
+                const statusPromise = child.status;
+                let leafPid: number | undefined;
+                try {
+                    const readyDeadline = Date.now() + 5_000;
+                    while (!existsSync(pidFile)) {
+                        ok(Date.now() < readyDeadline, `${signal} leaf did not become ready`);
+                        await new Promise((resolve) => setTimeout(resolve, 10));
+                    }
+                    leafPid = Number(readFileSync(pidFile, 'utf8'));
+                    ok(Number.isInteger(leafPid) && leafPid > 0, `${signal} invalid leaf pid`);
+                    Deno.kill(child.pid, signal);
+                    const status = await Promise.race([
+                        statusPromise,
+                        new Promise<never>((_, reject) =>
+                            setTimeout(() => reject(new Error(`${signal} task parent did not exit`)), 5_000)
+                        ),
+                    ]);
+                    strictEqual(status.signal, signal);
+                } finally {
+                    if (leafPid !== undefined) {
+                        try { Deno.kill(leafPid, 'SIGKILL'); } catch {}
+                    }
+                    try { Deno.kill(child.pid, 'SIGKILL'); } catch {}
+                    await statusPromise.catch(() => {});
+                }
+            }
         } finally {
             rmSync(root, { recursive: true, force: true });
         }

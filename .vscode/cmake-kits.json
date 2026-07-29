@@ -1,0 +1,13 @@
+[
+  {
+    "name": "MSVC 14.51 x64 (E:/MSVC)",
+    "compilers": {
+      "C": "E:/MSVC/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe",
+      "CXX": "E:/MSVC/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe"
+    },
+    "environmentSetupScript": "E:/MSVC/VC/Auxiliary/Build/vcvars64.bat",
+    "preferredGenerator": {
+      "name": "Ninja"
+    }
+  }
+]
