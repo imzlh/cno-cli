@@ -49,9 +49,9 @@
     "include": [
         "src/**/*.ts",
         "cno/lib.deno.d.ts",
-        "./circu.js/types/*",
-        "./cno/src/type/*",
-        "./cno/types/**/*.ts"
+        "./circu.js/types/**/*.d.ts",
+        "./cno/src/type/**/*.d.ts",
+        "./cno/types/**/*.d.ts"
     ],
     "exclude": ["node_modules", "dist", "build", "build_release"]
 }

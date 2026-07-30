@@ -43,6 +43,7 @@ const MAX_CACHED_REQUEST_BODIES = { low: 20, normal: 100, high: 200 }[getMemoryT
 const MAX_REQUEST_BODY_BYTES = { low: 16 * 1024, normal: 128 * 1024, high: 256 * 1024 }[getMemoryTier()] ?? 128 * 1024
 const FETCH_FRAME_ID = 'cno-fetch-frame-1'
 const FETCH_LOADER_ID = 'cno-fetch-loader-1'
+
 const SERVE_FRAME_ID = 'cno-serve-frame-1'
 const SERVE_LOADER_ID = 'cno-serve-loader-1'
 

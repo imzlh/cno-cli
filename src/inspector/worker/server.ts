@@ -22,6 +22,8 @@ export interface ServerOptions {
 	host?: string
 	entryUrl: string
 	onConnect: (ws: WebSocket) => void
+	/** Bearer required on the websocket upgrade and on /json discovery. */
+	token?: string
 }
 
 export interface ServerHandle {
@@ -35,7 +37,8 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 	const wsPath = `/${targetId}`
 	const hostname = opts.host || '127.0.0.1'
 	const host = `${hostname}:${port}`
-	const wsUrl = `ws://${host}${wsPath}`
+	const token = opts.token ?? nativeCrypto.randomUUID()
+	const wsUrl = `ws://${host}${wsPath}?token=${encodeURIComponent(token)}`
 
 	async function respondJson(res: HttpResponse, value: unknown): Promise<void> {
 		const body = JSON.stringify(value)
@@ -45,6 +48,19 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 			['Content-Length', String(bytes.length)],
 		])
 		await res.end(body)
+	}
+
+	// Timing-safe token comparison to avoid leaking leading bytes via response time.
+	function safeEqual(a: string, b: string): boolean {
+		if (a.length !== b.length) return false;
+		let r = 0;
+		for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
+		return r === 0;
+	}
+	function hasValidToken(req: HttpRequest): boolean {
+		const url = new URL(req.url, `ws://${host}`)
+		const headerToken = req.headers.find(([n]) => n.toLowerCase() === 'x-cdp-token')?.[1] ?? ''
+		return safeEqual(url.searchParams.get('token') ?? '', token) || safeEqual(headerToken, token)
 	}
 
 	const listEntry = {
@@ -70,6 +86,7 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 		const headers = Object.fromEntries(req.headers);
 
 		if (path === wsPath && (headers['upgrade'] ?? '').toLowerCase() === 'websocket') {
+			if (!hasValidToken(req)) { await res.writeHead(403, 'Forbidden'); await res.end(); return; }
 			const wsKey = headers['sec-websocket-key'] ?? ''
 			const digest = nativeCrypto.sha1(engine.encodeString(wsKey + WS_MAGIC))
 			const accept = nativeCrypto.base64Encode(new Uint8Array(digest))
@@ -88,10 +105,12 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 		}
 
 		if (path === '/json' || path === '/json/list') {
+			if (!hasValidToken(req)) { await res.writeHead(403, 'Forbidden'); await res.end(); return; }
 			await respondJson(res, [listEntry])
 			return
 		}
 		if (path === '/json/version') {
+			if (!hasValidToken(req)) { await res.writeHead(403, 'Forbidden'); await res.end(); return; }
 			await respondJson(res, versionInfo)
 			return
 		}

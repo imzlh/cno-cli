@@ -41,6 +41,8 @@ interface HeaderEntry {
 }
 
 function globToRegex(pattern: string): RegExp {
+	// Cap pattern length and reject nested quantifiers to prevent ReDoS / runaway compile.
+	if (pattern.length > 256) throw new TypeError('pattern too long');
 	let out = ''
 	for (let i = 0; i < pattern.length; i++) {
 		const ch = pattern[i]

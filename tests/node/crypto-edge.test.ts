@@ -20,6 +20,58 @@ Deno.test('crypto: AES-256-CBC encrypt then decrypt round-trips', () => {
     strictEqual(decrypted, plaintext);
 });
 
+Deno.test('crypto: AES-ECB matches NIST vectors for every supported key size', () => {
+    const plaintext = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const vectors = [
+        ['aes-128-ecb', '000102030405060708090a0b0c0d0e0f', '69c4e0d86a7b0430d8cdb78070b4c55a'],
+        ['aes-192-ecb', '000102030405060708090a0b0c0d0e0f1011121314151617', 'dda97ca4864cdfe06eaf70a0ec0d7191'],
+        ['aes-256-ecb', '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f', '8ea2b7ca516745bfeafc49904b496089'],
+    ] as const;
+
+    for (const [algorithm, keyHex, expectedHex] of vectors) {
+        const key = Buffer.from(keyHex, 'hex');
+        const cipher = crypto.createCipheriv(algorithm, key, null).setAutoPadding(false);
+        const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+        strictEqual(encrypted.toString('hex'), expectedHex);
+
+        const decipher = crypto.createDecipheriv(algorithm, key, null).setAutoPadding(false);
+        const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+        deepStrictEqual(decrypted, plaintext);
+    }
+});
+
+Deno.test('crypto: AES-ECB supports the npm API decrypt pattern with padding', () => {
+    const aesEcbDecrypt = (key: Buffer, ciphertext: Buffer): Buffer => {
+        const decipher = crypto.createDecipheriv(`aes-${key.length * 8}-ecb`, key, null);
+        return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    };
+
+    for (const keyLength of [16, 24, 32]) {
+        const key = Buffer.alloc(keyLength, keyLength);
+        const plaintext = Buffer.from(`netease-api-aes-${keyLength}`);
+        const cipher = crypto.createCipheriv(`aes-${keyLength * 8}-ecb`, key, null);
+        const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+        deepStrictEqual(aesEcbDecrypt(key, ciphertext), plaintext);
+    }
+});
+
+Deno.test('crypto: cipher keys accept secret KeyObjects and ArrayBufferView IVs', () => {
+    const keyBytes = Buffer.alloc(16, 7);
+    const key = crypto.createSecretKey(keyBytes);
+    const ivBytes = Buffer.alloc(16, 9);
+    const iv = new DataView(ivBytes.buffer, ivBytes.byteOffset, ivBytes.byteLength);
+    const cipher = crypto.createCipheriv('aes-128-cbc', key, iv);
+    const ciphertext = Buffer.concat([cipher.update('view-and-key-object'), cipher.final()]);
+    const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv);
+    strictEqual(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString(), 'view-and-key-object');
+});
+
+Deno.test('crypto: cipher validates null and non-null IVs by mode', () => {
+    throws(() => crypto.createCipheriv('aes-128-ecb', Buffer.alloc(16), Buffer.alloc(0)), /initialization vector/i);
+    throws(() => crypto.createDecipheriv('aes-128-cbc', Buffer.alloc(16), null), /initialization vector/i);
+    throws(() => crypto.createCipheriv('aes-256-ecb', Buffer.alloc(31), null), /Invalid key length/);
+});
+
 // --- 2. AES-256-GCM round-trip with auth tag -------------------------------
 
 Deno.test('crypto: AES-256-GCM round-trips with auth tag', () => {
