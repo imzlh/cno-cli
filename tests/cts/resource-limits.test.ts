@@ -143,6 +143,65 @@ const MEM = '32MB';
 // Well above the limit, but small enough that an unenforced build finishes fast.
 const CAP = 120;
 
+// Worker-side allocation source. The same two properties as allocSrc above are
+// load-bearing here, and for a sharper reason: a worker's OOM report has to
+// cross a thread boundary through structured clone, and serialising is itself an
+// allocation. OBSERVED 2026-08-06: with the sink still held and 256KB chunks,
+// `postMessage` at the cap silently ships a TRUNCATED, self-consistent payload
+// -- QuickJS's JS_WriteObject2 never checks dbuf_error, so the length prefix and
+// the checksum are both computed from the already-short buffer and neither
+// detects it. The worker reports success; the parent gets `messageerror: invalid
+// tag` or, worse, a successful decode of garbage (OBSERVED `{"if":false}` -- a
+// low-index predefined atom, i.e. an out-of-range atom index resolving to
+// nonsense). That is silent data corruption across a thread boundary, and it
+// applies to cts's own internal error envelope too, not just user messages.
+//
+// So both of these are deliberate:
+//   * chunks of CHUNK_MB, not 256KB -- the free heap left when the loop finally
+//     fails is necessarily in [0, CHUNK), so a 4MB chunk leaves 16x more room
+//     for the report than 256KB does;
+//   * the catch RELEASES the sink FIRST, before anything that serialises or
+//     allocates -- before postMessage, and before rethrowing, so cts's internal
+//     error envelope is cloned with the heap free rather than pinned at the cap.
+//
+// MEASURED as a 2x2 over 10 caps (20..64MB) x both the current binary
+// (a84343d3) and the previous one (cff5f982), plus 8 baseline-heap ballasts up
+// to 3MB:
+//   256KB, no release -> BROKEN, and in DIFFERENT bands per binary
+//                        (a84343d3 fails 20-40MB, cff5f982 fails 40-64MB), which
+//                        is why a green run at any single cap proves nothing;
+//   256KB + release   -> all green;
+//   CHUNK_MB, no rel. -> all green;
+//   CHUNK_MB + release-> all green.
+// So EITHER change alone closes the measured band. Both are kept: with the chunk
+// raised the release is defence in depth, and it is the property that stays true
+// if a future baseline shift eats into the remainder again. Do not remove either
+// on the grounds that the test still passes without it -- it will, right up to
+// the next few-KB change in the runtime's startup heap.
+//
+// `report` is the statement run inside the catch, AFTER the release; it may use
+// the locals `mb`, `isNull` and `name`. With no `report` the error propagates
+// uncaught, which is what tests 6 and 7 exercise.
+function workerAllocSrc(report?: string): string {
+    return `
+        import { parentPort } from 'node:worker_threads';
+        const sink = []; let mb = 0;
+        try {
+            while (mb < ${CAP}) {
+                sink.push(new Uint8Array(${CHUNK_MB} * 1024 * 1024));
+                mb += ${CHUNK_MB};
+            }
+            sink.length = 0;
+            parentPort?.postMessage({ ok: true, mb });
+        } catch (e) {
+            sink.length = 0;   // FIRST -- before anything that allocates
+            ${report === undefined ? '' : `const isNull = (e === null);
+            const name = isNull ? 'null' : String(e && e.name);
+            `}${report ?? 'throw e;'}
+        }
+    `;
+}
+
 // --- 1. memory limit is enforced at all -------------------------------------
 
 Deno.test('resource-limits: --memory-limit refuses allocation past the cap', async () => {
@@ -277,12 +336,7 @@ Deno.test('resource-limits: OOM in a vm sandbox is catchable by the host', async
 Deno.test('resource-limits: --memory-limit is enforced inside a file Worker', async () => {
     await withTempDir('rl-worker', async (dir) => {
         const wf = join(dir, 'w.js');
-        Deno.writeTextFileSync(wf, `
-            import { parentPort } from 'node:worker_threads';
-            const sink = []; let mb = 0;
-            while (mb < ${CAP}) { sink.push(new Uint8Array(256 * 1024)); mb += 0.25; }
-            parentPort?.postMessage({ ok: true, mb });
-        `);
+        Deno.writeTextFileSync(wf, workerAllocSrc());
         const f = join(dir, 'a.js');
         Deno.writeTextFileSync(f, `
             import { Worker } from 'node:worker_threads';
@@ -311,12 +365,7 @@ Deno.test('resource-limits: a worker OOM reaches the parent as error + exit 1', 
     // for the name and Node's contract for the event set.
     await withTempDir('rl-worker-err', async (dir) => {
         const wf = join(dir, 'w.js');
-        Deno.writeTextFileSync(wf, `
-            import { parentPort } from 'node:worker_threads';
-            const sink = []; let mb = 0;
-            while (mb < ${CAP}) { sink.push(new Uint8Array(256 * 1024)); mb += 0.25; }
-            parentPort?.postMessage({ ok: true, mb });
-        `);
+        Deno.writeTextFileSync(wf, workerAllocSrc());
         const f = join(dir, 'a.js');
         Deno.writeTextFileSync(f, `
             import { Worker } from 'node:worker_threads';
@@ -330,21 +379,43 @@ Deno.test('resource-limits: a worker OOM reaches the parent as error + exit 1', 
             `'error' must fire with the OOM; stdout: ${r.stdout}`);
         ok(r.stdout.includes('[EV exit] 1'),
             `a worker killed by OOM must exit 1; stdout: ${r.stdout}`);
-        // Node parity, OBSERVED on node v24.18.0 (resourceLimits
-        // maxOldGenerationSizeMb:32 with real old-space pressure — typed-array
-        // backing stores live OUTSIDE that cap and will not trip it):
+        // No 'message' may appear on this path -- but NOT for the reason this
+        // comment used to give. It claimed "Node fires no 'message' event for an
+        // OOM-killed worker". That is FALSE as a general statement: OBSERVED on
+        // node v24.18.0 (resourceLimits maxOldGenerationSizeMb:32 with real
+        // old-space pressure -- typed-array backing stores live OUTSIDE that cap
+        // and will not trip it), a worker that posts once and THEN dies of OOM
+        // delivers all three events, 3/3 runs:
+        //     [EV message] {"beforeOOM":true}
         //     [EV error] Error | code=ERR_WORKER_OUT_OF_MEMORY | ...
         //     [EV exit] 1
-        //     EVENTS: error        MESSAGE_FIRED: false
-        // Node fires no 'message' at all. This assertion previously demanded the
-        // OPPOSITE — that cno's internal role-tagged envelope also surface on the
-        // user's 'message' listener — i.e. it pinned the leak as expected
-        // behaviour and went red the moment the leak was fixed. Do not restore it.
+        //     EVENTS: message,error,exit   MESSAGE_FIRED: true
+        // node's silence in the simple case is a side effect of its OOM being an
+        // uncatchable abort that stops the worker before postMessage, not a
+        // contract that 'message' is suppressed.
+        //
+        // The assertion stays because it pins a DIFFERENT and real invariant: on
+        // this path user code never reaches postMessage at all (OBSERVED: the
+        // worker's `parentPort.postMessage({ok:true})` line is unreachable under
+        // the cap), so ANY 'message' the parent sees is a leaked cts-internal
+        // control envelope. cno/src/node/worker_threads/mod.ts:630 routes those
+        // by testing `NODE_WORKER_ERROR in value`; a truncated clone loses that
+        // key and the envelope falls through to emit('message') at :643. So a
+        // 'message' here means an internal envelope reached a user listener --
+        // which must never happen regardless of what node does.
+        //
+        // NOTE the sibling assertion below is the weaker of the two: the node
+        // worker path tags with `__cno_node_worker_error__`, not `__cno_role`,
+        // and corruption destroys the key either way. Keep it as a guard against
+        // the other envelope shape, but it is the `[EV message]` check that
+        // actually catches this defect.
         ok(!r.stdout.includes('__cno_role'),
             `the internal role-tagged envelope must never reach the user's ` +
             `'message' listener; stdout: ${r.stdout}`);
         ok(!/\[EV message\]/.test(r.stdout),
-            `Node fires no 'message' event for an OOM-killed worker; stdout: ${r.stdout}`);
+            `user code never reaches postMessage under the cap, so any 'message' ` +
+            `is a leaked cts-internal envelope that missed its gate; ` +
+            `stdout: ${r.stdout}`);
     });
 });
 
@@ -363,9 +434,14 @@ Deno.test('resource-limits: KNOWN GAP - an eval Worker inherits no memory limit'
                 const cfg = Reflect.get(globalThis, '__cno_worker_runtime_config');
                 const sink = []; let mb = 0;
                 try {
-                    while (mb < ${CAP}) { sink.push(new Uint8Array(256 * 1024)); mb += 0.25; }
+                    while (mb < ${CAP}) {
+                        sink.push(new Uint8Array(${CHUNK_MB} * 1024 * 1024));
+                        mb += ${CHUNK_MB};
+                    }
+                    sink.length = 0;
                     parentPort.postMessage({ ok: true, mb, hasCfg: !!cfg });
                 } catch (e) {
+                    sink.length = 0;   // release before serialising -- see workerAllocSrc
                     parentPort.postMessage({ caught: true, mb, hasCfg: !!cfg });
                 }
             \`, { eval: true });
@@ -499,19 +575,9 @@ Deno.test('resource-limits: CTS_MEMORY_LIMIT is enforced in the main thread', as
 Deno.test('resource-limits: CTS_MEMORY_LIMIT is enforced inside a Worker', async () => {
     await withTempDir('rl-env-worker', async (dir) => {
         const wf = join(dir, 'w.js');
-        Deno.writeTextFileSync(wf, `
-            import { parentPort } from 'node:worker_threads';
-            const sink = []; let mb = 0;
-            try {
-                while (mb < ${CAP}) { sink.push(new Uint8Array(256 * 1024)); mb += 0.25; }
-                parentPort?.postMessage({ ok: true, mb });
-            } catch (e) {
-                parentPort?.postMessage({
-                    caught: true,
-                    name: e === null ? 'null' : String(e && e.name),
-                });
-            }
-        `);
+        Deno.writeTextFileSync(wf, workerAllocSrc(
+            `parentPort?.postMessage({ caught: true, name });`,
+        ));
         const f = join(dir, 'a.js');
         Deno.writeTextFileSync(f, `
             import { Worker } from 'node:worker_threads';
