@@ -47,7 +47,11 @@ export class ObjectStore {
 		const e = this.store.get(objectId);
 		if (!e) return;
 		this.store.delete(objectId);
-		this.groups.get(e.group)?.delete(objectId);
+		const g = this.groups.get(e.group);
+		if (!g) return;
+		g.delete(objectId);
+		// Group names come from DevTools; drop empties so the map stays bounded.
+		if (g.size === 0) this.groups.delete(e.group);
 	}
 
 	releaseGroup(group: string): void {

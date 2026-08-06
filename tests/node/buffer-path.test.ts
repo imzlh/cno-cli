@@ -8,8 +8,11 @@ import { Buffer } from 'node:buffer';
 // --- path: join collapses and normalizes -----------------------------------
 
 Deno.test('path: join collapses separators and dots', () => {
-    strictEqual(path.join('/a', 'b', '..', 'c'), '/a/c');
-    strictEqual(path.join('a', 'b', 'c'), 'a/b/c');
+    // Bare `path` is win32 here, and real Node returns '\a\c' / 'a\b\c' for
+    // these inputs, so pin the flavour rather than the separator.
+    strictEqual(path.posix.join('/a', 'b', '..', 'c'), '/a/c');
+    strictEqual(path.posix.join('a', 'b', 'c'), 'a/b/c');
+    strictEqual(path.win32.join('/a', 'b', '..', 'c'), '\\a\\c');
 });
 
 Deno.test('path: join with no non-empty segments returns dot', () => {
@@ -45,7 +48,9 @@ Deno.test('path: relative computes relative path', () => {
 // --- path: normalize removes redundant separators --------------------------
 
 Deno.test('path: normalize removes redundant separators', () => {
-    ok(path.normalize('/a//b/../c').includes('/a/c') || path.normalize('/a//b/../c') === '/a/c');
+    // Pinned per flavour: real Node's win32 normalize returns '\a\c' here.
+    strictEqual(path.posix.normalize('/a//b/../c'), '/a/c');
+    strictEqual(path.win32.normalize('/a//b/../c'), '\\a\\c');
 });
 
 // --- path: isAbsolute -------------------------------------------------------
@@ -69,7 +74,9 @@ Deno.test('path: parse returns root/dir/base/ext/name', () => {
 // --- path: format rebuilds from object --------------------------------------
 
 Deno.test('path: format rebuilds path', () => {
-    const s = path.format({ root: '/', dir: '/a/b', base: 'c.js' });
+    // Separator-sensitive, so pin the flavour: bare `path` is win32 here and
+    // real Node returns '/a/b\c.js' for this input.
+    const s = path.posix.format({ root: '/', dir: '/a/b', base: 'c.js' });
     ok(s.includes('/a/b/c.js'));
 });
 
@@ -87,7 +94,9 @@ Deno.test('path: basename only strips an exact suffix match', () => {
 });
 
 Deno.test('path: format uses name/ext when base is absent', () => {
-    strictEqual(path.format({ dir: '/a/b', name: 'c', ext: '.js' }), '/a/b/c.js');
+    // Pinned to posix for the same reason as above: real Node's win32 format
+    // joins with a backslash, giving '/a/b\c.js'.
+    strictEqual(path.posix.format({ dir: '/a/b', name: 'c', ext: '.js' }), '/a/b/c.js');
 });
 
 Deno.test('path: format base takes precedence over name and ext', () => {
@@ -174,8 +183,14 @@ Deno.test('buffer upstream: Buffer.alloc repeats decoded string and byte fills',
 });
 
 Deno.test('buffer: ascii and latin1 encode code units like Node', () => {
-    strictEqual(Buffer.from('AéĀ', 'ascii').toString('hex'), '416900');
+    // Node documents 'ascii' *encoding* as equivalent to latin1 — it keeps the low
+    // byte and does not mask to 7 bits. Measured on v24.18.0:
+    // Buffer.from('AéĀ','ascii').toString('hex') === '41e900'. Only decoding masks
+    // (Buffer.from([0xe9]).toString('ascii') === 'i'), which is asserted below.
+    strictEqual(Buffer.from('AéĀ', 'ascii').toString('hex'), '41e900');
     strictEqual(Buffer.from('AéĀ', 'latin1').toString('hex'), '41e900');
+    strictEqual(Buffer.from([0xe9]).toString('ascii'), 'i');
+    strictEqual(Buffer.from([0xe9]).toString('latin1'), 'é');
 });
 
 // --- Buffer: allocUnsafe returns zero-filled buffer of length ---------------
@@ -533,4 +548,88 @@ Deno.test('buffer upstream: isUtf8 isAscii atob and btoa follow Node helper sema
     strictEqual(buffer.atob('Y25vLWNsaQ=='), 'cno-cli');
     strictEqual(buffer.btoa('cno-cli'), 'Y25vLWNsaQ==');
     throws(() => buffer.btoa('\u0100'), DOMException);
+});
+
+// --- Buffer.from: valueOf must be consulted before the array-like length ----
+
+Deno.test('buffer: Buffer.from unwraps boxed strings instead of reading .length', () => {
+    // A boxed String has BOTH a numeric `length` and a string `valueOf`. Taking
+    // the array-like branch first coerced the CHARACTERS to numbers, so this
+    // silently produced zero bytes rather than the string's bytes, and did the
+    // same to an explicit encoding. Node consults `valueOf` first.
+    strictEqual(Buffer.from(new String('ab')).toString('hex'), '6162');
+    strictEqual(Buffer.from(new String('abc')).toString('hex'), '616263');
+    strictEqual(Buffer.from(new String('é☃')).toString('hex'), 'c3a9e29883');
+    strictEqual(Buffer.from(new String('6162'), 'hex').toString('hex'), '6162');
+    strictEqual(Buffer.from(new String('YWJj'), 'base64').toString(), 'abc');
+    strictEqual(Buffer.from(Object('ab') as string).toString('hex'), '6162');
+
+    // An explicit valueOf outranks a numeric length for a plain object too.
+    strictEqual(Buffer.from({ length: 3, valueOf: () => 'ab' } as unknown as string).toString('hex'), '6162');
+
+    // ...but only when it yields a *different* string or object. A number-valued
+    // valueOf, or one returning `this`, must still fall through to array-like.
+    throws(() => Buffer.from({ valueOf: () => 5 } as unknown as string), TypeError);
+    const selfValueOf = { length: 2, valueOf(): unknown { return this; } };
+    strictEqual(Buffer.from(selfValueOf as unknown as string).toString('hex'), '0000');
+
+    // Symbol.toPrimitive is only reached when there is no length and no valueOf.
+    strictEqual(Buffer.from({ [Symbol.toPrimitive]: () => 'zz' } as unknown as string).toString('hex'), '7a7a');
+    strictEqual(
+        Buffer.from({ length: 5, [Symbol.toPrimitive]: () => 'zz' } as unknown as string).toString('hex'),
+        '0000000000',
+    );
+});
+
+Deno.test('buffer: Buffer.from rejects a function instead of using its arity', () => {
+    // A function's `.length` is its ARITY and is a number, so the array-like
+    // branch used to accept it and hand back an arity-sized zero-filled Buffer.
+    // `Buffer.from(getKey)` — forgetting `()` on a secret getter — silently
+    // yielded an all-zero key instead of throwing.
+    for (const fn of [
+        function () { /* arity 0 */ },
+        function (_a: unknown, _b: unknown) { /* arity 2 */ },
+        (_a: unknown, _b: unknown, _c: unknown) => 0,
+        class { },
+        class { constructor(_a: unknown, _b: unknown) { /* arity 2 */ } },
+        function (_a: unknown, _b: unknown) { /* bound below */ }.bind(null, 1),
+        async function (_a: unknown, _b: unknown) { /* arity 2 */ },
+        function* (_a: unknown) { /* arity 1 */ },
+    ]) {
+        throws(() => Buffer.from(fn as unknown as string), TypeError, `Buffer.from(${typeof fn}) must throw`);
+    }
+    // A function carrying a string valueOf is still rejected: Node requires an
+    // object before it will look at valueOf at all.
+    throws(
+        () => Buffer.from(Object.assign(function (_a: unknown, _b: unknown) { }, { valueOf: () => 'zz' }) as unknown as string),
+        TypeError,
+    );
+});
+
+Deno.test('buffer: Buffer.isEncoding agrees with the encodings that actually work', () => {
+    // isEncoding reported '' as valid while toString('')/indexOf('') threw
+    // ERR_UNKNOWN_ENCODING, so `if (Buffer.isEncoding(e)) buf.toString(e)` threw
+    // on the very input it had just approved.
+    strictEqual(Buffer.isEncoding(''), false);
+    throws(() => Buffer.from('abc').toString('' as BufferEncoding), TypeError);
+
+    // Node is deliberately inconsistent here: the write/fill family accepts ''
+    // and means utf8, so those must NOT throw.
+    const target = Buffer.alloc(4);
+    strictEqual(target.write('ab', 0, 2, '' as BufferEncoding), 2);
+    strictEqual(target.toString('hex'), '61620000');
+    strictEqual(Buffer.alloc(3).fill('a', '' as BufferEncoding).toString('hex'), '616161');
+    strictEqual(Buffer.alloc(3, 'a', '' as BufferEncoding).toString('hex'), '616161');
+    strictEqual(Buffer.from('abc', '' as BufferEncoding).toString('hex'), '616263');
+    strictEqual(Buffer.byteLength('abc', '' as BufferEncoding), 3);
+
+    // Every name isEncoding approves must survive a real toString round-trip.
+    for (const name of ['utf8', 'utf-8', 'utf16le', 'ucs2', 'latin1', 'binary', 'ascii', 'hex', 'base64', 'base64url']) {
+        ok(Buffer.isEncoding(name), `${name} should be a valid encoding`);
+        Buffer.from('ab').toString(name as BufferEncoding);
+    }
+    for (const name of ['', ' utf8', 'utf8 ', 'bogus', 'utf9', 'latin-1']) {
+        strictEqual(Buffer.isEncoding(name), false, `${name} should be rejected`);
+        throws(() => Buffer.from('ab').toString(name as BufferEncoding), TypeError);
+    }
 });

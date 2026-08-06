@@ -32,6 +32,13 @@ export const CdpErrorCode = {
 	MethodNotFound: -32601,
 	InvalidParams: -32602,
 	InternalError: -32603,
+	/**
+	 * CDP's own "the command cannot run in this state" code, outside the JSON-RPC
+	 * reserved range. MEASURED from node v24.18: `Debugger.evaluateOnCallFrame`
+	 * while running answers `{"code":-32000,"message":"Can only perform operation
+	 * while paused."}`, and V8 uses the same code for every wrong-state command.
+	 */
+	ServerError: -32000,
 } as const
 
 export interface CdpErrorPayload {

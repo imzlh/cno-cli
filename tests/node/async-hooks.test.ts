@@ -274,3 +274,87 @@ Deno.test('async_hooks upstream: AsyncLocalStorage propagates through dynamic im
         delete globalWithHook.alsDynamicImport;
     }
 });
+
+// --- AsyncLocalStorage.run/exit forward extra arguments ---------------------
+
+Deno.test('async_hooks upstream: run and exit forward extra arguments', () => {
+    const als = new async_hooks.AsyncLocalStorage<string>();
+    const seen: unknown[] = [];
+    als.run('store', (a: string, b: number) => { seen.push(a, b, als.getStore()); }, 'x', 7);
+    deepStrictEqual(seen, ['x', 7, 'store']);
+
+    const exited: unknown[] = [];
+    als.run('outer', () => {
+        als.exit((a: string) => { exited.push(a, als.getStore()); }, 'ARG');
+    });
+    deepStrictEqual(exited, ['ARG', undefined]);
+});
+
+// --- a synchronous throw inside run() must not leak the store --------------
+
+Deno.test('async_hooks upstream: synchronous throw in run restores the store', () => {
+    const als = new async_hooks.AsyncLocalStorage<string>();
+    strictEqual(als.getStore(), undefined);
+    try {
+        als.run('leaky', () => { throw new Error('boom'); });
+        ok(false, 'should throw');
+    } catch (e) {
+        strictEqual((e as Error).message, 'boom');
+    }
+    strictEqual(als.getStore(), undefined);
+
+    // nested: inner throw restores to the outer store
+    als.run('outer', () => {
+        try {
+            als.run('inner', () => { throw new Error('inner'); });
+        } catch { /* expected */ }
+        strictEqual(als.getStore(), 'outer');
+    });
+    strictEqual(als.getStore(), undefined);
+});
+
+Deno.test('async_hooks upstream: synchronous throw in exit restores the store', () => {
+    const als = new async_hooks.AsyncLocalStorage<string>();
+    als.run('kept', () => {
+        try {
+            als.exit(() => { throw new Error('boom'); });
+        } catch { /* expected */ }
+        strictEqual(als.getStore(), 'kept');
+    });
+});
+
+// --- createHook returns a chainable hook ----------------------------------
+
+Deno.test('async_hooks upstream: createHook enable/disable return the hook', () => {
+    const hook = async_hooks.createHook({});
+    strictEqual(hook.enable(), hook);
+    strictEqual(hook.disable(), hook);
+});
+
+// --- AsyncResource option forms -------------------------------------------
+
+Deno.test('async_hooks upstream: AsyncResource accepts an options object', () => {
+    const withObject = new async_hooks.AsyncResource('T', { triggerAsyncId: 1, requireManualDestroy: true });
+    strictEqual(withObject.triggerAsyncId(), 1);
+    const withNumber = new async_hooks.AsyncResource('T2', 7);
+    strictEqual(withNumber.triggerAsyncId(), 7);
+});
+
+Deno.test('async_hooks upstream: AsyncResource requires a string type', () => {
+    try {
+        new (async_hooks.AsyncResource as unknown as new () => unknown)();
+        ok(false, 'should throw');
+    } catch (e) {
+        strictEqual((e as { code?: string }).code, 'ERR_INVALID_ARG_TYPE');
+    }
+});
+
+// --- executionAsyncResource ----------------------------------------------
+
+Deno.test('async_hooks upstream: executionAsyncResource is exposed', () => {
+    strictEqual(typeof async_hooks.executionAsyncResource, 'function');
+    ok(typeof async_hooks.executionAsyncResource() === 'object');
+    const resource = new async_hooks.AsyncResource('Probe');
+    const inner = resource.runInAsyncScope(() => async_hooks.executionAsyncResource());
+    strictEqual(inner, resource);
+});

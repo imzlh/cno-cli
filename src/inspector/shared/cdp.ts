@@ -199,6 +199,8 @@ export interface RuntimeRunScriptParams {
 	objectGroup?: string
 	returnByValue?: boolean
 	generatePreview?: boolean
+	/** Per the CDP spec Runtime.runScript accepts awaitPromise, as evaluate does. */
+	awaitPromise?: boolean
 }
 export interface RuntimeAwaitPromiseParams {
 	promiseObjectId?: string

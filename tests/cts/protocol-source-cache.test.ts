@@ -13,6 +13,7 @@ import { withTempDir } from '../_helpers/temp.ts';
 
 const engine = import.meta.use('engine');
 const crypto = import.meta.use('crypto');
+const fs = import.meta.use('fs');
 
 function drive<T>(flow: Flow<T>, handler: (step: Step) => unknown): T {
     let state = flow.next();
@@ -270,6 +271,109 @@ Deno.test('cts jsc cache: local freshness and remote sidecar paths are observabl
         cache.setMemory('memory-module', new engine.Module('export const memory = 1;', 'memory-module').dump());
         ok(cache.load('memory-module', false));
         strictEqual(cache.load('memory-module', false), null);
+    });
+});
+
+Deno.test('cts jsc cache: normalized cache roots keep remote bytecode adjacent', async () => {
+    await withTempDir('cts-jsc-cache-root', (root) => {
+        const cacheDir = joinPaths(root, 'cache');
+        const configured = cacheDir + '//';
+        const cfg = createConfig({ cacheDir: configured });
+        strictEqual(cfg.cacheDir, normalizePath(cacheDir));
+
+        const remotePath = joinPaths(cacheDir, 'http', 'remote.ts');
+        mkdirSync(joinPaths(cacheDir, 'http'), { recursive: true });
+        writeFileSync(remotePath, 'export const remote = 1;\n');
+        const cache = new JscCache(configured);
+        cache.persistBytecode(remotePath, new engine.Module('export const remote = 1;', remotePath).dump(), true);
+        ok(existsSync(remotePath + '.jsc'));
+        ok(existsSync(remotePath + '.jsc.mt'));
+    });
+});
+
+Deno.test('cts jsc cache: persistence keeps the pre-compile source stamp', async () => {
+    await withTempDir('cts-jsc-source-snapshot', (root) => {
+        const cacheDir = joinPaths(root, 'cache');
+        const localPath = join(root, 'entry.ts').replaceAll('\\', '/');
+        writeFileSync(localPath, 'export const value = 1;\n');
+
+        const cache = new JscCache(cacheDir);
+        const source = cache.captureFreshness(localPath);
+        ok(source, 'source snapshot must be captured before compilation');
+        const oldBytecode = new engine.Module('export const value = 1;', localPath).dump();
+
+        // Same-size replacement reproduces the dangerous case: old bytecode is
+        // persisted after the source changed, so a post-compile stat would bless it.
+        writeFileSync(localPath, 'export const value = 2;\n');
+        const changedAt = Math.floor(Date.now() / 1000) + 2;
+        fs.utimes(localPath, changedAt, changedAt);
+        cache.persistBytecode(localPath, oldBytecode, false, localPath, source);
+        strictEqual(cache.hasFresh(localPath, false, undefined, localPath), false);
+        strictEqual(cache.load(localPath, false, undefined, localPath), null);
+    });
+});
+
+Deno.test('cts jsc cache: same-size edits invalidate even when the mtime second is unchanged', async () => {
+    await withTempDir('cts-jsc-same-second', (root) => {
+        const cacheDir = joinPaths(root, 'cache');
+        const localPath = join(root, 'entry.ts').replaceAll('\\', '/');
+        const original = 'export const value = 1;\n';
+        const edited = 'export const value = 2;\n';
+        strictEqual(original.length, edited.length, 'the hazard requires an identical size');
+
+        // Pin the mtime to an exact sub-second instant. A stamp that renders the
+        // mtime with second granularity cannot distinguish .1 from .9 below.
+        const pinnedAt = 1785640800.1;
+        writeFileSync(localPath, original);
+        fs.utimes(localPath, pinnedAt, pinnedAt);
+
+        const cache = new JscCache(cacheDir);
+        const source = cache.captureFreshness(localPath);
+        ok(source, 'source snapshot must be captured before compilation');
+        const mod = new engine.Module(original, localPath);
+        mod.resolve();
+        cache.persistLocal(localPath, mod, localPath, source);
+        strictEqual(cache.hasFresh(localPath, false, undefined, localPath), true);
+
+        // Same size, mtime still inside the same wall-clock second.
+        writeFileSync(localPath, edited);
+        fs.utimes(localPath, 1785640800.9, 1785640800.9);
+        strictEqual(cache.hasFresh(localPath, false, undefined, localPath), false);
+
+        // Worst case: same size AND a byte-identical mtime (touch -r, git checkout,
+        // codegen). Only the content hash can reject this.
+        fs.utimes(localPath, pinnedAt, pinnedAt);
+        strictEqual(cache.hasFresh(localPath, false, undefined, localPath), false);
+        strictEqual(cache.load(localPath, false, undefined, localPath), null);
+        strictEqual(existsSync(`${localPath}.jsc`), false);
+    });
+});
+
+Deno.test('cts jsc cache: an untouched source still hits the cache after the stamp upgrade', async () => {
+    await withTempDir('cts-jsc-still-hits', (root) => {
+        const cacheDir = joinPaths(root, 'cache');
+        const localPath = join(root, 'entry.ts').replaceAll('\\', '/');
+        writeFileSync(localPath, 'export const value = 1;\n');
+
+        const cache = new JscCache(cacheDir);
+        const source = cache.captureFreshness(localPath);
+        ok(source);
+        strictEqual(source.hash.length, 32, 'stamp carries an md5 of the source bytes');
+        const mod = new engine.Module('export const value = 1;', localPath);
+        mod.resolve();
+        cache.persistLocal(localPath, mod, localPath, source);
+
+        // Repeated checks must stay fresh: the hash is recomputed on every check and
+        // has to agree with itself, otherwise every run would recompile.
+        strictEqual(cache.hasFresh(localPath, false, undefined, localPath), true);
+        strictEqual(cache.hasFresh(localPath, false, undefined, localPath), true);
+        ok(cache.load(localPath, false, undefined, localPath));
+
+        // mtime stays part of the stamp so a resolver-supplied mtime can still force
+        // invalidation (see the -1 cases above); a bare touch therefore recompiles.
+        const laterAt = Math.floor(Date.now() / 1000) + 5;
+        fs.utimes(localPath, laterAt, laterAt);
+        strictEqual(cache.hasFresh(localPath, false, undefined, localPath), false);
     });
 });
 

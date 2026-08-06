@@ -166,7 +166,10 @@ Deno.test({ name: 'REPL serializes piped lines and preserves EOF order', timeout
         'replOrder\n' +
         '.q\n',
     );
-    ok(output.includes('[1, 2]'), output);
+    // Node's inspect (and cno's) renders an array with inner padding:
+    // `[ 1, 2 ]`, not `[1, 2]`. The intent here is the ordering — the awaited
+    // timer must land before the next piped line — not the spacing.
+    ok(output.includes('[ 1, 2 ]'), output);
 });
 
 Deno.test({ name: 'REPL .load preserves the supplied TypeScript path', timeout: 10000 }, async () => {

@@ -32,7 +32,9 @@ Deno.test('util: format handles placeholders escaping and trailing args', () => 
     strictEqual(format('%j', { a: 1 }), '{"a":1}');
     strictEqual(format('%o', [10, 11]), '[ 10, 11, [length]: 2 ]');
     strictEqual(format('left %s', 'one', 'two'), 'left one two');
-    strictEqual(format(undefined), '');
+    // Node returns the sole argument coerced, not '' — util.format() with no
+    // args returns ''. Verified against Node v24.18.
+    strictEqual(format(undefined), 'undefined');
 });
 
 Deno.test('util upstream: format numeric specifiers match Node coercion edges', () => {
@@ -65,8 +67,10 @@ Deno.test('util upstream: default export debug aliases inspect custom symbol and
 Deno.test('util: terminal helpers normalize control sequences and text styles', () => {
     strictEqual(stripVTControlCharacters('\x1B[31mred\x1B[0m'), 'red');
     strictEqual(styleText('red', 'x', { validateStream: false }), '\x1B[31mx\x1B[39m');
-    strictEqual(styleText(['bold', 'underline'], 'x', { validateStream: false }), '\x1B[4m\x1B[1mx\x1B[22m\x1B[24m');
-    strictEqual(styleText(['red', 'green'], 'error', { validateStream: false }), '\x1B[32m\x1B[31merror\x1B[39m\x1B[39m');
+    // Opens are emitted in array order and closes unwind in reverse.
+    // Verified against Node v24.18.
+    strictEqual(styleText(['bold', 'underline'], 'x', { validateStream: false }), '\x1B[1m\x1B[4mx\x1B[24m\x1B[22m');
+    strictEqual(styleText(['red', 'green'], 'error', { validateStream: false }), '\x1B[31m\x1B[32merror\x1B[39m\x1B[39m');
 });
 
 Deno.test('util: toUSVString replaces unpaired surrogates', () => {
@@ -210,8 +214,10 @@ Deno.test('util: system error helpers expose errno map and validate arguments', 
     const [code, [name, message]] = map.entries().next().value;
     strictEqual(getSystemErrorName(code), name);
     strictEqual(getSystemErrorMessage(code), message);
-    strictEqual(getSystemErrorName(-424242), undefined);
-    strictEqual(getSystemErrorMessage(-424242), undefined);
+    // Unmapped errno values get a synthetic name/message, never undefined.
+    // Verified against Node v24.18.
+    strictEqual(getSystemErrorName(-424242), 'Unknown system error -424242');
+    strictEqual(getSystemErrorMessage(-424242), 'Unknown system error -424242');
     throws(() => (getSystemErrorName as (err?: unknown) => unknown)(), TypeError);
     throws(() => (getSystemErrorName as (err: unknown) => unknown)(1), RangeError);
     throws(() => (getSystemErrorMessage as (err?: unknown) => unknown)(), TypeError);

@@ -6,6 +6,7 @@ import { createConfig } from '../../cts/src/config.ts';
 import { DepScanner } from '../../cts/src/deps.ts';
 import { hasImportAttributes, extractImports } from '../../cts/src/scan.ts';
 import { ImportScanner } from '../../cts/src/import-scanner.ts';
+import { LockStore } from '../../cts/src/lock.ts';
 import { tryLoadOxc } from '../../cts/src/oxc.ts';
 import { ModuleResolver } from '../../cts/src/resolve/index.ts';
 import { ParseWorkerError } from '../../cts/src/parse.ts';
@@ -139,9 +140,16 @@ Deno.test('DepScanner: full graph reports malformed source instead of caching an
 
 Deno.test('DepScanner: warm cache reuses imports while pack-style scans bypass them', async () => {
     const root = makePosixTempDir('dep-import-cache');
-    const main = join(root, 'main.ts');
-    const dep = join(root, 'dep.ts');
-    const other = join(root, 'other.ts');
+    // cts is POSIX-internally (cts/AGENT.md: "host paths on the boundary but
+    // POSIX internally"), so every ModuleInfo.localPath comes back with forward
+    // slashes. node:path join() yields backslashes on Windows, which made
+    // `module.localPath === dep` never match AND made the custom scanner's
+    // `localPath === main` never fire — so './other.ts' was never injected and
+    // two of the assertions below failed for a path-shape reason, not a scanner
+    // one. root is already POSIX via makePosixTempDir; keep these consistent.
+    const main = `${root}/main.ts`;
+    const dep = `${root}/dep.ts`;
+    const other = `${root}/other.ts`;
     const config = () => createConfig({
         cacheDir: join(root, 'cache'),
         persistLock: true,
@@ -170,8 +178,10 @@ Deno.test('DepScanner: warm cache reuses imports while pack-style scans bypass t
             async localPath => localPath === main ? ['./other.ts'] : [],
             { fullGraph: true },
         ).scan(main, main);
-        ok(packLike.modules.some(module => module.localPath === other));
-        ok(!packLike.modules.some(module => module.localPath === dep));
+        ok(packLike.modules.some(module => module.localPath === other),
+            `pack-style fullGraph scan must include the injected './other.ts'; got [${packLike.modules.map(m => m.localPath).join(', ')}]`);
+        ok(!packLike.modules.some(module => module.localPath === dep),
+            `pack-style scan must bypass the cached import edge to dep.ts; got [${packLike.modules.map(m => m.localPath).join(', ')}]`);
         packResolver.lockStore.close();
 
         Deno.removeSync(main);
@@ -179,9 +189,14 @@ Deno.test('DepScanner: warm cache reuses imports while pack-style scans bypass t
         const warmResolver = new ModuleResolver(config(), root, true);
         const warm = await new DepScanner(warmResolver, config()).scan(main, main);
         strictEqual(warm.errors.length, 0);
-        ok(warm.modules.some(module => module.localPath === dep));
+        ok(warm.modules.some(module => module.localPath === dep),
+            `warm scan must reuse the cached import edge and re-report dep.ts after both files were deleted from disk; got [${warm.modules.map(m => m.localPath).join(', ')}]`);
         warmResolver.lockStore.close();
     } finally {
+        // Exception-safe teardown: if any assertion above throws, the still-open
+        // SQLite handle would make removeSync fail and mask the real error.
+        // SQLite's Win32 VFS omits FILE_SHARE_DELETE, so closing is mandatory.
+        try { LockStore.closeAll(); } catch {}
         Deno.removeSync(root, { recursive: true });
     }
 });

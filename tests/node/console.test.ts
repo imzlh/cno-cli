@@ -236,8 +236,9 @@ Deno.test('console: ignoreErrors suppresses write errors', async () => {
 
 Deno.test('console: trace includes message and Trace prefix', async () => {
     let out = '';
-    const stdout = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
-    const stderr = new Writable({ write(_c: Buffer, _e, cb) { cb(); } });
+    // Node's console.trace writes to stderr (verified against v24.18), not stdout.
+    const stdout = new Writable({ write(_c: Buffer, _e, cb) { cb(); } });
+    const stderr = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
     const c = new Console(stdout, stderr);
     c.trace('marker');
     await new Promise((r) => setTimeout(r, 10));
@@ -280,8 +281,9 @@ Deno.test('console upstream: formats cross-realm built-in objects', async () => 
     for (const value of values) c.log(value);
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    ok(out.includes('Map(1) {x => 1}'));
-    ok(out.includes('Set(2) {a, b}'));
+    // util.inspect spacing/quoting, as real Node emits it (verified v24.18).
+    ok(out.includes("Map(1) { 'x' => 1 }"));
+    ok(out.includes("Set(2) { 'a', 'b' }"));
     ok(out.includes('2018-12-10T02:26:59.002Z'));
     ok(out.includes('Error: cross realm'));
 });

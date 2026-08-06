@@ -462,18 +462,30 @@ Deno.test({
     },
 });
 
+/**
+ * Pre/post lifecycle ordering is a task-runner semantic, not a shell one: npm
+ * package scripts run pre<name>/post<name>, deno.json tasks do not. Oracle
+ * (2026-08-03): real Deno 2.9.3 on Windows runs only `test` for a deno.json
+ * task that also defines pretest/posttest, confirming the second half.
+ *
+ * Only the fixture needed POSIX: `echo x >> f` depends on sh redirection and
+ * LF line endings. Using `node -e` (PATH-shimmed to cno by taskShellEnv) keeps
+ * the fixture portable, so this now runs on Windows too.
+ */
+const appendLine = (word: string) =>
+    `node -e "require('node:fs').appendFileSync('order.txt','${word}\\n')"`;
+
 Deno.test({
     name: 'cts task: package scripts run pre/post but deno tasks do not',
-    ignore: Deno.build.os === 'windows',
     async fn() {
         const pkgRoot = makePosixTempDir('task-package-prepost');
         const pkgLock = new LockStore(pkgRoot, true);
         try {
             writeFileSync(join(pkgRoot, 'package.json'), JSON.stringify({
                 scripts: {
-                    pretest: 'echo pre >> order.txt',
-                    test: 'echo test >> order.txt',
-                    posttest: 'echo post >> order.txt',
+                    pretest: appendLine('pre'),
+                    test: appendLine('test'),
+                    posttest: appendLine('post'),
                 },
             }));
 
@@ -491,9 +503,9 @@ Deno.test({
         try {
             writeFileSync(join(denoRoot, 'deno.json'), JSON.stringify({
                 tasks: {
-                    pretest: 'echo pre >> order.txt',
-                    test: 'echo test >> order.txt',
-                    posttest: 'echo post >> order.txt',
+                    pretest: appendLine('pre'),
+                    test: appendLine('test'),
+                    posttest: appendLine('post'),
                 },
             }));
 
@@ -615,9 +627,14 @@ Deno.test({
     },
 });
 
+/**
+ * Diamond dedup and cycle rejection are graph semantics in the task runner,
+ * independent of the shell. The gate existed only because the fixture used
+ * `echo x >> order.txt`. `appendLine` (node -e, PATH-shimmed to cno) is
+ * portable, so this runs on Windows too.
+ */
 Deno.test({
     name: 'cts task: dependencies dedupe diamond graphs and reject cycles',
-    ignore: Deno.build.os === 'windows',
     async fn() {
         const root = makePosixTempDir('task-diamond-deps');
         const lock = new LockStore(root, true);
@@ -625,10 +642,10 @@ Deno.test({
             writeFileSync(join(root, 'deno.jsonc'), `{
                 // a depends on b and c; both depend on d, which should run once.
                 "tasks": {
-                    "a": { "command": "echo a >> order.txt", "dependencies": ["b", "c"] },
-                    "b": { "command": "echo b >> order.txt", "dependencies": ["d"] },
-                    "c": { "command": "echo c >> order.txt", "dependencies": ["d"] },
-                    "d": "echo d >> order.txt"
+                    "a": { "command": ${JSON.stringify(appendLine('a'))}, "dependencies": ["b", "c"] },
+                    "b": { "command": ${JSON.stringify(appendLine('b'))}, "dependencies": ["d"] },
+                    "c": { "command": ${JSON.stringify(appendLine('c'))}, "dependencies": ["d"] },
+                    "d": ${JSON.stringify(appendLine('d'))}
                 }
             }`);
 
@@ -646,7 +663,7 @@ Deno.test({
         try {
             writeFileSync(join(cycleRoot, 'deno.jsonc'), `{
                 "tasks": {
-                    "a": { "command": "echo a >> order.txt", "dependencies": ["a"] }
+                    "a": { "command": ${JSON.stringify(appendLine('a'))}, "dependencies": ["a"] }
                 }
             }`);
 
@@ -1221,23 +1238,34 @@ Deno.test({
 });
 
 // specs/task/wildcard: foo-* and dep-* globs
+/**
+ * Wildcard task-name matching and once-only dependency execution are runner
+ * semantics; the gate existed only for the `echo x >> out.txt` fixture.
+ * This one runs through the real `cno task` CLI (cmd /c on Windows), so the
+ * fixture is a .cjs script taking the word as argv — no inner quoting, which
+ * `cmd` and `sh` would treat differently.
+ */
 Deno.test({
     name: 'cts task upstream: wildcard task names match and run once with deps',
-    ignore: Deno.build.os === 'windows',
     async fn() {
         const root = makePosixTempDir('task-wildcard');
         try {
+            writeFileSync(
+                join(root, 'append.cjs'),
+                "require('node:fs').appendFileSync('out.txt', process.argv[2] + '\\n');",
+            );
+            const appendArgv = (word: string) => `node append.cjs ${word}`;
             writeFileSync(join(root, 'deno.json'), JSON.stringify({
                 tasks: {
-                    'foo-1': 'echo foo-1 >> out.txt',
-                    'foo-2': 'echo foo-2 >> out.txt',
-                    'foo-3': 'echo foo-3 >> out.txt',
+                    'foo-1': appendArgv('foo-1'),
+                    'foo-2': appendArgv('foo-2'),
+                    'foo-3': appendArgv('foo-3'),
                     'dep-1': {
-                        command: 'echo dep-1 >> out.txt',
+                        command: appendArgv('dep-1'),
                         dependencies: ['dep-2', 'foo-1'],
                     },
                     'dep-2': {
-                        command: 'echo dep-2 >> out.txt',
+                        command: appendArgv('dep-2'),
                         dependencies: ['foo-1'],
                     },
                 },

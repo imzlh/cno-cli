@@ -84,14 +84,22 @@ function collectTests(rawPaths: string[]): string[] {
         })
         : [posixCwd];
 
+    // Overlapping roots (`cno test . a_test.ts`, or the same path twice) must
+    // not run a file twice and inflate the tally — deno dedupes too.
+    const seen = new Set<string>();
     const out: string[] = [];
+    const push = (file: string): void => {
+        if (seen.has(file)) return;
+        seen.add(file);
+        out.push(file);
+    };
     for (const r of roots) {
         const s = statOrNull(r);
         if (!s) continue;
         if (s.isFile) {
-            out.push(r);
+            push(r);
         } else if (s.isDirectory) {
-            out.push(...walkSync(r));
+            for (const file of walkSync(r)) push(file);
         }
     }
     return out;
@@ -122,13 +130,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function failureText(error: unknown): string {
+    if (typeof error === 'string') return error;
+    if (isRecord(error)) {
+        const stack = error.stack;
+        if (typeof stack === 'string' && stack) return stack;
+        const message = error.message;
+        if (typeof message === 'string' && message) {
+            const name = typeof error.name === 'string' ? error.name : 'Error';
+            return `${name}: ${message}`;
+        }
+    }
+    return String(error);
+}
+
 function parseFailedTests(value: unknown): FailedTest[] {
     if (!Array.isArray(value)) return [];
     return value.map((t): FailedTest => {
         if (!isRecord(t)) return { name: String(t) };
         return {
             name: typeof t.name === 'string' ? t.name : String(t),
-            error: t.error ? String(t.error) : undefined,
+            // Objects that lost their prototype over JSON IPC stringify to
+            // "[object Object]" — pull message/stack out instead.
+            error: t.error ? failureText(t.error) : undefined,
         };
     });
 }
@@ -190,11 +214,22 @@ export function parseTestChildArgs(args: string[]): {
     };
 }
 
-function parseConcurrency(value: string | boolean | undefined): number {
-    if (typeof value !== 'string') return 4;
+function parseConcurrency(value: string | boolean | undefined): number | null {
+    if (value === undefined) return 4;
+    // A garbage value silently falling back to 4 hides a typo in CI configs.
+    if (typeof value !== 'string') return null;
     const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed < 1) return 4;
+    if (!Number.isInteger(parsed) || parsed < 1) return null;
     return parsed;
+}
+
+/** Inspect flags bind one fixed port, so parallel children fight over it. */
+function usesInspector(flags: Record<string, string | boolean>): boolean {
+    for (const key of ['inspect', 'inspect-brk', 'inspect-wait']) {
+        const value = flags[key];
+        if (value !== undefined && value !== false) return true;
+    }
+    return false;
 }
 
 async function runOne(file: string, flags: Record<string, string | boolean>, scriptArgs: string[]): Promise<TestResult> {
@@ -308,9 +343,16 @@ export async function runTest(
     }
 
     const requestedConcurrency = parseConcurrency(flags['concurrency']);
-    const concurrency = flags['fail-fast'] === true ? 1 : Math.min(files.length,
-        requestedConcurrency
-    );
+    if (requestedConcurrency === null) {
+        console.error(`error: --concurrency must be a positive integer, got ${String(flags['concurrency'])}`);
+        os.exit(1);
+        return;
+    }
+    // Each test file is a child process; `--inspect*` is forwarded to all of
+    // them, so anything above 1 makes every child but the first die with
+    // EADDRINUSE and report a spurious module failure.
+    const serial = flags['fail-fast'] === true || usesInspector(flags);
+    const concurrency = serial ? 1 : Math.min(files.length, requestedConcurrency);
 
     console.log(`${C.dim('Running')} ${files.length} test file${files.length === 1 ? '' : 's'} (concurrency=${concurrency})`);
     console.log('');

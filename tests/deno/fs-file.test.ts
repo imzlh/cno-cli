@@ -187,7 +187,9 @@ Deno.test('deno FsFile: readable and writable streams use the file pointer', asy
             await writer.write(Buffer.from('stream-data'));
             await writer.close();
         } finally {
-            writerFile.close();
+            // The stream owns the handle and closed it, so close() here would
+            // throw BadResource. Symbol.dispose is the idempotent teardown.
+            writerFile[Symbol.dispose]();
         }
 
         const readerFile = await Deno.open(file, { read: true });
@@ -201,7 +203,7 @@ Deno.test('deno FsFile: readable and writable streams use the file pointer', asy
             }
             strictEqual(Buffer.concat(chunks).toString(), 'stream-data');
         } finally {
-            readerFile.close();
+            readerFile[Symbol.dispose]();
         }
     });
 });
@@ -217,7 +219,8 @@ Deno.test('deno FsFile: readable and writable streams take ownership of the hand
         await rejects(async () => {
             await readableFile.stat();
         }, Deno.errors.BadResource);
-        readableFile.close();
+        throws(() => readableFile.close(), Deno.errors.BadResource);
+        readableFile[Symbol.dispose]();
 
         const writableFile = await Deno.open(file, { write: true, truncate: true });
         const writer = writableFile.writable.getWriter();
@@ -226,7 +229,8 @@ Deno.test('deno FsFile: readable and writable streams take ownership of the hand
         await rejects(async () => {
             await writableFile.write(Buffer.from('x'));
         }, Deno.errors.BadResource);
-        writableFile.close();
+        throws(() => writableFile.close(), Deno.errors.BadResource);
+        writableFile[Symbol.dispose]();
 
         strictEqual(Deno.readTextFileSync(file), 'closed-by-stream');
     });
@@ -410,7 +414,8 @@ Deno.test('deno FsFile: append mode writes at EOF regardless of seek position', 
             await writer.close();
             strictEqual(await Deno.readTextFile(file), 'base-sync-async-stream');
         } finally {
-            streamFile.close();
+            // writer.close() already closed the handle it took ownership of.
+            streamFile[Symbol.dispose]();
         }
     });
 });

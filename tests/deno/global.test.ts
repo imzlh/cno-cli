@@ -215,9 +215,12 @@ Deno.test('deno: Deno.test accepts options object', () => {
 });
 
 Deno.test('deno: Deno.test.only is callable', () => {
-    Deno.test({ name: 'deno-inner: only-form', only: true }, () => {
-        ok(true);
-    });
+    // Oracle: Deno 2.9.3 reports `typeof Deno.test.only === 'function'` (and
+    // likewise Deno.test.ignore), measured with `deno run` on this same probe.
+    // The previous body only called Deno.test({ only: true }) and asserted
+    // nothing, so it passed even with Deno.test.only deleted outright.
+    strictEqual(typeof (Deno.test as { only?: unknown }).only, 'function');
+    strictEqual(typeof (Deno.test as { ignore?: unknown }).ignore, 'function');
 });
 
 // --- 8. Deno.cwd / Deno.chdir round-trip -----------------------------------
@@ -226,7 +229,9 @@ Deno.test('deno: Deno.chdir + Deno.cwd round-trip', () => {
     const original = Deno.cwd();
     ok(typeof original === 'string' && original.length > 0);
     Deno.chdir('/');
-    strictEqual(Deno.cwd(), '/');
+    // Windows resolves '/' to the current drive root (e.g. 'd:\'), matching upstream Deno.
+    if (Deno.build.os === 'windows') ok(/^[A-Za-z]:\\$/.test(Deno.cwd()), Deno.cwd());
+    else strictEqual(Deno.cwd(), '/');
     Deno.chdir(original);
     strictEqual(Deno.cwd(), original);
 });

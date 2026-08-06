@@ -9,3 +9,42 @@ cts.lock
 *.lock
 example/
 *.node
+
+# ---------------------------------------------------------------------------
+# Audit-campaign scratch (2026-07/08). All patterns below are ROOT-ANCHORED
+# with a leading "/" so they can never match a real source or test file in a
+# subdirectory. Verified: `git ls-files` matches none of these.
+# ---------------------------------------------------------------------------
+
+# Scratch probes and per-agent cache dirs: tmp-*.ts, tmp-*.cjs, tmp-<agent>-cache/
+# Root-anchored on purpose -- an unanchored "tmp-*" would also swallow
+# tests/cts/tmp-neg/, and nothing under tests/ may be ignored.
+/tmp-*
+
+# Created by a bad CTS_CACHE_DIR interpolation (a literal "d" directory,
+# from an unexpanded /d/... path). ~200 files.
+/d/
+
+# Release build tree (the Debug tree "build/" is already ignored above).
+/build-release/
+
+# Probe/scratch output directories
+/ZZZ/
+/.probe/
+/.deno/
+
+# Loose scratch files at the repo root
+/hostile-probe.ts
+/.scan-run.sh
+/sr.bat
+/ro.txt
+/plain.txt
+
+# MSVC debug symbols and Node tracing output
+*.pdb
+/node_trace.*.log
+# Dotfile scratch probes from the same campaign (root-anchored).
+/.tmp-*
+
+# Per-agent pre-edit backups (never source of truth; the tree is).
+*.bak-*

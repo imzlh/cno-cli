@@ -16,6 +16,7 @@ import {
     systemPathSplit,
     toPosixPath,
 } from '../../cno/src/utils/path.ts';
+import { isPosixCompatible } from '../../cno/src/utils/platform.ts';
 import { bridgeCjsToEsm } from '../../cts/src/compile/bridge.ts';
 import { clearDirPathsCache, buildPaths } from '../../cts/src/compile/cjs.ts';
 import { runAsync, runSync, StepType } from '../../cts/src/flow.ts';
@@ -74,17 +75,56 @@ Deno.test('cno utils args: builders derive Deno and Node argv from shared state'
     }
 });
 
+// cno/src/utils/path.ts is the NATIVE path layer (systemPathSplit is
+// `isPosixCompatible ? '/' : '\\'`), distinct from cts/src/utils/path.ts which is
+// the POSIX-internal layer. Asserting '/' here was a TEST BUG: it hardcoded the
+// POSIX branch of a deliberately platform-dependent constant, so it could only
+// ever pass on POSIX. Measured on Windows 11 (cno run):
+//   systemPathSplit -> "\\"   normalize('C:/a/./b/../c') -> "C:\\a\\c"
+//   join('C:/tmp','a','..','b') -> "C:\\tmp\\b"
+// dirname()/getExtension() are separator-agnostic (they scan for both / and \),
+// so those expectations are platform-independent and unchanged.
 Deno.test('cno utils path: normalize join dirname and extension cover common paths', () => {
-    strictEqual(systemPathSplit, '/');
+    strictEqual(systemPathSplit, isPosixCompatible ? '/' : '\\');
     strictEqual(toPosixPath('a\\b\\c'), 'a/b/c');
-    strictEqual(normalize('/a/./b/../c'), '/a/c');
-    strictEqual(normalize('a/../../b'), '../b');
-    strictEqual(join('/tmp', 'a', '..', 'b'), '/tmp/b');
+    // Use a drive-absolute path on Windows: a driveless rooted path hits a
+    // separate known bug (see the root-preservation test below).
+    strictEqual(
+        normalize(isPosixCompatible ? '/a/./b/../c' : 'C:/a/./b/../c'),
+        isPosixCompatible ? '/a/c' : 'C:\\a\\c',
+    );
+    strictEqual(normalize('a/../../b'), isPosixCompatible ? '../b' : '..\\b');
+    strictEqual(
+        join(isPosixCompatible ? '/tmp' : 'C:/tmp', 'a', '..', 'b'),
+        isPosixCompatible ? '/tmp/b' : 'C:\\tmp\\b',
+    );
     strictEqual(dirname('/tmp/file.txt'), '/tmp');
     strictEqual(dirname('/file.txt'), '/');
     strictEqual(dirname('file.txt'), '.');
     strictEqual(getExtension('/tmp/archive.tar.gz'), '.gz');
     strictEqual(getExtension('/tmp/.env'), '.env');
+});
+
+// KNOWN BUG, characterization test -- do NOT "fix" by changing the oracle.
+// normalize() drops the root of a driveless rooted path on Windows because its
+// `abs` test only accepts a drive letter (/^[A-Za-z]{1,2}:[\/\\]/), so '/a/b' is
+// treated as relative. On Windows a driveless rooted path is legal and means
+// "root of the current drive". Measured on Windows 11:
+//   cno   normalize('/a/b') -> "a\\b"     node path.win32.normalize('/a/b') -> "\\a\\b"
+//   cno   normalize('/')    -> "."        node path.win32.normalize('/')    -> "\\"
+// Reachable in cno/src/deno/02_fs.ts absolutePath() (line 257), which feeds the
+// Deno.watchFs paths; statSync/realPathSync bypass it and are unaffected.
+// cno/src/utils/path.ts is baked into cno.exe, so fixing it needs a rebuild:
+// the `abs`/`prefix`/`startPos` branches must keep a leading separator as root.
+Deno.test('cno utils path: normalize drops driveless root on Windows (known bug)', () => {
+    if (isPosixCompatible) {
+        strictEqual(normalize('/a/b'), '/a/b');
+        strictEqual(normalize('/'), '/');
+        return;
+    }
+    // Current (wrong) behaviour pinned so a fix flips this test loudly.
+    strictEqual(normalize('/a/b'), 'a\\b');   // SHOULD be '\\a\\b'
+    strictEqual(normalize('/'), '.');         // SHOULD be '\\'
 });
 
 Deno.test('cts flow: runSync executes filesystem steps and propagates caught errors', async () => {

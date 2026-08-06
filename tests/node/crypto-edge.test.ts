@@ -66,6 +66,30 @@ Deno.test('crypto: cipher keys accept secret KeyObjects and ArrayBufferView IVs'
     strictEqual(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString(), 'view-and-key-object');
 });
 
+Deno.test('crypto: BufferSource inputs use internal slots, not mutable brand helpers', () => {
+    const isView = Object.getOwnPropertyDescriptor(ArrayBuffer, 'isView');
+    const hasInstance = Object.getOwnPropertyDescriptor(ArrayBuffer, Symbol.hasInstance);
+    try {
+        Object.defineProperty(ArrayBuffer, Symbol.hasInstance, { value: () => false, configurable: true });
+        Object.defineProperty(ArrayBuffer, 'isView', { value: () => true, configurable: true });
+        const buffer = new Uint8Array([1, 2, 3]).buffer;
+        const view = new Uint8Array([4, 5, 6]);
+        Object.defineProperties(view, {
+            buffer: { value: new ArrayBuffer(0) },
+            byteOffset: { value: 99 },
+            byteLength: { value: 0 },
+        });
+        strictEqual(crypto.createSecretKey(buffer).symmetricKeySize, 3);
+        strictEqual(crypto.createSecretKey(view).symmetricKeySize, 3);
+        throws(() => crypto.createSecretKey({ buffer, byteOffset: 0, byteLength: 3 } as never), TypeError);
+    } finally {
+        if (isView) Object.defineProperty(ArrayBuffer, 'isView', isView);
+        else Reflect.deleteProperty(ArrayBuffer, 'isView');
+        if (hasInstance) Object.defineProperty(ArrayBuffer, Symbol.hasInstance, hasInstance);
+        else Reflect.deleteProperty(ArrayBuffer, Symbol.hasInstance);
+    }
+});
+
 Deno.test('crypto: cipher validates null and non-null IVs by mode', () => {
     throws(() => crypto.createCipheriv('aes-128-ecb', Buffer.alloc(16), Buffer.alloc(0)), /initialization vector/i);
     throws(() => crypto.createDecipheriv('aes-128-cbc', Buffer.alloc(16), null), /initialization vector/i);
@@ -877,8 +901,10 @@ Deno.test('crypto: one-shot hash and cipher metadata expose supported algorithms
     ok(hashes.includes('sha512-224'));
     ok(hashes.includes('sha3-512'));
     ok(hashes.includes('blake2b512'));
-    ok(hashes.includes('shake-128'));
-    ok(hashes.includes('shake-256'));
+    // Real Node lists the SHAKE digests without a dash, while still accepting
+    // the dashed spelling as input to hash()/createHash().
+    ok(hashes.includes('shake128'));
+    ok(hashes.includes('shake256'));
 
     const info = crypto.getCipherInfo('aes-128-cbc');
     deepStrictEqual(
@@ -1046,4 +1072,63 @@ Deno.test('crypto upstream: hkdf async callback matches hkdfSync', async () => {
     );
     strictEqual(Buffer.from(asyncResult).toString('hex'), Buffer.from(syncResult).toString('hex'));
     strictEqual(callbackCalled, true);
+});
+
+// --- RSA padding fidelity in the streaming sign/verify API ------------------
+//
+// The native sign/verify entry points always use PKCS#1 v1.5. The one-shot
+// crypto.sign()/crypto.verify() already refused a PSS request rather than
+// silently downgrading it, but createSign()/createVerify() read only `key` from
+// the options object and dropped `padding`. Measured against Node v24.18.0: a
+// PKCS#1 v1.5 signature was accepted as valid PSS (true where Node returns
+// false) — a signature-scheme confusion.
+
+Deno.test('crypto: createVerify must not accept a PKCS1 signature as RSA-PSS', () => {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const data = Buffer.from('the-message-to-sign');
+    const pkcs1Sig = crypto.createSign('sha256').update(data).sign(privateKey);
+
+    // Control: it is a valid PKCS#1 v1.5 signature.
+    strictEqual(
+        crypto.createVerify('sha256').update(data)
+            .verify({ key: publicKey, padding: crypto.constants.RSA_PKCS1_PADDING }, pkcs1Sig),
+        true,
+    );
+
+    // The defect: this returned true. PSS is unsupported by this build, so the
+    // only acceptable outcomes are a throw or false — never "valid".
+    let accepted: boolean | null = null;
+    try {
+        accepted = crypto.createVerify('sha256').update(data)
+            .verify({ key: publicKey, padding: crypto.constants.RSA_PKCS1_PSS_PADDING }, pkcs1Sig);
+    } catch (err) {
+        strictEqual((err as { code?: string }).code, 'ERR_CRYPTO_INVALID_PADDING');
+    }
+    ok(accepted !== true, 'a PKCS#1 v1.5 signature must never verify as RSA-PSS');
+});
+
+Deno.test('crypto: createSign must not silently downgrade an RSA-PSS request', () => {
+    const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    // Asking for PSS returned a PKCS#1 v1.5 signature with no indication.
+    throws(
+        () => crypto.createSign('sha256').update('data')
+            .sign({ key: privateKey, padding: crypto.constants.RSA_PKCS1_PSS_PADDING }),
+        (err: { code?: string }) => err.code === 'ERR_CRYPTO_INVALID_PADDING',
+    );
+});
+
+Deno.test('crypto: one-shot sign/verify still refuse an unsupported padding', () => {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const data = Buffer.from('payload');
+    throws(
+        () => crypto.sign('sha256', data, { key: privateKey, padding: crypto.constants.RSA_PKCS1_PSS_PADDING }),
+        (err: { code?: string }) => err.code === 'ERR_CRYPTO_INVALID_PADDING',
+    );
+    const sig = crypto.sign('sha256', data, privateKey);
+    throws(
+        () => crypto.verify('sha256', data, { key: publicKey, padding: crypto.constants.RSA_PKCS1_PSS_PADDING }, sig),
+        (err: { code?: string }) => err.code === 'ERR_CRYPTO_INVALID_PADDING',
+    );
+    // The supported padding must keep working.
+    strictEqual(crypto.verify('sha256', data, { key: publicKey, padding: crypto.constants.RSA_PKCS1_PADDING }, sig), true);
 });

@@ -16,7 +16,22 @@ Deno.test('precache policy: batch compile failure is not silent success', () => 
     ok(catchIdx > 0, 'batch-failed warn present');
     const after = runtimeSrc.slice(catchIdx, catchIdx + 500);
     ok(after.includes('throw '), 'batch failure rethrows instead of soft-continue');
-    ok(after.includes('parseDriver.terminate()'), 'batch failure cleans up workers before throw');
+    // Cleanup must cover the rethrow, but NOT by an inline terminate() in the
+    // catch: precache wraps the whole body in `try { ... } finally { await
+    // parseDriver.terminate() }`, so the throw above is already covered on every
+    // exit path (including a throw from flushLock()/hasFresh(), which an inline
+    // catch-only terminate would miss). Asserting the inline form would demand a
+    // double terminate. Measured: the terminate sits 1084 chars after the warn,
+    // so the old 500-char window could never see it.
+    const afterCatchToTerminate = runtimeSrc.slice(catchIdx, runtimeSrc.indexOf('parseDriver.terminate()', catchIdx) + 40);
+    ok(
+        /\}\s*finally\s*\{/.test(afterCatchToTerminate),
+        'batch failure rethrow must be enclosed by a finally block',
+    );
+    ok(
+        afterCatchToTerminate.includes('parseDriver.terminate()'),
+        'that finally must terminate the parse workers, so the rethrow cannot leak them',
+    );
     // Per-module failures still counted and warned (not only debug-skip forever).
     ok(runtimeSrc.includes('failed to precompile'), 'aggregate per-module fail warning');
     // Dual public surface must not reappear via api barrel.

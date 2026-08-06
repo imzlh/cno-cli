@@ -1,0 +1,17 @@
+; Import-library definition for the Node-API test fixture (Windows only).
+;
+; PE/COFF has no equivalent of `-Wl,--allow-shlib-undefined`: a DLL must name
+; the module it imports each symbol from at link time. cno.exe exports the
+; napi_* surface (see mod_nodeapi.c), so `lib /def:` turns this list into an
+; import library that binds the fixture to the already-loaded host process --
+; the same trick node-gyp plays with node.lib.
+;
+; Only the symbols addon.c actually calls need to be listed. Adding a napi call
+; to addon.c without adding it here surfaces as an unresolved-external link
+; error naming the missing symbol.
+
+LIBRARY cno.exe
+EXPORTS
+  napi_create_function
+  napi_create_string_utf8
+  napi_set_named_property

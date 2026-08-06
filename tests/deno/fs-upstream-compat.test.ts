@@ -181,9 +181,13 @@ Deno.test('deno fs upstream: writeFile mode and temp naming are observable', asy
     await withTempDir('deno-upstream-fs', async (root) => {
         const file = join(root, 'mode.txt');
         Deno.writeFileSync(file, Buffer.from('mode'), { mode: 0o755 });
-        ok((Deno.statSync(file).mode! & 0o777) === 0o755);
 
+        // Windows has no POSIX mode bits: NTFS only models the read-only
+        // attribute, so stat().mode is synthesized and real Deno reports 0o666
+        // here regardless of the requested mode.
         if (Deno.build.os !== 'windows') {
+            ok((Deno.statSync(file).mode! & 0o777) === 0o755);
+
             Deno.writeFileSync(file, Buffer.from('mode'), { mode: 0o666 });
             strictEqual(Deno.statSync(file).mode! & 0o777, 0o666);
 
@@ -261,7 +265,10 @@ Deno.test('deno fs upstream: mkdir recursive accepts existing directories and UR
         Deno.mkdirSync(dir, { recursive: true, mode: 0o737 });
         Deno.mkdirSync(dir, { recursive: true, mode: 0o731 });
         strictEqual(Deno.lstatSync(dir).isDirectory, true);
-        strictEqual(Deno.lstatSync(dir).mode! & 0o777, 0o737 & ~Deno.umask());
+        // mkdir mode is a POSIX concept; on Windows real Deno also reports 0o666.
+        if (Deno.build.os !== 'windows') {
+            strictEqual(Deno.lstatSync(dir).mode! & 0o777, 0o737 & ~Deno.umask());
+        }
 
         const urlDir = new URL(`file://${join(root, 'url-dir')}`);
         await Deno.mkdir(urlDir);
@@ -362,7 +369,6 @@ Deno.test('deno fs upstream: remove handles files directories URL paths and recu
 
 Deno.test({
     name: 'deno fs upstream: remove unlinks symlinks without following targets',
-    ignore: Deno.build.os === 'windows',
 }, async () => {
     await withTempDir('deno-upstream-fs', async (root) => {
         const dirTarget = join(root, 'dir-target');
@@ -527,7 +533,6 @@ Deno.test('deno fs upstream: stat and lstat expose file directory and timestamp 
 
 Deno.test({
     name: 'deno fs upstream: FileInfo exposes platform stat extension fields',
-    ignore: Deno.build.os === 'windows',
 }, async () => {
     await withTempDir('deno-upstream-fs', async (root) => {
         const file = join(root, 'stat-fields.txt');
@@ -571,7 +576,10 @@ Deno.test('deno fs upstream: makeTempDir and makeTempFile create unique entries 
         ok(basename(dir1).startsWith('hello'));
         ok(basename(dir1).endsWith('world'));
         strictEqual(Deno.statSync(dir1).isDirectory, true);
-        strictEqual(Deno.statSync(dir1).mode! & 0o777, 0o700 & ~Deno.umask());
+        // 0o700 is a POSIX-only guarantee; Windows reports the synthesized 0o666.
+        if (Deno.build.os !== 'windows') {
+            strictEqual(Deno.statSync(dir1).mode! & 0o777, 0o700 & ~Deno.umask());
+        }
 
         const nestedDir = await Deno.makeTempDir({ dir: dir1 });
         ok(nestedDir.startsWith(dir1));
@@ -582,7 +590,9 @@ Deno.test('deno fs upstream: makeTempDir and makeTempFile create unique entries 
         ok(file1 !== file2);
         ok(basename(file1).startsWith('file-'));
         ok(basename(file1).endsWith('.tmp'));
-        strictEqual(Deno.statSync(file1).mode! & 0o777, 0o600 & ~Deno.umask());
+        if (Deno.build.os !== 'windows') {
+            strictEqual(Deno.statSync(file1).mode! & 0o777, 0o600 & ~Deno.umask());
+        }
 
         throws(() => Deno.makeTempDirSync({ dir: join(root, 'missing') }), Deno.errors.NotFound);
         await rejects(async () => {
@@ -754,21 +764,58 @@ Deno.test('deno fs upstream: utime accepts number seconds Date objects and URL p
 
 Deno.test('deno fs upstream: utime accepts directories and large number seconds', async () => {
     await withTempDir('deno-upstream-fs', async (root) => {
-        const assertTimes = (info: Deno.FileInfo, atimeMs: number, mtimeMs: number) => {
-            ok(Math.abs((info.atime?.getTime() ?? 0) - atimeMs) < 1500);
-            ok(Math.abs((info.mtime?.getTime() ?? 0) - mtimeMs) < 1500);
+        const assertTimes = (info: Deno.FileInfo, atimeMs: number, mtimeMs: number, label: string) => {
+            const gotA = info.atime?.getTime() ?? 0;
+            const gotM = info.mtime?.getTime() ?? 0;
+            ok(Math.abs(gotA - atimeMs) < 1500, `${label}: atime ${gotA} != expected ${atimeMs}`);
+            ok(Math.abs(gotM - mtimeMs) < 1500, `${label}: mtime ${gotM} != expected ${mtimeMs}`);
         };
 
         Deno.utimeSync(root, 1_000, 50_000);
-        assertTimes(Deno.statSync(root), 1_000_000, 50_000_000);
+        assertTimes(Deno.statSync(root), 1_000_000, 50_000_000, 'dir utimeSync small seconds');
 
         await Deno.utime(root, new Date(100_000), new Date(5_000_000));
-        assertTimes(Deno.statSync(root), 100_000, 5_000_000);
+        assertTimes(Deno.statSync(root), 100_000, 5_000_000, 'dir utime Date');
 
+        // Large-seconds cases. The write side is correct on Windows (verified
+        // cross-runtime: real Deno 2.9.3 reads back 2147483648000 from a stamp
+        // cno wrote). The READ side truncates: on Windows tjs_syncfs_stat/lstat
+        // route through uv_fs_stat and marshal a uv_stat_t at
+        // circu.js/src/mod_fs.c:624-628 (SET_TIMESPEC_FIELD, reading
+        // st->st_atim.tv_sec), where libuv's uv_timespec_t is
+        // `{long tv_sec; long tv_nsec}` -- 32-bit signed on Windows (libuv's own
+        // "not 2038-proof" comment, libuv#3864). So cno wraps at 2^31, one whole
+        // boundary EARLIER than Node, which wraps at 2^32. The C macro itself is
+        // correct; the truncation happens inside libuv before the C sees it, so
+        // the fix is to stop sourcing Windows stat times from uv_fs_stat (e.g.
+        // read the FILETIME directly) rather than to patch that macro.
+        //
+        // Measured 2026-08-03 on this Windows box, same directory:
+        //   real Deno 2.9.3: 2^31 and >2^32 both ROUNDTRIP-OK
+        //   cno:             2^31 -> -2147483648000, >2^32 -> 1000
+        //   control (1000s): round-trips in BOTH, so cno's read path is correct
+        //                    below 2^31 and this is value-range-specific.
+        // Real Deno reads all of these correctly on the SAME OS, so this is NOT a
+        // POSIX-only-on-Windows limitation and a platform gate here would be
+        // faking a pass. These assertions are upstream-correct and must stay
+        // strict; they fail until the C stat layer stops going through
+        // uv_timespec_t. OPEN RUNTIME DEFECT, not a test defect.
         const largeDir = join(root, 'large-time-dir');
         Deno.mkdirSync(largeDir);
+
+        // 2^31 boundary = year 2038. cno currently reports year 1901 here.
+        // This is the practically important case: real calendar dates after
+        // 2038-01-19 come back negative.
+        Deno.utimeSync(largeDir, 2_147_483_648, 2_147_483_648);
+        assertTimes(Deno.statSync(largeDir), 2_147_483_648_000, 2_147_483_648_000, 'dir 2^31 seconds (year 2038)');
+
         Deno.utimeSync(largeDir, 0x100000001, 0x100000002);
-        assertTimes(Deno.statSync(largeDir), 0x100000001 * 1000, 0x100000002 * 1000);
+        assertTimes(
+            Deno.statSync(largeDir),
+            0x100000001 * 1000,
+            0x100000002 * 1000,
+            'dir >2^32 seconds',
+        );
     });
 });
 

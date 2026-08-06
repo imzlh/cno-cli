@@ -250,10 +250,13 @@ Deno.test({ name: 'TransformStream: transforms chunks', timeout: 10000 }, async 
     });
     const w = ts.writable.getWriter();
     const r = ts.readable.getReader();
-    await w.write('hi');
-    await w.close();
+    // The readable side defaults to HWM 0, so `await w.write(...)` before any
+    // read deadlocks by spec (verified in Node 24 and Deno 2). Read concurrently.
+    const written = w.write('hi');
     const { value } = await r.read();
     strictEqual(value, 'HI');
+    await written;
+    await w.close();
 });
 
 // --- URL / URLSearchParams (global) ---------------------------------------

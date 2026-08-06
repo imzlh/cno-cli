@@ -7,13 +7,24 @@ import { createConfig, parseSize, loadConfigFile } from '../../cts/src/config.ts
 import { err, ErrorKind, formatError, TransformError } from '../../cts/src/errors.ts';
 import { runSync, StepType } from '../../cts/src/flow.ts';
 import { LockStore } from '../../cts/src/lock.ts';
-import { applyAttrType, guessFileKind, isTypeDecl } from '../../cts/src/resolve/protocols/base.ts';
+import { applyAttrType, guessFileKind, isTypeDecl, validateAttrType } from '../../cts/src/resolve/protocols/base.ts';
 import { DataHandler } from '../../cts/src/resolve/protocols/data.ts';
 import { NpmHandler } from '../../cts/src/resolve/protocols/npm.ts';
 import { ModuleResolver } from '../../cts/src/resolve/index.ts';
 import { isRemote, JscCache } from '../../cts/src/source/cache.ts';
 import { moduleRef, moduleViewRef } from '../../cts/src/types.ts';
 import { dirname, joinPaths, parentDirKey } from '../../cts/src/utils/path.ts';
+
+/**
+ * A ModuleResolver owns a SQLite handle on cts.lock. SQLite opens through its
+ * own Win32 VFS, which does not set FILE_SHARE_DELETE, so the lock dir cannot
+ * be removed while the handle is live — teardown must close first.
+ */
+function closeResolverQuietly(resolver: ModuleResolver | null): void {
+    try {
+        resolver?.close();
+    } catch {}
+}
 
 function decodeBytes(data: Uint8Array | ArrayBuffer): string {
     return decodeUtf8(new Uint8Array(data));
@@ -813,6 +824,16 @@ Deno.test('cts resolver: file kind and attr helpers classify common paths', () =
     strictEqual(applyAttrType('source', { type: 'bytes' }), 'binary');
     strictEqual(applyAttrType('source', { type: 'json' }), 'json');
     strictEqual(applyAttrType('source', { type: 'unknown' }), 'source');
+    validateAttrType('json', { type: 'json' }, 'file:///data.json');
+    validateAttrType('source', { type: 'text' }, 'file:///mod.ts');
+    throws(
+        () => validateAttrType('source', { type: 'unknown' }, 'file:///mod.mjs'),
+        { name: 'TypeError', code: 'ERR_IMPORT_ATTRIBUTE_UNSUPPORTED' },
+    );
+    throws(
+        () => validateAttrType('source', { type: 'json' }, 'file:///mod.mjs'),
+        { name: 'TypeError', code: 'ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE' },
+    );
     ok(isTypeDecl('/x/index.d.ts'));
     ok(isTypeDecl('/x/index.d.mts'));
     ok(isTypeDecl('/x/index.d.cts'));
@@ -913,6 +934,7 @@ Deno.test('cts npm: cached packages still queue lifecycle scripts during cache',
 
 Deno.test('cts resolver: trusts remote lock entries without revalidation', () => {
     const root = makePosixTempDir('stale-remote-lock');
+    let resolver: ModuleResolver | null = null;
     try {
         const cacheDir = joinPaths(root, 'cache');
         const oldCacheDir = joinPaths(root, 'old-cache');
@@ -930,7 +952,7 @@ Deno.test('cts resolver: trusts remote lock entries without revalidation', () =>
         lock.flush();
         lock.close();
 
-        const resolver = new ModuleResolver({
+        resolver = new ModuleResolver({
             cacheDir,
             enableHttp: true,
             enableJsr: true,
@@ -949,12 +971,17 @@ Deno.test('cts resolver: trusts remote lock entries without revalidation', () =>
 
         strictEqual(info.localPath, stale);
     } finally {
+        // The resolver owns a second SQLite handle on cts.lock. SQLite opens
+        // through its own Win32 VFS (no FILE_SHARE_DELETE), so the directory
+        // cannot be removed while that handle is live.
+        closeResolverQuietly(resolver);
         rmSync(root, { recursive: true, force: true });
     }
 });
 
 Deno.test('cts resolver: trusts locked npm path and format without revalidation', () => {
     const root = makePosixTempDir('stale-npm-format-lock');
+    let resolver: ModuleResolver | null = null;
     try {
         const cacheDir = joinPaths(root, 'cache');
         const pkgDir = joinPaths(cacheDir, 'npm', 'format-fixture@1.0.0');
@@ -980,7 +1007,7 @@ Deno.test('cts resolver: trusts locked npm path and format without revalidation'
         lock.flush();
         lock.close();
 
-        const resolver = new ModuleResolver({
+        resolver = new ModuleResolver({
             cacheDir,
             enableHttp: true,
             enableJsr: true,
@@ -1000,12 +1027,14 @@ Deno.test('cts resolver: trusts locked npm path and format without revalidation'
         strictEqual(info.localPath, joinPaths(pkgDir, 'mod.js'));
         strictEqual(info.format, 'esm');
     } finally {
+        closeResolverQuietly(resolver);
         rmSync(root, { recursive: true, force: true });
     }
 });
 
 Deno.test('cts npm: stale parent localPath does not redirect dependency lookup to old cache', () => {
     const root = makePosixTempDir('stale-npm-parent-lock');
+    let resolver: ModuleResolver | null = null;
     try {
         const cacheDir = joinPaths(root, 'cache');
         const oldCacheDir = joinPaths(root, 'old-cache');
@@ -1051,7 +1080,7 @@ Deno.test('cts npm: stale parent localPath does not redirect dependency lookup t
         lock.flush();
         lock.close();
 
-        const resolver = new ModuleResolver({
+        resolver = new ModuleResolver({
             cacheDir,
             enableHttp: true,
             enableJsr: true,
@@ -1070,6 +1099,7 @@ Deno.test('cts npm: stale parent localPath does not redirect dependency lookup t
 
         strictEqual(info.localPath, joinPaths(depDir, 'index.js'));
     } finally {
+        closeResolverQuietly(resolver);
         rmSync(root, { recursive: true, force: true });
     }
 });

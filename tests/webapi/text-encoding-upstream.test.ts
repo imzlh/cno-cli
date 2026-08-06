@@ -64,6 +64,44 @@ Deno.test('webapi upstream: TextEncoder encode and encodeInto handle surrogate b
     deepStrictEqual([...bytes], [0xef, 0xbf, 0xbd, 0xef, 0xbf, 0xbd, 0x00, 0x00]);
 });
 
+Deno.test('webapi upstream: TextEncoder encode substitutes U+FFFD for lone surrogates', () => {
+    // The native encoder emits WTF-8 (ed a0 80); the spec requires U+FFFD (ef bf bd).
+    const encoder = new TextEncoder();
+    deepStrictEqual([...encoder.encode('\ud800')], [0xef, 0xbf, 0xbd]);
+    deepStrictEqual([...encoder.encode('\udc00')], [0xef, 0xbf, 0xbd]);
+    deepStrictEqual([...encoder.encode('a\ud800b')], [0x61, 0xef, 0xbf, 0xbd, 0x62]);
+    deepStrictEqual([...encoder.encode('\udc00\ud800')], [0xef, 0xbf, 0xbd, 0xef, 0xbf, 0xbd]);
+
+    // A well-formed pair still encodes as one 4-byte sequence.
+    deepStrictEqual([...encoder.encode('😀')], [0xf0, 0x9f, 0x98, 0x80]);
+    // encode() and encodeInto() must agree.
+    const dst = new Uint8Array(5);
+    encoder.encodeInto('a\ud800b', dst);
+    deepStrictEqual([...encoder.encode('a\ud800b')], [...dst]);
+});
+
+Deno.test('webapi upstream: TextDecoder rejects an unsupported label with RangeError', () => {
+    throws(() => new TextDecoder('nope-xx'), RangeError);
+});
+
+Deno.test('webapi upstream: UTF-8 decode substitutes U+FFFD for WTF-8 input', async () => {
+    // ED A0 80 is the WTF-8 encoding of a lone high surrogate: 3 bytes, 3 U+FFFD.
+    const wtf8 = new Uint8Array([0xed, 0xa0, 0x80]);
+    const replacement = '���';
+    strictEqual(new TextDecoder().decode(wtf8), replacement);
+    strictEqual(new TextDecoder().decode(new Uint8Array([0xed, 0xb0, 0x80])), replacement);
+
+    // Every user-visible decode path must agree — none may leak a lone surrogate.
+    strictEqual(await new Response(wtf8).text(), replacement);
+    strictEqual(await new Blob([wtf8]).text(), replacement);
+
+    // A WTF-8 encoded surrogate *pair* is still 6 malformed bytes, not one astral char.
+    strictEqual(
+        new TextDecoder().decode(new Uint8Array([0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80])),
+        '�'.repeat(6),
+    );
+});
+
 Deno.test('webapi upstream: TextEncoder coerces input and toString tags are web-compatible', () => {
     const encoder = new TextEncoder();
     const input = { toString: () => 'text' };

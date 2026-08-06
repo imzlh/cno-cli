@@ -1,4 +1,4 @@
-import { strictEqual, ok } from 'node:assert';
+import { strictEqual, ok, throws } from 'node:assert';
 import * as tty from 'node:tty';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -80,6 +80,51 @@ Deno.test('tty: isatty returns false for invalid fd values', () => {
 Deno.test('tty: WriteStream prototype color helpers match upstream shape', () => {
     strictEqual(tty.WriteStream.prototype.hasColors(), true);
     strictEqual(tty.WriteStream.prototype.hasColors({}), true);
-    strictEqual(tty.WriteStream.prototype.hasColors(1), true);
+    // Node rejects a count below 2 (ERR_OUT_OF_RANGE), verified against v24.18.
+    throws(() => tty.WriteStream.prototype.hasColors(1), RangeError);
     ok([1, 4, 8, 24].includes(tty.WriteStream.prototype.getColorDepth()));
+});
+
+// --- tty: color gating matches Node's internal/tty.js -----------------------
+
+function colorProbe() {
+    const P = tty.WriteStream.prototype as unknown as {
+        getColorDepth(env?: Record<string, string>): number;
+        hasColors(count?: number | Record<string, string>, env?: Record<string, string>): boolean;
+    };
+    return { isTTY: true, getColorDepth: P.getColorDepth, hasColors: P.hasColors };
+}
+
+Deno.test('tty: NO_COLOR and NODE_DISABLE_COLORS force depth 1', () => {
+    strictEqual(colorProbe().getColorDepth({ NO_COLOR: '1' }), 1);
+    strictEqual(colorProbe().getColorDepth({ NODE_DISABLE_COLORS: '1' }), 1);
+    strictEqual(colorProbe().getColorDepth({ TERM: 'dumb' }), 1);
+    // An empty NO_COLOR is ignored by Node (verified against v24.18).
+    ok(colorProbe().getColorDepth({ NO_COLOR: '' }) > 1);
+});
+
+Deno.test('tty: FORCE_COLOR levels match Node', () => {
+    strictEqual(colorProbe().getColorDepth({ FORCE_COLOR: '0' }), 1);
+    strictEqual(colorProbe().getColorDepth({ FORCE_COLOR: '1' }), 4);
+    strictEqual(colorProbe().getColorDepth({ FORCE_COLOR: 'true' }), 4);
+    strictEqual(colorProbe().getColorDepth({ FORCE_COLOR: '' }), 4);
+    strictEqual(colorProbe().getColorDepth({ FORCE_COLOR: '2' }), 8);
+    strictEqual(colorProbe().getColorDepth({ FORCE_COLOR: '3' }), 24);
+    // An unrecognised value means "no color", not "fall through".
+    strictEqual(colorProbe().getColorDepth({ FORCE_COLOR: 'abc' }), 1);
+});
+
+Deno.test('tty: hasColors() defaults count to 16 and respects NO_COLOR', () => {
+    // Returning true unconditionally here is what made packages emit colour
+    // even under NO_COLOR.
+    strictEqual(colorProbe().hasColors({ NO_COLOR: '1' }), false);
+    strictEqual(colorProbe().hasColors({ FORCE_COLOR: '0' }), false);
+    strictEqual(colorProbe().hasColors({ FORCE_COLOR: '1' }), true);
+    strictEqual(colorProbe().hasColors(256, { FORCE_COLOR: '1' }), false);
+    strictEqual(colorProbe().hasColors(256, { FORCE_COLOR: '2' }), true);
+});
+
+Deno.test('tty: hasColors validates count like Node', () => {
+    throws(() => colorProbe().hasColors(1, {}), RangeError);
+    throws(() => colorProbe().hasColors('x' as unknown as number, {}), TypeError);
 });

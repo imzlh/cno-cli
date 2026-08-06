@@ -149,6 +149,9 @@ export function bootstrapDebugWorker(): void {
 				entryUrl,
 				debuggerDomain,
 				runtimeDomain,
+				consoleDomain,
+				networkDomain,
+				fetchDomain,
 			}),
 	}).then((handle) => {
 		const { wsUrl } = handle

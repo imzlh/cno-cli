@@ -1,5 +1,5 @@
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
-import { parseArgv } from '../../src/cli.ts';
+import { missingFlagValues, parseArgv, unknownFlags } from '../../src/cli.ts';
 import { parseTestChildArgs } from '../../src/commands/test.ts';
 import {
     basename,
@@ -108,6 +108,24 @@ Deno.test('cli: value flags consume their value before the entry file', () => {
     strictEqual(test.flags.concurrency, '2');
     deepStrictEqual(test.positional, ['tests/cts']);
     deepStrictEqual(test.rawArgs.actionArgs, ['--concurrency', '2']);
+});
+
+Deno.test('cli: repeated Node conditions are preserved and -C requires a value', () => {
+    const cli = parseArgv([
+        'run',
+        '--conditions=development',
+        '--conditions', 'custom',
+        '-C', 'worker',
+        '-C', 'browser',
+        'main.ts',
+    ]);
+    strictEqual(cli.flags.conditions, 'development,custom');
+    strictEqual(cli.flags.C, 'worker,browser');
+    deepStrictEqual(missingFlagValues(cli), []);
+
+    const missing = parseArgv(['run', '-C', '--no-lock', 'main.ts']);
+    strictEqual(missing.flags.C, true);
+    deepStrictEqual(missingFlagValues(missing), ['C']);
 });
 
 Deno.test('cli: pack output flags work before and after the entry', () => {
@@ -274,6 +292,78 @@ Deno.test('cli: eval aliases collect code as entry', () => {
     deepStrictEqual(inline.rawArgs.args, []);
 });
 
+Deno.test('cli: option terminator is never consumed as a value-flag value', () => {
+    // Swallowing `--` loses the boundary AND assigns a nonsense value; deno and
+    // node both reject it ("a value is required for '--config <FILE>'").
+    const cacheDir = parseArgv(['run', '--cache-dir', '--', 'main.ts']);
+    strictEqual(cacheDir.flags['cache-dir'], true);
+    deepStrictEqual(cacheDir.positional, ['main.ts']);
+
+    const filter = parseArgv(['test', '--filter', '--', 'a_test.ts']);
+    strictEqual(filter.flags.filter, true);
+    // `test` keeps the terminator so runTest can split roots from Deno.args.
+    deepStrictEqual(filter.positional, ['--', 'a_test.ts']);
+
+    const out = parseArgv(['pack', '-o', '--', 'main.ts']);
+    strictEqual(out.flags.out, true);
+    deepStrictEqual(out.positional, ['main.ts']);
+
+    const require = parseArgv(['run', '--require', '--', 'main.ts']);
+    strictEqual(require.flags.require, true);
+    deepStrictEqual(require.positional, ['main.ts']);
+});
+
+Deno.test('cli: unknown flags are reported so a typo cannot exit 0', () => {
+    // A misspelled flag used to print a warning and then run the program with
+    // the intent silently dropped, exiting 0 — node exits 9 ("bad option") and
+    // deno exits 1 ("unexpected argument"), so CI scored the typo as a pass.
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--frobnicate', 'main.ts'])), ['--frobnicate']);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--frozenn', 'main.ts'])), ['--frozenn']);
+    // Short flags are stored bare; they must be reported with one dash.
+    deepStrictEqual(unknownFlags(parseArgv(['run', '-Z', 'main.ts'])), ['-Z']);
+
+    // Real flags stay silent.
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--frozen', '--no-lock', 'main.ts'])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['test', '--filter=t', '--fail-fast'])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '-r', '-q', '-A', 'main.ts'])), []);
+
+    // Deno-compat no-ops are accepted silently: cno advertises deno
+    // compatibility, so these must keep working unchanged.
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--allow-net', '--deny-env', 'main.ts'])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--unstable-byonm', 'main.ts'])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--allow-anything-at-all', 'main.ts'])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--no-check', '--quiet', 'main.ts'])), []);
+
+    // Tokens after the entry belong to the script, not to cno, so a flag the
+    // program defines itself must not be rejected.
+    deepStrictEqual(unknownFlags(parseArgv(['run', 'main.ts', '--script-own-flag'])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['main.ts', '--script-own-flag'])), []);
+    // `task` forwards everything after the task name.
+    deepStrictEqual(unknownFlags(parseArgv(['task', 'build', '--task-own-flag'])), []);
+    // Everything after `--` is the program's.
+    deepStrictEqual(unknownFlags(parseArgv(['run', 'main.ts', '--', '--not-ours'])), []);
+});
+
+Deno.test('cli: value flags with no value are reported, not silently dropped', () => {
+    // Every consumer type-guards on `string`, so `true` means the flag was
+    // silently ignored — a typo like `cno test --filter --fail-fast` would run
+    // the whole suite unfiltered and still exit 0.
+    deepStrictEqual(missingFlagValues(parseArgv(['test', '--filter', '--fail-fast', 'a_test.ts'])), ['filter']);
+    deepStrictEqual(missingFlagValues(parseArgv(['run', '--cache-dir', '--no-lock', 'main.ts'])), ['cache-dir']);
+    deepStrictEqual(missingFlagValues(parseArgv(['run', '--config', '--', 'main.ts'])), ['config']);
+    deepStrictEqual(missingFlagValues(parseArgv(['run', '--ext=', 'main.ts'])), ['ext']);
+
+    // Values present, or flags whose bare form is meaningful, stay silent.
+    deepStrictEqual(missingFlagValues(parseArgv(['test', '--filter=t', 'a_test.ts'])), []);
+    deepStrictEqual(missingFlagValues(parseArgv(['run', '--cache-dir', '.cache', 'main.ts'])), []);
+    deepStrictEqual(missingFlagValues(parseArgv(['run', '--reload', '--no-lock', 'main.ts'])), []);
+    // pack prints its own `-o requires a file path`; task owns bare `--eval`.
+    deepStrictEqual(missingFlagValues(parseArgv(['pack', 'main.ts', '-o', '--no-oxc'])), []);
+    deepStrictEqual(missingFlagValues(parseArgv(['task', '--eval'])), []);
+    // --inspect is legitimately bare.
+    deepStrictEqual(missingFlagValues(parseArgv(['run', '--inspect', 'main.ts'])), []);
+});
+
 Deno.test('cts path: normalizes separators and drive prefixes', () => {
     strictEqual(toPosixPath('a\\b\\c'), 'a/b/c');
     strictEqual(canonicalizePath('c:\\Users\\me'), 'C:/Users/me');
@@ -300,6 +390,12 @@ Deno.test('cts path: normalizePath collapses dot segments without escaping roots
     strictEqual(normalizePath('a/../../b'), '../b');
     strictEqual(normalizePath('C:\\a\\..\\b'), 'C:/b');
     strictEqual(normalizePath('/../../x'), '/x');
+    strictEqual(normalizePath('C:/cache//local/'), 'C:/cache/local');
+    strictEqual(normalizePath('C:cache//local/'), 'C:cache/local');
+    strictEqual(normalizePath('/cache//local/'), '/cache/local');
+    strictEqual(normalizePath('https://example.test/a//b/'), 'https://example.test/a//b/');
+    strictEqual(normalizePath('node:fs'), 'node:fs');
+    strictEqual(normalizePath('npm:pkg//subpath'), 'npm:pkg//subpath');
 });
 
 Deno.test('cts path: isRelative accepts only explicit relative specifiers', () => {

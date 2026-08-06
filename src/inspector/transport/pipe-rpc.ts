@@ -46,14 +46,36 @@ export class PipeClient {
 		this.pipe.onmessage = (msg: unknown) => this.onMessage(msg);
 		this.pipe.onmessageerror = (err: unknown) => {
 			log.error('pipe-rpc', `worker pipe error: ${err}`);
+			// A pipe fault means no reply can ever arrive. Mirror
+			// ChannelClient.setActive(false): fail everything outstanding so no CDP
+			// command hangs forever and DevTools sees an error instead of a spinner.
+			this.failAllPending(`inspector pipe error: ${errMsg(err)}`);
 		};
+	}
+
+	/** Reject every outstanding request; for when the transport can no longer reply. */
+	failAllPending(reason: string): void {
+		if (this.pending.size === 0) return;
+		const outstanding = [...this.pending.values()];
+		this.pending.clear();
+		for (const p of outstanding) {
+			try { p.reject(new Error(reason)); } catch {}
+		}
 	}
 
 	call(method: RpcMethod, params: unknown): Promise<unknown> {
 		const id = this.nextId++;
 		return new Promise<unknown>((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
-			this.pipe.postMessage({ kind: PipeKind.RpcReq, id, method, params });
+			try {
+				this.pipe.postMessage({ kind: PipeKind.RpcReq, id, method, params });
+			} catch (e) {
+				// postMessage throws on a non-cloneable param or a dead pipe. The
+				// promise rejects here, so the map entry must go with it or it is
+				// leaked for the life of the worker.
+				this.pending.delete(id);
+				reject(e instanceof Error ? e : new Error(String(e)));
+			}
 		});
 	}
 
@@ -98,14 +120,40 @@ export class PipeServer {
 		if (!msg || typeof msg !== 'object' || Reflect.get(msg, 'kind') !== PipeKind.RpcReq) return;
 		const id = Reflect.get(msg, 'id');
 		const method = Reflect.get(msg, 'method');
-		if (typeof id !== 'number' || typeof method !== 'string' || !isRpcMethod(method)) return;
+		if (typeof id !== 'number') return;
+		// Never drop a request that carries an id: the caller holds a pending
+		// promise keyed on it and would otherwise wait forever.
+		if (typeof method !== 'string' || !isRpcMethod(method)) {
+			this.reply({ kind: PipeKind.RpcRes, id, error: `unknown rpc method: ${String(method)}` });
+			return;
+		}
 		const params = Reflect.get(msg, 'params');
 		try {
 			if (!this.onRequest) throw new Error('no request handler registered');
 			const result = await this.onRequest(method, params);
-			this.pipe.postMessage({ kind: PipeKind.RpcRes, id, result });
+			// A non-cloneable result throws here, not in the handler; fall through to
+			// the catch so the worker still gets *a* reply for this id.
+			this.reply({ kind: PipeKind.RpcRes, id, result }, () => {
+				this.reply({ kind: PipeKind.RpcRes, id, error: `rpc result for ${method} is not transferable` });
+			});
 		} catch (e) {
-			this.pipe.postMessage({ kind: PipeKind.RpcRes, id, error: errMsg(e) });
+			this.reply({ kind: PipeKind.RpcRes, id, error: errMsg(e) });
+		}
+	}
+
+	/**
+	 * postMessage that cannot reject. `onMessage` is async and nothing awaits it,
+	 * so a throw here would surface as an unhandled rejection on the main thread
+	 * rather than as an RPC error.
+	 */
+	private reply(payload: Record<string, unknown>, onFail?: () => void): void {
+		try {
+			this.pipe.postMessage(payload);
+		} catch (e) {
+			log.error('pipe-rpc', `failed to post rpc reply: ${errMsg(e)}`);
+			if (onFail) {
+				try { onFail() } catch { /* pipe is gone; nothing left to try */ }
+			}
 		}
 	}
 }

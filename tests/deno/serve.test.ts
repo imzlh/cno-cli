@@ -1,11 +1,30 @@
-import { spawn } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
-import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const CNO = resolve('build/stage/cno');
-const TARGET = resolve('tests/deno/targets/serve.target.ts');
-const TIMEOUT_MS = 15_000;
+// The running binary, not a guessed path: `resolve('build/stage/cno')` has no `.exe`
+// and cno's spawn rejects that with ENOENT on win32 (real Node resolves it, since
+// CreateProcess appends the extension).
+const CNO = Deno.execPath().replace(/ \(deleted\)$/, '');
+// fileURLToPath, not URL.pathname: pathname yields `/D:/a/b` with forward slashes,
+// while the runtime reports native separators.
+const TARGET = fileURLToPath(new URL('./targets/serve.target.ts', import.meta.url));
+
+// Inner budgets MUST stay strictly below the enclosing Deno.test timeout. An inner
+// deadline that meets or exceeds the outer one can never expire first, so the harness
+// kills the test and the real cause is replaced by an opaque "Test timed out".
+//
+// Sizing is MEASURED, not guessed. The ~89s cold-cache cost (oxc.dll absent, so the TS
+// transform is interpreted Sucrase) is paid while the harness COMPILES this file, which
+// the per-test timeout does NOT cover -- the runner races only the test fn
+// (cno/src/deno/index.ts:738). Measured on a fresh CTS_CACHE_DIR: file total 93,764ms
+// but in-test elapsed 542ms, with the child serving 535ms after test-fn entry. So these
+// cover spawn plus a local HTTP poll, not a cold transform. The case that genuinely
+// needs a large ceiling is a cold dynamic import INSIDE a test fn (measured 16,125ms);
+// nothing in this file does that.
+const SERVER_START_BUDGET_MS = 8_000;
+const SPAWN_TEST_TIMEOUT_MS = 10_000;
 
 function sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
@@ -82,16 +101,75 @@ function canListenTcp(): Promise<boolean> {
     return canListenTcpPromise;
 }
 
-async function waitForServer(): Promise<void> {
-    const deadline = Date.now() + TIMEOUT_MS;
+/** A failure we can attribute; retrying it would only convert it into a timeout. */
+class DefinitiveError extends Error {}
+
+interface Target {
+    proc: ChildProcess;
+    readonly failure: Error | null;
+    stop(): Promise<void>;
+}
+
+/**
+ * Spawn the serve target and latch any spawn failure or early exit. Without the
+ * 'error' handler a bad executable path surfaces only as the outer test timeout, with
+ * the actual ENOENT never reported.
+ */
+function startTarget(args: string[]): Target {
+    const proc = spawn(CNO, args, {
+        env: { ...process.env, CNO_SERVE_PORT: String(PORT) },
+        stdio: ['ignore', 'ignore', 'inherit'],
+    });
+    let failure: Error | null = null;
+    let stopping = false;
+    proc.on('error', (e: Error) => {
+        failure ??= new DefinitiveError(`failed to spawn ${CNO}: ${e.message}`);
+    });
+    proc.on('exit', (code: number | null, signal: string | null) => {
+        if (stopping) return;
+        failure ??= new DefinitiveError(
+            `serve target exited before listening (code=${code}, signal=${signal}); see its stderr above`,
+        );
+    });
+    return {
+        proc,
+        get failure() {
+            return failure;
+        },
+        async stop() {
+            stopping = true;
+            proc.kill('SIGKILL');
+            if (proc.exitCode === null && proc.signalCode === null) {
+                await new Promise((r) => proc.on('exit', r));
+            }
+        },
+    };
+}
+
+/**
+ * Poll until the target serves. A transport error means "not listening yet" and is
+ * retried; a spawn failure or early child exit is definitive and is surfaced at once
+ * rather than retried until the harness timeout replaces it. `target` is required so
+ * the budget is always the one sized against the outer timeout.
+ */
+async function waitForServer(target: Target): Promise<void> {
+    const deadline = Date.now() + SERVER_START_BUDGET_MS;
+    let lastTransportError: unknown = null;
     while (Date.now() < deadline) {
+        if (target.failure) throw target.failure;
         try {
             const r = await fetch(`http://127.0.0.1:${PORT}/text`);
             if (r.ok) return;
-        } catch { /* not up yet */ }
+            await r.text();
+            throw new DefinitiveError(`GET /text -> HTTP ${r.status} ${r.statusText}`);
+        } catch (e) {
+            if (e instanceof DefinitiveError) throw e;
+            lastTransportError = e;
+        }
         await sleep(120);
     }
-    throw new Error('server did not start');
+    const detail = lastTransportError instanceof Error ? lastTransportError.message : String(lastTransportError);
+    throw new Error(`server did not start within ${SERVER_START_BUDGET_MS}ms; last transport error: ${detail}`);
 }
 
 Deno.test('deno: upgradeWebSocket returns a 101 response and negotiated socket', () => {
@@ -365,14 +443,11 @@ Deno.test({
     }
 });
 
-Deno.test({ name: 'deno: Deno.serve handles text/json/404 routes', timeout: 10000 }, async () => {
+Deno.test({ name: 'deno: Deno.serve handles text/json/404 routes', timeout: SPAWN_TEST_TIMEOUT_MS }, async () => {
     if (!await canListenTcp()) return;
-    const child = spawn(CNO, ['run', '--allow-net', `--inspect=0`, TARGET], {
-        env: { ...process.env, CNO_SERVE_PORT: String(PORT) },
-        stdio: ['ignore', 'ignore', 'inherit'],
-    });
+    const target = startTarget(['run', '--allow-net', `--inspect=0`, TARGET]);
     try {
-        await waitForServer();
+        await waitForServer(target);
 
         const text = await fetch(`http://127.0.0.1:${PORT}/text`);
         strictEqual(await text.text(), 'hello');
@@ -386,19 +461,15 @@ Deno.test({ name: 'deno: Deno.serve handles text/json/404 routes', timeout: 1000
         const miss = await fetch(`http://127.0.0.1:${PORT}/nope`);
         strictEqual(miss.status, 404);
     } finally {
-        child.kill('SIGKILL');
-        await new Promise((r) => child.on('exit', r));
+        await target.stop();
     }
 });
 
-Deno.test({ name: 'deno: Deno.serve handles request body HEAD stream and handler errors', timeout: 10000 }, async () => {
+Deno.test({ name: 'deno: Deno.serve handles request body HEAD stream and handler errors', timeout: SPAWN_TEST_TIMEOUT_MS }, async () => {
     if (!await canListenTcp()) return;
-    const child = spawn(CNO, ['run', '--allow-net', TARGET], {
-        env: { ...process.env, CNO_SERVE_PORT: String(PORT) },
-        stdio: ['ignore', 'ignore', 'inherit'],
-    });
+    const target = startTarget(['run', '--allow-net', TARGET]);
     try {
-        await waitForServer();
+        await waitForServer(target);
         const header = await fetch(`http://127.0.0.1:${PORT}/headers`, {
             headers: { 'x-foo': 'bar' },
         });
@@ -423,7 +494,6 @@ Deno.test({ name: 'deno: Deno.serve handles request body HEAD stream and handler
         strictEqual(bad.status, 500);
         strictEqual(await bad.text(), 'Internal Server Error');
     } finally {
-        child.kill('SIGKILL');
-        await new Promise((r) => child.on('exit', r));
+        await target.stop();
     }
 });

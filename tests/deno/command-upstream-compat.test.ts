@@ -243,11 +243,19 @@ Deno.test({ name: 'deno command upstream: invalid signals throw before native ki
         throws(() => child.kill('SIGEMT' as Deno.Signal), TypeError);
         throws(() => child.kill('CNO_BAD_SIGNAL' as Deno.Signal), TypeError);
 
-        for (const sig of ['SIGIO', 'SIGUNUSED'] as const) {
-            try {
-                Deno.kill(999999999, sig as Deno.Signal);
-            } catch (err) {
-                ok(!String((err as Error).message).includes('Invalid signal'), `${sig} should be accepted as a signal alias`);
+        // Real Deno's Windows signal table has no SIGIO/SIGUNUSED either: both
+        // throw `Invalid signal`. Only assert the alias contract on unix.
+        if (Deno.build.os !== 'windows') {
+            for (const sig of ['SIGIO', 'SIGUNUSED'] as const) {
+                try {
+                    Deno.kill(999999999, sig as Deno.Signal);
+                } catch (err) {
+                    ok(!String((err as Error).message).includes('Invalid signal'), `${sig} should be accepted as a signal alias`);
+                }
+            }
+        } else {
+            for (const sig of ['SIGIO', 'SIGUNUSED'] as const) {
+                throws(() => Deno.kill(999999999, sig as Deno.Signal), TypeError);
             }
         }
     } finally {
@@ -494,31 +502,22 @@ Deno.test({ name: 'deno command upstream: output after manually consuming stream
 });
 
 Deno.test({ name: 'deno command upstream: relative executable resolves through cwd and PATH', timeout: 10000 }, async () => {
-    const root = Deno.makeTempDirSync({ prefix: 'cno-command-path-' });
-    const suffix = Deno.build.os === 'windows' ? '.exe' : '';
-    const binDir = `${root}/bin`;
-    const binPath = `${binDir}/cno-command-bin${suffix}`;
-    try {
-        Deno.mkdirSync(binDir);
-        Deno.copyFileSync(Deno.execPath(), binPath);
-        if (Deno.build.os !== 'windows') Deno.chmodSync(binPath, 0o755);
+    // Resolution is checked against a self-contained system binary. Copying
+    // Deno.execPath() elsewhere cannot work here: the cno binary is dynamically
+    // linked against sibling DLLs, so a lone copy exits 127 before running.
+    const windows = Deno.build.os === 'windows';
+    const binDir = windows ? `${Deno.env.get('SystemRoot') ?? 'C:/Windows'}/System32` : '/bin';
+    const exe = windows ? 'hostname.exe' : 'echo';
+    const args = windows ? [] : ['ok'];
+    const expected = windows ? Deno.hostname().toUpperCase() : 'ok';
 
-        const viaCwd = await new Deno.Command(`./cno-command-bin${suffix}`, {
-            cwd: binDir,
-            args: ['eval', 'console.log("cwd-bin")'],
-        }).output();
-        strictEqual(viaCwd.success, true);
-        strictEqual(decodeUtf8(viaCwd.stdout).trim(), 'cwd-bin');
+    const viaCwd = await new Deno.Command(`./${exe}`, { cwd: binDir, args }).output();
+    strictEqual(viaCwd.success, true, decodeUtf8(viaCwd.stderr));
+    strictEqual(decodeUtf8(viaCwd.stdout).trim().toUpperCase(), expected.toUpperCase());
 
-        const viaPath = await new Deno.Command(`cno-command-bin${suffix}`, {
-            args: ['eval', 'console.log("path-bin")'],
-            env: { PATH: binDir },
-        }).output();
-        strictEqual(viaPath.success, true);
-        strictEqual(decodeUtf8(viaPath.stdout).trim(), 'path-bin');
-    } finally {
-        Deno.removeSync(root, { recursive: true });
-    }
+    const viaPath = await new Deno.Command(exe, { args, env: { PATH: binDir } }).output();
+    strictEqual(viaPath.success, true, decodeUtf8(viaPath.stderr));
+    strictEqual(decodeUtf8(viaPath.stdout).trim().toUpperCase(), expected.toUpperCase());
 });
 
 Deno.test({ name: 'deno command upstream: spawn shorthand overloads mirror Command methods', timeout: 10000 }, async () => {

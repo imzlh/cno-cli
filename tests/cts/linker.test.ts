@@ -14,9 +14,15 @@ import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 import { buildInstallViewEdges, materializeNodeModules } from '../../cts/src/resolve/linker.ts';
 import type { ScanResult } from '../../cts/src/deps.ts';
-import { joinPaths } from '../../cts/src/utils/path.ts';
+import { joinPaths, toPosixPath } from '../../cts/src/utils/path.ts';
 
 type Edge = ScanResult['edges'][number];
+
+// readlinkSync returns NATIVE separators — measured byte-identical to node
+// v24.18.0 on Windows for file/dir/dangling/relative/long targets. Store and
+// virtual-store paths here are posix (joinPaths) or native (join), so compare
+// both sides as posix rather than bending the runtime.
+const rl = (p: string) => toPosixPath(readlinkSync(p));
 
 function seedPkg(
     cacheDir: string,
@@ -88,13 +94,13 @@ Deno.test('cts linker: soft mode only links project roots (store untouched)', as
 
         const linked = joinPaths(projectDir, 'node_modules', 'alpha');
         ok(lstatSync(join(linked)).isSymbolicLink());
-        strictEqual(readlinkSync(join(linked)), alphaDir);
+        strictEqual(rl(join(linked)), toPosixPath(alphaDir));
 
         // Soft realpath walks install-owned store links — materialize did not write them.
         const realAlpha = realpathSync(join(linked));
         const nested = join(realAlpha, 'node_modules', 'beta');
         ok(lstatSync(nested).isSymbolicLink());
-        strictEqual(readlinkSync(nested), betaDir);
+        strictEqual(rl(nested), toPosixPath(betaDir));
         deepStrictEqual(JSON.parse(readFileSync(join(projectDir, 'node_modules', '.cts-node-modules.json'), 'utf8')), ['alpha']);
         // Soft: only project roots counted.
         deepStrictEqual(progress[0], [0, 1]);
@@ -124,7 +130,7 @@ Deno.test('cts linker: soft peer resolution uses install-owned store links', asy
         const realHost = realpathSync(join(projectDir, 'node_modules', 'host'));
         const peerLink = join(realHost, 'node_modules', 'peer-lib');
         ok(lstatSync(peerLink).isSymbolicLink(), 'peer remains install soft link under store');
-        strictEqual(readlinkSync(peerLink), peerDir);
+        strictEqual(rl(peerLink), toPosixPath(peerDir));
         ok(!existsSync(join(projectDir, 'node_modules', 'peer-lib')), 'peer is not a project root');
     } finally {
         rmSync(root, { recursive: true, force: true });
@@ -169,7 +175,7 @@ Deno.test('cts linker: hard mode uses virtual store; store read-only', async () 
         // Nested dep is soft sibling under virtual node_modules (pnpm layout).
         const nestedBeta = join(projectDir, 'node_modules', '.cts', 'alpha@1.0.0', 'node_modules', 'beta');
         ok(lstatSync(nestedBeta).isSymbolicLink());
-        strictEqual(readlinkSync(nestedBeta), virtBeta);
+        strictEqual(rl(nestedBeta), toPosixPath(virtBeta));
         strictEqual(
             readFileSync(join(nestedBeta, 'index.js'), 'utf8'),
             'export const beta = 2;\n',
@@ -217,8 +223,8 @@ Deno.test('cts linker: hard diamond shares one body (unique packages, soft edges
         const dFromC = join(projectDir, 'node_modules', '.cts', 'c@1.0.0', 'node_modules', 'd');
         ok(lstatSync(dFromB).isSymbolicLink());
         ok(lstatSync(dFromC).isSymbolicLink());
-        strictEqual(readlinkSync(dFromB), virtD);
-        strictEqual(readlinkSync(dFromC), virtD);
+        strictEqual(rl(dFromB), toPosixPath(virtD));
+        strictEqual(rl(dFromC), toPosixPath(virtD));
         // One shared body: both edges resolve to the same package contents.
         strictEqual(
             readFileSync(join(dFromB, 'index.js'), 'utf8'),
@@ -256,7 +262,7 @@ Deno.test('cts linker: hard mode cycle soft-links within virtual store', async (
         ok(existsSync(join(virtB, 'package.json')));
         const cycleA = join(projectDir, 'node_modules', '.cts', 'pkg-b@1.0.0', 'node_modules', 'pkg-a');
         ok(lstatSync(cycleA).isSymbolicLink(), 'cycle edge soft-links virtual body');
-        strictEqual(readlinkSync(cycleA), virtA);
+        strictEqual(rl(cycleA), toPosixPath(virtA));
         // Store never received hard materialize writes for the cycle.
         ok(!existsSync(join(bDir, 'node_modules', 'pkg-a')) || lstatSync(join(bDir, 'node_modules', 'pkg-a')).isSymbolicLink());
     } finally {
@@ -337,8 +343,8 @@ Deno.test('cts linker: multi-version store keeps install-linked older dep (no re
 
         const linked = join(hostDir, 'node_modules', 'dep');
         ok(lstatSync(linked).isSymbolicLink());
-        strictEqual(readlinkSync(linked), depOld, 'must not retarget install link to dep@1.9.0');
-        ok(readlinkSync(linked) !== depNew);
+        strictEqual(rl(linked), toPosixPath(depOld), 'must not retarget install link to dep@1.9.0');
+        ok(rl(linked) !== toPosixPath(depNew));
 
         // buildInstallViewEdges must also freeze the install target.
         const views = buildInstallViewEdges([

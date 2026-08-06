@@ -234,15 +234,24 @@ export class ChannelClient {
 export class ChannelServer {
 	constructor(private dc: DebugChannelMain) {}
 
-	/** Push an event to the worker while the main thread is paused in onBreak. */
-	emit(event: WorkerEvent, params: unknown): void {
-		this.notifyQuietly(event, params);
+	/**
+	 * Push an event to the worker while the main thread is paused in onBreak.
+	 * Returns false when the message was DROPPED — the C ring is 64 slots
+	 * (RING_CAP, mod_debug.c:102) and `ring_push` returns false when full
+	 * (mod_debug.c:151). A dropped Paused event must not be ignored: the caller
+	 * would then block in `service()` waiting for a resume the worker will never
+	 * send, freezing the process unkillably.
+	 */
+	emit(event: WorkerEvent, params: unknown): boolean {
+		return this.notifyQuietly(event, params);
 	}
 
-	private notifyQuietly(event: WorkerEvent, params: unknown): void {
+	private notifyQuietly(event: WorkerEvent, params: unknown): boolean {
 		try {
-			this.dc.notify(event, params);
-		} catch {}
+			return this.dc.notify(event, params) !== false;
+		} catch {
+			return false;
+		}
 	}
 
 	private replyQuietly(id: number, resp: ReplyPayload): void {

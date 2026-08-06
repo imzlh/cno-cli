@@ -442,3 +442,79 @@ Deno.test('webapi fetch upstream: Response static constructors preserve status h
     strictEqual(error.bodyUsed, false);
     deepStrictEqual([...error.headers], []);
 });
+
+Deno.test('webapi fetch upstream: error and redirect responses have immutable headers', () => {
+    const error = Response.error();
+    throws(() => error.headers.set('a', 'b'), TypeError);
+    throws(() => error.headers.append('a', 'b'), TypeError);
+    throws(() => error.headers.delete('a'), TypeError);
+
+    const redirect = Response.redirect('http://a.com/', 301);
+    throws(() => redirect.headers.set('a', 'b'), TypeError);
+    // A plain Response stays mutable.
+    const plain = new Response(null);
+    plain.headers.set('a', 'b');
+    strictEqual(plain.headers.get('a'), 'b');
+});
+
+Deno.test('webapi fetch upstream: Response status is ToUint16 before the range check', () => {
+    // ResponseInit.status is WebIDL `unsigned short`, so it truncates and wraps.
+    strictEqual(new Response(null, { status: 200.7 }).status, 200);
+    strictEqual(new Response(null, { status: 65736 }).status, 200);
+    throws(() => new Response(null, { status: 600 }), RangeError);
+    throws(() => new Response(null, { status: 199 }), RangeError);
+});
+
+Deno.test('webapi fetch upstream: Response.text always decodes UTF-8', () => {
+    // Only XMLHttpRequest honours the content-type charset.
+    const body = new Uint8Array([0xe9]);
+    const response = new Response(body, { headers: { 'content-type': 'text/plain;charset=iso-8859-1' } });
+    return response.text().then((text) => {
+        strictEqual(text, '�');
+    });
+});
+
+Deno.test('webapi fetch upstream: Request parses and normalizes its URL', () => {
+    strictEqual(new Request('http://a.com').url, 'http://a.com/');
+    strictEqual(new Request('http://a.com/a/../b?x=1#h').url, 'http://a.com/b?x=1#h');
+    // A relative reference has no base to resolve against.
+    throws(() => new Request('/foo'), TypeError);
+    throws(() => new Request('not a url'), TypeError);
+});
+
+Deno.test('webapi fetch upstream: formData decodes malformed bytes as U+FFFD', async () => {
+    const boundary = 'boundary1';
+    const encoder = new TextEncoder();
+    const head = encoder.encode(`--${boundary}\r\nContent-Disposition: form-data; name="k"\r\n\r\n`);
+    const tail = encoder.encode(`\r\n--${boundary}--\r\n`);
+    const wtf8 = new Uint8Array([0xed, 0xa0, 0x80]);
+    const body = new Uint8Array(head.length + wtf8.length + tail.length);
+    body.set(head, 0);
+    body.set(wtf8, head.length);
+    body.set(tail, head.length + wtf8.length);
+
+    const multipart = await new Response(body, {
+        headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+    }).formData();
+    strictEqual(multipart.get('k'), '���');
+
+    // Percent-escapes decode to bytes first, so a malformed sequence is not Latin-1.
+    const urlencoded = await new Response('k=%ED%A0%80', {
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    }).formData();
+    strictEqual(urlencoded.get('k'), '���');
+    // Well-formed multi-byte escapes still round-trip.
+    strictEqual(new URLSearchParams('k=%F0%9F%98%80').get('k'), '😀');
+});
+
+Deno.test('webapi fetch upstream: string bodies encode lone surrogates as U+FFFD', async () => {
+    const bytes = new Uint8Array(await new Response('a\ud800b').arrayBuffer());
+    deepStrictEqual([...bytes], [0x61, 0xef, 0xbf, 0xbd, 0x62]);
+
+    const request = new Request('http://a.com/', { method: 'POST', body: 'a\ud800b' });
+    deepStrictEqual([...new Uint8Array(await request.arrayBuffer())], [0x61, 0xef, 0xbf, 0xbd, 0x62]);
+
+    // Blob parts take the same path.
+    deepStrictEqual([...new Uint8Array(await new Blob(['a\ud800b']).arrayBuffer())], [0x61, 0xef, 0xbf, 0xbd, 0x62]);
+    strictEqual(new Blob(['a\ud800b']).size, 5);
+});

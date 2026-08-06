@@ -131,7 +131,14 @@ Deno.test({ name: 'pack command: packs a mixed ESM/CJS/JSON project and runs fro
 
         const packResult = await runCno(['pack', 'entry.ts', '-o', 'app.jspack'], projectDir);
         strictEqual(packResult.code, 0, packResult.output);
-        strictEqual(packResult.output.includes(join(projectDir, 'app.jspack')), true, packResult.output);
+        // pack prints `resolvePath(outPath)`, which is POSIX-form throughout cts.
+        // node:path join() emits '\' on win32, so comparing it directly could
+        // never match here.
+        strictEqual(
+            packResult.output.includes(join(projectDir, 'app.jspack').replaceAll('\\', '/')),
+            true,
+            packResult.output,
+        );
         strictEqual(/Packed \d+ modules \([\d.]+[KMG]?B\)/.test(packResult.output), true, packResult.output);
         strictEqual(packResult.output.includes('Size:'), true, packResult.output);
         strictEqual(/workspace\s+[\d.]+[KMG]?B\s+[\d.]+%/.test(packResult.output), true, packResult.output);
@@ -213,10 +220,17 @@ console.log('ATTR_CJS', await cjsAttribute());
         strictEqual(packed.code, 0, packed.output);
         strictEqual(existsSync(join(projectDir, 'nested', 'out.jspack')), true);
         const decoded = decodePack(new Uint8Array(readFileSync(join(projectDir, 'nested', 'out.jspack'))));
+        // The pack root is the nearest ancestor project marker, not the entry's
+        // directory (the nested-config case below depends on that: it packs
+        // ../shared.ts from outside the project dir). So ids carry a leading
+        // path segment whenever any marker sits above the temp project — a
+        // stray package.json in the OS temp dir is enough. Match on the module
+        // basename so this identity assertion does not depend on where the
+        // temp dir happens to live.
         const counterEntries = Object.entries(decoded.manifest.modules)
-            .filter(([id]) => id.startsWith('pack:/counter.ts'))
+            .filter(([id]) => /(^|\/)counter\.ts([?#]|$)/.test(id))
             .map(([, entry]) => entry);
-        strictEqual(counterEntries.length, 2);
+        strictEqual(counterEntries.length, 2, Object.keys(decoded.manifest.modules).join(','));
         strictEqual(counterEntries[0]!.sourceOffset, counterEntries[1]!.sourceOffset,
             'query/hash variants should share original source bytes');
         Deno.copyFileSync(join(projectDir, 'nested', 'out.jspack'), join(runDir, 'out.jspack'));
@@ -460,6 +474,17 @@ Deno.test({ name: 'pack command: rejects incomplete CJS graphs and invalid CLI o
         const wrongExtension = await runCno(['pack', 'entry.cjs', '-o', 'entry.bin'], projectDir);
         strictEqual(wrongExtension.code !== 0, true, wrongExtension.output);
         strictEqual(wrongExtension.output.includes('must end with .jspack'), true, wrongExtension.output);
+
+        // The atomic writer parks an existing destination as `<out>.old-N`. For a
+        // directory that park succeeds and the cleanup unlink silently fails, so
+        // pack used to report success while displacing the tree and leaving litter.
+        const outDir = join(projectDir, 'as-dir.jspack');
+        mkdirSync(outDir, { recursive: true });
+        writeFileSync(join(outDir, 'keep.txt'), 'PRECIOUS\n');
+        const dirOut = await runCno(['pack', 'entry.cjs', '-o', 'as-dir.jspack'], projectDir);
+        strictEqual(dirOut.code !== 0, true, dirOut.output);
+        strictEqual(dirOut.output.includes('output path is a directory'), true, dirOut.output);
+        strictEqual(existsSync(join(outDir, 'keep.txt')), true, 'directory contents must survive');
     } finally {
         Deno.removeSync(projectDir, { recursive: true });
     }
@@ -487,6 +512,11 @@ Deno.test({ name: 'pack runtime: validates blob bounds and contains hostile modu
         };
         const hostilePack = join(root, 'hostile.jspack');
         writeFileSync(hostilePack, encodePack(manifest, payload));
+        // A container id is an opaque key, never a path, so a traversal id is
+        // simply a module name: the entry loads from the blob (exit 0) and
+        // nothing is written outside the container. Measured both separator
+        // forms. `existsSync(target) === false` is the security property —
+        // do not relax it, and do not "fix" the exit code to expect a refusal.
         const hostileResult = await runCno([hostilePack], root);
         strictEqual(hostileResult.code, 0, hostileResult.output);
         strictEqual(existsSync(target), false, 'hostile module id escaped the extraction directory');

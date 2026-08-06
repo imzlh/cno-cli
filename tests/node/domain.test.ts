@@ -3,16 +3,27 @@ import domain from 'node:domain';
 import * as domainNs from 'node:domain';
 import { EventEmitter } from 'node:events';
 
-Deno.test('node:domain run catches thrown errors', async () => {
+// Real Node v24.18: run() does not catch. The throw reaches the caller and the
+// domain's 'error' handler never fires (verified directly against node).
+Deno.test('node:domain run rethrows thrown errors', () => {
     const d = domain.create();
-    const seen = new Promise<Error>((resolve) => d.on('error', resolve));
-
-    const result = d.run(() => {
-        throw new Error('a thrown error');
+    let errorEventFired = false;
+    d.on('error', () => {
+        errorEventFired = true;
     });
 
-    strictEqual(result, undefined);
-    strictEqual((await seen).message, 'a thrown error');
+    let thrown: Error | undefined;
+    try {
+        d.run(() => {
+            throw new Error('a thrown error');
+        });
+    } catch (error) {
+        thrown = error as Error;
+    }
+
+    strictEqual(thrown?.message, 'a thrown error');
+    strictEqual(errorEventFired, false);
+    strictEqual(domainNs.active, null);
 });
 
 Deno.test('node:domain enter/exit maintain active stack', () => {
@@ -92,9 +103,14 @@ Deno.test('node:domain remove detaches EventEmitter error forwarding', async () 
     deepStrictEqual(d.members, []);
 });
 
-Deno.test('node:domain bind preserves arguments and reports thrown errors', async () => {
+// Real Node v24.18: a throw from the bound callback's body propagates to the
+// caller; the domain's 'error' handler is not involved.
+Deno.test('node:domain bind preserves arguments and rethrows', () => {
     const d = domain.create();
-    const seen = new Promise<Error>((resolve) => d.on('error', resolve));
+    let errorEventFired = false;
+    d.on('error', () => {
+        errorEventFired = true;
+    });
     const calls: unknown[] = [];
 
     const bound = d.bind((error: Error, a: number, b: number) => {
@@ -102,12 +118,20 @@ Deno.test('node:domain bind preserves arguments and reports thrown errors', asyn
         throw new Error('bound throw');
     });
 
-    strictEqual(bound(new Error('passed'), 2, 3), undefined);
+    let thrown: Error | undefined;
+    try {
+        bound(new Error('passed'), 2, 3);
+    } catch (err) {
+        thrown = err as Error;
+    }
+    strictEqual(thrown?.message, 'bound throw');
     deepStrictEqual(calls, ['passed', 2, 3]);
-    strictEqual((await seen).message, 'bound throw');
+    strictEqual(errorEventFired, false);
 });
 
-Deno.test('node:domain intercept handles callback errors before invoking callback', async () => {
+// Real Node v24.18: only the error *argument* is routed to 'error'; a throw from
+// the callback body propagates to the caller.
+Deno.test('node:domain intercept handles the error argument before invoking callback', () => {
     const d = domain.create();
     const errors: string[] = [];
     d.on('error', (error) => {
@@ -120,9 +144,15 @@ Deno.test('node:domain intercept handles callback errors before invoking callbac
         throw new Error('callback throw');
     });
 
-    strictEqual(intercepted(null, 2, 3), undefined);
+    let thrown: Error | undefined;
+    try {
+        intercepted(null, 2, 3);
+    } catch (err) {
+        thrown = err as Error;
+    }
+    strictEqual(thrown?.message, 'callback throw');
     strictEqual(intercepted(new Error('passed error'), 4, 5), undefined);
 
     deepStrictEqual(calls, [2, 3]);
-    deepStrictEqual(errors, ['callback throw', 'passed error']);
+    deepStrictEqual(errors, ['passed error']);
 });

@@ -153,7 +153,10 @@ Deno.test('os: setPriority validates pid and priority ranges before native call'
 Deno.test('util: format interpolates %s %d %j %%', () => {
     strictEqual(util.format('%s:%d', 'a', 1), 'a:1');
     strictEqual(util.format('%j', { a: 1 }), JSON.stringify({ a: 1 }));
-    strictEqual(util.format('100%%'), '100%');
+    // Node returns the format string untouched when there are no substitution
+    // args, so `%%` is NOT collapsed here. Verified against node v24.18.
+    strictEqual(util.format('100%%'), '100%%');
+    strictEqual(util.format('100%%', 1), '100% 1');
 });
 
 // --- util: inspect formats objects and options -----------------------------
@@ -460,4 +463,84 @@ Deno.test('util: aborted resolves with abort event when signal aborts', async ()
     controller.abort('why');
     const event = await pending;
     strictEqual(event.type, 'abort');
+});
+
+// --- os: cidr is derived from the netmask, not hardcoded ---------------------
+
+Deno.test('os: networkInterfaces cidr prefix comes from the netmask', () => {
+    for (const entries of Object.values(os.networkInterfaces())) {
+        for (const iface of entries ?? []) {
+            if (iface.cidr === null) continue;
+            const [addr, prefix] = iface.cidr.split('/');
+            strictEqual(addr, iface.address);
+            const bits = Number(prefix);
+            ok(Number.isInteger(bits));
+            // A /32 (v4) or /128 (v6) must be backed by an all-ones netmask.
+            if (iface.family === 'IPv4') {
+                ok(bits >= 0 && bits <= 32);
+                if (bits === 32) strictEqual(iface.netmask, '255.255.255.255');
+                if (iface.netmask === '255.255.255.0') strictEqual(bits, 24);
+                if (iface.netmask === '255.0.0.0') strictEqual(bits, 8);
+            } else {
+                ok(bits >= 0 && bits <= 128);
+                if (iface.netmask === 'ffff:ffff:ffff:ffff::') strictEqual(bits, 64);
+            }
+        }
+    }
+});
+
+// --- os: constants.errno holds platform errno, not libuv codes --------------
+
+Deno.test('os: constants.errno uses platform values', () => {
+    const { errno } = os.constants;
+    // libuv would report -4092/4092 for EACCES; Node reports the platform value.
+    strictEqual(errno.EACCES, 13);
+    strictEqual(errno.ENOENT, 2);
+    strictEqual(errno.EPERM, 1);
+    strictEqual(errno.EEXIST, 17);
+    for (const [name, value] of Object.entries(errno)) {
+        // Winsock codes are legitimately 10000+; only the 4000-4100 band would
+        // mean a raw libuv code leaked through.
+        if (name.startsWith('WSA')) {
+            ok(value >= 10000, `${name}=${value} is not a Winsock code`);
+            continue;
+        }
+        ok(value > 0 && value < 4000, `${name}=${value} looks like a libuv code`);
+    }
+});
+
+Deno.test('os: constants.UV_UDP_REUSEADDR is 4', () => {
+    strictEqual(os.constants.UV_UDP_REUSEADDR, 4);
+});
+
+Deno.test('os: dlopen constants are empty on Windows', () => {
+    if (os.platform() === 'win32') {
+        strictEqual(Object.keys(os.constants.dlopen).length, 0);
+    } else {
+        strictEqual(os.constants.dlopen.RTLD_NOW, 2);
+    }
+});
+
+// --- os: Symbol.toPrimitive on the zero-arg getters -------------------------
+
+Deno.test('os: getters coerce to their value like Node', () => {
+    // freemem/uptime change between the two reads, so only assert that the
+    // coercion no longer yields function source.
+    const volatileNames = new Set(['freemem', 'uptime']);
+    const names = [
+        'arch', 'availableParallelism', 'endianness', 'freemem', 'homedir',
+        'hostname', 'machine', 'platform', 'release', 'tmpdir', 'totalmem',
+        'type', 'uptime', 'version',
+    ] as const;
+    for (const name of names) {
+        const fn = os[name] as unknown as () => unknown;
+        const coerced = `${fn}`;
+        ok(!coerced.startsWith('function'), `${name} lacks Symbol.toPrimitive`);
+        if (!volatileNames.has(name)) strictEqual(coerced, String(fn()), name);
+    }
+});
+
+Deno.test('os: devNull uses the lowercase Windows form', () => {
+    // The literal is \\.\nul — four backslashes here escape to two, plus \\n.
+    strictEqual(os.devNull, os.platform() === 'win32' ? '\\\\.\\nul' : '/dev/null');
 });

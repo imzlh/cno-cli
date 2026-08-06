@@ -1,0 +1,10 @@
+{
+    "extends": "./tsconfig.json",
+    "include": [
+        "cno/src/**/*.ts",
+        "cno/lib.deno.d.ts",
+        "./circu.js/types/**/*.d.ts",
+        "./cno/src/type/**/*.d.ts",
+        "./cno/types/**/*.d.ts"
+    ]
+}

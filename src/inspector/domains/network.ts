@@ -9,6 +9,7 @@
  */
 
 import { Domain } from './base'
+import { CDPError, CdpErrorCode } from '../worker/dispatcher'
 import { isRecord } from '../shared/cdp'
 import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
 import type { WorkerEndpoint } from '../transport/worker-endpoint'
@@ -115,7 +116,29 @@ export class NetworkDomain extends Domain {
 	private wsMeta = new Map<string, WSRequestMeta>()
 	/** Serve requestIds that are WS upgrades — suppress loadingFinished from HTTP side. */
 	private wsUpgradeRequests = new Set<string>()
+	/**
+	 * requestIds for which THIS session already emitted requestWillBeSent. A
+	 * request in flight when Network.enable arrives has no requestWillBeSent, so
+	 * emitting its responseReceived/loadingFinished would hand DevTools terminal
+	 * events for an id it never saw. Chrome/Node never report such a request at
+	 * all. REASONED from the CDP event ordering contract.
+	 */
+	private announced = new Set<string>()
+	/** Last time any event touched a requestId — drives staleness eviction. */
+	private lastSeen = new Map<string, number>()
 	private lastCleanupTime = 0
+
+	/**
+	 * Return to the detached state. `enabled`, the cookie jar and every
+	 * requestId-keyed map are per-SESSION state in CDP: a second client must not
+	 * inherit session 1's Network.enable, nor be able to read session 1's response
+	 * bodies back out with getResponseBody. Mirrors FetchDomain.setConnected.
+	 */
+	setConnected(connected: boolean): void {
+		if (connected) return
+		this.enabled = false
+		this.clearState()
+	}
 
 	constructor(dispatcher: CDPDispatcher, event: EmitEvent, private readonly rpc: WorkerEndpoint) {
 		super(dispatcher, event)
@@ -150,6 +173,12 @@ export class NetworkDomain extends Domain {
 		this.on('Network.replayXHR', () => ({}))
 		this.on('Network.streamResourceContent', async (p) => {
 			const requestId = this.reqStr(p, 'requestId')
+			// MEASURED against node v24.18: streaming an id that was never seen
+			// answers -32602 "Request not found". Previously this fell through and
+			// RPC'd the main thread for a request that does not exist.
+			if (!this.announced.has(requestId)) {
+				throw new CDPError(CdpErrorCode.InvalidParams, 'Request not found')
+			}
 			// Flush any buffered body before switching to live-stream mode.
 			// The Done event (main-thread flush) is already in flight or will
 			// arrive shortly; the body it carries will be cached by the Done
@@ -161,7 +190,7 @@ export class NetworkDomain extends Domain {
 			// Tell the main thread to start live-streaming subsequent chunks.
 			// The main thread will also flush its own buffered body in the
 			// Done event, which the Done handler processes normally.
-			await this.rpc.call('streamResourceContent', { requestId })
+			await this.rpc.call('streamResourceContent', { requestId, source: this.reqMeta.get(requestId)?.source })
 			return { bufferedData }
 		})
 		this.on('Network.searchInResponseBody', () => ({ result: [] }))
@@ -193,13 +222,26 @@ export class NetworkDomain extends Domain {
 		this.on('Network.getResponseBody', (p) => {
 			const requestId = this.reqStr(p, 'requestId')
 			const entry = this.responseBodyCache.get(requestId)
-			if (!entry) return { body: '', base64Encoded: false }
+			// A requestId we never saw, or whose body was already evicted, is an
+			// error — not an empty body. Returning `{body:''}` made a released or
+			// bogus id indistinguishable from a genuinely empty 204 body.
+			// MEASURED against node v24.18 (`inspector.Session`):
+			//   Network.getResponseBody {requestId:'never-existed'}
+			//     -> -32602 "Request not found"
+			if (!entry) {
+				throw new CDPError(CdpErrorCode.InvalidParams, 'Request not found')
+			}
 			if (entry.truncated) return { body: BODY_PREVIEW_UNAVAILABLE, base64Encoded: false }
 			return this.encodeBody(entry)
 		})
 		this.on('Network.getRequestPostData', (p) => {
-			const body = this.requestBodyCache.get(this.reqStr(p, 'requestId'))
-			return { postData: body ? engine.decodeString(body) : '' }
+			const requestId = this.reqStr(p, 'requestId')
+			const body = this.requestBodyCache.get(requestId)
+			// MEASURED against node v24.18: -32602 "Request not found".
+			if (!body) {
+				throw new CDPError(CdpErrorCode.InvalidParams, 'Request not found')
+			}
+			return { postData: engine.decodeString(body) }
 		})
 	}
 
@@ -215,6 +257,8 @@ export class NetworkDomain extends Domain {
 		this.streamedBodies.clear()
 		this.wsMeta.clear()
 		this.wsUpgradeRequests.clear()
+		this.announced.clear()
+		this.lastSeen.clear()
 	}
 
 	private stringHeadersFromRecord(value: unknown): Record<string, string> {
@@ -253,6 +297,8 @@ export class NetworkDomain extends Domain {
 				const resourceType = data.resourceType ?? 'Fetch'
 				this.cacheRequestBody(data.requestId, data.postData)
 				this.reqStartTimes.set(data.requestId, timestamp)
+				this.announced.add(data.requestId)
+				this.lastSeen.set(data.requestId, timestamp)
 				this.reqMeta.set(data.requestId, {
 					source: data.source,
 					url: data.url,
@@ -289,6 +335,7 @@ export class NetworkDomain extends Domain {
 				break
 			}
 			case NetFetchKind.Res: {
+				if (!this.announced.has(data.requestId)) return
 				const timestamp = data.timestamp
 				const start = this.reqStartTimes.get(data.requestId) ?? timestamp
 				const meta = this.reqMeta.get(data.requestId)
@@ -388,7 +435,10 @@ export class NetworkDomain extends Domain {
 				// receives a responseReceived.
 				if (resourceType === 'WebSocket') {
 					this.wsUpgradeRequests.add(data.requestId)
+					this.lastSeen.set(data.requestId, timestamp)
 				} else {
+					this.announced.add(data.requestId)
+					this.lastSeen.set(data.requestId, timestamp)
 					const context = this.contextForSource(data.source)
 					this.event('Network.requestWillBeSent', {
 						requestId: data.requestId,
@@ -440,7 +490,7 @@ export class NetworkDomain extends Domain {
 				const responseHeadersText = this.buildHeadersText(data.headers, data.status)
 				const requestHeadersText = this.buildRequestHeadersText(meta?.method ?? 'GET', data.url, requestHeaders)
 				const isWsUpgrade = this.wsUpgradeRequests.has(data.requestId)
-				if (!isWsUpgrade) {
+				if (!isWsUpgrade && this.announced.has(data.requestId)) {
 					const context = this.contextForSource(data.source)
 					this.event('Network.responseReceived', {
 						requestId: data.requestId,
@@ -495,6 +545,7 @@ export class NetworkDomain extends Domain {
 
 	onWSEvent(data: NetWSEvent): void {
 		if (!this.enabled) return
+		this.lastSeen.set(data.requestId, data.timestamp)
 		switch (data.ev) {
 			case NetWSKind.Created:
 				const wsHeaders = data.requestHeaders ? this.headerEntriesToRecord(data.requestHeaders) : {}
@@ -505,6 +556,8 @@ export class NetworkDomain extends Domain {
 					requestHeadersText: data.requestHeaders ? this.buildRequestHeadersText('GET', data.url, wsHeaders, data.source === 'fetch' ? 2 : undefined) : '',
 				})
 				this.reqStartTimes.set(data.requestId, data.timestamp)
+				this.announced.add(data.requestId)
+				this.lastSeen.set(data.requestId, data.timestamp)
 				this.event('Network.webSocketCreated', {
 					requestId: data.requestId,
 					url: data.url,
@@ -578,12 +631,19 @@ export class NetworkDomain extends Domain {
 					this.reqMeta.delete(data.requestId)
 				}
 				this.wsMeta.delete(data.requestId)
+				this.announced.delete(data.requestId)
+				this.lastSeen.delete(data.requestId)
 				break
 		}
 	}
 
 	// ── shared body buffering (used by both fetch and serve) ───────
 	private handleNetworkDataEvent(data: { requestId: string; timestamp: number; data: Uint8Array; byteLength: number }): void {
+		// No requestWillBeSent for this id in this session → DevTools would get a
+		// dataReceived for an unknown request. Also avoids buffering a body that
+		// getResponseBody must never hand back.
+		if (!this.announced.has(data.requestId)) return
+		this.lastSeen.set(data.requestId, data.timestamp)
 		let entry = this.pendingBodies.get(data.requestId)
 		if (!entry) {
 			entry = {
@@ -618,10 +678,22 @@ export class NetworkDomain extends Domain {
 		source: NetworkSource,
 		data: { requestId: string; timestamp: number; success: boolean; errorText?: string; body?: Uint8Array[]; totalBytes?: number; connection?: FetchConnection },
 	): void {
+		const announced = this.announced.has(data.requestId)
 		const meta = this.reqMeta.get(data.requestId)
 		const pendingEntry = this.pendingBodies.get(data.requestId)
 		this.dropPendingBody(data.requestId)
-
+		// Unannounced (started before Network.enable, or belonging to a previous
+		// session): emit nothing, but still release every map keyed by this id so a
+		// request that spans an enable boundary cannot leak.
+		if (!announced) {
+			this.reqStartTimes.delete(data.requestId)
+			this.reqMeta.delete(data.requestId)
+			this.streamedBodies.delete(data.requestId)
+			this.wsUpgradeRequests.delete(data.requestId)
+			this.lastSeen.delete(data.requestId)
+			this.cleanupStaleEntries(data.timestamp)
+			return
+		}
 		let bodyEntry: BodyEntry | undefined
 		if (data.body && data.body.length > 0) {
 			const merged = this.mergeChunks(data.body)
@@ -671,6 +743,8 @@ export class NetworkDomain extends Domain {
 			}
 			this.reqStartTimes.delete(data.requestId)
 			this.reqMeta.delete(data.requestId)
+			this.announced.delete(data.requestId)
+			this.lastSeen.delete(data.requestId)
 		}
 		this.streamedBodies.delete(data.requestId)
 		this.cleanupStaleEntries(data.timestamp)
@@ -755,16 +829,27 @@ export class NetworkDomain extends Domain {
 		const entry = this.pendingBodies.get(requestId)
 		if (entry) entry.liveStreamed = true
 		this.dropBufferedBodyForRequest(requestId)
-		if (syncMain && !alreadyStreaming) void this.rpc.call('streamResourceContent', { requestId }).catch(() => undefined)
+		if (syncMain && !alreadyStreaming) this.rpc.notify('streamResourceContent', { requestId, source: this.reqMeta.get(requestId)?.source })
 	}
 
 	private ensurePendingBodyCapacity(requestId: string, incomingBytes: number): boolean {
 		const maxBytes = MAX_BODY_PREVIEW_BYTES / 2;
-		while (this.pendingBodyBytes + incomingBytes > maxBytes && this.pendingBodies.size > 0) {
-			const oldest = this.pendingBodies.keys().next().value
-			if (oldest === undefined) break
-			if (oldest === requestId && this.pendingBodies.size === 1) break
-			this.dropBufferedBodyForRequest(oldest)
+		// A single chunk bigger than the whole eviction budget can never be made to
+		// fit, so evicting other requests' buffers would discard them for nothing.
+		if (incomingBytes > maxBytes) {
+			this.dropBufferedBodyForRequest(requestId)
+			return false
+		}
+		// Evict oldest-first. `dropBufferedBodyForRequest` zeroes an entry but keeps
+		// its key (the request is still live and its Done event must still find it),
+		// so this MUST iterate rather than re-reading the map head: re-reading spins
+		// forever the moment the head entry has nothing left to reclaim.
+		for (const candidate of this.pendingBodies.keys()) {
+			if (this.pendingBodyBytes + incomingBytes <= maxBytes) break
+			if (candidate === requestId) continue
+			const entry = this.pendingBodies.get(candidate)
+			if (!entry || entry.total === 0) continue
+			this.dropBufferedBodyForRequest(candidate)
 		}
 		if (this.pendingBodyBytes + incomingBytes <= maxBytes) return true
 		this.dropBufferedBodyForRequest(requestId)
@@ -1086,21 +1171,41 @@ export class NetworkDomain extends Domain {
 	}
 
 	/**
-	 * Evict orphaned entries from reqMeta / pendingBodies / reqStartTimes.
-	 * When Done events are lost (e.g. pipe saturation), these maps grow unbounded.
-	 * Clean up entries older than 120 s.  Runs at most once every 30 s.
+	 * Evict orphaned entries from every requestId-keyed map.
+	 * When Done events are lost (e.g. pipe saturation) or a request is aborted
+	 * without a terminal event, these maps grow unbounded. Clean up entries
+	 * untouched for 120 s. Runs at most once every 30 s.
+	 *
+	 * Keyed on `lastSeen` (last event for the id), NOT the start time: a download
+	 * or a WebSocket that legitimately runs longer than 120 s must not have its
+	 * metadata evicted mid-flight, which would strand its body and make its
+	 * terminal event unannounced.
 	 */
 	private cleanupStaleEntries(now: number): void {
 		if (now - this.lastCleanupTime < 30) return
 		this.lastCleanupTime = now
 		const cutoff = now - 120
+		for (const [id, seen] of this.lastSeen) {
+			if (seen >= cutoff) continue
+			this.lastSeen.delete(id)
+			this.reqStartTimes.delete(id)
+			this.reqMeta.delete(id)
+			this.dropPendingBody(id)
+			this.streamedBodies.delete(id)
+			this.wsUpgradeRequests.delete(id)
+			this.wsMeta.delete(id)
+			this.announced.delete(id)
+		}
+		// Ids that never made it into lastSeen (or outlived it) must not pin memory.
 		for (const [id, start] of this.reqStartTimes) {
-			if (start < cutoff) {
+			if (start < cutoff && !this.lastSeen.has(id)) {
 				this.reqStartTimes.delete(id)
 				this.reqMeta.delete(id)
 				this.dropPendingBody(id)
 				this.streamedBodies.delete(id)
 				this.wsUpgradeRequests.delete(id)
+				this.wsMeta.delete(id)
+				this.announced.delete(id)
 			}
 		}
 	}

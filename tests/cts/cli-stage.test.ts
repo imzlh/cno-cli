@@ -236,7 +236,7 @@ Deno.test({ name: 'cli stage: run exposes import.meta entry metadata', timeout: 
             if (!import.meta.main) throw new Error("entry must be main");
             console.log("META:" + JSON.stringify({
                 url: import.meta.url.startsWith("file://"),
-                filename: import.meta.filename.endsWith("/main.ts"),
+                filename: import.meta.filename.replace(/\\\\/g, "/").endsWith("/main.ts"),
                 dirname: import.meta.dirname.endsWith(${JSON.stringify(root)}),
                 resolve: import.meta.resolve("./dep.ts").endsWith("/dep.ts"),
             }));
@@ -565,6 +565,40 @@ Deno.test({ name: 'cli stage: run honors NODE_OPTIONS require before cli require
             'require3.cjs',
             'main.ts',
         ]);
+
+        // node's NODE_OPTIONS tokenizer treats `\` as literal OUTSIDE double
+        // quotes (verified against node v24), so an unquoted absolute Windows
+        // path must survive. Escaping everywhere turned C:\a\b.cjs into C:ab.cjs.
+        const nativePath = join(root, 'require1.cjs');
+        const nativeAbs = await runCno(['run', main], root, {
+            NODE_OPTIONS: `--require ${nativePath}`,
+        });
+        strictEqual(nativeAbs.code, 0, nativeAbs.stderr);
+        deepStrictEqual(nativeAbs.stdout.trim().split(/\r?\n/), ['require1.cjs', 'main.ts']);
+    });
+});
+
+Deno.test({ name: 'cli stage: rejects malformed quoted NODE_OPTIONS', timeout: 15000 }, async () => {
+    await withTempDir('cli-node-options-invalid', async (root) => {
+        const main = join(root, 'main.ts');
+        await Deno.writeTextFile(main, 'console.log("must not run");\n');
+
+        const unterminated = await runCno(['run', main], root, { NODE_OPTIONS: '--require "broken' });
+        strictEqual(unterminated.code, 1);
+        ok(unterminated.stderr.includes('invalid value for NODE_OPTIONS (unterminated string)'), unterminated.stderr);
+        strictEqual(unterminated.stdout, '');
+
+        const invalidEscape = await runCno(['run', main], root, { NODE_OPTIONS: '--require "broken\\' });
+        strictEqual(invalidEscape.code, 1);
+        ok(invalidEscape.stderr.includes('invalid value for NODE_OPTIONS (invalid escape)'), invalidEscape.stderr);
+        strictEqual(invalidEscape.stdout, '');
+
+        const beforeInspector = await runCno(['run', '--inspect=127.0.0.1:0', main], root, {
+            NODE_OPTIONS: '--require "broken',
+        });
+        strictEqual(beforeInspector.code, 1);
+        ok(beforeInspector.stderr.includes('invalid value for NODE_OPTIONS (unterminated string)'), beforeInspector.stderr);
+        ok(!beforeInspector.stdout.includes('Debugger listening'), beforeInspector.stdout);
     });
 });
 
@@ -592,8 +626,8 @@ Deno.test({ name: 'cli stage: run supports multiple require preloads with CJS me
             console.log(JSON.stringify({
                 first: globalThis.__first__,
                 second: globalThis.__second__,
-                firstFilename: globalThis.__first_filename__.endsWith("/require_first.js"),
-                secondFilename: globalThis.__second_filename__.endsWith("/require_second.js"),
+                firstFilename: globalThis.__first_filename__.replace(/\\\\/g, "/").endsWith("/require_first.js"),
+                secondFilename: globalThis.__second_filename__.replace(/\\\\/g, "/").endsWith("/require_second.js"),
                 firstDirname: globalThis.__first_dirname__ === Deno.cwd(),
                 secondDirname: globalThis.__second_dirname__ === Deno.cwd(),
             }));
@@ -2142,6 +2176,18 @@ Deno.test({ name: 'cli stage upstream npm: npm specifier can match local node_mo
     });
 });
 
+/**
+ * Env that redirects the REPL's history DB into a temp dir.
+ *
+ * `HOME` alone is not enough: src/commands/repl/index.ts:24 picks
+ * `USERPROFILE` on Windows, so a HOME-only env let these tests write to the
+ * developer's real ~/.cno_history.sqlite and then fail reading the temp path
+ * with "unable to open database file".
+ */
+function replHistoryEnv(root: string): Record<string, string> {
+    return { CTS_SILENT: 'true', HOME: root, USERPROFILE: root };
+}
+
 /** Read lines from the REPL SQLite history DB (oldest → newest). */
 function readReplHistoryDb(home: string): string[] {
     const sqlite3 = import.meta.use('sqlite3');
@@ -2166,10 +2212,7 @@ Deno.test({ name: 'cli stage: repl .q exits through cleanup and writes history',
             stdin: 'piped',
             stdout: 'piped',
             stderr: 'piped',
-            env: {
-                CTS_SILENT: 'true',
-                HOME: root,
-            },
+            env: replHistoryEnv(root),
         }).spawn();
 
         const writer = child.stdin.getWriter();
@@ -2195,10 +2238,7 @@ Deno.test({ name: 'cli stage: repl .q exits through cleanup and writes history',
 Deno.test({ name: 'cli stage: repl reloads prior history on next session', timeout: 15000 }, async () => {
     await withTempDir('cli-repl-history-reload', async (root) => {
         const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
-        const env = {
-            CTS_SILENT: 'true',
-            HOME: root,
-        };
+        const env = replHistoryEnv(root);
 
         // Seed a prior session.
         {
@@ -2252,10 +2292,7 @@ Deno.test({ name: 'cli stage: repl persists history immediately after each line'
             stdin: 'piped',
             stdout: 'piped',
             stderr: 'piped',
-            env: {
-                CTS_SILENT: 'true',
-                HOME: root,
-            },
+            env: replHistoryEnv(root),
         }).spawn();
 
         const writer = child.stdin.getWriter();
@@ -2270,6 +2307,159 @@ Deno.test({ name: 'cli stage: repl persists history immediately after each line'
 
         const history = readReplHistoryDb(root);
         ok(history.includes('99 + 1'), history.join('\n'));
+    });
+});
+
+Deno.test({
+    // FAILS UNTIL REBUILD: the guard is in src/commands/repl/runner.ts
+    // (`#update()` returns early when stdin is not a TTY) and src/** is baked
+    // into build/stage/cno.exe. Verified failing on the 2026-08-02 21:53
+    // binary with 593 escapes; expected to pass once cno.exe is rebuilt.
+    name: 'cli stage: repl does not echo or repaint when stdin is not a TTY',
+    timeout: 20000,
+}, async () => {
+    await withTempDir('cli-repl-nontty-echo', async (root) => {
+        const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+        const line = 'const someVariableName = 1234567890 + 987654321;';
+        const child = new Deno.Command(execPath, {
+            args: ['repl'],
+            cwd: root,
+            stdin: 'piped',
+            stdout: 'piped',
+            stderr: 'piped',
+            env: replHistoryEnv(root),
+        }).spawn();
+
+        const writer = child.stdin.getWriter();
+        await writer.write(new TextEncoder().encode(`${line}\nsomeVariableName\n.q\n`));
+        await writer.close();
+
+        const output = await child.output();
+        strictEqual(output.code, 0, decodeUtf8(output.stderr));
+        const stdout = decodeUtf8(output.stdout);
+
+        // The line editor used to run its full repaint for every printable
+        // character even on a pipe: this input produced 3764 bytes and 506
+        // escape sequences, where `node --interactive` produces 78 bytes and
+        // zero escapes. Assert the escape storm specifically, since it is what
+        // corrupts programmatic readers of REPL stdout.
+        const escapes = stdout.split('\x1b').length - 1;
+        ok(escapes === 0, `non-TTY stdout must carry no ANSI escapes, saw ${escapes}: ${JSON.stringify(stdout.slice(0, 400))}`);
+        // Each character must not be echoed back: one occurrence per submitted
+        // line at most, never one per keystroke.
+        const echoes = stdout.split(line).length - 1;
+        ok(echoes <= 1, `input echoed ${echoes} times: ${JSON.stringify(stdout.slice(0, 400))}`);
+        // The session must still work — the value has to come back.
+        ok(stdout.includes('2222222211'), stdout);
+    });
+});
+
+Deno.test({
+    name: 'cli stage: repl survives a throw from a timer and keeps evaluating',
+    timeout: 20000,
+}, async () => {
+    await withTempDir('cli-repl-timer-throw', async (root) => {
+        const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+        const child = new Deno.Command(execPath, {
+            args: ['repl'],
+            cwd: root,
+            stdin: 'piped',
+            stdout: 'piped',
+            stderr: 'piped',
+            env: replHistoryEnv(root),
+        }).spawn();
+
+        const writer = child.stdin.getWriter();
+        // src/commands/repl/index.ts used to install `engine.onEvent(() => false)`
+        // here. `false` is the FATAL value for EV_JOB_EXCEPTION
+        // (circu.js/src/utils.c:180 calls TJS_Stop), so a throw from a timer
+        // killed the REPL — the opposite of that receiver's stated intent.
+        await writer.write(new TextEncoder().encode(
+            'setTimeout(() => { throw new Error("BOOM"); }, 5)\n'
+            + 'await new Promise((r) => setTimeout(r, 200))\n'
+            + '6 * 7\n'
+            + '.q\n',
+        ));
+        await writer.close();
+
+        const output = await child.output();
+        strictEqual(output.code, 0, decodeUtf8(output.stderr));
+        const stdout = decodeUtf8(output.stdout);
+        // The expression AFTER the async throw must still evaluate.
+        ok(stdout.includes('42'), `REPL died on the timer throw: ${stdout}`);
+        ok(!stdout.includes('CALLED'), stdout);
+    });
+});
+
+Deno.test({
+    name: 'cli stage: repl reports unhandled rejections instead of swallowing them',
+    timeout: 20000,
+}, async () => {
+    await withTempDir('cli-repl-rejection', async (root) => {
+        const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+        const child = new Deno.Command(execPath, {
+            args: ['repl'],
+            cwd: root,
+            stdin: 'piped',
+            stdout: 'piped',
+            stderr: 'piped',
+            env: replHistoryEnv(root),
+        }).spawn();
+
+        const writer = child.stdin.getWriter();
+        await writer.write(new TextEncoder().encode(
+            'Promise.reject(new Error("REJECTED_MARKER"))\n'
+            + 'await new Promise((r) => setTimeout(r, 200))\n'
+            + '1 + 1\n'
+            + '.q\n',
+        ));
+        await writer.close();
+
+        const output = await child.output();
+        strictEqual(output.code, 0, decodeUtf8(output.stderr));
+        // The old single-slot engine.onEvent() displaced the event multiplexer,
+        // so the diagnostics receiver never ran and async errors vanished.
+        const combined = decodeUtf8(output.stdout) + decodeUtf8(output.stderr);
+        ok(combined.includes('REJECTED_MARKER'), `rejection was silent: ${combined}`);
+        ok(combined.includes('2'), combined);
+    });
+});
+
+Deno.test({
+    // FAILS UNTIL REBUILD: `.exit`/`.save` are added in
+    // src/commands/repl/runner.ts and src/** is baked into build/stage/cno.exe.
+    // On the 2026-08-02 21:53 binary all three print "Unknown directive".
+    name: 'cli stage: repl supports .exit and .save like node',
+    timeout: 20000,
+}, async () => {
+    await withTempDir('cli-repl-directives', async (root) => {
+        const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+        const savePath = join(root, 'session.js');
+        const child = new Deno.Command(execPath, {
+            args: ['repl'],
+            cwd: root,
+            stdin: 'piped',
+            stdout: 'piped',
+            stderr: 'piped',
+            env: replHistoryEnv(root),
+        }).spawn();
+
+        const writer = child.stdin.getWriter();
+        await writer.write(new TextEncoder().encode(
+            `const saved = 5\n.save ${savePath.replace(/\\/g, '/')}\n.exit\n`,
+        ));
+        await writer.close();
+
+        const output = await child.output();
+        strictEqual(output.code, 0, decodeUtf8(output.stderr));
+        const stdout = decodeUtf8(output.stdout);
+        ok(!stdout.includes('Unknown directive'), stdout);
+
+        // `.save` writes the session's code, not the directives themselves.
+        const saved = await Deno.readTextFile(savePath);
+        ok(saved.includes('const saved = 5'), saved);
+        ok(!saved.includes('.save'), saved);
+        ok(!saved.includes('.exit'), saved);
     });
 });
 

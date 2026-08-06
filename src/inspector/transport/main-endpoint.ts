@@ -53,12 +53,17 @@ export class MainEndpoint {
 	}
 
 	/** Push an event to the worker. Paused must use the synchronous channel. */
-	emit(event: WorkerEvent, params: unknown): void {
+	/**
+	 * Emit a worker-bound event. Returns false only for a DROPPED `Paused`, which
+	 * the caller must handle rather than blocking for a resume that cannot come.
+	 * Other events go over the pipe and are reported as delivered.
+	 */
+	emit(event: WorkerEvent, params: unknown): boolean {
 		if (event === WorkerEvent.Paused) {
-			this.channelServer.emit(event, params);
-			return;
+			return this.channelServer.emit(event, params);
 		}
 		this.pipeServer.emit(event, params);
+		return true;
 	}
 
 	/** Synchronous service loop, invoked from inside onBreak. Returns resume step. */

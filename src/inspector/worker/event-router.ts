@@ -14,7 +14,6 @@ import type { FetchDomain } from '../domains/fetch'
 import type { NetworkDomain } from '../domains/network'
 import type { RuntimeDomain } from '../domains/runtime'
 import type { PausedEvent } from '../shared/cdp'
-import { buildConsoleStackTrace, consoleAPICalledType } from '../shared/console-utils'
 import type {
 	BindingCalledPayload,
 	ConsolePayload,
@@ -30,6 +29,11 @@ import type { EmitEvent } from './dispatcher'
 
 export interface EventRouterDeps {
 	endpoint: WorkerEndpoint
+	/**
+	 * Retained for the domains that still need a direct emitter. Console forwarding
+	 * no longer uses it: Runtime.consoleAPICalled must be gated on Runtime.enable, so
+	 * it is emitted by RuntimeDomain rather than from here.
+	 */
 	emit: EmitEvent
 	debuggerDomain: DebuggerDomain
 	runtimeDomain: RuntimeDomain
@@ -39,7 +43,7 @@ export interface EventRouterDeps {
 }
 
 export function createEventRouter(deps: EventRouterDeps): (event: WorkerEvent, params: unknown) => void {
-	const { endpoint, emit, debuggerDomain, runtimeDomain, consoleDomain, networkDomain, fetchDomain } = deps
+	const { endpoint, debuggerDomain, runtimeDomain, consoleDomain, networkDomain, fetchDomain } = deps
 
 	return (event: WorkerEvent, params: unknown): void => {
 		switch (event) {
@@ -60,14 +64,9 @@ export function createEventRouter(deps: EventRouterDeps): (event: WorkerEvent, p
 			case WorkerEvent.Console: {
 				const payload = params as ConsolePayload
 				consoleDomain.onConsole(payload.method, payload.args, payload.timestamp, payload.callFrames)
-
-				emit('Runtime.consoleAPICalled', {
-					type: consoleAPICalledType(payload.method),
-					args: payload.args,
-					executionContextId: 1,
-					timestamp: payload.timestamp,
-					stackTrace: buildConsoleStackTrace(payload.callFrames),
-				})
+				// Runtime owns its own half of console forwarding: it must be gated on
+				// Runtime.enable and buffered until then. See RuntimeDomain.onConsole.
+				runtimeDomain.onConsole(payload)
 				break
 			}
 			case WorkerEvent.Load: {

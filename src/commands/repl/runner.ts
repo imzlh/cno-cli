@@ -3,6 +3,8 @@ import { COLOR, STYLE_MAP } from './types';
 import { JSColorizer } from './colorizer';
 import { CompletionEngine } from './completion';
 import { HistoryStore } from './history';
+import { openReplInput, openReplOutput } from './file-stdio';
+import type { ReplInputHandle, ReplOutputHandle } from './file-stdio';
 
 const os = import.meta.use('os');
 const streams = import.meta.use('streams');
@@ -91,9 +93,21 @@ export class CnoRepl {
     #lastEmptyCtrlCAt = 0;
 
     // Terminal
-    #stdin: CModuleStreams.Pipe | CModuleStreams.Stream;
-    #stdout: CModuleStreams.Pipe | CModuleStreams.Stream;
+    #stdin: CModuleStreams.Pipe | CModuleStreams.Stream | ReplInputHandle;
+    #stdout: CModuleStreams.Pipe | CModuleStreams.Stream | ReplOutputHandle;
+    /** stdin is a TTY — governs echo, repaint and raw-mode key handling. */
     #isatty: boolean = false;
+    /**
+     * stdout is a TTY — governs colour only.
+     *
+     * Deliberately separate from `#isatty`. The two answer different questions
+     * and node splits them the same way: readline's `terminal` option (echo and
+     * repaint) follows the *input* stream, while `util.inspect`'s colour follows
+     * `process.stdout.isTTY`. They differ in exactly the cases this REPL has to
+     * survive — `cno repl < script.txt` on a terminal, and `cno repl > log.txt`
+     * from one.
+     */
+    #stdoutIsatty: boolean = false;
     #reading = false;
     #termWidth = 80;
     #termCursorX = 0;   // cursor X after prompt (start of input area)
@@ -131,13 +145,15 @@ export class CnoRepl {
             colors: true,
             utf8: true,
         };
-        // Set up stdout: use TTY for terminal, Pipe for redirection
+        // Set up stdout: TTY for a terminal, otherwise a Pipe when libuv can
+        // adopt the fd and an fd-level shim when it cannot. `Pipe.open()` used
+        // to run unconditionally here, which made `cno repl > out.txt` die with
+        // ENOTSOCK and `cno repl < in.txt` with EINVAL — see file-stdio.ts.
         if (os.guessHandle(os.STDOUT_FILENO) === 'tty') {
             this.#stdout = new streams.TTY(os.STDOUT_FILENO, false);
+            this.#stdoutIsatty = true;
         } else {
-            const pipe = new streams.Pipe();
-            pipe.open(os.STDOUT_FILENO);
-            this.#stdout = pipe;
+            this.#stdout = openReplOutput(os.STDOUT_FILENO);
         }
 
         if (os.guessHandle(os.STDIN_FILENO) === 'tty') {
@@ -146,9 +162,7 @@ export class CnoRepl {
             this.#isatty = true;
             this.#refreshTermWidth();
         } else {
-            const pipe = new streams.Pipe();
-            pipe.open(os.STDIN_FILENO);
-            this.#stdin = pipe;
+            this.#stdin = openReplInput(os.STDIN_FILENO);
             console.warn('stdin is not a TTY, some features may not work');
         }
 
@@ -182,6 +196,7 @@ export class CnoRepl {
         // Cleanup on exit (TTY restore + close history DB)
         this.#onExit(() => {
             this.#history.close();
+            this.#settleExitCode();
             try {
                 this.#sigintHandle?.close();
             } catch {}
@@ -592,6 +607,9 @@ export class CnoRepl {
 
     #lastCommand = '';
 
+    /** Code lines evaluated in this session, for `.save`. */
+    #sessionLines: string[] = [];
+
     // ==================== Command Implementation ====================
 
     #submitLine(): CommandResult | void {
@@ -609,6 +627,9 @@ export class CnoRepl {
         // Pure meta directives (.q / .help / …) are not worth replaying.
         if (this.#cmd.length && !/^\.[a-z]+\s*$/i.test(this.#cmd)) {
             this.#history.append(this.#cmd);
+            // `.save` writes the code evaluated in THIS session (node's
+            // semantics), which is not the same as the persistent history.
+            if (!/^\.[a-z]+(\s|$)/i.test(this.#cmd)) this.#sessionLines.push(this.#cmd);
         }
         return { type: 'submit', value: this.#cmd } as const;
     }
@@ -769,6 +790,17 @@ export class CnoRepl {
     }
 
     #update(): void {
+        // Non-TTY stdin means there is no cursor to move and no line to
+        // repaint: every printable character used to trigger a full
+        // re-render, so a piped 48-char line emitted 3764 bytes / 506 escape
+        // sequences instead of nothing (node --interactive with a piped stdin
+        // emits 78 bytes and zero escapes; `deno repl -q` emits 20). That
+        // O(n^2) echo storm is invisible interactively but corrupts every
+        // programmatic consumer of REPL stdout, which is how the cli-stage
+        // REPL assertions see it. node's readline takes the same branch via
+        // `terminal: false`.
+        if (!this.#isatty) return;
+
         this.#moveToStart();
 
         if (this.#config.colors) {
@@ -921,10 +953,49 @@ export class CnoRepl {
                 this.#print('\x1b[H\x1b[J');
                 this.#flush();
                 return false;
-            case 'q':
+            case 'q': case 'exit':
+                // `.exit` is the name node and deno both use; `.q` predates it
+                // here and stays as an alias. Omitting `.exit` meant the most
+                // widely known way to leave a REPL printed "Unknown directive".
                 this.#running = false;
                 this.cleanup();
                 return false;
+            case 'save': {
+                const target = rest.trim();
+                if (!target) {
+                    this.#print('.save requires a filename\n');
+                    this.#flush();
+                    return false;
+                }
+                const body = this.#sessionLines.length
+                    ? this.#sessionLines.join('\n') + '\n'
+                    : '';
+                try {
+                    sfs.writeFile(target, engine.encodeString(body));
+                    this.#print(`Session saved to: ${target}\n`);
+                } catch {
+                    // node prints exactly this on an unwritable path.
+                    this.#print(`Failed to save: ${target}\n`);
+                }
+                this.#flush();
+                return false;
+            }
+            case 'editor': {
+                // node's `.editor`: read raw lines until ^D, then evaluate the
+                // whole block as one expression. Reusing paste mode keeps the
+                // existing submit path (and its brace tracking) intact.
+                if (!this.#isatty) {
+                    // Without a terminal there is no way to signal ^D distinctly
+                    // from EOF, so node also refuses. Say so instead of hanging.
+                    this.#print('.editor requires a terminal\n');
+                    this.#flush();
+                    return false;
+                }
+                this.#inPasteMode = true;
+                this.#print('// Entering editor mode (^D to finish, ^C to cancel)\n');
+                this.#flush();
+                return false;
+            }
             case 'u':
                 rest = rest.trim();
                 Reflect.set(globalThis, rest, import.meta.use(rest));
@@ -948,7 +1019,12 @@ export class CnoRepl {
             }
             const result = (await engine.eval<EngineEvalResult>(code, '<eval>', engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)).value;
 
-            this.#print(COLOR.brightWhite);
+            // Colour only on a terminal. These two writes used to be
+            // unconditional, which put `\x1b[97m` ... `\x1b[0m` around every
+            // result even when stdout was a pipe or a file — 2 escapes per
+            // evaluated expression, corrupting any programmatic reader of REPL
+            // stdout. node applies the same rule via `process.stdout.isTTY`.
+            this.#printColor(COLOR.brightWhite);
             this.#flush();
             if (this.#config.hexMode && (typeof result === 'number' || typeof result === 'bigint')) {
                 const hex = typeof result === 'bigint'
@@ -958,7 +1034,8 @@ export class CnoRepl {
             } else {
                 console.log(result);
             }
-            this.#print(COLOR.reset + '\n');
+            this.#printColor(COLOR.reset);
+            this.#print('\n');
             this.#flush();
 
             Reflect.set(globalThis, '_', result);
@@ -973,13 +1050,16 @@ export class CnoRepl {
     #showHelp(): void {
         const sel = (n: boolean) => n ? '*' : ' ';
         console.log(
-            `.h          this help\n` +
+            `.h, .help   this help\n` +
             `.x         ${sel(this.#config.hexMode)} hexadecimal number display\n` +
             `.d         ${sel(!this.#config.hexMode)} decimal number display\n` +
             `.t         ${sel(this.#config.showTime)} toggle timing display\n` +
             `.u          use a built-in c-module and save it to globalThis\n` +
-            `.c          clear the terminal\n` +
-            `.q          exit`
+            `.load       load and evaluate a file in this session\n` +
+            `.save       write this session's code to a file\n` +
+            `.editor     multi-line editor mode (terminal only)\n` +
+            `.c, .clear  clear the terminal\n` +
+            `.q, .exit   exit`
         );
     }
 
@@ -1003,12 +1083,61 @@ export class CnoRepl {
     }
 
     #printError(err: unknown): void {
-        this.#print(COLOR.brightRed);
+        this.#printColor(COLOR.brightRed);
         if (!(err instanceof Error)) this.#print('Throw: ');
         this.#flush();
         console.log(err);
-        this.#print(COLOR.reset + '\n');
+        this.#printColor(COLOR.reset);
+        this.#print('\n');
         this.#flush();
+    }
+
+    /**
+     * Emit an ANSI colour escape, but only when stdout is a terminal.
+     *
+     * Separate from `#print` so the colour decision lives in one place: every
+     * other `#print` carries real text that must survive redirection, whereas a
+     * colour code on a pipe or a file is pure corruption.
+     */
+    #printColor(code: string): void {
+        if (this.#stdoutIsatty && this.#config.colors) this.#print(code);
+    }
+
+    /**
+     * A REPL session that ended normally exits 0, whatever individual
+     * expressions did along the way.
+     *
+     * The cts diagnostics receiver calls `requestFailureExitCode()` for an
+     * unhandled rejection (cts/src/runtime/index.ts:455) and an unhandled job
+     * exception (:483). That is right for `cno run script.js`, where node also
+     * exits 1 — but wrong for an interactive session, where node reports the
+     * error, keeps evaluating, and exits 0 (OBSERVED on v24.18.0: a throwing
+     * `setTimeout` and a `Promise.reject` both exit 0 under `--interactive`).
+     * Without this, `cno repl` exited 1 after any async error, so every REPL
+     * session that touched one reported failure despite working correctly.
+     *
+     * Fixed here rather than in the receiver because the receiver is correct for
+     * every non-REPL entry point; the REPL is the exception and owns the
+     * exception.
+     *
+     * `process.exitCode` is only read here, never a runtime request: the two are
+     * kept in separate slots (src/main.ts:301 writes the private field alone) and
+     * an explicit value wins, including an explicit 0 (resolveExitCode,
+     * src/main.ts:286). So "still undefined" means *only* the runtime asked for
+     * failure — and assigning 0 to that case neutralises the request while
+     * leaving a deliberate `process.exitCode = 3` from the user intact.
+     */
+    #settleExitCode(): void {
+        try {
+            const proc = Reflect.get(globalThis, 'process');
+            if (proc === null || typeof proc !== 'object') return;
+            if (Reflect.get(proc, 'exitCode') === undefined) {
+                Reflect.set(proc, 'exitCode', 0);
+            }
+        } catch {
+            // No process object, or an exotic exitCode setter threw. The status
+            // is not worth failing cleanup over.
+        }
     }
 
     #alert(): void {

@@ -76,7 +76,7 @@ export interface RpcParams {
 		callFrameId?: string | number
 	}
 	compileScript: { expression: string; sourceURL?: string; persistScript?: boolean }
-	runScript: { scriptId: string; objectGroup?: string; returnByValue?: boolean; generatePreview?: boolean; paused?: boolean }
+	runScript: { scriptId: string; objectGroup?: string; returnByValue?: boolean; generatePreview?: boolean; awaitPromise?: boolean; paused?: boolean }
 	releaseObject: { objectId: string }
 	releaseObjectGroup: { objectGroup?: string; groupName?: string }
 	globalLexicalScopeNames: Record<string, never>
@@ -84,7 +84,7 @@ export interface RpcParams {
 	addBinding: { name: string }
 	removeBinding: { name: string }
 	fetchInterceptResult: { requestId: string; result: InterceptResult | null }
-	streamResourceContent: { requestId: string }
+	streamResourceContent: { requestId: string; source?: 'fetch' | 'serve' }
 
 	// control (channel; valid running or paused)
 	addBreakpoint: { url: string; line: number; col?: number }

@@ -13,7 +13,10 @@
 import { isRecord, parseCDPMessage, type CDPMessage } from '../shared/cdp'
 import { CDPError, CdpErrorCode, formatCdpError, type EmitEvent, type CDPDispatcher, type CdpParams } from './dispatcher'
 import type { WorkerEndpoint } from '../transport/worker-endpoint'
+import type { ConsoleDomain } from '../domains/console'
 import type { DebuggerDomain } from '../domains/debugger'
+import type { FetchDomain } from '../domains/fetch'
+import type { NetworkDomain } from '../domains/network'
 import type { RuntimeDomain } from '../domains/runtime'
 
 const engine = import.meta.use('engine');
@@ -23,12 +26,30 @@ type CdpSink = (msg: CDPMessage) => void
 /** Routes domain events to the currently-attached DevTools socket, if any. */
 export class CdpChannel {
 	private sink: CdpSink | null = null
+	private socket: WebSocket | null = null
 
 	setSink(sink: CdpSink): void {
 		this.sink = sink
 	}
+	/** Install `ws` as the owner and return the socket it displaced, if any. */
+	takeSocket(ws: WebSocket): WebSocket | null {
+		const previous = this.socket === ws ? null : this.socket
+		this.socket = ws
+		return previous
+	}
+	clearSocket(ws: WebSocket): void {
+		if (this.socket === ws) this.socket = null
+	}
 	clearSink(sink: CdpSink): void {
 		if (this.sink === sink) this.sink = null
+	}
+	/**
+	 * Unconditionally detach the current sink. Used when an incoming connection
+	 * displaces an existing one: the caller does not hold the old sink reference,
+	 * and the teardown that follows must not emit into the incoming socket.
+	 */
+	dropSink(): void {
+		this.sink = null
 	}
 	isActive(sink: CdpSink): boolean {
 		return this.sink === sink
@@ -50,17 +71,51 @@ export interface ConnectionDeps {
 	entryUrl: string
 	debuggerDomain: DebuggerDomain
 	runtimeDomain: RuntimeDomain
+	consoleDomain: ConsoleDomain
+	networkDomain: NetworkDomain
+	fetchDomain: FetchDomain
 }
 
 export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): void {
-	const { channel, dispatcher, rpc, debuggerDomain, runtimeDomain } = deps
+	const { channel, dispatcher, rpc, debuggerDomain, runtimeDomain, consoleDomain, networkDomain, fetchDomain } = deps
+
+	/**
+	 * Return every domain to its detached state. Domain `enabled` flags, paused
+	 * Fetch requests and the paused safepoint are all per-SESSION state in CDP, so
+	 * they must not survive the client that created them.
+	 */
+	const releaseSession = (): void => {
+		debuggerDomain.setConnected(false)
+		runtimeDomain.setConnected(false)
+		consoleDomain.setConnected(false)
+		networkDomain.setConnected(false)
+		fetchDomain.setConnected(false)
+		rpc.notify('setConnected', { connected: false })
+	}
 
 	const thisSend: CdpSink = (msg) => ws.send(JSON.stringify(msg))
+	// Only one client can own the domains; drop the previous socket instead of
+	// leaving it half-attached (its commands would be silently ignored forever).
+	const superseded = channel.takeSocket(ws)
+	if (superseded) {
+		// The displaced socket's own onclose cannot do this: it early-returns on
+		// `!channel.isActive(...)`, which is already false by the time a close
+		// handshake completes — and a client that vanished may never send one at all.
+		// Without this the previous session's paused Fetch requests were held forever
+		// and its Fetch.enable leaked into the new session.
+		//
+		// Ordered deliberately: drop the sink FIRST so the teardown's own events
+		// (Debugger.resumed) are not delivered to the incoming client as if they
+		// belonged to it.
+		channel.dropSink()
+		releaseSession()
+		try { superseded.close() } catch { /* already gone */ }
+	}
 	channel.setSink(thisSend)
 
 	debuggerDomain.setConnected(true)
 	runtimeDomain.setConnected(true)
-	void rpc.call('setConnected', { connected: true })
+	rpc.notify('setConnected', { connected: true })
 
 	ws.onmessage = (ev): void => {
 		if (!channel.isActive(thisSend)) return
@@ -77,7 +132,20 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 			return
 		}
 		const { id, method, params, sessionId } = message
-		if (id == null) return
+		// Never drop a command silently: a client that sent a malformed id would
+		// otherwise wait forever with no indication anything was wrong. Real node
+		// answers every shape — MEASURED on v24.18: `{"method":"Runtime.enable"}`
+		// with no id returns
+		// {"error":{"code":-32600,"message":"Message must have integer 'id' property"}}.
+		// `parseCDPMessage` only keeps a number-or-null id, so a string or float id
+		// arrives here as absent and lands in this branch too; node rejects those as
+		// well. Messages carrying `result`/`error` are replies rather than commands
+		// and legitimately have no id for us, so they stay ignored.
+		if (id == null) {
+			if ('result' in message || 'error' in message) return
+			thisSend({ id: null, error: { code: CdpErrorCode.InvalidRequest, message: "Message must have integer 'id' property" } })
+			return
+		}
 		if (!method) {
 			thisSend({ id, error: { code: CdpErrorCode.InvalidRequest, message: 'CDP command method is required' }, sessionId })
 			return
@@ -99,14 +167,19 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 			})
 	}
 
-	ws.onclose = (): void => {
-		// Ignore a close from a socket that has already been superseded.
+	const detach = (): void => {
+		// Ignore a close from a socket that has already been superseded; the
+		// incoming connection released the session on its behalf.
 		if (!channel.isActive(thisSend)) return
 		channel.clearSink(thisSend)
-		debuggerDomain.setConnected(false)
-		runtimeDomain.setConnected(false)
-		void rpc.call('setConnected', { connected: false })
+		channel.clearSocket(ws)
+		releaseSession()
 	}
+
+	ws.onclose = detach
+	// A transport error may never produce a clean close; treat it as a detach so
+	// paused execution and intercepted requests are never stranded.
+	ws.onerror = detach
 }
 
 function normalizeParams(params: unknown): CdpParams {

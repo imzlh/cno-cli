@@ -593,3 +593,142 @@ Deno.test({ name: 'https: listener error after headers closes TLS socket', timeo
         await new Promise<void>((resolve) => server.close(() => resolve()));
     }
 });
+
+// --- TLS options reaching the transport ------------------------------------
+
+type HttpsServeResult = { server: https.Server; port: number };
+
+async function serveHttps(options: Parameters<typeof https.createServer>[0]): Promise<HttpsServeResult> {
+    const server = https.createServer(options ?? {}, (_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('served');
+    });
+    server.on('tlsClientError', () => {});
+    await new Promise<void>((resolve, reject) => {
+        server.listen(0, '127.0.0.1', () => resolve());
+        server.once('error', reject);
+    });
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('no port');
+    return { server, port: addr.port };
+}
+
+type HttpsOutcome = { status: number | null; body: string | null; error: string | null };
+
+function requestHttps(options: Record<string, unknown>): Promise<HttpsOutcome> {
+    return new Promise((resolve) => {
+        const outcome: HttpsOutcome = { status: null, body: null, error: null };
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(outcome);
+        };
+        const timer = setTimeout(() => { outcome.error = outcome.error ?? 'timeout'; finish(); }, 8000);
+        const req = https.request(options as Parameters<typeof https.request>[0], (res) => {
+            outcome.status = res.statusCode ?? null;
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk: string) => { body += chunk; });
+            res.on('end', () => { outcome.body = body; finish(); });
+            res.on('error', (err: Error) => { outcome.error = String(err.message); finish(); });
+        });
+        req.on('error', (err: Error) => { outcome.error = String(err.message); finish(); });
+        req.end();
+    });
+}
+
+Deno.test({ name: 'https: an explicit ca on the request verifies the peer', timeout: 20000 }, async () => {
+    const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
+    const { server, port } = await serveHttps({ cert, key });
+    try {
+        const outcome = await requestHttps({ host: '127.0.0.1', port, path: '/', ca: cert, servername: 'localhost' });
+        strictEqual(outcome.status, 200, `request failed: ${outcome.error}`);
+        strictEqual(outcome.body, 'served');
+    } finally { server.close(); }
+});
+
+Deno.test({ name: 'https: an untrusted certificate is rejected by default', timeout: 20000 }, async () => {
+    const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
+    const { server, port } = await serveHttps({ cert, key });
+    try {
+        const outcome = await requestHttps({ host: '127.0.0.1', port, path: '/', servername: 'localhost' });
+        strictEqual(outcome.status, null, 'a self-signed certificate must not be served by default');
+        ok(outcome.error, 'the failure must surface as an error');
+    } finally { server.close(); }
+});
+
+Deno.test({ name: 'https: Agent options reach the TLS layer', timeout: 20000 }, async () => {
+    // Agent.createConnection read only the per-request options, so every TLS
+    // setting given to `new https.Agent({...})` was dropped. Combined with a
+    // system-CA lookup that returned a file path where PEM was required, that
+    // made every agent-backed (i.e. keep-alive) https request fail.
+    const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
+    const { server, port } = await serveHttps({ cert, key });
+    const agent = new https.Agent({ ca: cert, keepAlive: true });
+    try {
+        const outcome = await requestHttps({ host: '127.0.0.1', port, path: '/', agent, servername: 'localhost' });
+        strictEqual(outcome.status, 200, `agent ca was not honoured: ${outcome.error}`);
+    } finally {
+        try { agent.destroy(); } catch { /* already closed */ }
+        server.close();
+    }
+});
+
+Deno.test({ name: 'https: rejectUnauthorized:false on the Agent is honoured', timeout: 20000 }, async () => {
+    const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
+    const { server, port } = await serveHttps({ cert, key });
+    const agent = new https.Agent({ rejectUnauthorized: false, keepAlive: true });
+    try {
+        const outcome = await requestHttps({ host: '127.0.0.1', port, path: '/', agent, servername: 'localhost' });
+        strictEqual(outcome.status, 200, `agent rejectUnauthorized was dropped: ${outcome.error}`);
+    } finally {
+        try { agent.destroy(); } catch { /* already closed */ }
+        server.close();
+    }
+});
+
+Deno.test({ name: 'https: an Agent must not downgrade verification for an untrusted peer', timeout: 20000 }, async () => {
+    // The merge must not let an agent default weaken the request: with
+    // rejectUnauthorized left at its default, a self-signed peer stays refused.
+    const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
+    const { server, port } = await serveHttps({ cert, key });
+    const agent = new https.Agent({ keepAlive: true });
+    try {
+        const outcome = await requestHttps({ host: '127.0.0.1', port, path: '/', agent, servername: 'localhost' });
+        strictEqual(outcome.status, null, 'a self-signed peer must not be served');
+        ok(outcome.error, 'the failure must surface as an error');
+    } finally {
+        try { agent.destroy(); } catch { /* already closed */ }
+        server.close();
+    }
+});
+
+Deno.test({ name: 'https: keep-alive reuses one TLS agent across sequential requests', timeout: 25000 }, async () => {
+    const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
+    const { server, port } = await serveHttps({ cert, key });
+    const agent = new https.Agent({ ca: cert, keepAlive: true, maxSockets: 1 });
+    try {
+        for (const path of ['/one', '/two', '/three']) {
+            const outcome = await requestHttps({ host: '127.0.0.1', port, path, agent, servername: 'localhost' });
+            strictEqual(outcome.status, 200, `${path} failed: ${outcome.error}`);
+            strictEqual(outcome.body, 'served');
+        }
+    } finally {
+        try { agent.destroy(); } catch { /* already closed */ }
+        server.close();
+    }
+});
+
+Deno.test({ name: 'https: requestCert with rejectUnauthorized refuses a client with no certificate', timeout: 20000 }, async () => {
+    // The https server forwards these to the TLS server, which ran with
+    // SSL_VERIFY_NONE: an anonymous client was served a 200.
+    const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
+    const { server, port } = await serveHttps({ cert, key, ca: cert, requestCert: true, rejectUnauthorized: true });
+    try {
+        const outcome = await requestHttps({ host: '127.0.0.1', port, path: '/', ca: cert, servername: 'localhost' });
+        strictEqual(outcome.status, null, 'a client with no certificate must not be served');
+        ok(outcome.error, 'the failure must surface as an error');
+    } finally { server.close(); }
+});

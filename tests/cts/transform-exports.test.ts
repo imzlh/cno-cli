@@ -1,4 +1,5 @@
 import { strictEqual, ok } from 'node:assert';
+import { join } from 'node:path';
 import { Transformer } from '../../cts/src/source/transform.ts';
 import { OxcTranspiler } from '../../cts/src/oxc.ts';
 import { transform } from '../../cts/deps/sucrase/src/index.ts';
@@ -338,8 +339,15 @@ Deno.test('cts: sucrase react displayName uses parent directory for index files'
 
 // --- 21. resolveExports: "exports" "." maps to declared file ---------------
 
+// cts is POSIX-internally: resolver entry points strip a file-URL's leading
+// slash-drive ("/D:/x" -> "D:/x") before createCtx/readPkg ever see a dir.
+// `new URL(...).pathname` yields that unnormalized "/D:/..." form, which is not
+// a filesystem path on Windows (node: existsSync('/D:/...') === false), so it
+// must be converted here rather than handed to the resolver raw.
+const fixtureDir = join(import.meta.dirname!, 'fixtures', 'cts-pkg-exports').replaceAll('\\', '/');
+
 Deno.test('cts: resolveExports maps "." to package exports', () => {
-    const dir = new URL('./fixtures/cts-pkg-exports/', import.meta.url).pathname;
+    const dir = fixtureDir;
     clearPkgCache();
     const ctx = createCtx(dir);
     ok(ctx, 'createCtx must return a context for a dir with package.json');
@@ -352,10 +360,11 @@ Deno.test('cts: resolveExports maps "." to package exports', () => {
 // --- 22. resolveExports: subpath "./utils" resolves under exports -----------
 
 Deno.test('cts: resolveExports maps "./utils" to subpath target', () => {
-    const dir = new URL('./fixtures/cts-pkg-exports/', import.meta.url).pathname;
+    const dir = fixtureDir;
     clearPkgCache();
-    const ctx = createCtx(dir)!;
-    const r = resolveExports(ctx, './utils');
+    const ctx = createCtx(dir);
+    ok(ctx, 'createCtx must return a context for a dir with package.json');
+    const r = resolveExports(ctx!, './utils');
     ok(r, 'resolveExports("./utils") must resolve');
     ok(r!.path.endsWith('utils.js'), `expected utils.js, got ${r!.path}`);
 });
@@ -363,10 +372,14 @@ Deno.test('cts: resolveExports maps "./utils" to subpath target', () => {
 // --- 23. resolveExports: unknown subpath returns null ---------------------
 
 Deno.test('cts: resolveExports returns null for an unmapped subpath', () => {
-    const dir = new URL('./fixtures/cts-pkg-exports/', import.meta.url).pathname;
+    const dir = fixtureDir;
     clearPkgCache();
-    const ctx = createCtx(dir)!;
-    const r = resolveExports(ctx, './nope');
+    const ctx = createCtx(dir);
+    // Guard before the assertion below: a null ctx would make `resolveExports`
+    // throw, and asserting `=== null` on a non-existent package would pass for
+    // the wrong reason.
+    ok(ctx, 'createCtx must return a context for a dir with package.json');
+    const r = resolveExports(ctx!, './nope');
     strictEqual(r, null, 'unmapped subpath must resolve to null');
 });
 

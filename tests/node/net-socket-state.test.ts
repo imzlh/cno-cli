@@ -14,6 +14,23 @@ function close(server: net.Server): Promise<void> {
     return new Promise((resolve) => server.close(() => resolve()));
 }
 
+// Windows has no Unix-domain sockets on filesystem paths — libuv maps a pipe
+// bind to CreateNamedPipe, which requires the `\\.\pipe\` namespace. Real Node
+// v24.18 fails a tmpdir `.sock` path with `listen EACCES` on Windows too, so
+// the path must be platform-specific rather than the code bent to accept one.
+const isWindows = process.platform === 'win32';
+function pipePathFor(tag: string): string {
+    const unique = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return isWindows
+        ? `\\\\.\\pipe\\cno-net-${tag}-${unique}`
+        : join(tmpdir(), `cno-net-${tag}-${unique}.sock`);
+}
+function unlinkPipe(pipePath: string): void {
+    // Named pipes are kernel objects, removed with the last handle.
+    if (isWindows) return;
+    try { rmSync(pipePath); } catch { /* already gone */ }
+}
+
 // --- 1. readyState transitions opening -> open on connect -------------------
 
 Deno.test({ name: 'net: Socket readyState transitions opening -> open', timeout: 10000 }, async () => {
@@ -228,18 +245,19 @@ Deno.test({ name: 'net: setKeepAlive accepts Node millisecond initialDelay', tim
 });
 
 Deno.test({ name: 'net: Unix pipe server supports ref unref and close', timeout: 10000 }, async () => {
-    const pipePath = join(tmpdir(), `cno-net-unref-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`);
+    const pipePath = pipePathFor('unref');
     const server = net.createServer();
     try {
         await new Promise<void>((resolve, reject) => {
             server.once('error', reject);
             server.listen(pipePath, () => resolve());
         });
+        strictEqual(server.address(), pipePath, 'pipe address() is the bare path string');
         strictEqual(server.unref(), server);
         strictEqual(server.ref(), server);
         await close(server);
     } finally {
-        try { rmSync(pipePath); } catch {}
+        unlinkPipe(pipePath);
     }
 });
 
@@ -249,7 +267,9 @@ Deno.test({ name: 'net: Unix pipe socket unref allows process exit', timeout: 10
         import { tmpdir } from 'node:os';
         import { join } from 'node:path';
 
-        const pipePath = join(tmpdir(), \`cno-net-pipe-unref-\${process.pid}.sock\`);
+        const pipePath = process.platform === 'win32'
+            ? \`\\\\\\\\.\\\\pipe\\\\cno-net-pipe-unref-\${process.pid}\`
+            : join(tmpdir(), \`cno-net-pipe-unref-\${process.pid}.sock\`);
         const server = net.createServer((socket) => socket.unref());
         server.listen(pipePath, () => {
             server.unref();
@@ -303,6 +323,50 @@ Deno.test({ name: 'net: socket readable event supports read() consumption', time
             sock.on('error', reject);
         });
         strictEqual(body, 'readable-data');
+    } finally {
+        await close(server);
+    }
+});
+
+Deno.test({ name: 'net: readable data survives a read() deferred past EOF', timeout: 10000 }, async () => {
+    // The socket's EOF handler clears `socket.readable` right after push(null).
+    // Duplex.read() used to refuse to hand back already-buffered chunks once
+    // that flag was false, so a consumer that read on a later macrotask than
+    // the 'readable' emit saw an empty body and never got 'end' — silent data
+    // loss with no error anywhere.
+    const server = net.createServer((s) => {
+        s.end('deferred-payload');
+    });
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+
+        const result = await new Promise<{ body: string; ended: boolean }>((resolve, reject) => {
+            const sock = net.connect(addr.port, '127.0.0.1');
+            const chunks: Buffer[] = [];
+            let ended = false;
+            let deferred = false;
+            sock.on('readable', () => {
+                if (!deferred) {
+                    // Deliberately do not read now — read on a later macrotask.
+                    deferred = true;
+                    setTimeout(() => {
+                        let chunk: Buffer | null;
+                        while ((chunk = sock.read() as Buffer | null) !== null) chunks.push(chunk);
+                    }, 30);
+                    return;
+                }
+                let chunk: Buffer | null;
+                while ((chunk = sock.read() as Buffer | null) !== null) chunks.push(chunk);
+            });
+            sock.on('end', () => { ended = true; });
+            sock.on('close', () => resolve({ body: Buffer.concat(chunks).toString('utf8'), ended }));
+            sock.on('error', reject);
+        });
+
+        strictEqual(result.body, 'deferred-payload');
+        ok(result.ended, "'end' must fire once the buffer drains");
     } finally {
         await close(server);
     }
@@ -654,7 +718,7 @@ Deno.test({ name: 'net: server.close waits for active sockets without destroying
 });
 
 Deno.test({ name: 'net: object path form connects to Unix sockets', timeout: 10000 }, async () => {
-    const pipePath = join(tmpdir(), `cno-net-object-path-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`);
+    const pipePath = pipePathFor('object-path');
     const server = net.createServer((socket) => socket.end('ok'));
     try {
         await new Promise<void>((resolve, reject) => {
@@ -671,7 +735,7 @@ Deno.test({ name: 'net: object path form connects to Unix sockets', timeout: 100
         strictEqual(body, 'ok');
     } finally {
         await close(server);
-        try { rmSync(pipePath); } catch {}
+        unlinkPipe(pipePath);
     }
 });
 

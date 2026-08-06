@@ -3,6 +3,30 @@ import { deepStrictEqual, rejects, strictEqual, ok, throws } from 'node:assert';
 // ============================================================================
 // Cache API — Cache + CacheStorage
 // ============================================================================
+//
+// Cache keys must be ABSOLUTE URLs in a server-side runtime.
+//
+// The Fetch spec parses the `Request` constructor's string `input` "with
+// baseURL as base", where baseURL is the *entry settings object's API base
+// URL*. In a browser that is the document URL, so `new Request('/a')` resolves
+// against it. Neither cno, Node, nor Deno has a document, so there is no base
+// URL and a scheme-relative path cannot be parsed. Per the Cache API spec,
+// `Cache.put`/`match`/`delete`/`keys` funnel a string key through that same
+// `Request` constructor, so the requirement propagates to every cache key.
+//
+// OBSERVED 2026-08-02:
+//   node -e "new Request('/a')"
+//     -> TypeError: Failed to parse URL from /a
+//   deno: new Request('/a')
+//     -> TypeError: Invalid URL: '/a'
+//   deno: (await caches.open(n)).put('/a', new Response('body-a'))
+//     -> TypeError: Invalid URL: '/a'
+//
+// cno's `parseRequestUrl` (cno/src/webapi/fetch/request.ts) now throws the
+// byte-identical Node message, so these tests were converted from relative to
+// absolute keys. They previously asserted pre-fix behaviour, where `this.url`
+// was assigned the raw input unparsed.
+const BASE = 'https://cache-test.example';
 
 // --- 1. caches global exists ----------------------------------------------
 
@@ -24,8 +48,8 @@ Deno.test('caches.open: returns a Cache', async () => {
 
 Deno.test('Cache: put then match returns the Response', async () => {
     const c = await caches.open('test-cache-2');
-    await c.put('/a', new Response('body-a'));
-    const r = await c.match('/a');
+    await c.put(`${BASE}/a`, new Response('body-a'));
+    const r = await c.match(`${BASE}/a`);
     ok(r, 'match must return a Response');
     strictEqual(r!.status, 200);
     strictEqual(await r!.text(), 'body-a');
@@ -35,7 +59,7 @@ Deno.test('Cache: put then match returns the Response', async () => {
 
 Deno.test('Cache: match on missing returns undefined', async () => {
     const c = await caches.open('test-cache-3');
-    const r = await c.match('/missing');
+    const r = await c.match(`${BASE}/missing`);
     strictEqual(r, undefined);
 });
 
@@ -43,9 +67,9 @@ Deno.test('Cache: match on missing returns undefined', async () => {
 
 Deno.test('Cache: put overwrites previous entry', async () => {
     const c = await caches.open('test-cache-4');
-    await c.put('/x', new Response('v1'));
-    await c.put('/x', new Response('v2'));
-    const r = await c.match('/x');
+    await c.put(`${BASE}/x`, new Response('v1'));
+    await c.put(`${BASE}/x`, new Response('v2'));
+    const r = await c.match(`${BASE}/x`);
     strictEqual(await r!.text(), 'v2');
 });
 
@@ -53,18 +77,18 @@ Deno.test('Cache: put overwrites previous entry', async () => {
 
 Deno.test('Cache: delete removes entry', async () => {
     const c = await caches.open('test-cache-5');
-    await c.put('/d', new Response('data'));
-    ok(await c.delete('/d'), 'delete must return true');
-    strictEqual(await c.match('/d'), undefined);
-    ok(!(await c.delete('/d')), 'delete on missing returns false');
+    await c.put(`${BASE}/d`, new Response('data'));
+    ok(await c.delete(`${BASE}/d`), 'delete must return true');
+    strictEqual(await c.match(`${BASE}/d`), undefined);
+    ok(!(await c.delete(`${BASE}/d`)), 'delete on missing returns false');
 });
 
 // --- 7. Cache matchAll returns all ----------------------------------------
 
 Deno.test('Cache: matchAll returns all entries', async () => {
     const c = await caches.open('test-cache-6');
-    await c.put('/1', new Response('one'));
-    await c.put('/2', new Response('two'));
+    await c.put(`${BASE}/1`, new Response('one'));
+    await c.put(`${BASE}/2`, new Response('two'));
     const all = await c.matchAll();
     ok(all.length >= 2);
 });
@@ -73,7 +97,7 @@ Deno.test('Cache: matchAll returns all entries', async () => {
 
 Deno.test('Cache: keys returns Request objects', async () => {
     const c = await caches.open('test-cache-7');
-    await c.put('/k', new Response('kv'));
+    await c.put(`${BASE}/k`, new Response('kv'));
     const keys = await c.keys();
     ok(keys.length >= 1);
     ok(keys[0] instanceof Request);
@@ -84,9 +108,9 @@ Deno.test('Cache: keys returns Request objects', async () => {
 
 Deno.test('Cache: put accepts a Request', async () => {
     const c = await caches.open('test-cache-8');
-    const req = new Request('/req-path');
+    const req = new Request(`${BASE}/req-path`);
     await c.put(req, new Response('req-body'));
-    const r = await c.match('/req-path');
+    const r = await c.match(`${BASE}/req-path`);
     strictEqual(await r!.text(), 'req-body');
 });
 
@@ -105,10 +129,14 @@ Deno.test('caches: has/delete/keys manage cache names', async () => {
 
 Deno.test('caches.match: global match across caches', async () => {
     const c = await caches.open('test-cache-9');
-    await c.put('/global', new Response('global-body'));
-    // caches.match may or may not find it depending on impl; just smoke
-    const r = await caches.match('/global');
-    ok(r === undefined || r instanceof Response);
+    await c.put(`${BASE}/global`, new Response('global-body'));
+    // Oracle: Deno 2.9.3 returns the stored Response with its body intact
+    // (`deno eval` on this same sequence prints "Response body=gb"), so a
+    // global match MUST hit. The previous `r === undefined || r instanceof
+    // Response` accepted a total miss and could never fail.
+    const r = await caches.match(`${BASE}/global`);
+    ok(r instanceof Response, 'caches.match must find a response put into an open cache');
+    strictEqual(await r.text(), 'global-body');
 });
 
 // --- 12. Cache put with Vary header ---------------------------------------
@@ -117,10 +145,33 @@ Deno.test('Cache: put with Vary header distinguishes by request header', async (
     const c = await caches.open('test-cache-10');
     const res = new Response('vary-body');
     res.headers.set('Vary', 'Accept');
-    await c.put(new Request('/vary', { headers: { Accept: 'text/html' } }), res);
+    await c.put(new Request(`${BASE}/vary`, { headers: { Accept: 'text/html' } }), res);
     // Different Accept should not match
-    const miss = await c.match(new Request('/vary', { headers: { Accept: 'application/json' } }));
+    const miss = await c.match(new Request(`${BASE}/vary`, { headers: { Accept: 'application/json' } }));
     strictEqual(miss, undefined, 'different Vary header must not match');
+});
+
+// --- 13. relative keys are rejected, matching Node and Deno ----------------
+//
+// Pins the contract the tests above were converted for. A server-side runtime
+// has no API base URL, so a scheme-relative key cannot be resolved.
+// OBSERVED: Node v24.18.0 throws `TypeError: Failed to parse URL from /a`;
+// Deno 2.9.3 throws `TypeError: Invalid URL: '/a'` from both `new Request` and
+// `Cache.put`. cno matches Node's message byte-for-byte.
+
+Deno.test('Cache: relative keys are rejected because there is no base URL', async () => {
+    throws(() => new Request('/a'), TypeError);
+    throws(() => new Request('/a'), /Failed to parse URL from \/a/);
+
+    const cacheName = `test-cache-relative-${Deno.pid}-${Date.now()}`;
+    const c = await caches.open(cacheName);
+    try {
+        await rejects(c.put('/a', new Response('body-a')), TypeError);
+        await rejects(c.match('/a') as Promise<unknown>, TypeError);
+        await rejects(c.delete('/a') as Promise<unknown>, TypeError);
+    } finally {
+        await caches.delete(cacheName);
+    }
 });
 
 Deno.test('Cache upstream: Cache is an illegal constructor', () => {

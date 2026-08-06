@@ -1,5 +1,7 @@
 import { deepStrictEqual, strictEqual, ok, throws } from 'node:assert';
 
+// Verified against Node v24 — see the `file:` / opaque-path cases at the end.
+
 // ============================================================================
 // URL — WHATWG URL Standard edge cases
 // ============================================================================
@@ -350,6 +352,66 @@ Deno.test('URL upstream: Deno.inspect preserves explicit empty query without exp
 });
 
 // --- helper ---------------------------------------------------------------
+
+Deno.test('URL: file host state handles Windows drive letters and localhost', () => {
+    // A drive letter in host position is a path, not a host.
+    strictEqual(new URL('file://C:/x').href, 'file:///C:/x');
+    strictEqual(new URL('file://C:/x').host, '');
+    strictEqual(new URL('file://C:/x').pathname, '/C:/x');
+    strictEqual(new URL('file://C|/x').href, 'file:///C:/x');
+
+    // `localhost` becomes the empty host for file: only.
+    strictEqual(new URL('file://localhost/C:/x').href, 'file:///C:/x');
+    strictEqual(new URL('file://LOCALHOST/C:/x').href, 'file:///C:/x');
+    strictEqual(new URL('http://localhost/x').host, 'localhost');
+
+    // A real UNC host is preserved.
+    strictEqual(new URL('file://server/share/f').host, 'server');
+
+    // `C|` normalizes to `C:`, and backslashes are path separators.
+    strictEqual(new URL('file:///C|/x').pathname, '/C:/x');
+    strictEqual(new URL('file:///C:' + '\\' + 'x' + '\\' + 'y').pathname, '/C:/x/y');
+});
+
+Deno.test('URL: backslash is a path separator only for special schemes', () => {
+    strictEqual(new URL('http://a.com/a' + '\\' + 'b').pathname, '/a/b');
+    strictEqual(new URL('file:///a' + '\\' + 'b').pathname, '/a/b');
+    // Non-special schemes keep it as literal path data, including through the setter.
+    const nonSpecial = new URL('abc://h/a' + '\\' + 'b');
+    strictEqual(nonSpecial.pathname, '/a' + '\\' + 'b');
+    strictEqual(nonSpecial.href, 'abc://h/a' + '\\' + 'b');
+    nonSpecial.pathname = '/c' + '\\' + 'd';
+    strictEqual(nonSpecial.href, 'abc://h/c' + '\\' + 'd');
+    // Query and fragment are never rewritten.
+    strictEqual(new URL('http://a.com/?q=a' + '\\' + 'b').search, '?q=a' + '\\' + 'b');
+    strictEqual(new URL('http://a.com/#a' + '\\' + 'b').hash, '#a' + '\\' + 'b');
+});
+
+Deno.test('URL: opaque paths serialize verbatim without a leading slash', () => {
+    strictEqual(new URL('data:text/plain,hi').href, 'data:text/plain,hi');
+    strictEqual(new URL('data:text/plain,hi').pathname, 'text/plain,hi');
+    strictEqual(new URL('data:text/plain;base64,aGk=').href, 'data:text/plain;base64,aGk=');
+    strictEqual(new URL('mailto:a@b.com').pathname, 'a@b.com');
+    strictEqual(new URL('javascript:alert(1)').href, 'javascript:alert(1)');
+    strictEqual(new URL('abc:opaque/thing').pathname, 'opaque/thing');
+    // A blob: URL keeps its inner origin intact.
+    strictEqual(new URL('blob:http://a.com/uuid-1').href, 'blob:http://a.com/uuid-1');
+    strictEqual(new URL('blob:http://a.com/uuid-1').pathname, 'http://a.com/uuid-1');
+
+    // Query and fragment still split off an opaque path.
+    const u = new URL('data:text/plain,a?b#c');
+    strictEqual(u.pathname, 'text/plain,a');
+    strictEqual(u.search, '?b');
+    strictEqual(u.hash, '#c');
+
+    // The pathname setter is a no-op on an opaque path.
+    const d = new URL('data:text/plain,hi');
+    d.pathname = '/other';
+    strictEqual(d.href, 'data:text/plain,hi');
+
+    // A slashed non-special scheme still has a normal path.
+    strictEqual(new URL('abc://h/p').pathname, '/p');
+});
 
 function deepStrictEqual(a: unknown, b: unknown) {
     strictEqual(JSON.stringify(a), JSON.stringify(b));

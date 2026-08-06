@@ -153,8 +153,18 @@ Deno.test('deno upstream: timer web compatibility edge cases', async () => {
         });
     }
 
+    // No brand check on any receiver, measured against BOTH oracles: real
+    // Deno 2.9.3 and Node v24.18.0 each accept all nine of these (9 accepted,
+    // 0 thrown). This block previously asserted `throws(..., TypeError)`, which
+    // no upstream runtime does — the same defect-encoding assertion existed in
+    // tests/webapi/basic.test.ts and was corrected there for the same reason.
+    // A brand check is in fact impossible upstream: the globals and the
+    // `node:timers` exports are the same function objects, so `timers.setTimeout(...)`
+    // is itself a method call with a non-global receiver, and rejecting those
+    // breaks every fake-timer library (sinon, @sinonjs/fake-timers, jest).
     for (const thisArg of [0, '', true, false, {}, [], 'foo', () => {}, Object.prototype]) {
-        throws(() => setTimeout.call(thisArg, () => {}, 1), TypeError);
+        const handle = setTimeout.call(thisArg, () => {}, 1);
+        clearTimeout(handle);
     }
 
     let valueOfCalled = false;

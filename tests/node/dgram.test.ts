@@ -274,12 +274,85 @@ Deno.test('dgram: validates socket type and unbound address state', () => {
 Deno.test('dgram: validates ttl arguments before socket options', () => {
     const s = dgram.createSocket('udp4');
     try {
+        // libuv's SOCKOPT_SETTER range-checks BEFORE the INVALID_SOCKET check,
+        // so range errors surface as EINVAL even on a never-bound socket, while
+        // an in-range value reaches the EBADF check. Verified against Node
+        // v24.18 on Windows.
         throws(() => s.setTTL('1' as unknown as number), TypeError);
         throws(() => s.setTTL(0), /EINVAL/);
         throws(() => s.setTTL(256), /EINVAL/);
+        throws(() => s.setTTL(64), /EBADF/);
+        // VALIDATE_MULTICAST_TTL accepts -1..255, so 0 is in range and hits EBADF.
+        throws(() => s.setMulticastTTL(0), /EBADF/);
+        throws(() => s.setMulticastTTL(1), /EBADF/);
+        throws(() => s.setMulticastTTL(256), /EINVAL/);
+        throws(() => s.setMulticastTTL(-2), /EINVAL/);
+    } finally {
+        s.close();
+    }
+});
+
+Deno.test('dgram: ttl and multicast options apply once bound', async () => {
+    const s = dgram.createSocket('udp4');
+    try {
+        await new Promise<void>((resolve) => s.bind(0, '127.0.0.1', resolve));
         strictEqual(s.setTTL(64), 64);
-        throws(() => s.setMulticastTTL(0), /EINVAL/);
         strictEqual(s.setMulticastTTL(1), 1);
+        strictEqual(s.setMulticastTTL(-1), -1);
+        strictEqual(s.setMulticastLoopback(true), true);
+        strictEqual(s.setMulticastInterface('0.0.0.0'), undefined);
+        strictEqual(s.setBroadcast(true), undefined);
+    } finally {
+        s.close();
+    }
+});
+
+// send() offset/length were sliced with a raw subarray, so out-of-range values
+// silently clamped instead of throwing. Node bounds-checks via its internal
+// sliceBuffer, which coerces both with `>>> 0` BEFORE comparing -- that coercion
+// is why a negative offset reports 'offset' while a negative length reports
+// 'length'. All five cases measured against node v24.18.0.
+Deno.test('dgram: send() bounds-checks offset and length like Node', async () => {
+    const s = dgram.createSocket('udp4');
+    try {
+        await new Promise<void>((resolve) => s.bind(0, '127.0.0.1', resolve));
+        const port = s.address()!.port;
+        const buf = Buffer.from('abcdefghij');
+        const noop = () => {};
+        const oob = (name: string) => (err: unknown) => {
+            const e = err as { code?: string; message?: string };
+            return e?.code === 'ERR_BUFFER_OUT_OF_BOUNDS' && e.message === `"${name}" is outside of buffer bounds`;
+        };
+
+        throws(() => s.send(buf, -1, 3, port, '127.0.0.1', noop), oob('offset'));
+        throws(() => s.send(buf, 20, 3, port, '127.0.0.1', noop), oob('offset'));
+        throws(() => s.send(buf, 0, 99, port, '127.0.0.1', noop), oob('length'));
+        throws(() => s.send(buf, 0, -5, port, '127.0.0.1', noop), oob('length'));
+        throws(() => s.send(buf, 5, 6, port, '127.0.0.1', noop), oob('length'));
+
+        // offset == byteLength with length 0 is in bounds for Node.
+        s.send(buf, 10, 0, port, '127.0.0.1', noop);
+    } finally {
+        s.close();
+    }
+});
+
+Deno.test('dgram: send() reports a bad buffer list under Node’s argument name', () => {
+    const s = dgram.createSocket('udp4');
+    try {
+        // Node names the whole list "buffer list arguments" and reports the Array
+        // as the received value, not the offending element under "buffer".
+        throws(
+            () => s.send([1, 2] as unknown as Uint8Array[], 1234, '127.0.0.1', () => {}),
+            (err: unknown) => {
+                const e = err as { code?: string; message?: string };
+                return e?.code === 'ERR_INVALID_ARG_TYPE'
+                    && (e.message ?? '').includes('"buffer list arguments"')
+                    && (e.message ?? '').includes('Received an instance of Array');
+            },
+        );
+        // A well-formed mixed list stays valid.
+        s.send([Buffer.from('x'), 'y'], 1234, '127.0.0.1', () => {});
     } finally {
         s.close();
     }

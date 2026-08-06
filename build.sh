@@ -1,5 +1,7 @@
 #!/usr/bin/env sh
 # Build cno + ext-oxc and collect everything into dist/exe/
+# ext-oxc is OPTIONAL: it needs a Rust toolchain. If cargo is missing the
+# ext-oxc step is skipped with a notice and the build still succeeds.
 set -eu
 
 BUILD_DIR="build"
@@ -10,17 +12,30 @@ DIST_DIR="dist/exe"
 cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$BUILD_DIR" --config Release --parallel
 
-# ── 2. ext-oxc ────────────────────────────────────────────────────────────────
-cmake -S ext-oxc -B "$OXC_BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
-  -DCJS_DIR="$(pwd)/circu.js"
-cmake --build "$OXC_BUILD_DIR" --config Release --parallel
+# ── 2. ext-oxc (optional) ─────────────────────────────────────────────────────
+# Rust is not part of the required toolchain — probe before doing anything.
+OXC_BUILT=0
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "note: cargo not found — skipping ext-oxc (optional native TS transform)."
+    echo "      CTS falls back to the bundled Sucrase transformer."
+    echo "      Install a Rust toolchain and re-run to build it."
+elif cmake -S ext-oxc -B "$OXC_BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
+       -DCJS_DIR="$(pwd)/circu.js" &&
+     cmake --build "$OXC_BUILD_DIR" --config Release --parallel; then
+    OXC_BUILT=1
+else
+    echo "warning: ext-oxc build failed — continuing without it (Sucrase fallback)." >&2
+fi
 
 # ── 3. Collect into dist/exe/ ─────────────────────────────────────────────────
 mkdir -p "$DIST_DIR/ext"
 
 cp "$BUILD_DIR/stage/cno"        "$DIST_DIR/cno"
-cp "$OXC_BUILD_DIR/oxc.so"       "$DIST_DIR/ext/oxc.so" 2>/dev/null || \
-cp "$OXC_BUILD_DIR/oxc.dylib"    "$DIST_DIR/ext/oxc.dylib" 2>/dev/null || true
+if [ "$OXC_BUILT" = 1 ]; then
+    cp "$OXC_BUILD_DIR/oxc.so"    "$DIST_DIR/ext/oxc.so" 2>/dev/null || \
+    cp "$OXC_BUILD_DIR/oxc.dylib" "$DIST_DIR/ext/oxc.dylib" 2>/dev/null || \
+    echo "warning: no oxc.so/oxc.dylib in $OXC_BUILD_DIR" >&2
+fi
 
 echo ""
 echo "dist/exe/ contents:"

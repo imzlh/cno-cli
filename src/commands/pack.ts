@@ -8,6 +8,17 @@ const os = import.meta.use('os');
 const console = import.meta.use('console');
 const fs = import.meta.use('fs');
 
+/** Languages the transformer understands for an explicit `--ext`. */
+const PACK_LANGS = new Set(['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs']);
+
+function isExistingDirectory(path: string): boolean {
+    try {
+        return fs.stat(path).isDirectory;
+    } catch {
+        return false;
+    }
+}
+
 function defaultOutPath(entry: string, dir: string): string {
     const colon = entry.indexOf(':');
     const hasProtocol = colon >= 2 && /^[a-z][a-z0-9+.-]*$/i.test(entry.slice(0, colon));
@@ -73,11 +84,27 @@ export async function runPack(files: string[], flags: Record<string, string | bo
         os.exit(1);
         return;
     }
+    // The atomic writer parks an existing destination as `<out>.old-N` before
+    // renaming the temp file over it. For a directory that park succeeds and the
+    // follow-up unlink silently fails, so pack would report success while having
+    // displaced a directory tree and left the litter behind.
+    if (isExistingDirectory(outPath)) {
+        console.error(`${C.warn('⚠')} Pack failed: output path is a directory`);
+        os.exit(1);
+        return;
+    }
 
     const explicitExtValue = typeof flags['ext'] === 'string'
         ? (flags['ext'].startsWith('.') ? flags['ext'].slice(1) : flags['ext'])
         : undefined;
     const explicitExt = explicitExtValue || undefined;
+    // An unknown language silently becomes "no transform" and is recorded in the
+    // manifest, so the ABI-mismatch recompile would mis-parse the entry.
+    if (explicitExt !== undefined && !PACK_LANGS.has(explicitExt.toLowerCase())) {
+        console.error(`${C.warn('⚠')} Pack failed: --ext must be one of ${[...PACK_LANGS].join(', ')}`);
+        os.exit(1);
+        return;
+    }
     const entryLang = explicitExt ?? (extname(entry) === '' ? 'ts' : undefined);
     const runtime = createRuntime(cfg, projectDir);
     try {

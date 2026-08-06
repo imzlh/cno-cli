@@ -76,13 +76,39 @@ Deno.test('clearTimeout: cancels pending timer', async () => {
 // --- 6. setInterval fires multiple times ----------------------------------
 
 Deno.test('setInterval: fires multiple times', async () => {
+    // The requested 5 ms is NOT the delivered cadence on Windows: every runtime
+    // here is clamped by the ~15.6 ms system timer tick, so 3 fires need ~47 ms
+    // and can never happen inside the 30 ms window this test used to allow.
+    // Measured 2026-08-03, 20 fires at a requested 5 ms interval:
+    //   cno 15.65 ms/fire, Node v24.18.0 15.75 ms/fire, Deno 2.9.3 15.90 ms/fire
+    // (median gap 16 ms, min 15, max 17 in all three). Node itself produced only
+    // 2 fires in 30 ms on 3/3 runs, so the old bound asserted behaviour no
+    // upstream runtime exhibits. Waiting on the third fire rather than on a
+    // wall-clock deadline keeps the real assertion -- that the timer repeats --
+    // without re-encoding a platform-specific clamp. The 2000 ms cap is ~40x the
+    // measured 47 ms requirement and only exists so a non-repeating timer fails
+    // instead of hanging.
     let count = 0;
-    const id = setInterval(() => {
-        count++;
-        if (count >= 3) clearInterval(id);
-    }, 5);
-    await new Promise((r) => setTimeout(r, 30));
-    ok(count >= 3, `expected >= 3 fires, got ${count}`);
+    const fired = new Promise<void>((resolve) => {
+        const id = setInterval(() => {
+            count++;
+            if (count >= 3) {
+                clearInterval(id);
+                resolve();
+            }
+        }, 5);
+    });
+    let timer: number | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), 2000) as unknown as number;
+    });
+    try {
+        const outcome = await Promise.race([fired, timedOut]);
+        strictEqual(outcome, undefined, `setInterval stopped repeating after ${count} fires`);
+        ok(count >= 3, `expected >= 3 fires, got ${count}`);
+    } finally {
+        clearTimeout(timer);
+    }
 });
 
 Deno.test('timers upstream: string callbacks execute in global scope', async () => {
@@ -122,7 +148,7 @@ Deno.test('timers upstream: string callbacks execute in global scope', async () 
     }
 });
 
-Deno.test('timers upstream: callback this and illegal invocation binding', async () => {
+Deno.test('timers upstream: callback this and receiver binding', async () => {
     let capturedThis: unknown;
     await new Promise<void>((resolve) => {
         setTimeout(function() {
@@ -130,6 +156,10 @@ Deno.test('timers upstream: callback this and illegal invocation binding', async
             resolve();
         }, 1);
     });
+    // DIVERGENCE (open): Node v24.18.0 invokes the callback with the Timeout
+    // object as the receiver, measured. cno passes globalThis for the global
+    // timers (node:timers already passes its Timeout). Asserted as-is so this
+    // stays a live record rather than silently drifting.
     strictEqual(capturedThis, globalThis);
 
     await new Promise<void>((resolve) => {
@@ -139,8 +169,24 @@ Deno.test('timers upstream: callback this and illegal invocation binding', async
         setTimeout.call(globalThis, () => resolve(), 1);
     });
 
+    // Node applies NO brand check to any timer entry point: measured against
+    // v24.18.0, every receiver below is ACCEPTED by setTimeout, clearTimeout,
+    // setInterval and clearInterval alike (8/8 accepted, 0 thrown, each).
+    //
+    // It cannot be otherwise there: the globals and the `node:timers` exports
+    // are the same function objects (`globalThis.setTimeout ===
+    // require('node:timers').setTimeout` is true), so `timers.setTimeout(...)`
+    // is itself a call with a non-global receiver. This previously asserted a
+    // TypeError, which contradicted the upstream label it carries and broke
+    // every fake-timer library (sinon, @sinonjs/fake-timers, jest) — those
+    // install by copying the timer functions onto a table and calling them as
+    // methods of it.
     for (const thisArg of [0, '', true, false, {}, [], 'foo', () => {}]) {
-        throws(() => setTimeout.call(thisArg, () => {}, 1), TypeError);
+        const handle = setTimeout.call(thisArg, () => {}, 1);
+        clearTimeout(handle as never);
+        clearInterval(setInterval.call(thisArg, () => {}, 100_000) as never);
+        clearTimeout.call(thisArg, undefined);
+        clearInterval.call(thisArg, undefined);
     }
 });
 
@@ -310,6 +356,19 @@ Deno.test('structuredClone: clones RegExp source and flags', () => {
     ok(cloned !== re);
 });
 
+Deno.test('structuredClone: preserves repeated built-in object identity', () => {
+    const date = new Date(123);
+    const regexp = /identity/gi;
+    const view = new Uint8Array([1, 2, 3]);
+    const cloned = structuredClone({ dateA: date, dateB: date, regexpA: regexp, regexpB: regexp, viewA: view, viewB: view });
+    strictEqual(cloned.dateA, cloned.dateB);
+    strictEqual(cloned.regexpA, cloned.regexpB);
+    strictEqual(cloned.viewA, cloned.viewB);
+    ok(cloned.dateA !== date);
+    ok(cloned.regexpA !== regexp);
+    ok(cloned.viewA !== view);
+});
+
 Deno.test('structuredClone: preserves sparse array holes', () => {
     const arr = [1, , 3] as number[];
     const cloned = structuredClone(arr);
@@ -317,6 +376,23 @@ Deno.test('structuredClone: preserves sparse array holes', () => {
     strictEqual(0 in cloned, true);
     strictEqual(1 in cloned, false);
     strictEqual(2 in cloned, true);
+});
+
+Deno.test('structuredClone: preserves an own __proto__ property without changing the clone prototype', () => {
+    const source: Record<string, unknown> = {};
+    const value = { polluted: true };
+    Object.defineProperty(source, '__proto__', {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+    });
+
+    const cloned = structuredClone(source);
+    strictEqual(Object.getPrototypeOf(cloned), Object.prototype);
+    strictEqual(Object.prototype.hasOwnProperty.call(cloned, '__proto__'), true);
+    ok(cloned.__proto__ !== value);
+    deepStrictEqual(cloned.__proto__, value);
 });
 
 Deno.test('structuredClone: clones class and null-prototype objects as plain objects', () => {
@@ -373,6 +449,37 @@ Deno.test('structuredClone: clones ArrayBuffer', () => {
     strictEqual(new Uint8Array(cab)[1], 2);
 });
 
+Deno.test('structuredClone: preserves resizable ArrayBuffer metadata', () => {
+    const source = new ArrayBuffer(4, { maxByteLength: 16 });
+    new Uint8Array(source)[0] = 9;
+    const cloned = structuredClone(source);
+    strictEqual(cloned.resizable, true);
+    strictEqual(cloned.maxByteLength, 16);
+    strictEqual(new Uint8Array(cloned)[0], 9);
+});
+
+Deno.test('structuredClone: reads ArrayBuffer internal slots, not shadowed properties', () => {
+    const fixed = new ArrayBuffer(4);
+    Object.defineProperties(fixed, {
+        resizable: { value: true },
+        maxByteLength: { value: 1 },
+        slice: { value: () => { throw new Error('shadowed slice called'); } },
+    });
+    const fixedClone = structuredClone(fixed);
+    strictEqual(fixedClone.byteLength, 4);
+    strictEqual(fixedClone.resizable, false);
+
+    const resizable = new ArrayBuffer(4, { maxByteLength: 16 });
+    Object.defineProperties(resizable, {
+        resizable: { value: false },
+        maxByteLength: { value: 4 },
+        slice: { value: () => { throw new Error('shadowed slice called'); } },
+    });
+    const resizableClone = structuredClone(resizable);
+    strictEqual(resizableClone.resizable, true);
+    strictEqual(resizableClone.maxByteLength, 16);
+});
+
 Deno.test('structuredClone: preserves ArrayBuffer identity without transfer', () => {
     const ab = new ArrayBuffer(4);
     new Uint8Array(ab).set([1, 2, 3, 4]);
@@ -399,6 +506,71 @@ Deno.test('structuredClone: preserves shared backing buffer across views without
     strictEqual(cloned.b.byteOffset, 2);
     strictEqual(cloned.b[3], 6);
     strictEqual(ab.byteLength, 8);
+});
+
+Deno.test('structuredClone: built-in clones use internal slots, not shadowed properties', () => {
+    const date = new Date(123);
+    Object.defineProperty(date, 'getTime', { value() { throw new Error('shadowed getTime called'); } });
+
+    const regexp = /slot/gi;
+    Object.defineProperties(regexp, {
+        source: { value: 'wrong' },
+        flags: { value: 'm' },
+        global: { value: false },
+        ignoreCase: { value: false },
+    });
+
+    const view = new Uint8Array([4, 5]);
+    Object.defineProperties(view, {
+        buffer: { value: new ArrayBuffer(9) },
+        byteOffset: { value: 99 },
+        byteLength: { value: 99 },
+        length: { value: 99 },
+        [Symbol.toStringTag]: { value: 'Int32Array' },
+    });
+
+    const dataView = new DataView(new Uint8Array([8, 9, 10]).buffer, 1, 2);
+    Object.defineProperties(dataView, {
+        buffer: { value: new ArrayBuffer(12) },
+        byteOffset: { value: 0 },
+        byteLength: { value: 12 },
+    });
+
+    const cloned = structuredClone({ date, regexp, view, dataView });
+    strictEqual(Date.prototype.getTime.call(cloned.date), 123);
+    strictEqual(cloned.regexp.source, 'slot');
+    strictEqual(cloned.regexp.flags, 'gi');
+    ok(cloned.view instanceof Uint8Array);
+    strictEqual(cloned.view.length, 2);
+    strictEqual(cloned.view[1], 5);
+    strictEqual(cloned.dataView.byteOffset, 1);
+    strictEqual(cloned.dataView.byteLength, 2);
+    strictEqual(cloned.dataView.getUint8(0), 9);
+});
+
+Deno.test('structuredClone: Map, Set and boxed primitives use internal slots', () => {
+    const map = new Map<unknown, unknown>([[1, 'x']]);
+    Object.defineProperty(map, Symbol.iterator, { value() { throw new Error('shadowed Map iterator called'); } });
+    const set = new Set<unknown>([2]);
+    Object.defineProperty(set, Symbol.iterator, { value() { throw new Error('shadowed Set iterator called'); } });
+    const number = new Number(3);
+    const string = new String('x');
+    const boolean = new Boolean(true);
+    const bigint = Object(4n);
+    for (const boxed of [number, string, boolean, bigint]) {
+        Object.defineProperties(boxed, {
+            valueOf: { value() { throw new Error('shadowed valueOf called'); } },
+            [Symbol.toStringTag]: { value: 'Wrong' },
+        });
+    }
+
+    const cloned = structuredClone({ map, set, number, string, boolean, bigint });
+    strictEqual(cloned.map.get(1), 'x');
+    strictEqual(cloned.set.has(2), true);
+    strictEqual(Number.prototype.valueOf.call(cloned.number), 3);
+    strictEqual(String.prototype.valueOf.call(cloned.string), 'x');
+    strictEqual(Boolean.prototype.valueOf.call(cloned.boolean), true);
+    strictEqual(BigInt.prototype.valueOf.call(cloned.bigint), 4n);
 });
 
 Deno.test('structuredClone: transfer detaches ArrayBuffer and preserves typed view', () => {
@@ -463,6 +635,47 @@ Deno.test('structuredClone: transfer list buffer detaches even when not in paylo
     strictEqual(ab.byteLength, 0);
 });
 
+Deno.test('structuredClone: transfer accepts iterables and rejects non-iterables', () => {
+    const source = new ArrayBuffer(4);
+    new Uint8Array(source)[0] = 7;
+    const cloned = structuredClone({ source }, { transfer: new Set([source]) as unknown as Transferable[] });
+    strictEqual(source.byteLength, 0);
+    strictEqual(new Uint8Array(cloned.source)[0], 7);
+    throws(() => structuredClone(1, { transfer: {} as Transferable[] }), TypeError);
+    throws(() => structuredClone(1, { transfer: null as unknown as Transferable[] }), TypeError);
+});
+
+Deno.test('structuredClone: an array second argument is an options dictionary, not a transfer list', () => {
+    const source = new ArrayBuffer(4);
+    new Uint8Array(source)[0] = 11;
+    const cloned = structuredClone({ source }, [source] as unknown as StructuredSerializeOptions);
+    strictEqual(source.byteLength, 4);
+    strictEqual(new Uint8Array(cloned.source)[0], 11);
+    ok(cloned.source !== source);
+});
+
+Deno.test('structuredClone: transfer preserves resizable ArrayBuffer metadata', () => {
+    const source = new ArrayBuffer(4, { maxByteLength: 16 });
+    new Uint8Array(source)[0] = 9;
+    const cloned = structuredClone({ source }, { transfer: [source] });
+    strictEqual(source.byteLength, 0);
+    strictEqual(cloned.source.resizable, true);
+    strictEqual(cloned.source.maxByteLength, 16);
+    strictEqual(new Uint8Array(cloned.source)[0], 9);
+});
+
+Deno.test('structuredClone: transfer uses ArrayBuffer internal slots, not an instance transfer property', () => {
+    const source = new ArrayBuffer(4);
+    let shadowCalled = false;
+    Object.defineProperty(source, 'transfer', {
+        value() { shadowCalled = true; },
+    });
+    const cloned = structuredClone({ source }, { transfer: [source] });
+    strictEqual(shadowCalled, false);
+    strictEqual(source.byteLength, 0);
+    strictEqual(cloned.source.byteLength, 4);
+});
+
 Deno.test('structuredClone: ArrayBuffer view is not transferable', () => {
     const ab = new ArrayBuffer(4);
     const view = new Uint8Array(ab);
@@ -475,9 +688,15 @@ Deno.test('structuredClone: ArrayBuffer view is not transferable', () => {
 Deno.test('structuredClone: SharedArrayBuffer is cloneable but not transferable', () => {
     const sab = new SharedArrayBuffer(4);
     new Uint8Array(sab)[0] = 77;
-    const cloned = structuredClone({ sab });
-    ok(cloned.sab instanceof SharedArrayBuffer);
-    strictEqual(new Uint8Array(cloned.sab)[0], 77);
+    const view = new Uint8Array(sab);
+    const cloned = structuredClone({ sabA: sab, sabB: sab, view });
+    ok(cloned.sabA instanceof SharedArrayBuffer);
+    ok(cloned.sabA !== sab);
+    strictEqual(cloned.sabA, cloned.sabB);
+    strictEqual(cloned.view.buffer, cloned.sabA);
+    strictEqual(new Uint8Array(cloned.sabA)[0], 77);
+    new Uint8Array(cloned.sabA)[0] = 88;
+    strictEqual(new Uint8Array(sab)[0], 88);
     let threw = false;
     try { structuredClone({ sab }, { transfer: [sab as unknown as Transferable] }); } catch { threw = true; }
     ok(threw, 'SharedArrayBuffer must not be accepted as a transfer entry');
@@ -584,6 +803,78 @@ Deno.test('structuredClone: unsupported objects throw DataCloneError', () => {
         }
         ok(threw, `${Object.prototype.toString.call(value)} must not be cloneable`);
     }
+});
+
+Deno.test('structuredClone: Proxy objects throw DataCloneError without invoking traps', () => {
+    let traps = 0;
+    const handler: ProxyHandler<object> = {
+        get() { traps++; throw new Error('get trap invoked'); },
+        getPrototypeOf() { traps++; throw new Error('getPrototypeOf trap invoked'); },
+        ownKeys() { traps++; throw new Error('ownKeys trap invoked'); },
+    };
+    for (const target of [{ a: 1 }, new Map(), new Date(0)]) {
+        throws(() => structuredClone(new Proxy(target, handler)), { name: 'DataCloneError' });
+    }
+    const revoked = Proxy.revocable({ a: 1 }, {});
+    revoked.revoke();
+    throws(() => structuredClone(revoked.proxy), { name: 'DataCloneError' });
+    strictEqual(traps, 0);
+});
+
+Deno.test('structuredClone: built-in brands ignore overwritten Symbol.hasInstance', () => {
+    const constructors = [ArrayBuffer, Date, RegExp, Map, Set, Promise, Error] as Function[];
+    const descriptors = constructors.map((ctor) => Object.getOwnPropertyDescriptor(ctor, Symbol.hasInstance));
+    try {
+        for (const ctor of constructors) {
+            Object.defineProperty(ctor, Symbol.hasInstance, { value: () => false, configurable: true });
+        }
+
+        const source = {
+            buffer: new ArrayBuffer(2),
+            date: new Date(123),
+            regexp: /brand/gi,
+            map: new Map([[1, 'x']]),
+            set: new Set([2]),
+            error: new TypeError('brand'),
+        };
+        const cloned = structuredClone(source);
+        strictEqual(Object.prototype.toString.call(cloned.buffer), '[object ArrayBuffer]');
+        strictEqual(Date.prototype.getTime.call(cloned.date), 123);
+        strictEqual(RegExp.prototype.exec.call(cloned.regexp, 'BRAND')?.[0], 'BRAND');
+        strictEqual(Map.prototype.get.call(cloned.map, 1), 'x');
+        strictEqual(Set.prototype.has.call(cloned.set, 2), true);
+        strictEqual(Object.prototype.toString.call(cloned.error), '[object Error]');
+        strictEqual(cloned.error.name, 'TypeError');
+        throws(() => structuredClone(Promise.resolve(1)), { name: 'DataCloneError' });
+    } finally {
+        constructors.forEach((ctor, index) => {
+            const descriptor = descriptors[index];
+            if (descriptor) Object.defineProperty(ctor, Symbol.hasInstance, descriptor);
+            else Reflect.deleteProperty(ctor, Symbol.hasInstance);
+        });
+    }
+});
+
+Deno.test('structuredClone: Error reads stack once and ignores message/cause accessors', () => {
+    const error = new TypeError('original');
+    let stackReads = 0;
+    let messageReads = 0;
+    let causeReads = 0;
+    Object.defineProperties(error, {
+        stack: { configurable: true, get() { stackReads++; return undefined; } },
+        message: { configurable: true, get() { messageReads++; return 'wrong'; } },
+        cause: { configurable: true, get() { causeReads++; return { wrong: true }; } },
+    });
+
+    const cloned = structuredClone(error);
+    strictEqual(stackReads, 1);
+    strictEqual(messageReads, 0);
+    strictEqual(causeReads, 0);
+    strictEqual(cloned.name, 'TypeError');
+    strictEqual(Object.prototype.hasOwnProperty.call(cloned, 'message'), false);
+    strictEqual(Object.prototype.hasOwnProperty.call(cloned, 'stack'), true);
+    strictEqual(cloned.stack, undefined);
+    strictEqual(Object.prototype.hasOwnProperty.call(cloned, 'cause'), false);
 });
 
 Deno.test('structuredClone: duplicate transfer list throws before detach', () => {

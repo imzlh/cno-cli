@@ -382,7 +382,9 @@ Deno.test({ name: 'http upstream: ServerResponse can send wrapped Web Response b
         if (!addr || typeof addr === 'string') throw new Error('no port');
         const response = await fetch(`http://127.0.0.1:${addr.port}`);
         strictEqual(response.status, 200);
-        strictEqual(response.headers.get('content-type'), 'text/plain; charset=UTF-8');
+        // No space after the semicolon: verified on real Node v24.18,
+        // `new Response('x').headers.get('content-type')` === 'text/plain;charset=UTF-8'.
+        strictEqual(response.headers.get('content-type'), 'text/plain;charset=UTF-8');
         strictEqual(await response.text(), 'Hello, world!');
     } finally {
         Object.defineProperty(globalThis, 'Response', { value: previousResponse, configurable: true });

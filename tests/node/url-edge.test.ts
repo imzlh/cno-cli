@@ -1,6 +1,7 @@
 import { deepStrictEqual, strictEqual, ok, throws } from 'node:assert';
 import * as url from 'node:url';
 import * as nodeUrl from 'node:url';
+import * as path from 'node:path';
 
 // --- 1. url.parse splits components ------------------------------------------
 
@@ -40,8 +41,10 @@ Deno.test('url: format rebuilds URL from object', () => {
 
 // --- 4. fileURLToPath / pathToFileURL round-trip -----------------------------
 
+// pathToFileURL runs the input through path.resolve, so a driveless "/tmp/x"
+// gains the cwd's drive on Windows. Real Node: file:///D:/tmp/foo.txt.
 Deno.test('url: fileURLToPath and pathToFileURL round-trip', () => {
-    const p = '/tmp/foo.txt';
+    const p = path.resolve('/tmp/foo.txt');
     const u = url.pathToFileURL(p);
     ok(u instanceof URL);
     strictEqual(u.protocol, 'file:');
@@ -49,7 +52,42 @@ Deno.test('url: fileURLToPath and pathToFileURL round-trip', () => {
 });
 
 Deno.test('url: pathToFileURL percent-encodes URL syntax characters', () => {
-    strictEqual(url.pathToFileURL('/tmp/a#b?c').href, 'file:///tmp/a%23b%3Fc');
+    strictEqual(url.pathToFileURL('/tmp/a#b?c', { windows: false }).href, 'file:///tmp/a%23b%3Fc');
+});
+
+Deno.test('url: pathToFileURL resolves driveless and drive-relative Windows paths', () => {
+    const drive = path.win32.resolve('/').slice(0, 2);
+    strictEqual(url.pathToFileURL('/tmp/x', { windows: true }).href, `file:///${drive}/tmp/x`);
+    strictEqual(url.pathToFileURL('C:a', { windows: true }).href, 'file:///C:/a');
+    strictEqual(url.pathToFileURL('C:\\a\\..\\b', { windows: true }).href, 'file:///C:/b');
+    strictEqual(url.pathToFileURL('C:\\dir\\', { windows: true }).href, 'file:///C:/dir/');
+});
+
+Deno.test('url: pathToFileURL encodes the Node file-URL set, including ~', () => {
+    strictEqual(url.pathToFileURL('C:\\a b\\c', { windows: true }).href, 'file:///C:/a%20b/c');
+    strictEqual(url.pathToFileURL('C:\\a~b', { windows: true }).href, 'file:///C:/a%7Eb');
+    strictEqual(url.pathToFileURL('C:\\a%b', { windows: true }).href, 'file:///C:/a%25b');
+    strictEqual(url.pathToFileURL('C:\\a[b]|c', { windows: true }).href, 'file:///C:/a%5Bb%5D%7Cc');
+    strictEqual(url.pathToFileURL('/a\\b', { windows: false }).href, 'file:///a%5Cb');
+});
+
+Deno.test('url: pathToFileURL handles UNC paths and rejects malformed ones', () => {
+    strictEqual(url.pathToFileURL('\\\\srv\\share\\f', { windows: true }).href, 'file://srv/share/f');
+    strictEqual(url.pathToFileURL('\\\\?\\UNC\\srv\\share\\f', { windows: true }).href, 'file://srv/share/f');
+    strictEqual(url.pathToFileURL('\\\\?\\C:\\a', { windows: true }).href, 'file:///C:/a');
+    // Node punycodes the UNC servername via domainToASCII.
+    strictEqual(url.pathToFileURL('\\\\пример.рф\\s\\f', { windows: true }).href, 'file://xn--e1afmkfd.xn--p1ai/s/f');
+    throws(() => url.pathToFileURL('\\\\srv', { windows: true }), { code: 'ERR_INVALID_ARG_VALUE' });
+    throws(() => url.pathToFileURL('\\\\\\x', { windows: true }), { code: 'ERR_INVALID_ARG_VALUE' });
+});
+
+Deno.test('url: fileURLToPath maps UNC hosts and rejects driveless Windows paths', () => {
+    strictEqual(url.fileURLToPath('file://srv/share/f', { windows: true }), '\\\\srv\\share\\f');
+    strictEqual(url.fileURLToPath('file://xn--e1afmkfd.xn--p1ai/s/f', { windows: true }), '\\\\пример.рф\\s\\f');
+    strictEqual(url.fileURLToPath('file:///C:/a%20b', { windows: true }), 'C:\\a b');
+    throws(() => url.fileURLToPath('file:///tmp/foo.txt', { windows: true }), { code: 'ERR_INVALID_FILE_URL_PATH' });
+    throws(() => url.fileURLToPath('file:///C:/a%5Cb', { windows: true }), { code: 'ERR_INVALID_FILE_URL_PATH' });
+    throws(() => url.fileURLToPath('file://host/x', { windows: false }), { code: 'ERR_INVALID_FILE_URL_HOST' });
 });
 
 Deno.test('url: fileURLToPath rejects encoded slash on POSIX paths', () => {
@@ -173,6 +211,70 @@ Deno.test('url: URL setters remain writable after node:url patching', () => {
 
 // --- 9. domainToASCII / domainToUnicode --------------------------------------
 
+// Legacy url.parse has a "simple path" fast path: with no protocol, no `#` and
+// no `@`, `//foo/bar` is a PATH, not a host. It also only defaults pathname to
+// "/" for slashed protocols, and only emits "//" when slashes is set.
+Deno.test('url upstream: parse treats protocol-relative input as a simple path', () => {
+    const u = url.parse('//foo/bar');
+    strictEqual(u.protocol, null);
+    strictEqual(u.slashes, null);
+    strictEqual(u.host, null);
+    strictEqual(u.pathname, '//foo/bar');
+    strictEqual(u.href, '//foo/bar');
+    // slashesDenoteHost flips it to a host, but pathname stays null.
+    const h = url.parse('//foo', false, true);
+    strictEqual(h.host, 'foo');
+    strictEqual(h.pathname, null);
+    strictEqual(h.href, '//foo');
+});
+
+Deno.test('url upstream: parse gives a non-slashed protocol a host but no default pathname', () => {
+    const u = url.parse('mailto:me@example.com');
+    strictEqual(u.protocol, 'mailto:');
+    strictEqual(u.slashes, null);
+    strictEqual(u.auth, 'me');
+    strictEqual(u.host, 'example.com');
+    strictEqual(u.pathname, null);
+    strictEqual(u.href, 'mailto:me@example.com');
+});
+
+Deno.test('url upstream: parse keeps an empty host for a slashed protocol', () => {
+    const u = url.parse('file:///c:/x');
+    strictEqual(u.host, '');
+    strictEqual(u.hostname, '');
+    strictEqual(u.pathname, '/c:/x');
+});
+
+Deno.test('url upstream: parse ends the host at non-host characters', () => {
+    // ":st" is not a port, so it moves into the path.
+    strictEqual(url.parse('http://ho:st/p').hostname, 'ho');
+    strictEqual(url.parse('http://ho:st/p').pathname, '/:st/p');
+    // Only the trailing all-digit group is a port.
+    strictEqual(url.parse('http://a:1:2/p').host, 'a:2');
+    strictEqual(url.parse('http://a:1:2/p').pathname, '/:1/p');
+    strictEqual(url.parse('http://a;b/p').hostname, 'a');
+    strictEqual(url.parse('http://a|b/p').pathname, '%7Cb/p');
+    strictEqual(url.parse('http://a b/p').pathname, '%20b/p');
+    // A hostname over 255 chars is dropped entirely.
+    strictEqual(url.parse(`http://${'h'.repeat(300)}/p`).host, '');
+});
+
+Deno.test('url upstream: parse punycodes a non-ASCII hostname', () => {
+    strictEqual(url.parse('http://中文.com/p').hostname, 'xn--fiq228c.com');
+    strictEqual(url.parse('http://中文.com/p').href, 'http://xn--fiq228c.com/p');
+});
+
+Deno.test('url upstream: format only adds // for slashes or a slashed protocol', () => {
+    strictEqual(nodeUrl.format({ host: 'h', pathname: '/p' }), 'h/p');
+    strictEqual(nodeUrl.format({ protocol: 'foo:', host: 'h' }), 'foo:h');
+    strictEqual(nodeUrl.format({ protocol: 'http:', host: 'h' }), 'http://h');
+    strictEqual(nodeUrl.format({ protocol: 'foo:', host: 'h', slashes: true }), 'foo://h');
+});
+
+Deno.test('url upstream: resolve falls back to the legacy resolver for a bare path base', () => {
+    strictEqual(url.resolve('/a/b/c', 'd'), '/a/b/d');
+});
+
 Deno.test('url: domainToASCII punycode-encodes international domain', () => {
     strictEqual(nodeUrl.domainToASCII('中文.com'), 'xn--fiq228c.com');
     strictEqual(nodeUrl.domainToASCII('münchen.de'), 'xn--mnchen-3ya.de');
@@ -198,6 +300,37 @@ Deno.test('url: domainToUnicode decodes punycoded labels', () => {
 
 Deno.test('url: domainToUnicode leaves non-punycode ASCII labels unchanged', () => {
     strictEqual(nodeUrl.domainToUnicode('example.com'), 'example.com');
+});
+
+// UTS-46 runs with VerifyDnsLength=false and UseSTD3ASCIIRules=false, so a long
+// ASCII label and `!$&'()*+,;=~` are all legal, while `xn--`/`xn--a` are not
+// valid A-labels (they decode to nothing / to a C1 control).
+Deno.test('url upstream: domainToASCII follows the UTS-46 ASCII rules', () => {
+    strictEqual(nodeUrl.domainToASCII('xn--'), '');
+    strictEqual(nodeUrl.domainToASCII('xn--a'), '');
+    strictEqual(nodeUrl.domainToASCII('xn--aa'), '');
+    strictEqual(nodeUrl.domainToASCII('a!b'), 'a!b');
+    strictEqual(nodeUrl.domainToASCII('a~b'), 'a~b');
+    strictEqual(nodeUrl.domainToASCII("a'b"), "a'b");
+    strictEqual(nodeUrl.domainToASCII('a;b'), 'a;b');
+    strictEqual(nodeUrl.domainToASCII('a{b}'), 'a{b}');
+    // A 70-char ASCII label is accepted (no DNS length check).
+    strictEqual(nodeUrl.domainToASCII(`${'x'.repeat(70)}.com`), `${'x'.repeat(70)}.com`);
+    // Tab/LF/CR are stripped; `#/?\` truncate the domain rather than failing.
+    strictEqual(nodeUrl.domainToASCII('a/b'), 'a');
+    strictEqual(nodeUrl.domainToASCII('a?b'), 'a');
+    strictEqual(nodeUrl.domainToASCII('a\tb'), 'ab');
+    // Other disallowed ASCII still fails.
+    strictEqual(nodeUrl.domainToASCII('a:b'), '');
+    strictEqual(nodeUrl.domainToASCII('a b'), '');
+    strictEqual(nodeUrl.domainToASCII('a|b'), '');
+});
+
+Deno.test('url upstream: domainToUnicode lowercases and rejects invalid A-labels', () => {
+    strictEqual(nodeUrl.domainToUnicode('EXAMPLE.COM'), 'example.com');
+    strictEqual(nodeUrl.domainToUnicode('XN--FIQ228C.COM'), '中文.com');
+    strictEqual(nodeUrl.domainToUnicode('xn--a'), '');
+    strictEqual(nodeUrl.domainToUnicode('xn--a.com'), '');
 });
 
 Deno.test('url: format URL object can drop auth, search, and fragment', () => {

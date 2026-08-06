@@ -68,9 +68,19 @@ Deno.test('stream.promises: pipeline rejects on transform errors', async () => {
 
 Deno.test('stream.promises: finished resolves for writable finish', async () => {
     const stream = new PassThrough();
-    const done = finished(stream);
+    // finished() on a Duplex waits for BOTH sides by default, so an unread
+    // readable half would keep the promise pending forever (verified against
+    // Node v24). Scope the wait to the writable side.
+    const done = finished(stream, { readable: false });
     stream.end('payload');
     await done;
+
+    // Consuming the readable half settles the default (both-sides) form too.
+    const both = new PassThrough();
+    const doneBoth = finished(both);
+    both.end('payload');
+    both.resume();
+    await doneBoth;
 });
 
 Deno.test('stream.promises: finished rejects on stream error', async () => {

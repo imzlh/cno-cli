@@ -31,18 +31,26 @@ Deno.test('node cluster upstream: primary-only export surface is available', () 
     strictEqual(cluster.isMaster, clusterNamed.isMaster);
 });
 
-Deno.test('node domain upstream: run catches thrown errors', async () => {
+// Verified against real Node v24.18: `run()` does NOT catch. The throw
+// propagates to the caller and the domain's 'error' handler does not fire
+// (Node's uncaughtException path would handle it, and `domain.active` is left
+// stranded). Asserting that run() routes to 'error' encodes a cno-only bug.
+Deno.test('node domain upstream: run rethrows thrown errors', () => {
     const d = domain.create();
-    const caught = new Promise<void>((resolve) => {
-        d.on('error', (err) => {
-            strictEqual(err?.message, 'a thrown error');
-            resolve();
+    let errorEventFired = false;
+    d.on('error', () => {
+        errorEventFired = true;
+    });
+    let thrown: Error | undefined;
+    try {
+        d.run(() => {
+            throw new Error('a thrown error');
         });
-    });
-    d.run(() => {
-        throw new Error('a thrown error');
-    });
-    await caught;
+    } catch (err) {
+        thrown = err as Error;
+    }
+    strictEqual(thrown?.message, 'a thrown error');
+    strictEqual(errorEventFired, false);
 });
 
 Deno.test('node domain upstream: add and remove EventEmitter error routing', async () => {
@@ -74,37 +82,48 @@ Deno.test('node domain upstream: add and remove EventEmitter error routing', asy
     strictEqual(domainGotError, false);
 });
 
+// Verified against real Node v24.18: only the *error argument* passed to an
+// intercept()-wrapped callback reaches 'error'. A throw from the callback body
+// of bind() or intercept() propagates to the caller instead.
 Deno.test('node domain upstream: bind and intercept route callback errors', async () => {
     const d = domain.create();
     const messages: string[] = [];
     const done = new Promise<void>((resolve) => {
         d.on('error', (err) => {
             messages.push(err?.message);
-            if (messages.length === 3) resolve();
+            resolve();
         });
     });
 
-    d.bind((err: Error, a: number, b: number) => {
-        strictEqual(err.message, 'a passed error');
-        strictEqual(a, 2);
-        strictEqual(b, 3);
-        throw new Error('a thrown error');
-    })(new Error('a passed error'), 2, 3);
+    let boundThrew: Error | undefined;
+    try {
+        d.bind((err: Error, a: number, b: number) => {
+            strictEqual(err.message, 'a passed error');
+            strictEqual(a, 2);
+            strictEqual(b, 3);
+            throw new Error('a thrown error');
+        })(new Error('a passed error'), 2, 3);
+    } catch (err) {
+        boundThrew = err as Error;
+    }
+    strictEqual(boundThrew?.message, 'a thrown error');
 
-    d.intercept((a: number, b: number) => {
-        strictEqual(a, 2);
-        strictEqual(b, 3);
-        throw new Error('another thrown error');
-    })(null, 2, 3);
+    let interceptThrew: Error | undefined;
+    try {
+        d.intercept((a: number, b: number) => {
+            strictEqual(a, 2);
+            strictEqual(b, 3);
+            throw new Error('another thrown error');
+        })(null, 2, 3);
+    } catch (err) {
+        interceptThrew = err as Error;
+    }
+    strictEqual(interceptThrew?.message, 'another thrown error');
 
     d.intercept(() => {
         throw new Error('should never reach here');
     })(new Error('a passed intercept error'));
 
     await done;
-    deepStrictEqual(messages, [
-        'a thrown error',
-        'another thrown error',
-        'a passed intercept error',
-    ]);
+    deepStrictEqual(messages, ['a passed intercept error']);
 });

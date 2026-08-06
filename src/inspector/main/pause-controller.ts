@@ -84,7 +84,16 @@ export class PauseController {
 			hitLine,
 			data: this.pauseData(reason, thrown),
 		}
-		this.endpoint.emit(WorkerEvent.Paused, payload)
+		// A dropped Paused event means the worker never learns we are paused, so it
+		// will never send a resume. Blocking in serviceWhilePaused() would then
+		// freeze the process with no way out (the C ring is 64 slots and
+		// ring_push returns false when full). Continue execution instead: losing a
+		// breakpoint stop is bad, but an unkillable hang is far worse.
+		const delivered = this.endpoint.emit(WorkerEvent.Paused, payload)
+		if (delivered === false) {
+			log.debug('debug', () => 'onBreak: Paused event was DROPPED (ring full) — resuming instead of blocking')
+			return 0
+		}
 
 		const step = this.endpoint.serviceWhilePaused()
 		log.debug('debug', () => `onBreak: resumed step=${step}`)

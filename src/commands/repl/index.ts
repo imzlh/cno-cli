@@ -1,4 +1,5 @@
 import { createRuntime, loadConfigFile, Transformer, joinPaths, cwd, uname } from '../../../cts/src/api';
+import { installEventReceiver, PRIORITY_FALLBACK, EV } from '../../../cts/src/runtime/event-mux';
 import { version } from '../../version';
 import { CnoRepl } from './runner';
 import { HISTORY_DB_NAME, HISTORY_TEXT_NAME } from './history';
@@ -8,7 +9,6 @@ import { parseInspectFlags } from '../inspect';
 
 const os = import.meta.use('os');
 const fs = import.meta.use('fs');
-const engine = import.meta.use('engine');
 
 function getEnv(name: string): string | null {
     try {
@@ -65,7 +65,32 @@ export async function runRepl(flags: Record<string, string | boolean>): Promise<
 
     // 2. Prevent default unhandled-rejection crash so a bad expression doesn't
     //    take down the whole REPL.
-    engine.onEvent((_e: unknown) => false);
+    //
+    // This was a raw `engine.onEvent((_e) => false)`. Two defects:
+    //
+    //  a) onEvent is a single-slot setter that frees the previous receiver
+    //     (circu.js/src/mod_engine.c:871), so it displaced the multiplexer that
+    //     createRuntime() had just installed one call earlier — and the mux
+    //     cannot detect this, because the native layer exposes no getter. Inside
+    //     the REPL, 'unhandledrejection'/'load'/'unload' were dead again and the
+    //     cts diagnostics receiver was silenced, so async errors vanished
+    //     without a trace.
+    //
+    //  b) the flat `false` was wrong for EV_JOB_EXCEPTION. The native polarity
+    //     is not uniform: utils.c:180 treats `false` as "fatal" and calls
+    //     TJS_Stop. So a throw from a timer or a stray callback would have torn
+    //     down the REPL — the opposite of this receiver's stated purpose.
+    //
+    // PRIORITY_FALLBACK puts this last in dispatch order, and the last explicit
+    // boolean wins, so the REPL's non-fatal guarantee overrides any other
+    // receiver while still letting webapi dispatch and diagnostics print first.
+    installEventReceiver('repl', (name) => {
+        // false = "handled, do not abort" for a rejection (vm.c:242 aborts on
+        // any non-false); true = "continue" for a job exception (utils.c:180
+        // calls TJS_Stop on false). Same intent, opposite constants.
+        if (name === EV.JOB_EXCEPTION) return true;
+        return false;
+    }, PRIORITY_FALLBACK);
 
     // 3. Build the TypeScript transformer. Use a stable virtual filename so
     //    source-map noise is predictable.

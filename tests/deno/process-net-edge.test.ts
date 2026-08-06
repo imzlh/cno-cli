@@ -97,6 +97,12 @@ Deno.test('deno stdio: zero-length read and write operations return zero bytes',
 });
 
 Deno.test('deno process: umask cache, uid gid and signal validation are observable', () => {
+    // NOTE (measured, real Deno 2.9.3 on Windows 11): Deno's umask is a POSIX
+    // no-op on Windows -- umask() reads 0 and the setter never round-trips, so
+    // real Deno FAILS the three assertions below. cno implements a real umask
+    // cache (reads 0o111), which is why they pass here. This block therefore
+    // asserts cno's own behaviour, not Deno-on-Windows parity; it is kept because
+    // it guards the umask cache against regression.
     const original = Deno.umask();
     try {
         strictEqual(Deno.umask(0o077), original);
@@ -107,8 +113,19 @@ Deno.test('deno process: umask cache, uid gid and signal validation are observab
     }
     strictEqual(Deno.umask(), original);
 
-    ok(Number.isInteger(Deno.uid()));
-    ok(Number.isInteger(Deno.gid()));
+    // Deno.uid()/gid() are POSIX-only. Measured against real Deno 2.9.3 on
+    // Windows 11: both return `null` (typeof 'object'), so
+    // `Number.isInteger(Deno.uid())` is false on every runtime here. cno matches
+    // that null exactly, so asserting an integer encoded a defect in the test
+    // rather than in the runtime. Assert the real per-platform contract instead
+    // of skipping, so a regression to e.g. 0 or undefined still fails.
+    if (Deno.build.os === 'windows') {
+        strictEqual(Deno.uid(), null);
+        strictEqual(Deno.gid(), null);
+    } else {
+        ok(Number.isInteger(Deno.uid()));
+        ok(Number.isInteger(Deno.gid()));
+    }
     throws(() => Deno.kill(Deno.pid, 'SIGEMT' as Deno.Signal), TypeError);
     Deno.kill(Deno.pid, 0);
     throws(() => Deno.kill(999999, 0), Deno.errors.NotFound);

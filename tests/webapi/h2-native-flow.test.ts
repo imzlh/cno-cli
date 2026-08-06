@@ -1,10 +1,34 @@
-import { deepStrictEqual, strictEqual, throws } from 'node:assert';
+/**
+ * Native nghttp2 flow-control surface.
+ *
+ * COVERAGE WARNING — the nine flow-control tests below are gated
+ * `ignore: !h2Available()`, and `h2Available()` is false in this binary for a
+ * BUILD reason, not a platform one: `build/CMakeCache.txt` carries
+ * `CNO_EMBED_EXT_H2:BOOL=OFF`, so the native nghttp2 extension was never
+ * compiled in. (OBSERVED 2026-08-04: 0 ok / 9 skipped.)
+ *
+ * That matters because sibling files DO exercise the JS-side h2 path against the
+ * real H2Stream class and pass (tests/webapi/h2-body-cap.test.ts 12 ok,
+ * tests/webapi/h2-truncation.test.ts 15 ok). So a green verdict here would imply
+ * native-flow coverage that does not exist. Re-enable by building with
+ * -DCNO_EMBED_EXT_H2=ON; until then treat native H2 flow control as UNMEASURED.
+ *
+ * This file used to report a file-level PASS while executing ZERO tests, which is
+ * worse than failing. The two GATE tests at the bottom therefore run
+ * unconditionally and assert the fail-closed contract, so the file always
+ * executes at least one real assertion in either build configuration. Same shape
+ * as tests/webapi/quic-native.test.ts — do not add `ignore:` to them.
+ */
+import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import {
     h2Available,
     requireH2,
+    tryLoadH2,
+    __forceH2Unavailable,
     type H2Header,
     type H2Session,
 } from '@cnojs/http/h2-native';
+import { h2 } from '@cnojs/http/h2';
 
 function copyBytes(bytes: Uint8Array): Uint8Array {
     const copy = new Uint8Array(bytes.byteLength);
@@ -457,4 +481,73 @@ Deno.test({
     } finally {
         session.destroy();
     }
+});
+
+/* ── GATE: these two run in EVERY build configuration ──────────────────────
+ * Without them this file reported PASS while executing zero tests whenever
+ * CNO_EMBED_EXT_H2=OFF. They assert the fail-closed contract rather than the
+ * native behaviour, so they are meaningful with or without the extension.
+ * Never add an `ignore:` to them. */
+
+Deno.test({
+    name: 'native h2 GATE: the load gate is self-consistent and names its build flag',
+}, () => {
+    // h2Available() must never disagree with tryLoadH2().
+    strictEqual(h2Available(), tryLoadH2() !== null);
+    if (h2Available()) {
+        const mod = requireH2();
+        ok(typeof mod.Session === 'function', 'Session ctor');
+        ok(mod.constants !== null && typeof mod.constants === 'object', 'constants');
+        strictEqual(tryLoadH2(), mod, 'tryLoadH2 is cached/stable');
+    } else {
+        // The error must be actionable: it has to name the build flag, or nobody
+        // reading a CI log can tell a missing extension from a broken one.
+        let msg = '';
+        try {
+            requireH2();
+            ok(false, 'expected requireH2() to throw when h2 is unavailable');
+        } catch (e) {
+            msg = e instanceof Error ? e.message : String(e);
+        }
+        ok(/CNO_EMBED_EXT_H2/.test(msg), `message must name the build flag, got: ${msg}`);
+        ok(/HTTP\/2/i.test(msg), msg);
+    }
+});
+
+Deno.test({
+    name: 'native h2 GATE: h2 protocol module fails closed, it does not silently no-op',
+}, async () => {
+    // __forceH2Unavailable drives the same path as CNO_EMBED_EXT_H2=OFF, so this
+    // half of the contract is measured even on a build that HAS the extension.
+    __forceH2Unavailable(true);
+    try {
+        strictEqual(h2Available(), false);
+        strictEqual(tryLoadH2(), null);
+
+        // Both protocol entry points must reject. A resolved promise here would
+        // mean an h2 connection object built on a missing native.
+        for (const [label, run] of [
+            ['server.accept', () => h2.server.accept(null as never, { secure: true } as never)],
+            ['client.connect', () => h2.client.connect(null as never, { secure: true } as never)],
+        ] as const) {
+            let rejected = false;
+            let msg = '';
+            try {
+                await run();
+            } catch (e) {
+                rejected = true;
+                msg = e instanceof Error ? e.message : String(e);
+            }
+            ok(rejected, `${label} must reject when the native is absent`);
+            ok(/CNO_EMBED_EXT_H2/.test(msg), `${label}: ${msg}`);
+        }
+
+        // requireH2 reached through the protocol module must be the same gate.
+        throws(() => h2.requireH2(), /CNO_EMBED_EXT_H2/);
+    } finally {
+        __forceH2Unavailable(false);
+    }
+    // The force flag must be reversible: a leaked `true` would silently disable
+    // h2 for every test file that runs after this one in the same process.
+    strictEqual(h2Available(), tryLoadH2() !== null);
 });

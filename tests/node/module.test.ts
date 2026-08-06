@@ -12,7 +12,16 @@ Deno.test('module: builtinModules and isBuiltin expose bare builtin names', () =
     ok(module.isBuiltin('node:fs'));
     ok(!module.isBuiltin('node:not-real'));
     ok(!module.isBuiltin('internal/errors'));
-    ok(module.isBuiltin('test'));
+    // Measured on real node v24.18.0: `node:test`, `node:sqlite`, `node:sea` and
+    // `node:test/reporters` are listed and resolvable ONLY with the prefix.
+    // `isBuiltin('test')` is FALSE upstream — a bare `test` would shadow a user's
+    // own ./test module. This test previously asserted the opposite and real Node
+    // failed it too, so it was a wrong expectation rather than a cno defect.
+    ok(!module.isBuiltin('test'), 'bare test is not a builtin');
+    ok(module.isBuiltin('node:test'), 'node:test is a builtin');
+    ok(module.isBuiltin('node:sqlite'), 'node:sqlite is a builtin');
+    ok(module.builtinModules.includes('node:test'), 'builtinModules lists node:test verbatim');
+    ok(!module.builtinModules.includes('test'), 'builtinModules omits bare test');
     ok(!module.isBuiltin(''));
     ok(!module.isBuiltin(undefined as unknown as string));
 });
@@ -442,27 +451,60 @@ Deno.test('module upstream: CJS re-export getters from subfolder survive ESM nam
     });
 });
 
-Deno.test('module upstream: ESM import of extensionless package subpath can load CJS', async () => {
-    await withTempDir('node-module-extensionless-cjs-subpath', async (root) => {
-        const pkgDir = path.join(root, 'node_modules', 'extensionless-package');
-        Deno.mkdirSync(pkgDir, { recursive: true });
-        Deno.writeTextFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({
-            name: 'extensionless-package',
+// An extensionless file inherits the package's `type` field verbatim — there is no
+// content sniffing when `type` is explicit. Measured on real node v24.18.0 across the
+// full matrix (`import { add } from "p/add"` from an .mjs entry):
+//
+//   type=module   + ESM content -> loads, add(1,2)===3
+//   type=module   + CJS content -> SyntaxError: does not provide an export named 'add'
+//   type=commonjs + CJS content -> loads, add(1,2)===3
+//   type=commonjs + ESM content -> SyntaxError: Named export 'add' not found
+//   type=ABSENT   + CJS content -> loads (syntax detection)
+//   type=ABSENT   + ESM content -> loads (syntax detection)
+//
+// This test previously wrote CJS content into a `type: "module"` package and asserted
+// it loaded as CJS — row 2, which real Node *fails*. Node parses the file as ESM, so
+// `module.exports.add = …` is dead code and no named export exists; `require()` of the
+// same file returns `{}`. So the old assertion described behaviour neither Node nor cno
+// exhibits, rather than a cno defect. It now asserts the real rule in both directions.
+Deno.test('module upstream: extensionless package subpath follows package type, not content', async () => {
+    await withTempDir('node-module-extensionless-subpath', async (root) => {
+        // type: "module" + ESM content — the honoured combination.
+        const esmPkg = path.join(root, 'node_modules', 'extensionless-esm-package');
+        Deno.mkdirSync(esmPkg, { recursive: true });
+        Deno.writeTextFileSync(path.join(esmPkg, 'package.json'), JSON.stringify({
+            name: 'extensionless-esm-package',
             type: 'module',
         }));
-        Deno.writeTextFileSync(path.join(pkgDir, 'add'), `
+        Deno.writeTextFileSync(path.join(esmPkg, 'add'), `
+            export const add = (a, b) => a + b;
+        `);
+
+        // type: "commonjs" + CJS content — also honoured, and proves the extensionless
+        // file is not simply always treated as ESM.
+        const cjsPkg = path.join(root, 'node_modules', 'extensionless-cjs-package');
+        Deno.mkdirSync(cjsPkg, { recursive: true });
+        Deno.writeTextFileSync(path.join(cjsPkg, 'package.json'), JSON.stringify({
+            name: 'extensionless-cjs-package',
+            type: 'commonjs',
+        }));
+        Deno.writeTextFileSync(path.join(cjsPkg, 'add'), `
             module.exports.add = require("./internal.cjs").add;
         `);
-        Deno.writeTextFileSync(path.join(pkgDir, 'internal.cjs'), `
+        Deno.writeTextFileSync(path.join(cjsPkg, 'internal.cjs'), `
             module.exports.add = (a, b) => a + b;
         `);
+
         Deno.writeTextFileSync(path.join(root, 'entry.mjs'), `
-            import { add } from "extensionless-package/add";
-            export const result = add(1, 2);
+            import { add as esmAdd } from "extensionless-esm-package/add";
+            import cjsNs from "extensionless-cjs-package/add";
+            export const esmResult = esmAdd(1, 2);
+            export const cjsResult = cjsNs.add(1, 2);
         `);
 
         const ns = await import(pathToFileURL(path.join(root, 'entry.mjs')).href);
-        strictEqual(ns.result, 3);
+        strictEqual(ns.esmResult, 3, 'type:module + ESM content resolves as ESM');
+        strictEqual(ns.cjsResult, 3, 'type:commonjs + CJS content resolves as CJS');
     });
 });
 
@@ -575,7 +617,7 @@ Deno.test('module: Module constructor links parent and initializes paths', () =>
 
 Deno.test('module: Module.wrap and _compile provide CommonJS wrapper variables', () => {
     const wrapped = module.wrap('return __filename;');
-    ok(wrapped.startsWith('(function(exports, require, module, __filename, __dirname)'));
+    ok(wrapped.startsWith('(function (exports, require, module, __filename, __dirname)'));
     ok(wrapped.endsWith('\n});'));
 
     const mod = new module.Module('/tmp/compiled.js');

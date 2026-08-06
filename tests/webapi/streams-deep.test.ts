@@ -216,10 +216,37 @@ Deno.test('TransformStream: transforms chunks', async () => {
     });
     const w = ts.writable.getWriter();
     const r = ts.readable.getReader();
-    await w.write('hi');
-    await w.close();
+    // The readable side defaults to HWM 0, so `await w.write(...)` before any
+    // read deadlocks by spec (verified in Node 24 and Deno 2). Read concurrently.
+    const written = w.write('hi');
     const { value } = await r.read();
     strictEqual(value, 'HI');
+    await written;
+    await w.close();
+});
+
+Deno.test('TransformStream: default readable side applies backpressure', async () => {
+    const stream = new TransformStream<string, string>();
+    const writer = stream.writable.getWriter();
+    const reader = stream.readable.getReader();
+    let state = 'pending';
+    const write = writer.write('held').then(() => { state = 'resolved'; });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    strictEqual(state, 'pending');
+    deepStrictEqual(await reader.read(), { value: 'held', done: false });
+    await write;
+    strictEqual(state, 'resolved');
+});
+
+Deno.test('TransformStream: abort rejects a backpressured write without deadlock', async () => {
+    const stream = new TransformStream<string, string>();
+    const writer = stream.writable.getWriter();
+    const write = writer.write('held');
+    const abort = writer.abort('stopped');
+    await rejects(write, (reason) => reason === 'stopped');
+    await abort;
 });
 
 // --- 11. TransformStream: flush is called on close ------------------------
@@ -232,14 +259,18 @@ Deno.test('TransformStream: flush is called on close', async () => {
     });
     const w = ts.writable.getWriter();
     const r = ts.readable.getReader();
-    await w.write('a');
-    await w.close();
+    // The readable side defaults to HWM 0, so awaiting the write before any read
+    // deadlocks by spec (verified in Node 24 and Deno 2). Read concurrently.
+    const written = w.write('a');
+    const closed = w.close();
     const out: string[] = [];
     for (;;) {
         const { value, done } = await r.read();
         if (done) break;
         out.push(value as string);
     }
+    await written;
+    await closed;
     ok(flushed, 'flush must be called');
     deepStrictEqual(out, ['a', 'END']);
 });
@@ -326,15 +357,23 @@ Deno.test('ReadableStream: read returns done:true at end', async () => {
 
 // --- 18. ReadableStream: desiredSize reflects backpressure -----------------
 
+// Oracle (2026-08-03, all three agree): Node v24.18.0, Deno 2.9.3 and cno all
+// report desiredSize 3 after one enqueue into a HWM-4 queue, and 4 once the
+// chunk is consumed.
 Deno.test('ReadableStream: desiredSize is positive when room', async () => {
-    const rs = new ReadableStream({
-        start(c) { c.enqueue('x'); },
+    let ctrl: ReadableStreamDefaultController<string> | undefined;
+    const rs = new ReadableStream<string>({
+        start(c) { ctrl = c; c.enqueue('x'); },
     }, { highWaterMark: 4 });
+    // Before reading, one chunk is queued against a HWM of 4.
+    strictEqual(ctrl!.desiredSize, 3);
     const r = rs.getReader();
-    // Before reading, controller should have room.
-    await r.read();
-    // After consuming, desiredSize should be back to HWM.
-    ok(true); // smoke: no throw
+    const first = await r.read();
+    strictEqual(first.done, false);
+    strictEqual(first.value, 'x');
+    // After consuming, desiredSize is back to the full HWM.
+    strictEqual(ctrl!.desiredSize, 4);
+    ok(ctrl!.desiredSize > 0, 'desiredSize must be positive when the queue has room');
 });
 
 // --- 19. WritableStream: desiredSize goes negative under pressure ---------

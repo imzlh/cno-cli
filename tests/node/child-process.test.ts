@@ -1,5 +1,5 @@
 import { deepStrictEqual, strictEqual, ok, throws } from 'node:assert';
-import { ChildProcess, spawn, exec, execFile, fork, spawnSync } from 'node:child_process';
+import { ChildProcess, spawn, exec, execFile, execFileSync, execSync, fork, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { join } from 'node:path';
 import * as fs from 'node:fs';
@@ -195,8 +195,13 @@ Deno.test({ name: 'child_process: explicit env does not inherit parent env and s
                 encoding: 'utf8',
             },
         );
+        // Node drops only `undefined`; a `null` value is stringified, so B is
+        // PRESENT with the literal string "null". Measured on Node v24.18.0 with
+        // this exact spawnSync call: stdout is `false:true:ok` and
+        // JSON.stringify(process.env.B) is `"null"`. The previous expectation
+        // (`false:false:ok`) asserted that null was skipped, which no runtime does.
         strictEqual(nullish.status, 0);
-        strictEqual(nullish.stdout, 'false:false:ok');
+        strictEqual(nullish.stdout, 'false:true:ok');
     } finally {
         if (previous === undefined) delete process.env[key];
         else process.env[key] = previous;
@@ -394,6 +399,341 @@ Deno.test({ name: 'child_process upstream: spawn missing command emits platform 
 
     if (Deno.build.os === 'windows') strictEqual(err.errno, -4058);
     else strictEqual(err.errno, -2);
+});
+
+// CVE-2024-27980. cmd.exe re-parses a batch file's argument string, so `&` in an
+// argument runs as its own command. Verified exploitable before the guard: the
+// `.bat` echoed `args=["a\"]` and `INJECTED` appeared on a *separate* line,
+// outside the script's own brackets. Node refuses the spawn (EINVAL) unless
+// `shell` is set; asserting only "`.bat` is rejected" would not catch a
+// regression that still ran the file, so assert INJECTED never executes.
+Deno.test({
+    name: 'child_process: refuses direct .bat/.cmd spawn (CVE-2024-27980 argument injection)',
+    ignore: Deno.build.os !== 'windows',
+    timeout: 20000,
+}, async () => {
+    await withTempDir('child-process-batcve', async (dir) => {
+        const bat = join(dir, 'hello.bat');
+        fs.writeFileSync(bat, '@echo off\r\necho HELLO_FROM_BAT args=[%*]\r\n');
+        const cmdFile = join(dir, 'hello.cmd');
+        fs.writeFileSync(cmdFile, '@echo off\r\necho HELLO_FROM_CMD args=[%*]\r\n');
+        const evil = 'a" & echo INJECTED & rem "b';
+
+        // spawnSync reports it in `error` (pid 0, status null) and runs nothing.
+        const sync = spawnSync(bat, [evil], { encoding: 'utf8' });
+        strictEqual(sync.status, null);
+        strictEqual(String(sync.stdout ?? '').includes('INJECTED'), false, 'injected command must not run');
+        strictEqual(String(sync.stdout ?? '').includes('HELLO_FROM_BAT'), false, 'the batch file must not run');
+        const syncErr = sync.error as NodeJS.ErrnoException | undefined;
+        ok(syncErr, 'spawnSync must report an error');
+        strictEqual(syncErr?.code, 'EINVAL');
+        strictEqual(syncErr?.errno, -4071);
+        strictEqual(syncErr?.syscall, `spawnSync ${bat}`);
+        strictEqual(syncErr?.message, `spawnSync ${bat} EINVAL`);
+        strictEqual(syncErr?.path, bat);
+        deepStrictEqual(Reflect.get(syncErr!, 'spawnargs'), [evil]);
+
+        // .cmd and an uppercase extension are the same case (Node matches both).
+        strictEqual((spawnSync(cmdFile, [evil], { encoding: 'utf8' }).error as NodeJS.ErrnoException).code, 'EINVAL');
+        strictEqual((spawnSync(bat.toUpperCase(), [evil], { encoding: 'utf8' }).error as NodeJS.ErrnoException).code, 'EINVAL');
+
+        // Async spawn throws synchronously — Node only defers ENOENT, not EINVAL.
+        let asyncErr: NodeJS.ErrnoException | undefined;
+        try {
+            spawn(bat, [evil]).on('error', () => {});
+        } catch (err) {
+            asyncErr = err as NodeJS.ErrnoException;
+        }
+        ok(asyncErr, 'spawn must throw for a direct .bat');
+        strictEqual(asyncErr?.message, 'spawn EINVAL');
+        strictEqual(asyncErr?.code, 'EINVAL');
+        strictEqual(asyncErr?.errno, -4071);
+        strictEqual(asyncErr?.syscall, 'spawn');
+        deepStrictEqual(Object.keys(asyncErr!), ['errno', 'code', 'syscall']);
+
+        // execFile delegates to spawn, so it throws the same way.
+        throws(() => execFile(bat, [evil], () => {}), (err: NodeJS.ErrnoException) => err.code === 'EINVAL');
+
+        // `shell: true` is the documented escape hatch: it runs, and the argument
+        // stays one literal token inside the brackets (no separate INJECTED line).
+        const viaShell = spawnSync(bat, [evil], { encoding: 'utf8', shell: true });
+        strictEqual(viaShell.status, 0);
+        const shellOut = String(viaShell.stdout ?? '');
+        strictEqual(shellOut.includes('HELLO_FROM_BAT'), true, shellOut);
+        strictEqual(/args=\[[^\]\r\n]*INJECTED[^\]\r\n]*\]/.test(shellOut), true, shellOut);
+        strictEqual(/^INJECTED/m.test(shellOut), false, `INJECTED must stay inside args=[…]: ${shellOut}`);
+
+        // A real .exe is unaffected, including the extensionless PATHEXT form.
+        const exe = spawnSync(Deno.execPath(), ['--version'], { encoding: 'utf8' });
+        strictEqual(exe.status, 0);
+    });
+});
+
+// Every entry point, plain AND injecting, against the payload. The whole point of
+// the guard is that `INJECTED` never executes, so each case asserts on the child's
+// actual output rather than only on the error shape. Error shapes below were all
+// measured against real Node v24.18 on Windows.
+//
+// exec/execSync are deliberately NOT refused: they pass `shell: options.shell ?? true`,
+// and Node exempts them the same way, so they DO run the injected command. That is
+// upstream behaviour, not a cno bug — asserting it here stops someone "fixing" it
+// into a divergence.
+Deno.test({
+    name: 'child_process: CVE-2024-27980 entry-point matrix (spawn/spawnSync/execFile/execFileSync refuse, exec/execSync exempt)',
+    ignore: Deno.build.os !== 'windows',
+    timeout: 30000,
+}, async () => {
+    await withTempDir('child-process-batmatrix', async (dir) => {
+        const bat = join(dir, 'hello.bat');
+        fs.writeFileSync(bat, '@echo off\r\necho HELLO_BAT args=[%*]\r\n');
+        const cmdFile = join(dir, 'hello.cmd');
+        fs.writeFileSync(cmdFile, '@echo off\r\necho HELLO_CMD args=[%*]\r\n');
+        const EVIL = 'a" & echo INJECTED & rem "b';
+        const quoted = (p: string) => `"${p}"`;
+
+        const noInjection = (out: string, label: string) => {
+            strictEqual(out.includes('INJECTED'), false, `${label}: injected command ran: ${out}`);
+        };
+
+        // --- spawn: throws synchronously, bare `spawn EINVAL` (no path/spawnargs).
+        for (const [label, file] of [['bat', bat], ['cmd', cmdFile], ['BAT-upper', bat.toUpperCase()]] as const) {
+            for (const [argLabel, args] of [['plain', ['plainarg']], ['injecting', [EVIL]]] as const) {
+                let thrown: NodeJS.ErrnoException | undefined;
+                try {
+                    spawn(file, args as string[]).on('error', () => {});
+                } catch (err) {
+                    thrown = err as NodeJS.ErrnoException;
+                }
+                ok(thrown, `spawn ${label}/${argLabel} must throw`);
+                strictEqual(thrown?.code, 'EINVAL');
+                strictEqual(thrown?.errno, -4071);
+                strictEqual(thrown?.message, 'spawn EINVAL');
+                strictEqual(thrown?.syscall, 'spawn');
+                deepStrictEqual(Object.keys(thrown!), ['errno', 'code', 'syscall']);
+            }
+        }
+
+        // --- spawnSync: reports via `error`, status null, and carries path/spawnargs.
+        for (const [argLabel, args] of [['plain', ['plainarg']], ['injecting', [EVIL]]] as const) {
+            const r = spawnSync(bat, args as string[], { encoding: 'utf8' });
+            const out = String(r.stdout ?? '') + String(r.stderr ?? '');
+            noInjection(out, `spawnSync ${argLabel}`);
+            strictEqual(out.includes('HELLO_BAT'), false, `spawnSync ${argLabel}: script ran`);
+            strictEqual(r.status, null);
+            const err = r.error as NodeJS.ErrnoException;
+            strictEqual(err?.code, 'EINVAL');
+            strictEqual(err?.message, `spawnSync ${bat} EINVAL`);
+            strictEqual(err?.path, bat);
+            deepStrictEqual(Reflect.get(err, 'spawnargs'), args);
+        }
+
+        // --- execFile: delegates to spawn, so it throws synchronously too.
+        for (const [argLabel, args] of [['plain', ['plainarg']], ['injecting', [EVIL]]] as const) {
+            throws(
+                () => execFile(bat, args as string[], () => {}),
+                (err: NodeJS.ErrnoException) => err.code === 'EINVAL' && err.message === 'spawn EINVAL',
+                `execFile ${argLabel}`,
+            );
+        }
+
+        // --- execFileSync: rethrows the spawnSync error, decorated with the result.
+        for (const [argLabel, args] of [['plain', ['plainarg']], ['injecting', [EVIL]]] as const) {
+            let thrown: NodeJS.ErrnoException | undefined;
+            try {
+                execFileSync(bat, args as string[], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+            } catch (err) {
+                thrown = err as NodeJS.ErrnoException;
+            }
+            ok(thrown, `execFileSync ${argLabel} must throw`);
+            noInjection(String(Reflect.get(thrown!, 'stdout') ?? ''), `execFileSync ${argLabel}`);
+            strictEqual(thrown?.code, 'EINVAL');
+            strictEqual(Reflect.get(thrown!, 'status'), null);
+            // Node builds this by ObjectAssign(err, result), so `error` is the error
+            // itself. Callers doing `e.error?.code` rely on it being present.
+            strictEqual(Reflect.get(thrown!, 'error'), thrown);
+        }
+
+        // --- exec / execSync: EXEMPT (shell ?? true), matching Node. They run, and
+        // the injected command DOES execute — cmd.exe re-parses the string. Asserted
+        // so the exemption stays deliberate and visible.
+        const execOut = await new Promise<string>((resolve) => {
+            exec(`${quoted(bat)} plainarg`, (_e, stdout, stderr) => resolve(String(stdout) + String(stderr)));
+        });
+        strictEqual(execOut.includes('HELLO_BAT'), true, execOut);
+        noInjection(execOut, 'exec plain');
+
+        const execEvil = await new Promise<string>((resolve) => {
+            exec(`${quoted(bat)} "${EVIL.replace(/"/g, '""')}"`, (_e, stdout, stderr) => resolve(String(stdout) + String(stderr)));
+        });
+        strictEqual(execEvil.includes('INJECTED'), true, `exec is shell-exempt like Node: ${execEvil}`);
+
+        const execSyncPlain = String(execSync(`${quoted(bat)} plainarg`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }));
+        strictEqual(execSyncPlain.includes('HELLO_BAT'), true, execSyncPlain);
+        noInjection(execSyncPlain, 'execSync plain');
+        const execSyncEvil = String(execSync(`${quoted(bat)} "${EVIL.replace(/"/g, '""')}"`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }));
+        strictEqual(execSyncEvil.includes('INJECTED'), true, `execSync is shell-exempt like Node: ${execSyncEvil}`);
+    });
+});
+
+// The PATHEXT trap: `spawn('D:/tools/build')` where only `build.bat` exists. A guard
+// that tested the raw string would miss it, but Node does NOT run it either — it
+// reports ENOENT, because CreateProcess cannot launch a batch file (measured on
+// v24.18: ENOENT, not EINVAL). So the batch file must never execute AND the code
+// must be ENOENT. resolveCommandFile enforces this by refusing to let the PATHEXT
+// probe resolve onto .bat/.cmd.
+Deno.test({
+    name: 'child_process: extensionless command resolving to .bat is ENOENT and never runs (PATHEXT)',
+    ignore: Deno.build.os !== 'windows',
+    timeout: 20000,
+}, async () => {
+    await withTempDir('child-process-pathext-bat', async (dir) => {
+        fs.writeFileSync(join(dir, 'build.bat'), '@echo off\r\necho HELLO_BUILD args=[%*]\r\n');
+        const spec = join(dir, 'build');
+        const EVIL = 'a" & echo INJECTED & rem "b';
+
+        const sync = spawnSync(spec, [EVIL], { encoding: 'utf8' });
+        const syncOut = String(sync.stdout ?? '') + String(sync.stderr ?? '');
+        strictEqual(syncOut.includes('INJECTED'), false, `injected command ran: ${syncOut}`);
+        strictEqual(syncOut.includes('HELLO_BUILD'), false, `batch file ran: ${syncOut}`);
+        const syncErr = sync.error as NodeJS.ErrnoException;
+        strictEqual(syncErr?.code, 'ENOENT');
+        strictEqual(syncErr?.errno, -4058);
+        strictEqual(syncErr?.message, `spawnSync ${spec} ENOENT`);
+        strictEqual(syncErr?.path, spec);
+        // Node's ENOENT carries spawnargs, and the key order is errno-first.
+        deepStrictEqual(Reflect.get(syncErr, 'spawnargs'), [EVIL]);
+        deepStrictEqual(Object.keys(syncErr), ['errno', 'code', 'syscall', 'path', 'spawnargs']);
+
+        // Async spawn defers ENOENT to the 'error' event (unlike EINVAL).
+        const asyncErr = await new Promise<NodeJS.ErrnoException>((resolve, reject) => {
+            const child = spawn(spec, [EVIL]);
+            let out = '';
+            child.stdout?.on('data', (c) => { out += decodeUtf8(c); });
+            child.on('error', (e) => {
+                strictEqual(out.includes('INJECTED'), false, out);
+                resolve(e as NodeJS.ErrnoException);
+            });
+            child.on('exit', () => reject(new Error('must not exit normally')));
+        });
+        strictEqual(asyncErr.code, 'ENOENT');
+        deepStrictEqual(Reflect.get(asyncErr, 'spawnargs'), [EVIL]);
+    });
+});
+
+// Relative commands resolve against the CHILD's cwd. Node runs
+// `spawnSync('./tool.exe', { cwd: dir })` when dir holds the file even though the
+// parent cwd does not (measured on v24.18). cno's native layer resolves against the
+// parent instead — CreateProcessW(NULL, cmdline, …) parses the program out of the
+// command line, and lpCurrentDirectory only sets where the child starts — so the JS
+// layer pre-resolves to an absolute path. Regressing that turns a working spawn into
+// a spurious ENOENT.
+Deno.test({
+    name: 'child_process: relative command resolves against options.cwd, not the parent cwd',
+    ignore: Deno.build.os !== 'windows',
+    timeout: 20000,
+}, async () => {
+    await withTempDir('child-process-relcwd', async (dir) => {
+        // A real executable is required — copy one that is guaranteed present.
+        const src = join(Deno.env.get('SystemRoot') ?? 'C:\\Windows', 'System32', 'where.exe');
+        const tool = join(dir, 'tool.exe');
+        fs.copyFileSync(src, tool);
+
+        const viaCwd = spawnSync('./tool.exe', ['/?'], { encoding: 'utf8', cwd: dir });
+        strictEqual(viaCwd.error, undefined, String(viaCwd.error?.message));
+        strictEqual(viaCwd.status, 0);
+
+        // The extensionless PATHEXT form must work the same way.
+        const extensionless = spawnSync('./tool', ['/?'], { encoding: 'utf8', cwd: dir });
+        strictEqual(extensionless.error, undefined, String(extensionless.error?.message));
+        strictEqual(extensionless.status, 0);
+
+        // Without cwd it is genuinely missing, and spawnfile keeps the caller's spec.
+        const missing = spawnSync('./tool.exe', ['/?'], { encoding: 'utf8' });
+        strictEqual((missing.error as NodeJS.ErrnoException | undefined)?.code, 'ENOENT');
+
+        const child = spawn('./tool.exe', ['/?'], { cwd: dir, stdio: 'ignore' });
+        strictEqual(child.spawnfile, './tool.exe');
+        deepStrictEqual(child.spawnargs, ['./tool.exe', '/?']);
+        await new Promise<void>((resolve) => child.on('close', () => resolve()));
+    });
+});
+
+// A directory is not a runnable command: Node reports ENOENT for `spawn('./adir')`
+// (measured on v24.18). An existence check that counts directories would let it
+// through to the native layer and surface a codeless InternalError instead.
+Deno.test({ name: 'child_process: spawning a directory reports ENOENT', timeout: 15000 }, async () => {
+    await withTempDir('child-process-dirspawn', async (dir) => {
+        const sub = join(dir, 'adir');
+        fs.mkdirSync(sub, { recursive: true });
+
+        const r = spawnSync(sub, ['x'], { encoding: 'utf8' });
+        const err = r.error as NodeJS.ErrnoException | undefined;
+        strictEqual(err?.code, 'ENOENT');
+        strictEqual(err?.path, sub);
+        strictEqual(r.status, null);
+
+        const asyncErr = await new Promise<NodeJS.ErrnoException>((resolve, reject) => {
+            const child = spawn(sub, ['x']);
+            child.on('error', (e) => resolve(e as NodeJS.ErrnoException));
+            child.on('exit', () => reject(new Error('must not exit normally')));
+        });
+        strictEqual(asyncErr.code, 'ENOENT');
+    });
+});
+
+// Node decorates a pre-existing exec/execFile failure (spawn error, maxBuffer) with
+// `cmd` ONLY — killed/signal appear solely on the exit-status error it builds itself.
+// Measured on v24.18: ENOENT gives [errno,code,syscall,path,spawnargs,cmd] and
+// maxBuffer gives [code,cmd], while a non-zero exit gives [code,killed,signal,cmd].
+Deno.test({ name: 'child_process: execFile error decoration matches Node per failure kind', timeout: 20000 }, async () => {
+    const missing = await new Promise<NodeJS.ErrnoException>((resolve) => {
+        execFile(join('.', 'no-such-cno-execfile-target'), ['a'], (err) => resolve(err as NodeJS.ErrnoException));
+    });
+    strictEqual(missing.code, 'ENOENT');
+    strictEqual(Reflect.has(missing, 'killed'), false, 'spawn error must not carry killed');
+    strictEqual(Reflect.has(missing, 'signal'), false, 'spawn error must not carry signal');
+    ok(Reflect.has(missing, 'cmd'), 'spawn error must carry cmd');
+
+    const exited = await new Promise<NodeJS.ErrnoException>((resolve) => {
+        execFile(process.execPath, ['-e', 'process.exit(7)'], (err) => resolve(err as NodeJS.ErrnoException));
+    });
+    strictEqual(exited.code as unknown as number, 7);
+    strictEqual(Reflect.get(exited, 'killed'), false);
+    strictEqual(Reflect.get(exited, 'signal'), null);
+
+    const overflow = await new Promise<NodeJS.ErrnoException>((resolve) => {
+        execFile(process.execPath, ['-e', 'process.stdout.write("x".repeat(5000))'], { maxBuffer: 10 }, (err) => resolve(err as NodeJS.ErrnoException));
+    });
+    strictEqual(overflow.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+    strictEqual(Reflect.has(overflow, 'killed'), false, 'maxBuffer error must not carry killed');
+    strictEqual(Reflect.has(overflow, 'signal'), false, 'maxBuffer error must not carry signal');
+});
+
+// execSync/execFileSync throw an Error carrying the whole spawnSync result. Node
+// builds it with ObjectAssign(err, result), so a result that has an `error` yields a
+// self-referencing `error` key — and a plain non-zero exit has no `error` key at all.
+Deno.test({ name: 'child_process: execFileSync/execSync error carries the spawnSync result shape', timeout: 20000 }, () => {
+    let nonZero: NodeJS.ErrnoException | undefined;
+    try {
+        execFileSync(process.execPath, ['-e', 'process.exit(3)'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (err) {
+        nonZero = err as NodeJS.ErrnoException;
+    }
+    ok(nonZero, 'non-zero exit must throw');
+    strictEqual(Reflect.get(nonZero!, 'status'), 3);
+    strictEqual(Reflect.has(nonZero!, 'error'), false, 'a plain non-zero exit has no `error` key');
+    deepStrictEqual(Object.keys(nonZero!), ['status', 'signal', 'output', 'pid', 'stdout', 'stderr']);
+
+    let spawnFailure: NodeJS.ErrnoException | undefined;
+    try {
+        execFileSync(join('.', 'no-such-cno-execfilesync-target'), ['a'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (err) {
+        spawnFailure = err as NodeJS.ErrnoException;
+    }
+    ok(spawnFailure, 'missing command must throw');
+    strictEqual(spawnFailure?.code, 'ENOENT');
+    strictEqual(Reflect.get(spawnFailure!, 'error'), spawnFailure, '`error` must be the error itself');
+    strictEqual(Reflect.get(spawnFailure!, 'status'), null);
 });
 
 Deno.test({ name: 'child_process upstream: kill can be called repeatedly without throwing', timeout: 10000 }, async () => {
@@ -643,6 +983,99 @@ Deno.test({ name: 'child_process upstream: spawn exposes extra pipe stdio entrie
 
         strictEqual(result.code, 0);
         strictEqual(result.got, 'hello world');
+    });
+});
+
+// The IPC channel must be DUPLEX. An anonymous _pipe() on Windows is
+// unidirectional: child->parent worked while every parent->child send() failed
+// EPIPE (-4047). Node reference, measured on v24.18.0: send() === true, then
+// messages ["ready", {"echo":{"hello":1}}].
+Deno.test({ name: 'child_process upstream: fork IPC round-trips parent send to child and back', timeout: 15000 }, async () => {
+    await withTempDir('child-process-ipc-roundtrip', async (dir) => {
+        const script = join(dir, 'child.js');
+        fs.writeFileSync(script, `
+            process.send('ready');
+            process.on('message', (m) => {
+                process.send({ echo: m });
+                process.disconnect();
+            });
+        `);
+
+        const child = fork(script, [], {
+            silent: true,
+            env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
+        });
+        const messages: unknown[] = [];
+        let sendReturned: unknown = '<send never called>';
+        let sendCallbackError: unknown = '<callback never fired>';
+
+        try {
+            await new Promise<void>((resolve, reject) => {
+                child.on('error', reject);
+                child.on('message', (message) => {
+                    messages.push(message);
+                    if (messages.length !== 1) return;
+                    sendReturned = child.send({ hello: 1 }, (error) => {
+                        sendCallbackError = error === null || error === undefined ? null : String(error);
+                    });
+                });
+                child.on('close', () => resolve());
+            });
+
+            deepStrictEqual(messages[0], 'ready', 'child->parent direction must deliver the first message');
+            strictEqual(sendReturned, true, `parent->child send() must return true, got ${String(sendReturned)} (callback error: ${String(sendCallbackError)})`);
+            strictEqual(sendCallbackError, null, `send() must not report a write error, got ${String(sendCallbackError)}`);
+            deepStrictEqual(messages, ['ready', { echo: { hello: 1 } }], 'the child must receive the payload and echo it back');
+        } finally {
+            try { child.kill('SIGKILL'); } catch {}
+        }
+    });
+});
+
+Deno.test({ name: 'child_process upstream: fork IPC survives repeated parent sends in both directions', timeout: 15000 }, async () => {
+    await withTempDir('child-process-ipc-pingpong', async (dir) => {
+        const script = join(dir, 'child.js');
+        fs.writeFileSync(script, `
+            process.on('message', (m) => {
+                if (m === 'stop') { process.disconnect(); return; }
+                process.send(m * 2);
+            });
+            process.send('go');
+        `);
+
+        const child = fork(script, [], {
+            silent: true,
+            env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
+        });
+        const replies: number[] = [];
+        const sendResults: unknown[] = [];
+        const sendErrors: string[] = [];
+        // Supplying a callback keeps a write failure off the 'error' event, so a
+        // broken channel surfaces as a failed assertion rather than a rejection.
+        const record = (error: Error | null) => { if (error) sendErrors.push(String(error)); };
+
+        try {
+            await new Promise<void>((resolve, reject) => {
+                child.on('error', reject);
+                child.on('message', (message) => {
+                    if (message === 'go') {
+                        for (const n of [1, 2, 3, 4, 5]) sendResults.push(child.send(n, record));
+                        // Nothing will come back on a broken channel; stop waiting.
+                        if (sendResults.some((r) => r === false)) child.kill('SIGKILL');
+                        return;
+                    }
+                    replies.push(message as number);
+                    if (replies.length === 5) sendResults.push(child.send('stop', record));
+                });
+                child.on('close', () => resolve());
+            });
+
+            deepStrictEqual(sendErrors, [], `no send() may report a write error, got ${sendErrors.join('; ')}`);
+            deepStrictEqual(sendResults, [true, true, true, true, true, true], 'every send() must succeed');
+            deepStrictEqual(replies, [2, 4, 6, 8, 10], 'each payload must reach the child intact');
+        } finally {
+            try { child.kill('SIGKILL'); } catch {}
+        }
     });
 });
 

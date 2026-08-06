@@ -26,6 +26,16 @@ import { Domain } from './base'
 
 const timers = import.meta.use('timers')
 const INITIAL_PAUSE_SETTLE_MS = 50
+/**
+ * How long a pause may be held while the socket is attached but `Debugger.enable`
+ * has not arrived. See onPaused: the hold exists for the --inspect-brk startup race
+ * (inspector.ts waits for the SOCKET, then arms the entry breakpoint, so the pause
+ * can beat the frontend's Debugger.enable), but an unbounded hold parks the main
+ * thread in serviceWhilePaused() forever with no Debugger.paused ever emitted.
+ * 2s is ~100x the observed attach→enable gap and the timer is cancelled the moment
+ * enable arrives, so it only ever expires when no debugger is coming at all.
+ */
+const UNENABLED_PAUSE_GRACE_MS = 2000
 
 interface KnownScript {
 	scriptId: string
@@ -59,9 +69,10 @@ export class DebuggerDomain extends Domain {
 	private nextBpId = 1
 	private knownScripts = new Map<string, KnownScript>()
 	private cdpBreakpoints = new Map<string, CdpBreakpoint>()
-	private pendingScriptEvents: KnownScript[] = []
 	private pendingPausedEvent: PausedEvent | null = null
 	private pendingPausedTimer: number | null = null
+	/** Bounds a pause held because Debugger is not enabled yet. See onPaused. */
+	private unenabledPauseTimer: number | null = null
 	private lastScriptParsedAt = 0
 
 	constructor(
@@ -75,14 +86,21 @@ export class DebuggerDomain extends Domain {
 
 	private registerHandlers(): void {
 		this.on('Debugger.enable', () => {
-			this.enabled = true
-			// Replay scripts for every enable call so reconnecting frontends see the
-			// full source tree again. pendingScriptEvents preserves early-load order
-			// before the first enable; afterwards we fall back to knownScripts.
-			if (this.pendingScriptEvents.length > 0) {
-				for (const script of this.pendingScriptEvents) this.emitScriptParsed(script)
-				this.pendingScriptEvents.length = 0
-			} else {
+			// The frontend is here: any bounded hold from onPaused has served its purpose
+			// and flushPendingPausedSoon below takes over delivery of the held event.
+			this.clearUnenabledPauseTimeout()
+			// Idempotent, like V8. MEASURED against node v24.18: the 1st enable emitted
+			// 83 scriptParsed and a 2nd on the same session emitted 0, both returning the
+			// same debuggerId. Replaying unconditionally hands DevTools a second
+			// scriptParsed for a scriptId it already has, which duplicates the file in
+			// the sources tree. A disable/enable cycle DOES replay (also measured: 83
+			// then 83) and still does here, because `disable` clears `enabled`.
+			if (!this.enabled) {
+				this.enabled = true
+				// Replay every known script. knownScripts is insertion ordered and is a
+				// superset of the old `pendingScriptEvents` list, so replaying only that
+				// list after a disable/enable cycle hid every script loaded before it —
+				// breakpoints in those files then never resolved.
 				for (const script of this.knownScripts.values()) this.emitScriptParsed(script)
 			}
 			this.flushPendingPausedSoon()
@@ -130,6 +148,20 @@ export class DebuggerDomain extends Domain {
 
 		this.on('Debugger.setBreakpointByUrl', (p) => {
 			const q = this.extract<SetBreakpointByUrlParams>(p)
+			// CDP requires one script locator: url, urlRegex or scriptHash. With NONE of
+			// them the request is malformed. MEASURED, node v24.18, params {}:
+			//   -32602 "Invalid parameters".
+			// MEASURED, cno before this check: {"breakpointId":"","locations":[]} — a
+			// reply DevTools records as a real breakpoint, but one that can never fire
+			// and whose Debugger.removeBreakpoint("") is a silent no-op.
+			// Deliberately narrow: this only rejects the case where no locator was sent
+			// at all. When a locator IS present but cno cannot turn it into a path (the
+			// unsupported `scriptHash`, or a urlRegex that reduces to nothing), the old
+			// lenient early-return below is kept, so no locator-bearing DevTools call
+			// pattern changes behaviour.
+			if (p.url === undefined && p.urlRegex === undefined && p.scriptHash === undefined) {
+				throw new CDPError(CdpErrorCode.InvalidParams, "CDP param 'url', 'urlRegex' or 'scriptHash' is required")
+			}
 			const rawUrl = q.url ?? this.urlFromRegex(q.urlRegex)
 			if (!rawUrl) return { breakpointId: '', locations: [] }
 			const lineNumber = this.requireLineNumber(q.lineNumber)
@@ -140,7 +172,7 @@ export class DebuggerDomain extends Domain {
 			const col = columnNumber != null && columnNumber > 0 ? columnNumber + 1 : undefined
 			const bp = this.makeBreakpoint(resolved.path, resolved.altPath, line, col)
 			this.cdpBreakpoints.set(breakpointId, bp)
-			if (this.breakpointsActive) void this.installNativeBreakpoint(bp)
+			if (this.breakpointsActive) this.installNativeBreakpointSafely(bp)
 			return {
 				breakpointId,
 				locations: [{ scriptId: resolved.scriptId, lineNumber, columnNumber: columnNumber ?? 0 }],
@@ -156,7 +188,7 @@ export class DebuggerDomain extends Domain {
 			const col = loc.columnNumber != null && loc.columnNumber > 0 ? loc.columnNumber + 1 : undefined
 			const bp = this.makeBreakpoint(resolved.path, resolved.altPath, line, col)
 			this.cdpBreakpoints.set(breakpointId, bp)
-			if (this.breakpointsActive) void this.installNativeBreakpoint(bp)
+			if (this.breakpointsActive) this.installNativeBreakpointSafely(bp)
 			return { breakpointId, actualLocation: loc }
 		})
 		this.on('Debugger.removeBreakpoint', async (p) => {
@@ -179,12 +211,22 @@ export class DebuggerDomain extends Domain {
 		this.on('Debugger.getScriptSource', (p) => this.rpc.call('getScriptSource', { scriptId: this.reqStr(p, 'scriptId') }))
 
 		this.on('Debugger.evaluateOnCallFrame', (p) => {
+			// MEASURED against node v24.18: this answers
+			// {"error":{"code":-32000,"message":"Can only perform operation while paused."}}
+			// A successful result carrying a fabricated exceptionDetails instead tells
+			// DevTools the expression ran and threw, so the console prints a bogus
+			// "Not paused" error object rather than the command reporting failure.
 			if (!this.paused) {
-				return { result: { type: 'undefined' }, exceptionDetails: { text: 'Not paused', exceptionId: 0 } }
+				throw new CDPError(CdpErrorCode.ServerError, 'Can only perform operation while paused.')
 			}
 			const q = this.extract<DebuggerEvaluateOnCallFrameParams>(p)
-			// DevTools eager-evaluates as you type; without this gate a preview
-			// of `arr.pop()` would actually mutate the paused debuggee.
+			// DevTools eager-evaluates as you type, so honour throwOnSideEffect.
+			// NOTE: side-effect.ts is a permissive BLOCKLIST, not a sandbox. It
+			// rejects assignment, ++/--, delete/throw/yield, import and a small set
+			// of named callees (eval/Function/setTimeout/...). Instance-method calls
+			// are NOT rejected — MEASURED: `arr.pop()`, `map.clear()` and even
+			// `process.exit(1)` all pass this gate. Do not treat it as a guarantee
+			// that a preview cannot mutate or kill the debuggee.
 			if (q.throwOnSideEffect && !isSideEffectFree(q.expression)) return sideEffectException()
 			return this.rpc.call('evaluate', {
 				expression: q.expression,
@@ -198,6 +240,27 @@ export class DebuggerDomain extends Domain {
 		})
 
 		this.on('Debugger.setVariableValue', (p) => {
+			// Paused-only, exactly like evaluateOnCallFrame above. Without this guard the
+			// RPC reaches main/rpc-handlers.ts setVariableValue, which addresses the stack
+			// at FrameOffset.PausedSetVariable — an offset only meaningful while
+			// serviceWhilePaused() is blocked. While RUNNING it lands on unrelated frames,
+			// and PauseController.normalizeScope cannot correct the scope number because
+			// scopeChainLengths is only populated by onBreak (cleared at every break), so
+			// it returns the caller's number unchanged.
+			// MEASURED, node v24.18, this command while running:
+			//   {"error":{"code":-32000,"message":"Invalid call frame id"}}
+			// MEASURED, cno over a real WebSocket (never paused, no breakpoint set):
+			//   scopeNumber:2 wrote the REAL global scope of the running program —
+			//   globalThis.SENTINEL read back changed, and clobbering `setTimeout` to 1
+			//   wedged the runtime (the next Runtime.evaluate never answered).
+			// Gate on `this.paused` rather than `rpc.isPaused()` deliberately: the field is
+			// only set once onPaused has run, which is also when scopeChainLengths becomes
+			// valid. In the window where C is Paused but the domain has not processed the
+			// event, the scope mapping would still be wrong, so the field is the stricter
+			// and correct gate — and it matches the sibling guard.
+			if (!this.paused) {
+				throw new CDPError(CdpErrorCode.ServerError, 'Can only perform operation while paused.')
+			}
 			const q = this.extract<DebuggerSetVariableValueParams>(p)
 			return this.rpc.call('setVariableValue', {
 				scopeNumber: q.scopeNumber,
@@ -334,6 +397,20 @@ export class DebuggerDomain extends Domain {
 		}
 	}
 
+	/**
+	 * Fire-and-forget breakpoint install. The rejection MUST be swallowed here:
+	 * the worker's `unhandledrejection` listener reports to the main thread as a
+	 * worker crash, and the main thread now rejects the attach `ready` promise on a
+	 * worker error — so one orphan rejection aborts the whole debug session.
+	 * pipe-rpc's `failAllPending` makes that reachable, because a single pipe fault
+	 * rejects every in-flight rpc.call at once.
+	 */
+	private installNativeBreakpointSafely(bp: CdpBreakpoint): void {
+		this.installNativeBreakpoint(bp).catch((e: unknown) => {
+			log.debug('debug', () => `addBreakpoint ${bp.url}:${bp.line} failed: ${e instanceof Error ? e.message : String(e)}`)
+		})
+	}
+
 	private async installNativeBreakpoint(bp: CdpBreakpoint): Promise<void> {
 		await this.rpc.call('addBreakpoint', { url: bp.url, line: bp.line, col: bp.col })
 		// CJS debug frames use localPath; ESM uses module name — register both.
@@ -360,8 +437,21 @@ export class DebuggerDomain extends Domain {
 
 	setConnected(connected: boolean): void {
 		this.connected = connected
-		if (!connected && this.paused) void this.doResume(Step.None)
-		if (!connected) this.clearPendingPaused()
+		if (connected) return
+		// doResume awaits releaseObjectGroup over the pipe, and this path runs exactly
+		// when the socket is going away — i.e. when the pipe is most likely already
+		// dead. An orphan rejection here is reported to the main thread as a worker
+		// crash, so it must be swallowed.
+		if (this.paused) {
+			this.doResume(Step.None).catch((e: unknown) => {
+				log.debug('debug', () => `resume on detach failed: ${e instanceof Error ? e.message : String(e)}`)
+			})
+		}
+		this.clearPendingPaused()
+		// Back to disabled, like ConsoleDomain: `enabled` is per-session state in V8, so
+		// a reattaching frontend's Debugger.enable must replay the full script tree
+		// again. Without this the next enable is a no-op and DevTools shows no sources.
+		this.enabled = false
 	}
 
 	onScriptParsed(data: ScriptParsedPayload): void {
@@ -377,12 +467,8 @@ export class DebuggerDomain extends Domain {
 			normalizedSourcePath: sourcePath ? this.normalizeUrl(sourcePath) : undefined,
 		}
 		this.knownScripts.set(data.scriptId, script)
-		if (this.enabled) {
-			this.emitScriptParsed(script)
-		} else {
-			// Buffer until Debugger.enable so DevTools doesn't miss early scripts.
-			this.pendingScriptEvents.push(script)
-		}
+		// Not enabled yet: knownScripts is replayed wholesale on Debugger.enable.
+		if (this.enabled) this.emitScriptParsed(script)
 	}
 
 	private emitScriptParsed(script: KnownScript): void {
@@ -412,21 +498,71 @@ export class DebuggerDomain extends Domain {
 		}
 		this.paused = true
 		this.rpc.setPaused(true)
+		this.pendingPausedEvent = p
 		if (!this.enabled) {
-			this.pendingPausedEvent = p
+			// Connected but Debugger not enabled. Two ways to get here:
+			//   1. the --inspect-brk startup race — inspector.ts waits for the SOCKET
+			//      (waitForConnection), then arms a breakpoint on entry line 1, so the
+			//      pause can arrive before the frontend's Debugger.enable does;
+			//   2. a session that never enables Debugger at all (a console-only
+			//      frontend), hitting a `debugger` statement or a breakpoint/exception
+			//      breakpoint a PREVIOUS session left armed — detach clears `enabled`
+			//      but only Debugger.disable disarms native breakpoints.
+			// Case 1 is why the event is HELD rather than resumed: Debugger.enable
+			// flushes it, and resuming instead would make break-on-start a coin flip.
+			// Case 2 is why the hold must be BOUNDED. OBSERVED (earlier probe, older
+			// binary): the debuggee froze indefinitely — tick count pinned across three
+			// round trips — while Runtime.evaluate kept answering over the pause channel,
+			// so nothing in the protocol traffic revealed the program had stopped.
+			// The bounded hold serves both: correct for a frontend that is merely slow,
+			// self-healing for one that is never going to ask.
+			this.armUnenabledPauseTimeout()
 			return
 		}
-		this.pendingPausedEvent = p
 		this.flushPendingPausedSoon()
+	}
+
+	/**
+	 * Resume, once, if a pause is still being held with Debugger not enabled.
+	 *
+	 * Deliberately mirrors the synchronous `!connected` branch of onPaused rather than
+	 * calling doResume(): doResume awaits releaseObjectGroup over the pipe, and an
+	 * orphan rejection from a timer callback reaches the worker's `unhandledrejection`
+	 * listener, which the main thread reports as a worker crash. The backtrace group is
+	 * released by onBreak at the next break in any case. No Debugger.resumed is emitted
+	 * because no Debugger.paused ever was, and the domain is not enabled.
+	 */
+	private armUnenabledPauseTimeout(): void {
+		if (this.unenabledPauseTimer != null) return
+		this.unenabledPauseTimer = timers.setTimeout(() => {
+			this.unenabledPauseTimer = null
+			if (!this.paused || this.enabled || !this.pendingPausedEvent) return
+			log.debug('debug', () => 'onPaused: held pause expired with Debugger still disabled — resuming')
+			this.pendingPausedEvent = null
+			this.paused = false
+			this.rpc.setPaused(false)
+			this.rpc.beginResume(Step.None)
+		}, UNENABLED_PAUSE_GRACE_MS)
+	}
+
+	private clearUnenabledPauseTimeout(): void {
+		if (this.unenabledPauseTimer == null) return
+		timers.clearTimeout(this.unenabledPauseTimer)
+		this.unenabledPauseTimer = null
 	}
 
 	private emitPaused(p: PausedEvent): void {
 		const reason = p.reason ?? 'other'
 		const hitBreakpoints: string[] = []
-		const hitFile = this.normalizeUrl(p.hitFilename)
+		// hitFilename is the frame's devtools url; breakpoints are keyed on the
+		// scriptId (specPath). For non-file modules (npm:/jsr:) the two differ, so
+		// compare against both or hitBreakpoints is always empty there.
+		const hitFiles = new Set<string>([this.normalizeUrl(p.hitFilename)])
+		const topScriptId = p.callFrames?.[0]?.location?.scriptId
+		if (topScriptId) hitFiles.add(this.normalizeUrl(topScriptId))
 		for (const [id, bp] of this.cdpBreakpoints) {
-			const pathHit = bp.matchUrl === hitFile
-				|| (bp.matchAltUrl !== undefined && bp.matchAltUrl === hitFile)
+			const pathHit = hitFiles.has(bp.matchUrl)
+				|| (bp.matchAltUrl !== undefined && hitFiles.has(bp.matchAltUrl))
 			if (pathHit && bp.line === p.hitLine) hitBreakpoints.push(id)
 		}
 		const callFrames: CallFrame[] = p.callFrames ?? []
@@ -460,6 +596,7 @@ export class DebuggerDomain extends Domain {
 
 	private clearPendingPaused(): void {
 		this.pendingPausedEvent = null
+		this.clearUnenabledPauseTimeout()
 		if (this.pendingPausedTimer == null) return
 		timers.clearTimeout(this.pendingPausedTimer)
 		this.pendingPausedTimer = null

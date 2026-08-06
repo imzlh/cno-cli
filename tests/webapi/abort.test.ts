@@ -67,8 +67,13 @@ Deno.test('AbortSignal.any: aborts when one source aborts and keeps first reason
     strictEqual(fired, 1);
 });
 
-Deno.test('AbortSignal.any: rejects non-array input', () => {
-    throws(() => AbortSignal.any(new Set() as unknown as AbortSignal[]), TypeError);
+Deno.test('AbortSignal.any: accepts any iterable and rejects non-iterables', () => {
+    // Spec takes an iterable of signals, so a Set and a generator are both valid.
+    const controller = new AbortController();
+    strictEqual(AbortSignal.any(new Set([controller.signal])).aborted, false);
+    strictEqual(AbortSignal.any(new Set()).aborted, false);
+    throws(() => AbortSignal.any(5 as unknown as AbortSignal[]), TypeError);
+    throws(() => AbortSignal.any(null as unknown as AbortSignal[]), TypeError);
 });
 
 Deno.test('AbortSignal.timeout: aborts asynchronously with TimeoutError', async () => {
@@ -82,6 +87,21 @@ Deno.test('AbortSignal.timeout: aborts asynchronously with TimeoutError', async 
 });
 
 Deno.test('AbortSignal.timeout: rejects invalid timeout values', () => {
-    throws(() => AbortSignal.timeout(-1), TypeError);
-    throws(() => AbortSignal.timeout(Infinity), TypeError);
+    // Spec/Node use RangeError for an out-of-range delay.
+    throws(() => AbortSignal.timeout(-1), RangeError);
+    throws(() => AbortSignal.timeout(Infinity), RangeError);
+});
+
+Deno.test('AbortSignal/AbortController: default reason and prototype string tag', () => {
+    const controller = new AbortController();
+    controller.abort();
+    ok(controller.signal.reason instanceof DOMException);
+    strictEqual(controller.signal.reason.name, 'AbortError');
+    strictEqual(controller.signal.reason.message, 'This operation was aborted');
+    strictEqual(AbortSignal.abort().reason.message, 'This operation was aborted');
+
+    // Symbol.toStringTag belongs on the prototype, not on each instance.
+    ok(Object.prototype.hasOwnProperty.call(AbortSignal.prototype, Symbol.toStringTag));
+    ok(!Object.prototype.hasOwnProperty.call(controller.signal, Symbol.toStringTag));
+    ok(!Object.prototype.hasOwnProperty.call(controller, Symbol.toStringTag));
 });

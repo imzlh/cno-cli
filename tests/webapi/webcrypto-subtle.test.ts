@@ -31,9 +31,20 @@ Deno.test('webcrypto upstream: digest consumes only the supplied BufferSource vi
 });
 
 Deno.test('webcrypto upstream: unsupported digest algorithms reject', async () => {
+    // Both oracles throw a NotSupportedError DOMException (code 9) here, per the
+    // WebCrypto spec's "unrecognized algorithm name" path -- but their messages
+    // differ, so the name is the only portable assertion. OBSERVED 2026-08-03:
+    //   Node v24.18.0: NotSupportedError / 'Unrecognized algorithm name'
+    //   Deno 2.9.3:    NotSupportedError / "Algorithm 'SHA-999' is not supported"
+    //   cno:           NotSupportedError / 'Unrecognized algorithm name: SHA-999'
+    // The previous /Unsupported hash algorithm/ matched none of the three.
     await rejects(
         () => crypto.subtle.digest('SHA-999', new Uint8Array()),
-        /Unsupported hash algorithm/,
+        (error: unknown) => {
+            ok(error instanceof DOMException, 'must be a DOMException');
+            strictEqual((error as DOMException).name, 'NotSupportedError');
+            return true;
+        },
     );
 });
 

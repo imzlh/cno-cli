@@ -1,0 +1,22 @@
+{
+    // Type-check ONLY the CDP test files this agent added or repaired.
+    // Neither tsconfig.json nor tsconfig.audit.json includes `tests/**`, which is
+    // precisely how cdp-protocol.test.ts kept compiling against a ConnectionDeps
+    // shape that no longer existed. This config is a checking tool, not part of any
+    // build: nothing emits from it.
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "noEmit": true
+    },
+    "include": [
+        "tests/node/cdp-protocol.test.ts",
+        "tests/node/cdp-endpoint.test.ts",
+        "tests/node/cdp-lifetime.test.ts",
+        "tests/node/cdp-detach.test.ts",
+        "tests/node/cdp-test-ambient.d.ts",
+        "cno/lib.deno.d.ts",
+        "./circu.js/types/**/*.d.ts",
+        "./cno/src/type/**/*.d.ts",
+        "./cno/types/**/*.d.ts"
+    ]
+}

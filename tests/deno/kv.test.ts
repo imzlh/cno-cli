@@ -1,5 +1,5 @@
 import { strictEqual, ok, deepStrictEqual, throws, rejects } from 'node:assert';
-import { withTempPath } from '../_helpers/temp.ts';
+import { withTempDir, withTempPath } from '../_helpers/temp.ts';
 
 // Deno KV: SQLite-backed. Tests run in-process against the Deno global.
 // Each test opens its own isolated DB via a unique path.
@@ -56,6 +56,35 @@ Deno.test({ name: 'deno: KV openKv accepts memory and rejects invalid filenames'
 
     await rejects(async () => await Deno.openKv(''), /Filename cannot be empty/);
     await rejects(async () => await Deno.openKv(':foo'), /Filename cannot start with ':'/);
+});
+
+Deno.test({ name: 'deno: KV openKv handles absolute paths and creates missing parents', timeout: 10000 }, async () => {
+    // Regression: mkdirRecursive used to treat the Windows drive spec as an
+    // ordinary segment and call mkdir("C:"), which fails EACCES. That made
+    // every absolute path unopenable. Both separator styles must work, and a
+    // missing parent chain must be created.
+    await withTempDir('kv-abs', async (dir) => {
+        const backslash = `${dir}\\back\\data`;
+        const forward = `${dir.replaceAll('\\', '/')}/fwd/data`;
+
+        for (const path of [backslash, forward]) {
+            const kv = await Deno.openKv(path);
+            try {
+                await kv.set(['probe'], 'value');
+                strictEqual((await kv.get(['probe'])).value, 'value', `round-trip failed for ${path}`);
+            } finally {
+                kv.close();
+            }
+        }
+
+        // Reopening the same absolute path must see the persisted entry.
+        const reopened = await Deno.openKv(backslash);
+        try {
+            strictEqual((await reopened.get(['probe'])).value, 'value', 'entry must persist across reopen');
+        } finally {
+            reopened.close();
+        }
+    });
 });
 
 Deno.test({ name: 'deno: KV set/get/delete round-trip', timeout: 10000 }, async () => {

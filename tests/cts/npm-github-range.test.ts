@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 
-const CNO = Deno.env.get('CNO') ?? '/home/iz/cno-cli/build/stage/cno';
+const CNO = Deno.env.get('CNO') ?? Deno.execPath().replace(/ \(deleted\)$/, '');
 const proc = import.meta.use('process');
 const os = import.meta.use('os');
 
@@ -40,8 +40,11 @@ Deno.test('npm github: range installs via codeload for cache hard', async () => 
         },
     }));
 
-    // Use stage binary after rebuild
-    const cno = '/home/iz/cno-cli/build/stage/cno';
+    // Reuse the running binary (repo convention: Deno.execPath, stripping the
+    // " (deleted)" suffix Linux appends for a park-and-swapped exe). The old
+    // hardcoded '/home/iz/cno-cli/build/stage/cno' made this fail with a bogus
+    // ENOENT at native spawn on every machine but the original author's.
+    const cno = CNO;
     const p = import.meta.use('process');
     const child = p.spawn([cno, 'cache', '--npm-mode=hard', `--cache-dir=${cache}`], {
         cwd: project,

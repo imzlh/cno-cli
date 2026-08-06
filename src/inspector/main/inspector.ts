@@ -26,6 +26,24 @@ const timers = import.meta.use('timers')
 
 type WorkerErrorPayload = { message: string; stack?: string; phase?: string }
 
+/**
+ * Loopback-only bind check. `0.0.0.0`/`::` are wildcards (every interface), and
+ * anything else is a specific routable address; both are reachable off-box.
+ *
+ * This gates a warning that matters more than it looks: discovery is
+ * unauthenticated by protocol necessity, so anyone who can reach the port can read
+ * the token, and the token is arbitrary code execution. `--allow-*` is not enforced,
+ * so the bind address and the token are the entire security model.
+ */
+export function isLoopbackHost(host: string): boolean {
+	const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '')
+	if (h === '' || h === 'localhost') return true
+	if (h === '::1') return true
+	// IPv4-mapped loopback, e.g. ::ffff:127.0.0.1
+	if (h.startsWith('::ffff:')) return isLoopbackHost(h.slice(7))
+	return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)
+}
+
 export interface InspectorOptions {
 	port: number
 	host?: string
@@ -124,6 +142,12 @@ export class Inspector {
 			onWorkerError: (error: WorkerErrorPayload) => {
 				const phase = error.phase ? ` during ${error.phase}` : ''
 				log.error('inspector', () => `debug worker crashed${phase}: ${errMsg(error)}`)
+				// A crash before `ready` (EADDRINUSE in startServer, bad workerData) would
+				// otherwise stall attach() for the whole 30s ready timeout.
+				const reject = this.readyReject
+				this.readyResolve = null
+				this.readyReject = null
+				reject?.(new Error(`inspector worker failed${phase}: ${error.message}`))
 			},
 		})
 		// Wait for the worker's WS server to report its URL via the ready RPC.
@@ -143,6 +167,16 @@ export class Inspector {
 		this.inspectorUrl = ready.wsUrl
 		console.info(`Debugger listening on ${this.inspectorUrl}`)
 		console.info(`Visit chrome://inspect to connect to the debugger.`)
+		if (!isLoopbackHost(this.host)) {
+			// Discovery (/json/version) is unauthenticated by protocol necessity, so it
+			// hands the ws token to anyone who can reach the port, and the ws session is
+			// arbitrary code execution. On a non-loopback bind that is the whole network.
+			console.warn(
+				`Warning: inspector bound to ${this.host}:${this.port}, which is not loopback. `
+				+ `Anyone able to reach it can read the debugger token from /json/version and run `
+				+ `arbitrary code in this process. Bind 127.0.0.1 and use an SSH tunnel instead.`,
+			)
+		}
 
 		// Hooks must be live before the entry module is loaded.
 		hooks.installAll()
@@ -195,6 +229,11 @@ export class Inspector {
 		})
 	}
 
+	/** Let a completed entry exit while leaving inspection live for other handles. */
+	allowProcessExit(): void {
+		this.worker?.messagePipe.unref()
+	}
+
 	async detach(): Promise<void> {
 		try {
 			native.stop()
@@ -228,6 +267,9 @@ export class Inspector {
 		}
 		this.serializer?.releaseGroup('backtrace')
 		this.hooks?.teardown()
+		// The worker's channel poll loop and WS server keep its uv loop alive;
+		// dropping the reference without terminating leaks the thread.
+		this.worker?.terminate()
 		this.reset()
 	}
 

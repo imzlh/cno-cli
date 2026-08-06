@@ -52,6 +52,15 @@ export class ConsoleDomain extends Domain {
 		})
 	}
 
+	/**
+	 * DevTools detached: go back to buffering. `enabled` is per-session state in
+	 * V8; leaving it set would drop every message emitted while nobody is
+	 * attached, so a re-attaching frontend would see an empty console.
+	 */
+	setConnected(connected: boolean): void {
+		if (!connected) this.enabled = false
+	}
+
 	onConsole(method: string, args: RemoteObject[], timestamp: number, callFrames?: ConsoleCallFrame[]): void {
 		if (this.enabled) {
 			this.emitMessage(method, args, timestamp, callFrames)

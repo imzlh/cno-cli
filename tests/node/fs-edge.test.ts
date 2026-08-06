@@ -4,7 +4,7 @@ import { O_APPEND, O_CREAT, O_EXCL, O_RDWR, O_TRUNC, O_WRONLY } from 'node:const
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { withTempDir } from '../_helpers/temp.ts';
 
@@ -708,8 +708,9 @@ Deno.test('fs upstream: close fstat ftruncate and futimes operate on numeric fds
 });
 
 Deno.test('fs upstream: statfs works for callback sync promises Buffer paths and bigint', async () => {
-    const filePath = new URL(import.meta.url);
-    const pathString = filePath.pathname;
+    // URL.pathname keeps a leading slash before the drive letter on Windows
+    // ("/D:/..."), which real Node also rejects with ENOENT — convert properly.
+    const pathString = fileURLToPath(import.meta.url);
 
     const callbackStats = await new Promise<fs.StatsFs>((resolve, reject) => {
         fs.statfs(pathString, (err, stats) => err ? reject(err) : resolve(stats));
@@ -899,8 +900,15 @@ Deno.test('fs upstream: promises readFile rejects an already aborted signal', as
         await rejects(
             fsp.readFile(file, { signal: AbortSignal.abort() }),
             (err: unknown) => {
-                ok(err instanceof DOMException);
-                strictEqual(err.name, 'AbortError');
+                // Measured Node v24.18.0: the rejection is Node's own AbortError
+                // (a plain Error subclass), NOT a DOMException, carrying
+                // code 'ABORT_ERR' with signal.reason on `.cause`. This
+                // previously asserted `instanceof DOMException`, which only held
+                // because makeAbortError returned signal.reason verbatim and so
+                // exposed `code` as the number 20 instead of 'ABORT_ERR'.
+                ok(err instanceof Error);
+                strictEqual((err as Error).name, 'AbortError');
+                strictEqual((err as NodeJS.ErrnoException).code, 'ABORT_ERR');
                 return true;
             },
         );
@@ -927,6 +935,31 @@ Deno.test('fs upstream: selected constants match platform values', () => {
         strictEqual(fs.constants.O_NOATIME, undefined);
         strictEqual(fs.constants.O_SYMLINK, undefined);
     }
+});
+
+Deno.test({
+    name: 'fs upstream: Windows sync stat preserves sub-second timestamps',
+    ignore: Deno.build.os !== 'windows',
+    async fn() {
+        await withTempDir('fs-stat-subsecond', async (root) => {
+            const file = join(root, 'stamp.txt');
+            fs.writeFileSync(file, 'same-size');
+            const stamp = new Date('2024-01-02T03:04:05.678Z');
+            fs.utimesSync(file, stamp, stamp);
+
+            const sync = fs.statSync(file);
+            const async = await fsp.stat(file);
+            strictEqual(sync.mtimeMs, stamp.getTime());
+            strictEqual(sync.mtimeMs, async.mtimeMs);
+
+            const fd = fs.openSync(file, 'r');
+            try {
+                strictEqual(fs.fstatSync(fd).mtimeMs, stamp.getTime());
+            } finally {
+                fs.closeSync(fd);
+            }
+        });
+    },
 });
 
 Deno.test('fs upstream: rm force only ignores missing paths and rejects directories', async () => {
@@ -1129,17 +1162,17 @@ Deno.test('fs upstream: glob supports sync callback and async iterator forms', a
 
         deepStrictEqual(
             fs.globSync('src/**/*.{ts,js}', { cwd: root }).sort(),
-            ['src/a.ts', 'src/b.js', join('src', 'nested', 'c.ts')].sort(),
+            [join('src', 'a.ts'), join('src', 'b.js'), join('src', 'nested', 'c.ts')].sort(),
         );
         deepStrictEqual(
             fs.globSync(['src/*.ts', 'src/*.{ts,js}'], { cwd: pathToFileURL(`${root}/`) }).sort(),
-            ['src/a.ts', 'src/b.js'].sort(),
+            [join('src', 'a.ts'), join('src', 'b.js')].sort(),
         );
-        deepStrictEqual(fs.globSync('src/!(a).js', { cwd: root }), ['src/b.js']);
-        deepStrictEqual(fs.globSync('src/nested/../*.js', { cwd: root }), ['src/b.js']);
+        deepStrictEqual(fs.globSync('src/!(a).js', { cwd: root }), [join('src', 'b.js')]);
+        deepStrictEqual(fs.globSync('src/nested/../*.js', { cwd: root }), [join('src', 'b.js')]);
         deepStrictEqual(
             fs.globSync('**/*', { cwd: root, exclude: ['src/nested/**'] }).sort(),
-            ['src', 'src/a.ts', 'src/b.js', 'src/nested'].sort(),
+            ['src', join('src', 'a.ts'), join('src', 'b.js'), join('src', 'nested')].sort(),
         );
 
         if (Deno.build.os !== 'windows') {
@@ -1164,7 +1197,7 @@ Deno.test('fs upstream: glob supports sync callback and async iterator forms', a
             });
             synchronous = false;
         });
-        deepStrictEqual(callbackMatches.sort(), ['src/a.ts', join('src', 'nested', 'c.ts')].sort());
+        deepStrictEqual(callbackMatches.sort(), [join('src', 'a.ts'), join('src', 'nested', 'c.ts')].sort());
 
         const iteratorMatches: string[] = [];
         for await (const match of fsp.glob('src/**/*.ts', { cwd: root })) {

@@ -58,6 +58,7 @@ Deno.test('cts lock: flush opens a fresh writable DB and persists pending entrie
 // single surface is flush / flushLock only.
 Deno.test('cts lock: single persist surface is flush (no rewrite dual name)', () => {
     const root = makePosixTempDir('lock-single-flush');
+    let resolver: ModuleResolver | null = null;
     try {
         const store = new LockStore(root, false);
         ok(typeof store.flush === 'function');
@@ -71,21 +72,22 @@ Deno.test('cts lock: single persist surface is flush (no rewrite dual name)', ()
         store.flush();
         store.close();
 
-        const resolver = new ModuleResolver(createConfig({
+        const resolver2 = new ModuleResolver(createConfig({
             cacheDir: joinPaths(root, 'cache'),
             enableOxc: false,
             silent: true,
         }), root, false);
-        ok(typeof resolver.flushLock === 'function');
-        ok(!('rewriteLock' in resolver));
+        resolver = resolver2;
+        ok(typeof resolver2.flushLock === 'function');
+        ok(!('rewriteLock' in resolver2));
         // Same path precache uses after scan: flushLock must persist.
-        resolver.lockStore.setModule({
+        resolver2.lockStore.setModule({
             specPath: 'file:///via-resolver.ts',
             localPath: joinPaths(root, 'via-resolver.ts'),
             format: 'esm',
             fileKind: 'source',
         });
-        resolver.flushLock();
+        resolver2.flushLock();
         const again = new LockStore(root, true);
         try {
             ok(again.getModule('file:///single.ts'));
@@ -94,6 +96,9 @@ Deno.test('cts lock: single persist surface is flush (no rewrite dual name)', ()
             again.close();
         }
     } finally {
+        // SQLite's Win32 VFS omits FILE_SHARE_DELETE, so the resolver's lock
+        // handle must be closed before the dir can be removed.
+        try { resolver?.close(); } catch {}
         rmSync(root, { recursive: true, force: true });
     }
 });
@@ -266,7 +271,16 @@ Deno.test('cts bin resolver: prefers local node_modules bin over lock index', ()
             ok(resolved);
             strictEqual(resolved!.entry, localEntry);
             strictEqual(resolved!.fallback, false);
-            strictEqual(resolved!.reason, 'unix-shim-entry');
+            // `reason` is platform-specific by design. The fixture writes a POSIX
+            // `#!/bin/sh` shim into node_modules/.bin with no .cmd/.bat sibling.
+            // On Windows resolveEntry() takes the documented fallback at
+            // cts/src/task.ts:276 ('win-posix-shim-entry'); on POSIX it takes the
+            // branch at :280 ('unix-shim-entry'). `entry` and `fallback` — the
+            // parts that actually matter — are identical on both.
+            strictEqual(
+                resolved!.reason,
+                Deno.build.os === 'windows' ? 'win-posix-shim-entry' : 'unix-shim-entry',
+            );
         } finally {
             lock.close();
         }

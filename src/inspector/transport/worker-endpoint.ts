@@ -16,6 +16,7 @@ import { PipeClient } from './pipe-rpc';
 import { ChannelClient } from './channel-rpc';
 import { isControlMethod, transportOf, type RpcMethod, type RpcParams } from '../shared/rpc-contract';
 import { DebugState } from '../shared/native';
+import { errMsg, log } from '../../../cts/src/api';
 import type { DebugChannelWorker, StepCode } from '../shared/native';
 import type { WorkerEvent } from '../shared/wire';
 type Pipe = CModuleWorker.MessagePipe;
@@ -58,6 +59,23 @@ export class WorkerEndpoint {
 		const transport = transportOf(method)
 		if (transport === 'lifecycle') return this.pipe.call(method, params)
 		return this.paused ? this.channel.send(method, params) : this.pipe.call(method, params);
+	}
+
+	/**
+	 * Fire-and-forget call. Use this instead of `void call(...)` whenever nobody
+	 * awaits the result: a rejected orphan promise reaches the worker's
+	 * `unhandledrejection` listener, which reports it to the main thread as a worker
+	 * crash. A dying pipe would otherwise manufacture a phantom crash report for
+	 * every in-flight notify.
+	 */
+	notify<M extends RpcMethod>(method: M, params: RpcParams[M]): void {
+		try {
+			void this.call(method, params).catch((e: unknown) => {
+				log.debug('debug', () => `rpc notify ${method} failed: ${errMsg(e)}`)
+			})
+		} catch (e) {
+			log.debug('debug', () => `rpc notify ${method} threw: ${errMsg(e)}`)
+		}
 	}
 
 	/** Flip transport mode. Driven by doResume / setConnected in DebuggerDomain. */

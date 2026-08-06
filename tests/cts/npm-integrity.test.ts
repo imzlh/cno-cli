@@ -5,6 +5,7 @@ import { createConfig } from '../../cts/src/config.ts';
 import { StepType, type Flow, type Step, type StepResult, type TarFile } from '../../cts/src/flow.ts';
 import { NpmHandler } from '../../cts/src/resolve/protocols/npm.ts';
 import { makePosixTempDir } from '../_helpers/temp.ts';
+import { toPosixPath } from '../../cts/src/utils/path.ts';
 
 const engine = import.meta.use('engine');
 const crypto = import.meta.use('crypto');
@@ -181,7 +182,9 @@ Deno.test('cts npm URL tarball: unsafe package version cannot select the store d
             requestedVersion: TARBALL_URL,
             tarVersion: '1.0.0/../../escape',
         });
-        const npmRoot = join(root, 'cache', 'npm');
+        // localPath is posix-normalized; node:path.join yields backslashes on
+        // win32, so the prefix must be normalized before comparing.
+        const npmRoot = toPosixPath(join(root, 'cache', 'npm'));
         ok(result.entry.startsWith(npmRoot + '/'));
         ok(result.entry.includes(`${PACKAGE_NAME}@0.0.0+u`));
         ok(!existsSync(join(root, 'cache', 'escape')));

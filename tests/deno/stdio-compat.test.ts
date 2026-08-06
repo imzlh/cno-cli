@@ -80,19 +80,23 @@ Deno.test('deno FsFile: zero reads bypass closed-resource checks but writes do n
         throws(() => file.writeSync(new Uint8Array(0)), Deno.errors.BadResource);
         await rejects(() => file.write(new Uint8Array(0)), Deno.errors.BadResource);
     } finally {
-        file.close();
+        // The body already closed the handle; close() again throws BadResource
+        // and would skip the temp-file cleanup. Symbol.dispose is idempotent.
+        file[Symbol.dispose]();
         Deno.removeSync(path);
     }
 });
 
 Deno.test('deno FsFile: readable rejects when the descriptor is not readable', async () => {
-    const file = await Deno.open('/dev/null', { write: true });
+    const nullDevice = Deno.build.os === 'windows' ? 'NUL' : '/dev/null';
+    const file = await Deno.open(nullDevice, { write: true });
     const reader = file.readable.getReader();
     try {
         await rejects(() => reader.read(), Error);
     } finally {
         try { reader.releaseLock(); } catch {}
-        file.close();
+        // A failed pull may already have closed the handle.
+        file[Symbol.dispose]();
     }
 });
 
@@ -368,6 +372,71 @@ Deno.test({
 });
 
 Deno.test({
+    name: 'deno stdio: redirected stdout shares the operating-system file cursor (Windows)',
+    ignore: Deno.build.os !== 'windows',
+    fn: async () => {
+        // Windows counterpart of the /bin/sh test above. `cmd`'s own `>` gives the
+        // child a real regular-file handle for fd 1, which is the condition under
+        // test; the redirection lives in a .cmd wrapper because cmd.exe applies no
+        // backslash escaping, so an inline command line cannot carry a quoted exe
+        // path (measured: Node's spawn behaves identically, this is not a cno bug).
+        const out = Deno.makeTempFileSync({ prefix: 'cno-stdio-out-' });
+        const script = Deno.makeTempFileSync({ prefix: 'cno-stdio-s1-', suffix: '.mjs' });
+        const wrapper = Deno.makeTempFileSync({ prefix: 'cno-stdio-b1-', suffix: '.cmd' });
+        try {
+            Deno.writeTextFileSync(
+                script,
+                `console.log('A'); Deno.stdout.writeSync(new TextEncoder().encode('B')); console.log('C')`,
+            );
+            Deno.writeTextFileSync(wrapper, `@echo off\r\n"${Deno.execPath()}" run "${script}" > "${out}"\r\n`);
+            const child = await new Deno.Command('cmd', {
+                args: ['/d', '/s', '/c', wrapper],
+                stdout: 'piped',
+                stderr: 'piped',
+            }).output();
+            strictEqual(child.code, 0, decoder.decode(child.stderr));
+            strictEqual(Deno.readTextFileSync(out), 'A\nBC\n');
+        } finally {
+            for (const path of [out, script, wrapper]) Deno.removeSync(path);
+        }
+    },
+});
+
+Deno.test({
+    name: 'deno stdio: redirected stdin shares its cursor with node fs (Windows)',
+    ignore: Deno.build.os !== 'windows',
+    fn: async () => {
+        const input = Deno.makeTempFileSync({ prefix: 'cno-stdio-in-' });
+        const script = Deno.makeTempFileSync({ prefix: 'cno-stdio-s2-', suffix: '.mjs' });
+        const wrapper = Deno.makeTempFileSync({ prefix: 'cno-stdio-b2-', suffix: '.cmd' });
+        try {
+            Deno.writeTextFileSync(input, 'abc');
+            Deno.writeTextFileSync(
+                script,
+                `
+                    import { readSync } from 'node:fs';
+                    const first = new Uint8Array(1);
+                    const second = new Uint8Array(1);
+                    Deno.stdin.readSync(first);
+                    readSync(0, second, 0, 1, null);
+                    console.log(String.fromCharCode(first[0], second[0]));
+                `,
+            );
+            Deno.writeTextFileSync(wrapper, `@echo off\r\n"${Deno.execPath()}" run "${script}" < "${input}"\r\n`);
+            const child = await new Deno.Command('cmd', {
+                args: ['/d', '/s', '/c', wrapper],
+                stdout: 'piped',
+                stderr: 'piped',
+            }).output();
+            strictEqual(child.code, 0, decoder.decode(child.stderr));
+            strictEqual(decoder.decode(child.stdout), 'ab\n');
+        } finally {
+            for (const path of [input, script, wrapper]) Deno.removeSync(path);
+        }
+    },
+});
+
+Deno.test({
     name: 'deno FsFile: /dev/full preserves ENOSPC for zero and nonzero writes',
     ignore: Deno.build.os !== 'linux',
     fn: async () => {
@@ -455,7 +524,10 @@ Deno.test({
     name: 'deno FsFile: Windows TTY retains the descriptor owned by libuv',
     ignore: Deno.build.os !== 'windows',
     fn: async () => {
-        const file = Deno.openSync('CONOUT$', { write: true });
+        // CONOUT$ must be opened for reading too: libuv's handle probe calls
+        // GetConsoleMode, which needs GENERIC_READ, so a write-only console
+        // handle is classified as a plain file and isTerminal() reports false.
+        const file = Deno.openSync('CONOUT$', { read: true, write: true });
         try {
             strictEqual(file.isTerminal(), true);
             strictEqual(await file.write(new Uint8Array([0])), 1);

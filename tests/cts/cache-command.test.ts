@@ -343,7 +343,6 @@ Deno.test({ name: 'cache command: runs remaining lifecycle scripts after a failu
 // Host PATH without node must still run `node install.js` via cno rewrite / PATH shim.
 Deno.test({
     name: 'cache command: lifecycle node scripts work without host node on PATH',
-    ignore: Deno.build.os === 'windows',
     timeout: 30000,
     async fn() {
         const root = makePosixTempDir('cache-lifecycle-no-host-node');
@@ -415,7 +414,6 @@ Deno.test({
 // Missing binary: fail closed with argv/ENOENT diagnostic (not a silent bare 127).
 Deno.test({
     name: 'cache command: missing lifecycle binary reports diagnostic',
-    ignore: Deno.build.os === 'windows',
     timeout: 30000,
     async fn() {
         const root = makePosixTempDir('cache-lifecycle-missing-bin');
@@ -438,7 +436,16 @@ Deno.test({
 
             const result = await runCacheCommand(root, cacheDir);
             strictEqual(result.code, 1, result.output);
-            strictEqual(/install missing-bin@1\.0\.0 exited with code 127/.test(result.output), true, result.output);
+            // "command not found" is 127 from a POSIX shell; cmd.exe reports 1 for
+            // the same condition (measured: cmd.exe /c <missing> => exit 1). The
+            // behaviour under test is that the failure is reported with the failing
+            // argv rather than swallowed, so accept either platform's code.
+            const notFoundCode = Deno.build.os === 'windows' ? '(?:127|1)' : '127';
+            strictEqual(
+                new RegExp(`install missing-bin@1\\.0\\.0 exited with code ${notFoundCode}`).test(result.output),
+                true,
+                result.output,
+            );
             strictEqual(
                 /command:|not found|ENOENT|cno-lifecycle-bin-that-does-not-exist-xyz/i.test(result.output),
                 true,

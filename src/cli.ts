@@ -62,6 +62,131 @@ const KNOWN_FLAGS = new Set<string>([
     'eval', 'help', 'h', 'version', 'v',
 ]);
 
+/* ------------------------------------------------------------------ *
+ * Per-subcommand scoping
+ *
+ * KNOWN_FLAGS above is the *vocabulary*: it decides how a token is
+ * TOKENIZED (is `--filter x` one token or two?). It deliberately stays
+ * flat, because tokenization cannot depend on the subcommand — the
+ * subcommand is not known until the first positional is reached, which is
+ * after the flags in `cno --filter=x test`.
+ *
+ * Validation is a separate question and it IS per-subcommand. A flat
+ * vocabulary used as the validation set meant a flag valid for *some*
+ * command was accepted by *every* command and then silently dropped by a
+ * consumer that never reads it: OBSERVED `cno pack --filter=x entry.js`
+ * exited 0 and packed everything, `cno run --out=x entry.js` ran the entry
+ * and ignored --out. deno rejects the same shapes (rc 1, "unexpected
+ * argument '--filter' found").
+ *
+ * Each set below is derived from the CODE that reads the flag, not from
+ * --help. Cited call sites are the consumers; a flag absent from every
+ * consumer for a command is not in that command's set.
+ * ------------------------------------------------------------------ */
+
+/** Accepted by every subcommand: meta, plus the two dispatch-level toggles. */
+const GLOBAL_FLAGS = new Set<string>([
+    // main.ts:444-451 — checked before the subcommand switch.
+    'help', 'h', 'version', 'v',
+    // main.ts:481-495 — applied for every command, before dispatch.
+    'system-proxy', 'skip-cert-verify',
+    // Read by flagsToConfig/buildCacheConfig for the commands that build a
+    // config, and harmless elsewhere; -q is the documented spelling.
+    'silent', 'q',
+]);
+
+/**
+ * Module resolution / cache / limits — the documented "COMMON OPTIONS".
+ * Consumers: flagsToConfig (commands/run.ts:96) for run/eval/test,
+ * buildCacheConfig (commands/cache-utils.ts:22) for cache/pack.
+ *
+ * Deliberately shared by every code-running command even though the two
+ * consumers read different subsets — see the "parsed but never read" list in
+ * the report. Narrowing this to each consumer's exact subset would reject
+ * `cno cache --frozen`, which help.ts advertises as a common option, and that
+ * is a documentation/consumer defect to fix in the consumer rather than a
+ * user error to reject at the CLI.
+ */
+const CONFIG_FLAGS = new Set<string>([
+    'cache-dir', 'lock-dir', 'no-lock', 'frozen', 'disable-cache',
+    'no-http', 'no-jsr', 'no-node', 'no-oxc', 'polyfill',
+    'memory-limit', 'max-stack-size',
+    'npm-mode', 'ignore-scripts',
+    'precache', 'reload', 'r',
+]);
+
+/** parseInspectFlags (commands/inspect.ts:8); task forwards them (task.ts:8). */
+const INSPECT_FLAGS = new Set<string>(['inspect', 'inspect-brk', 'inspect-wait']);
+
+/**
+ * Flags only a program-running command honors.
+ * ext        — sourceLangFromFlags (run.ts:173), extFromFlags (eval.ts:16)
+ * location   — applyLocationFlag (run.ts:464), eval.ts:40
+ * env/-file  — loadEnvFiles via collectValueFlags (run.ts:479)
+ * preload    — runDenoPreloads (run.ts:425)
+ * require/…  — collectNodePreloads (run.ts:402)
+ * conditions — conditionsFromFlags (commands/node-options.ts:3)
+ * v8-flags / max-old-space-size — flags-config.ts:51-58
+ */
+const PROGRAM_FLAGS = new Set<string>([
+    'ext', 'location',
+    'env', 'env-file', 'preload',
+    'require', 'import', 'loader', 'conditions', 'C',
+    'max-old-space-size', 'v8-flags',
+]);
+
+/** commands/eval.ts:97 — printableCode; meaningless without eval source. */
+const EVAL_FLAGS = new Set<string>(['eval', 'print', 'p']);
+
+/** runTest (commands/test.ts:327) reads all four; nothing else does. */
+const TEST_FLAGS = new Set<string>(['concurrency', 'filter', 'fail-fast', 'permit-no-files']);
+
+/** runPack (commands/pack.ts:47) reads out/o; nothing else does. */
+const PACK_FLAGS = new Set<string>(['out', 'o']);
+
+/** taskLookup (commands/task.ts:24) reads cwd + config; runTask reads eval. */
+const TASK_FLAGS = new Set<string>(['cwd', 'config', 'eval']);
+
+function unionFlags(...sets: ReadonlySet<string>[]): Set<string> {
+    const out = new Set<string>(GLOBAL_FLAGS);
+    for (const set of sets) for (const name of set) out.add(name);
+    return out;
+}
+
+/**
+ * Allow-list per subcommand. `null` (implicit run) maps to 'run'.
+ *
+ * setup takes only globals: runSetup (commands/setup.ts:319) reads --cache-dir
+ * only, so that one is listed explicitly rather than pulling in all of
+ * CONFIG_FLAGS.
+ */
+const COMMAND_FLAGS: Record<CnoSubcommand, Set<string>> = {
+    run:     unionFlags(CONFIG_FLAGS, PROGRAM_FLAGS, INSPECT_FLAGS),
+    // `cno eval` shares flagsToConfig with run (eval.ts:59) and accepts the
+    // eval/print pair on top. It has no entry directory, hence no env/preload.
+    eval:    unionFlags(CONFIG_FLAGS, PROGRAM_FLAGS, INSPECT_FLAGS, EVAL_FLAGS),
+    // A test child is a real `cno run` (main.ts:587) and receives the parent's
+    // flags verbatim via flagsToArgs (test.ts:166), so run's whole surface is
+    // legitimately in scope here as well as the four test-only flags.
+    test:    unionFlags(CONFIG_FLAGS, PROGRAM_FLAGS, INSPECT_FLAGS, TEST_FLAGS),
+    cache:   unionFlags(CONFIG_FLAGS),
+    pack:    unionFlags(CONFIG_FLAGS, PACK_FLAGS, new Set(['ext'])),
+    repl:    unionFlags(CONFIG_FLAGS, INSPECT_FLAGS),
+    // A task spawns a shell command that may itself be a `cno run`, so the
+    // config family stays in scope; --cwd/--config/--eval are task-only.
+    task:    unionFlags(CONFIG_FLAGS, INSPECT_FLAGS, TASK_FLAGS),
+    // exec resolves an npm bin (main.ts:526) and reads only --cache-dir.
+    exec:    unionFlags(new Set(['cache-dir'])),
+    setup:   unionFlags(new Set(['cache-dir'])),
+    help:    unionFlags(),
+    version: unionFlags(),
+};
+
+/** The allow-list for a parsed command; implicit run (null) is `run`. */
+function allowedFlagsFor(cmd: Subcommand): Set<string> {
+    return COMMAND_FLAGS[cmd ?? 'run'];
+}
+
 /**
  * Deno flags we recognise but intentionally don't implement. Silently
  * accepted so deno scripts can be run unmodified. Add aliases freely.
@@ -93,6 +218,12 @@ const DENO_NOOP_FLAGS = new Set<string>([
     'conditions', 'C', 'no-warnings', 'max-old-space-size',
 ]);
 
+/** Deno-compat no-op families documented as wildcards (--allow-*, --deny-*, --unstable-*). */
+function isDenoNoopFlag(name: string): boolean {
+    if (DENO_NOOP_FLAGS.has(name)) return true;
+    return name.startsWith('allow-') || name.startsWith('deny-') || name.startsWith('unstable-');
+}
+
 const VALUE_FLAGS = new Set<string>([
     'cache-dir', 'lock-dir', 'npm-mode', 'polyfill', 'ext', 'cwd',
     'memory-limit', 'max-stack-size', 'concurrency', 'filter',
@@ -105,20 +236,59 @@ const VALUE_FLAGS = new Set<string>([
 const NODE_RUNTIME_VALUE_FLAGS = new Set<string>(['require', 'import', 'loader', 'conditions', 'max-old-space-size']);
 const NODE_INSPECT_FLAGS = new Set<string>(['inspect', 'inspect-brk', 'inspect-wait']);
 
+/**
+ * Value flags that are meaningless as booleans: reaching a consumer as `true`
+ * means the value was missing, and every consumer type-guards on `string`, so
+ * the flag would be silently ignored. Deno errors ("a value is required for
+ * '--filter <filter>' but none was supplied") and so do we.
+ *
+ * Excluded on purpose: `out`/`o` (pack prints its own message), `eval` (bare
+ * `task --eval` is a documented usage error) and `v8-flags` (deno accepts the
+ * bare form as a help request).
+ */
+const REQUIRED_VALUE_FLAGS = new Set<string>([
+    'cache-dir', 'lock-dir', 'npm-mode', 'polyfill', 'ext', 'cwd',
+    'memory-limit', 'max-stack-size', 'concurrency', 'filter',
+    'cert', 'config', 'import-map', 'lock', 'location', 'log-level', 'seed',
+    'require', 'import', 'loader', 'env', 'env-file', 'preload',
+    'conditions', 'C', 'max-old-space-size',
+]);
+
+function setFlag(
+    flags: Record<string, string | boolean>,
+    name: string,
+    value: string | boolean,
+): void {
+    // Node accepts repeated condition flags. Preserve all values in the flat
+    // parser result; conditionsFromFlags splits the comma-separated form.
+    const previous = flags[name];
+    if ((name === 'conditions' || name === 'C')
+        && typeof previous === 'string'
+        && typeof value === 'string') {
+        flags[name] = `${previous},${value}`;
+        return;
+    }
+    flags[name] = value;
+}
+
 function isRecognizedOptionToken(token: string): boolean {
     if (token.startsWith('--')) {
         const eq = token.indexOf('=');
         const name = token.slice(2, eq === -1 ? undefined : eq);
-        return KNOWN_FLAGS.has(name) || DENO_NOOP_FLAGS.has(name);
+        return KNOWN_FLAGS.has(name) || isDenoNoopFlag(name);
     }
     if (!token.startsWith('-') || token.length <= 1) return false;
     const name = token.slice(1);
     if (ALIASES[token] || name === 'r' || name === 'q' || name === 'A') return true;
-    return KNOWN_FLAGS.has(name) || DENO_NOOP_FLAGS.has(name);
+    return KNOWN_FLAGS.has(name) || isDenoNoopFlag(name);
 }
 
 function shouldConsumeValueFlagToken(token: string | undefined): token is string {
     if (token === undefined) return false;
+    // `--` is the option terminator, never a value — deno and node both reject
+    // `--config --` as "a value is required". Swallowing it also loses the
+    // boundary, so `test --filter -- a_test.ts` would filter on "--".
+    if (token === '--') return false;
     if (!token.startsWith('-')) return true;
     return !isRecognizedOptionToken(token);
 }
@@ -327,7 +497,7 @@ export function parseArgv(argv: string[]): ParsedCli {
             const eq = a.indexOf('=');
             const k  = a.slice(2, eq);
             const v  = a.slice(eq + 1);
-            flags[k] = v;
+            setFlag(flags, k, v);
             pushRawTokens(a);
             i++;
             continue;
@@ -376,7 +546,7 @@ export function parseArgv(argv: string[]): ParsedCli {
                 continue;
             }
             if (VALUE_FLAGS.has(k) && shouldConsumeValueFlagToken(next)) {
-                flags[k] = next;
+                setFlag(flags, k, next);
                 pushRawTokens(a, next);
                 i += 2;
                 continue;
@@ -412,7 +582,7 @@ export function parseArgv(argv: string[]): ParsedCli {
             if (k === 'C') {
                 const next = argv[i + 1];
                 if (shouldConsumeValueFlagToken(next)) {
-                    flags['C'] = next;
+                    setFlag(flags, 'C', next);
                     pushRawTokens(a, next);
                     i += 2;
                 } else {
@@ -472,23 +642,66 @@ export function parseArgv(argv: string[]): ParsedCli {
 }
 
 /**
- * Warn (once, to stderr) about flags cno doesn't honor. Deno-compat no-op
- * flags are silently accepted; everything else gets a yellow ⚠ line so a
- * typo like `--frozenn` doesn't silently disable the intent.
+ * Names of flags this invocation does not honor — unknown everywhere, or known
+ * but not for THIS subcommand.
  *
- * Returns the same parsed object for convenient chaining.
+ * Deno-compat no-op flags are accepted silently for every command (cno claims
+ * deno compatibility, so `--allow-net` and friends must keep working);
+ * anything else is either a typo like `--frozenn`, which used to print a
+ * warning and then run anyway with the intent silently dropped — exit 0 — or a
+ * mis-scoped flag like `cno pack --filter=x`, which exited 0 and packed
+ * everything. node exits 9 ("bad option") and deno exits 1 ("unexpected
+ * argument"), so a warn-only path meant CI scored both as a pass.
+ *
+ * Scoping is validation-only and deliberately does not touch tokenization: the
+ * subcommand is not known while tokens are being consumed (`cno --filter=x
+ * test` puts the flag first), so KNOWN_FLAGS stays flat and this decides
+ * whether the resulting flag was legal for the command that was selected.
+ *
+ * Returned rather than exited on so this stays unit-testable; `dispatch` turns
+ * a non-empty list into exit 1.
  */
-export function warnUnknownFlags(cli: ParsedCli): ParsedCli {
+export function unknownFlags(cli: ParsedCli): string[] {
+    const unknown: string[] = [];
+    const allowed = allowedFlagsFor(cli.cmd);
     for (const k of Object.keys(cli.flags)) {
-        if (KNOWN_FLAGS.has(k)) continue;
-        if (DENO_NOOP_FLAGS.has(k)) continue;
-        console.error(`cno: warning: unknown flag --${k} (ignored)`);
+        if (allowed.has(k)) continue;
+        if (isDenoNoopFlag(k)) continue;
+        // Short flags are stored under their bare name; report them as typed.
+        unknown.push(`${k.length === 1 ? '-' : '--'}${k}`);
     }
-    return cli;
+    return unknown;
+}
+
+/**
+ * True when `name` is a real cno flag that is simply not valid for `cmd`.
+ *
+ * Lets a caller distinguish "you typed `--frozenn`" from "`--filter` belongs to
+ * `cno test`", which is the difference between a typo and a wrong-command
+ * mistake. `dispatch` uses it to add the "not supported by" half of the error.
+ */
+export function isMisscopedFlag(name: string, cmd: Subcommand): boolean {
+    const bare = name.startsWith('--') ? name.slice(2) : name.startsWith('-') ? name.slice(1) : name;
+    return KNOWN_FLAGS.has(bare) && !allowedFlagsFor(cmd).has(bare);
 }
 
 /** Get argv passed to this cno invocation (skips the binary name). */
 export function readArgv(): string[] {
     // os.args[0] is the binary path. Drop it.
     return os.args.slice(1);
+}
+
+/**
+ * Names of flags that need a value but were given none (`--filter` at the end
+ * of argv, or followed by another option). Returning instead of exiting keeps
+ * this unit-testable; `dispatch` turns a non-empty list into exit 1.
+ */
+export function missingFlagValues(cli: ParsedCli): string[] {
+    const missing: string[] = [];
+    for (const [k, v] of Object.entries(cli.flags)) {
+        if (v !== true && v !== '') continue;
+        if (!REQUIRED_VALUE_FLAGS.has(k)) continue;
+        missing.push(k);
+    }
+    return missing;
 }

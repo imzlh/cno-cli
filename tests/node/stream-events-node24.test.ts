@@ -130,7 +130,7 @@ Deno.test('node24 stream: missing common exports are present on named and defaul
     strictEqual(stream.isDestroyed, isDestroyed);
 });
 
-Deno.test('node24 stream: destroy uses AbortError and isDestroyed reads stream state', () => {
+Deno.test('node24 stream: destroy uses AbortError and isDestroyed reads stream state', async () => {
     const target = new PassThrough();
     let seen: Error & { code?: string } | undefined;
     target.on('error', (error) => { seen = error as Error & { code?: string }; });
@@ -138,6 +138,10 @@ Deno.test('node24 stream: destroy uses AbortError and isDestroyed reads stream s
     strictEqual(destroy(target), undefined);
     strictEqual(isDestroyed(target), true);
     strictEqual(isDestroyed({}), null);
+    // Node defers the 'error' emit past the microtask queue (destroy() schedules
+    // emitErrorCloseNT), so the error is not observable synchronously.
+    strictEqual(seen, undefined);
+    await new Promise((resolve) => setImmediate(resolve));
     strictEqual(seen?.name, 'AbortError');
     strictEqual(seen?.code, 'ABORT_ERR');
 });
@@ -167,7 +171,9 @@ Deno.test('node24 stream: synchronous write callbacks run after write returns', 
     writable.write('x', () => order.push('callback'));
     order.push('after');
     deepStrictEqual(order, ['before', 'write', 'after']);
-    await Promise.resolve();
+    // Node defers the write callback via process.nextTick, which is not drained
+    // by a single microtask turn; assert on the macrotask boundary instead.
+    await new Promise((resolve) => setImmediate(resolve));
     deepStrictEqual(order, ['before', 'write', 'after', 'callback']);
 });
 
@@ -199,7 +205,9 @@ Deno.test('node24 stream: corked writes use writev and drain before callbacks', 
     strictEqual(writable.writableNeedDrain, true);
     writable.uncork();
     deepStrictEqual(order, ['writev:2']);
-    await Promise.resolve();
+    // 'drain' and the per-write callbacks are nextTick-deferred in Node, so they
+    // are not visible after a single microtask turn.
+    await new Promise((resolve) => setImmediate(resolve));
 
     deepStrictEqual(order, ['writev:2', 'drain', 'a', 'b']);
     strictEqual(writable.writableLength, 0);
@@ -290,6 +298,10 @@ Deno.test('node24 stream: duplexPair half-open and error lifecycle matches Node'
     peer.on('error', () => { peerError = true; });
     failed.destroy(failure);
     strictEqual(failed.destroyed, true);
+    // Node defers propagation of an errored destroy() to the opposite endpoint,
+    // so the peer is still alive synchronously and never sees the error itself.
+    strictEqual(peer.destroyed, false);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     strictEqual(peer.destroyed, true);
     strictEqual(peerError, false);
 });

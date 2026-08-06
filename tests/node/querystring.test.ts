@@ -92,10 +92,21 @@ Deno.test('querystring: escape/unescape round-trips', () => {
     strictEqual(querystring.unescape(escaped), s);
 });
 
-// --- 13. unescape decodes + as space --------------------------------------
+// --- 13. unescape does NOT decode + as space ------------------------------
 
-Deno.test('querystring: unescape decodes + as space', () => {
-    strictEqual(querystring.unescape('a+b'), 'a b');
+// Verified against real Node v24.18.0: qsUnescape is decodeURIComponent with a
+// Buffer fallback and never maps '+'. Only parse() rewrites '+' before decoding.
+// The decodeSpaces flag applies solely on the fallback path, so it is invisible
+// unless decodeURIComponent actually throws.
+Deno.test('querystring: unescape leaves + alone but parse decodes it', () => {
+    strictEqual(querystring.unescape('a+b'), 'a+b');
+    strictEqual(querystring.unescape('a+b', true), 'a+b');
+    strictEqual(querystring.unescape('a%20b'), 'a b');
+    // decodeURIComponent throws here, so decodeSpaces reaches the fallback.
+    strictEqual(querystring.unescape('a+b%zz'), 'a+b%zz');
+    strictEqual(querystring.unescape('a+b%zz', true), 'a b%zz');
+    // parse() does map '+', in both keys and values.
+    deepStrictEqual(Object.entries(querystring.parse('a+b=c+d')), [['a b', 'c d']]);
 });
 
 // --- 14. stringify with encodeURIComponent option -------------------------
@@ -249,4 +260,83 @@ Deno.test('querystring: parse falsy separators use defaults', () => {
     );
     strictEqual(parsed.a, '1');
     strictEqual(parsed.b, '2');
+});
+
+// --- regressions: measured against real Node v24.18.0 ----------------------
+
+// Node's unescape fallback is unescapeBuffer(s).toString(): every UTF-16 code
+// unit is truncated to one byte and joins the SAME byte stream as the
+// percent-decoded bytes before a single UTF-8 decode. So a literal U+4E2D
+// becomes the byte 0x2D ('-'), and a surrogate pair becomes 0x3D 0x00.
+Deno.test('querystring: unescape byte-truncates literals on the fallback path', () => {
+    strictEqual(querystring.unescape('%zz中'), '%zz-');
+    strictEqual(querystring.unescape('中%zz'), '-%zz');
+    strictEqual(querystring.unescape('%zz中A'), '%zz-A');
+    strictEqual(querystring.unescape('%zz\u{1F600}'), '%zz=\u0000');
+    strictEqual(querystring.unescape('%zzÿ'), '%zz\uFFFD');
+    strictEqual(querystring.unescape('%zzĀ'), '%zz\u0000');
+    // The truncated byte participates in the same UTF-8 decode: %E4 %B8 is an
+    // incomplete sequence (one U+FFFD), then 0x2D from the literal.
+    strictEqual(querystring.unescape('%E4%B8中'), '\uFFFD-');
+    // No fallback when decodeURIComponent succeeds, so the literal survives.
+    strictEqual(querystring.unescape('中'), '中');
+});
+
+// Node's parse only calls the decoder once it has seen a plausible %XX
+// (keyEncoded/valEncoded). Decoding unconditionally is observably wrong: with no
+// valid escape the literal is preserved, but one valid escape arms the gate and
+// the fallback then truncates.
+Deno.test('querystring: parse only decodes segments holding a valid escape', () => {
+    deepStrictEqual(Object.entries(querystring.parse('k=a+中%zz')), [['k', 'a 中%zz']]);
+    deepStrictEqual(Object.entries(querystring.parse('a+中%zz')), [['a 中%zz', '']]);
+    // %41 arms the gate, decodeURIComponent then throws on %zz -> truncation.
+    deepStrictEqual(Object.entries(querystring.parse('k=%41中%zz')), [['k', 'A-%zz']]);
+    deepStrictEqual(Object.entries(querystring.parse('%41中%zz=v')), [['A-%zz', 'v']]);
+    // Incomplete escapes never arm the gate.
+    deepStrictEqual(Object.entries(querystring.parse('k=%4')), [['k', '%4']]);
+    deepStrictEqual(Object.entries(querystring.parse('k=%G1')), [['k', '%G1']]);
+});
+
+// Node matches sep and eq in one pass, with the eq test in the ELSE branch of
+// the sep match. A char that advances the sep prefix is therefore never tested
+// as eq, which split()+indexOf() cannot reproduce.
+Deno.test('querystring: parse gives separator matching priority over equals', () => {
+    deepStrictEqual(Object.entries(querystring.parse('k%ad', 'ab', 'a')), [['k%ad', '']]);
+    deepStrictEqual(Object.entries(querystring.parse('xay', 'ab', 'a')), [['xay', '']]);
+    // On a failed sep-prefix advance, sepIdx resets and the SAME char is then
+    // tested as eq (it is not re-tested as a fresh sep start), so the second 'a'
+    // here becomes the separator between key and value.
+    deepStrictEqual(Object.entries(querystring.parse('xaay', 'ab', 'a')), [['xa', 'y']]);
+    // A self-overlapping separator also differs from String.split.
+    deepStrictEqual(Object.entries(querystring.parse('aab=1', 'ab', '=')), [['aab', '1']]);
+    // Trailing text after a completed separator becomes a fresh empty-valued key.
+    deepStrictEqual(Object.entries(querystring.parse('k=vaba', 'ab', '=')), [['k', 'v'], ['a', '']]);
+    deepStrictEqual(Object.entries(querystring.parse('k=va', 'ab', '=')), [['k', 'va']]);
+});
+
+// Node exports qsEscape/qsUnescape under the escape/unescape names because both
+// are JS globals, and parse/stringify both declare four parameters.
+Deno.test('querystring: function names and arities match Node', () => {
+    strictEqual(querystring.escape.name, 'qsEscape');
+    strictEqual(querystring.unescape.name, 'qsUnescape');
+    strictEqual(querystring.parse.length, 4);
+    strictEqual(querystring.stringify.length, 4);
+    strictEqual(querystring.escape.length, 1);
+    strictEqual(querystring.unescape.length, 2);
+    strictEqual(querystring.decode, querystring.parse);
+    strictEqual(querystring.encode, querystring.stringify);
+});
+
+Deno.test('querystring: unescapeBuffer truncates and honours decodeSpaces', () => {
+    deepStrictEqual([...querystring.unescapeBuffer('a+b')], [0x61, 0x2b, 0x62]);
+    deepStrictEqual([...querystring.unescapeBuffer('a+b', true)], [0x61, 0x20, 0x62]);
+    deepStrictEqual([...querystring.unescapeBuffer('%E4%B8%AD')], [0xe4, 0xb8, 0xad]);
+    // A malformed escape emits a literal '%' and rescans from the next char.
+    deepStrictEqual([...querystring.unescapeBuffer('%4z')], [0x25, 0x34, 0x7a]);
+    deepStrictEqual([...querystring.unescapeBuffer('%zz')], [0x25, 0x7a, 0x7a]);
+    // A trailing '%' with fewer than two chars after it stays literal.
+    deepStrictEqual([...querystring.unescapeBuffer('a%')], [0x61, 0x25]);
+    deepStrictEqual([...querystring.unescapeBuffer('%2')], [0x25, 0x32]);
+    // Literals above U+00FF are truncated to their low byte.
+    deepStrictEqual([...querystring.unescapeBuffer('中')], [0x2d]);
 });

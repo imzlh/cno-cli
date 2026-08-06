@@ -143,6 +143,10 @@ Deno.test({ name: 'worker_threads upstream: worker keeps independent dynamic imp
             const value = await new Promise<boolean>((resolve, reject) => {
                 worker.once('message', resolve);
                 worker.once('error', reject);
+                // Without an 'exit' handler a worker that dies before posting can only end
+                // as the outer harness timeout, which reports nothing about the cause.
+                worker.once('exit', (code: number) =>
+                    reject(new Error(`worker exited (code=${code}) before posting a message`)));
             });
             strictEqual(value, false);
         } finally {
@@ -219,9 +223,12 @@ Deno.test({ name: 'worker_threads: parentPort is null on main thread', timeout: 
     strictEqual(parentPort, null, 'main thread parentPort must be null');
 });
 
-Deno.test({ name: 'worker_threads: Worker terminate resolves with exit code 0', timeout: 10000 }, async () => {
+// Real Node v24.18.0 resolves terminate() with 1 for a live worker, and undefined for
+// an already-exited worker or a second call — never 0. Verified on win32:
+//   alive.terminate() -> 1 | second terminate() -> undefined | exited.terminate() -> undefined
+Deno.test({ name: 'worker_threads: Worker terminate resolves with exit code 1 for a live worker', timeout: 10000 }, async () => {
     const worker = new Worker('setInterval(() => {}, 1000);', { eval: true });
-    strictEqual(await worker.terminate(), 0);
+    strictEqual(await worker.terminate(), 1);
 });
 
 Deno.test({ name: 'worker_threads: Worker postMessage transfer detaches source ArrayBuffer', timeout: 10000 }, async () => {

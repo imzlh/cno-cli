@@ -1,7 +1,7 @@
 import { strictEqual, ok, throws } from 'node:assert';
 import { EventEmitter } from 'node:events';
 import * as stream from 'node:stream';
-import { Readable, Writable, Transform, PassThrough, pipeline, compose, getDefaultHighWaterMark, setDefaultHighWaterMark, isDisturbed, isErrored, isReadable } from 'node:stream';
+import { Readable, Writable, Duplex, Transform, PassThrough, pipeline, compose, getDefaultHighWaterMark, setDefaultHighWaterMark, isDisturbed, isErrored, isReadable } from 'node:stream';
 
 // --- 1. isDisturbed reflects consumption state --------------------------------
 
@@ -328,4 +328,85 @@ Deno.test('stream upstream: Writable validates chunks and counts queued bytes', 
         () => objectWritable.write(null),
         (error: unknown) => error instanceof TypeError && Reflect.get(error, 'code') === 'ERR_STREAM_NULL_VALUES',
     );
+});
+
+// --- 'readable' + read() scheduling ----------------------------------------
+
+Deno.test("stream: setEncoding + 'readable' listener still reaches 'end'", async () => {
+    // push(null) on a decoder-backed stream skipped the EOF 'readable' emit, so
+    // nothing re-entered read() to drain the buffer and 'end' never fired.
+    const r = new Readable({ read() {} });
+    r.setEncoding('utf8');
+    let body = '';
+    r.on('readable', () => {
+        let chunk: unknown;
+        while ((chunk = r.read()) !== null) body += chunk as string;
+    });
+
+    const euro = Buffer.from('€');
+    const ended = new Promise<void>((resolve, reject) => {
+        r.on('end', () => resolve());
+        setTimeout(() => reject(new Error(`'end' never fired; body=${JSON.stringify(body)}`)), 3000);
+    });
+    // Split a multi-byte character across two pushes so the decoder holds a
+    // partial sequence and decoder.end() yields no trailing chunk.
+    setTimeout(() => r.push(euro.subarray(0, 1)), 5);
+    setTimeout(() => r.push(euro.subarray(1)), 10);
+    setTimeout(() => r.push(null), 15);
+
+    await ended;
+    strictEqual(body, '€');
+    strictEqual(r.readableEnded, true);
+    strictEqual(r.readableLength, 0);
+});
+
+Deno.test("stream: unshift() from a 'readable' handler preserves chunk order", async () => {
+    // A synchronous 'readable' emit from unshift() re-entered the handler, which
+    // appended the unshifted bytes before the ones the outer loop already held.
+    const r = new Readable({ read() {} });
+    let body = '';
+    let pushedBack = false;
+    r.on('readable', () => {
+        let chunk: unknown;
+        while ((chunk = r.read()) !== null) {
+            const buf = chunk as Buffer;
+            if (!pushedBack && buf.toString() === 'abcd') {
+                pushedBack = true;
+                r.unshift(buf.subarray(2));
+                body += 'ab';
+                continue;
+            }
+            body += buf.toString();
+        }
+    });
+
+    const ended = new Promise<void>((resolve) => r.on('end', () => resolve()));
+    setTimeout(() => r.push('abcd'), 5);
+    setTimeout(() => r.push('ef'), 10);
+    setTimeout(() => r.push(null), 15);
+
+    await ended;
+    strictEqual(body, 'abcdef');
+});
+
+Deno.test("stream: Duplex read() still drains buffered data after 'readable' returns", async () => {
+    // Duplex.read() must not gate on the public `readable` flag: net's EOF
+    // handler clears it right after push(null) while chunks are still buffered,
+    // so a consumer reading on a later macrotask got null and lost the body.
+    const d = new Duplex({ read() {}, write(_c, _e, cb) { cb(); } });
+    d.push('buffered-payload');
+    d.push(null);
+    // Reproduce what net.Socket does at EOF.
+    d.readable = false;
+
+    let seen = '';
+    await new Promise<void>((resolve) => {
+        setTimeout(() => {
+            let chunk: unknown;
+            while ((chunk = d.read()) !== null) seen += (chunk as Buffer).toString();
+            resolve();
+        }, 20);
+    });
+    strictEqual(seen, 'buffered-payload');
+    strictEqual(d.readableLength, 0);
 });

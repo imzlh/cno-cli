@@ -51,7 +51,14 @@ Deno.test('process: cwd and chdir round-trip', () => {
     const original = process.cwd();
     ok(typeof original === 'string' && original.length > 0);
     process.chdir('/');
-    strictEqual(process.cwd(), '/');
+    // Not '/': on win32 chdir('/') lands on the drive root and real Node v24.18.0
+    // reports it as e.g. "d:\\". POSIX genuinely reports '/'.
+    const root = process.cwd();
+    if (process.platform === 'win32') {
+        ok(/^[a-zA-Z]:\\$/.test(root), `win32 chdir('/') must yield a drive root, got ${JSON.stringify(root)}`);
+    } else {
+        strictEqual(root, '/');
+    }
     process.chdir(original);
     strictEqual(process.cwd(), original);
 });
@@ -112,15 +119,19 @@ Deno.test('process upstream: env preserves empty strings and tolerates invalid a
     strictEqual('\0' in process.env, false);
     strictEqual('=c:' in process.env, false);
 
+    // Real Node v24.18.0/win32 THROWS here: the env setter applies ToString to
+    // the key, and ToString of a symbol is a TypeError. Verified differentially
+    // (D:/tmp/ag-sym.cjs) — it does NOT store the value under the symbol.
     const symbol = Symbol.for('cno-process-env-symbol');
-    (process.env as Record<symbol, string>)[symbol] = 'symbol-value';
-    try {
-        strictEqual((process.env as Record<symbol, string>)[symbol], 'symbol-value');
-        strictEqual(Reflect.has(process.env, symbol), true);
-    } finally {
-        delete (process.env as Record<symbol, string>)[symbol];
-    }
+    throws(
+        () => { (process.env as Record<symbol, string>)[symbol] = 'symbol-value'; },
+        (e: unknown) => e instanceof TypeError
+            && /Cannot convert a Symbol value to a string/.test((e as Error).message),
+    );
     strictEqual(Reflect.has(process.env, symbol), false);
+    strictEqual(Object.getOwnPropertySymbols(process.env).length, 0);
+    // deleting a symbol key is a no-op that reports success, as in Node
+    strictEqual(delete (process.env as Record<symbol, string>)[symbol], true);
 });
 
 // --- 6. process.platform / arch / version --------------------------------
@@ -360,6 +371,74 @@ Deno.test('process upstream: stdio exposes fd and writable tty size fields', () 
         process.stdout.isTTY = originalStdoutTTY;
         process.stdout.columns = originalColumns;
     }
+});
+
+// Windows stdio must be in CRT *binary* mode. Inherited descriptors default to
+// text mode, which rewrites every \n as \r\n and corrupts binary writes.
+// tjs__normalize_stdio (circu.js/src/vm.c) forces _O_BINARY on fds 0/1/2.
+// Node reference, measured on v24.18.0: 41 0a 42 0a for all three paths.
+const CRLF_FREE = [0x41, 0x0a, 0x42, 0x0a];
+const hexBytes = (b: Uint8Array) => Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join(' ');
+
+Deno.test({ name: 'process upstream: stdout writes bytes verbatim without CRLF translation', timeout: 20000 }, () => {
+    // process.stdout.write(Buffer) -> mod_fs.c write(fd) via utils/stdio.ts
+    const buffered = spawnSync(process.execPath, [
+        'eval',
+        'process.stdout.write(new Uint8Array([0x41, 0x0a, 0x42, 0x0a]))',
+    ]);
+    strictEqual(buffered.status, 0, String(buffered.stderr));
+    deepStrictEqual(
+        Array.from(buffered.stdout),
+        CRLF_FREE,
+        `process.stdout.write must not translate \\n; got ${hexBytes(buffered.stdout)}`,
+    );
+
+    // Deno.stdout.writeSync -> same native write path, different caller
+    const denoSync = spawnSync(process.execPath, [
+        'eval',
+        'Deno.stdout.writeSync(new Uint8Array([0x41, 0x0a, 0x42, 0x0a]))',
+    ]);
+    strictEqual(denoSync.status, 0, String(denoSync.stderr));
+    deepStrictEqual(
+        Array.from(denoSync.stdout),
+        CRLF_FREE,
+        `Deno.stdout.writeSync must not translate \\n; got ${hexBytes(denoSync.stdout)}`,
+    );
+
+    // console.log -> console.c fwrite(stdout), a different CRT stream
+    const logged = spawnSync(process.execPath, ['eval', 'console.log("A");console.log("B")']);
+    strictEqual(logged.status, 0, String(logged.stderr));
+    deepStrictEqual(
+        Array.from(logged.stdout),
+        CRLF_FREE,
+        `console.log must emit LF only; got ${hexBytes(logged.stdout)}`,
+    );
+});
+
+Deno.test({ name: 'process upstream: stderr writes bytes verbatim without CRLF translation', timeout: 20000 }, () => {
+    const result = spawnSync(process.execPath, [
+        'eval',
+        'process.stderr.write(new Uint8Array([0x41, 0x0a, 0x42, 0x0a]))',
+    ]);
+    strictEqual(result.status, 0, String(result.stdout));
+    deepStrictEqual(
+        Array.from(result.stderr),
+        CRLF_FREE,
+        `process.stderr.write must not translate \\n; got ${hexBytes(result.stderr)}`,
+    );
+});
+
+Deno.test({ name: 'process upstream: stdout round-trips arbitrary binary bytes', timeout: 20000 }, () => {
+    // 0x1a is Ctrl-Z (CRT text-mode EOF on read) and 0x0d/0x0a are the pair a
+    // text-mode write mangles. A whole-byte-range round trip catches any
+    // translation, not just the LF case.
+    const result = spawnSync(process.execPath, [
+        'eval',
+        'process.stdout.write(new Uint8Array(Array.from({ length: 256 }, (_, i) => i)))',
+    ]);
+    strictEqual(result.status, 0, String(result.stderr));
+    strictEqual(result.stdout.length, 256, `expected 256 bytes, got ${result.stdout.length}`);
+    deepStrictEqual(Array.from(result.stdout), Array.from({ length: 256 }, (_, i) => i));
 });
 
 // --- 18. process.umask returns a number ----------------------------------
@@ -611,14 +690,32 @@ Deno.test('process upstream: binding("uv") exposes errno lookup maps', () => {
             errname(code: number): string;
             getErrorMessage(code: number): string;
             getErrorMap(): Map<number, [string, string]>;
-            getCodeMap(): Map<string, number>;
+            getCodeMap?(): Map<string, number>;
         };
     }).binding('uv');
 
-    strictEqual(uv.errname(-1), 'EPERM');
-    strictEqual(uv.getErrorMessage(-1), 'operation not permitted');
-    deepStrictEqual(uv.getErrorMap().get(-1), ['EPERM', 'operation not permitted']);
-    strictEqual(uv.getCodeMap().get('EPERM'), -1);
+    // Windows errnos are libuv's own, not POSIX: EPERM is -4048 (UV__EPERM), not -1.
+    // Verified against real Node v24.18.0 on win32.
+    const EPERM = process.platform === 'win32' ? -4048 : -1;
+    strictEqual(uv.errname(EPERM), 'EPERM');
+    strictEqual(uv.getErrorMessage(EPERM), 'operation not permitted');
+    deepStrictEqual(uv.getErrorMap().get(EPERM), ['EPERM', 'operation not permitted']);
+
+    // An unmapped code is reported as unknown rather than guessed at. On win32 -1 is
+    // exactly such a code; real Node v24.18.0 returns 'Unknown system error -1' from
+    // both errname and getErrorMessage, and undefined from getErrorMap.
+    if (process.platform === 'win32') {
+        strictEqual(uv.errname(-1), 'Unknown system error -1');
+        strictEqual(uv.getErrorMessage(-1), 'Unknown system error -1');
+        strictEqual(uv.getErrorMap().get(-1), undefined);
+    }
+
+    // getCodeMap is a deliberate cno extension: it does NOT exist on real Node v24.18.0
+    // (typeof -> undefined). Asserted only when present so this never becomes a
+    // Node-parity claim.
+    if (typeof uv.getCodeMap === 'function') {
+        strictEqual(uv.getCodeMap().get('EPERM'), EPERM);
+    }
 });
 
 Deno.test('process upstream: cpuUsage reports current usage and validates previous values', () => {

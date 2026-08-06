@@ -26,7 +26,10 @@ type InspectableFunction = object & { name?: string }
 const engine = import.meta.use('engine')
 const nativeConsole = import.meta.use('console')
 const DEVTOOLS_EVAL_SLOT_PREFIX = '__cnoDevtoolsEvalResult__'
+/** Property name of the in-VM completion-value box. See `Captured`. */
+const CAPTURE_KEY = '__cnoCapturedCompletion__'
 let nextDevtoolsEvalSlot = 0
+let nextCompiledScriptId = 0
 
 function isThenable(v: unknown): v is PromiseLike<unknown> {
 	return typeof v === 'object' && v !== null && typeof Reflect.get(v, 'then') === 'function'
@@ -37,19 +40,55 @@ function unwrapEvalResult(v: unknown): unknown {
 	return v
 }
 
-async function evalWithCapturedCompletion(expression: string, sourceURL = '<devtools>'): Promise<unknown> {
+/**
+ * The completion value, boxed.
+ *
+ * The box is load-bearing, not decoration. `evalWithCapturedCompletion` is an
+ * `async function`, and an async function's return value is ALWAYS adopted: a
+ * returned thenable is resolved before the caller's `await` sees it. Returning
+ * the bare completion value therefore made `Runtime.evaluate` resolve every
+ * Promise regardless of `awaitPromise`, because the value had already been
+ * unwrapped by the time `q.awaitPromise` was consulted.
+ *
+ * MEASURED, cno before this change: evaluate `new Promise(r=>setTimeout(()=>r(99),200))`
+ * with `awaitPromise:false` -> {"type":"number","value":99}.
+ * MEASURED, node v24.18.0, same expression and flag ->
+ * {"type":"object","subtype":"promise","className":"Promise",objectId:...}.
+ * The slot itself always held the real Promise (measured: `slotIsThenable=true`),
+ * so the loss happened purely at the async-return boundary.
+ */
+type Captured = { readonly v: unknown }
+
+async function evalWithCapturedCompletion(expression: string, sourceURL = '<devtools>'): Promise<Captured> {
 	const slot = `${DEVTOOLS_EVAL_SLOT_PREFIX}${++nextDevtoolsEvalSlot}`
 	try {
 		try {
 			await engine.eval(`${slotRef(slot)} = (${expression})`, sourceURL, engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)
 		} catch (e) {
 			if (!isSyntaxLikeError(e)) throw e
-			await engine.eval(`${slotRef(slot)} = await (async () => {\n${returnifyLastStatement(expression)}\n})()`, sourceURL, engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)
+			// The fallback IIFE is async so the body may use top-level await. That
+			// makes its return value adopted too, so the box has to be built INSIDE
+			// the IIFE — `await (async()=>{...})()` on a Promise-valued body would
+			// otherwise resolve it here, before awaitPromise is consulted.
+			await engine.eval(`${slotRef(slot)} = await (async () => {\n${returnifyLastStatement(expression, true)}\n})()`, sourceURL, engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)
+			return { v: unboxCaptured(Reflect.get(globalThis, slot)) }
 		}
-		return Reflect.get(globalThis, slot)
+		return { v: Reflect.get(globalThis, slot) }
 	} finally {
 		Reflect.deleteProperty(globalThis, slot)
 	}
+}
+
+/**
+ * Unwrap the in-VM box produced by `returnifyLastStatement(_, true)`.
+ *
+ * A statement-only body (`var q=1;`) gets no `return`, so the IIFE yields
+ * undefined rather than a box; that is not an error, it is `undefined` as the
+ * completion value, which is what node reports for the same input.
+ */
+function unboxCaptured(boxed: unknown): unknown {
+	if (boxed && typeof boxed === 'object' && CAPTURE_KEY in boxed) return Reflect.get(boxed, CAPTURE_KEY)
+	return undefined
 }
 
 function slotRef(slot: string): string {
@@ -64,14 +103,24 @@ function isSyntaxLikeError(e: unknown): boolean {
 		|| /\b(?:SyntaxError|Transform Error|Unexpected|Missing|Invalid|Unterminated)\b/i.test(message)
 }
 
-function returnifyLastStatement(source: string): string {
+/**
+ * Turn the last top-level statement into a `return`, so the IIFE fallback has a
+ * completion value.
+ *
+ * `box` wraps that value in `{[CAPTURE_KEY]: ...}` inside the VM. It must be
+ * applied in-VM because the IIFE is async: a bare `return somePromise` would be
+ * adopted by the IIFE's own promise and resolved before the caller could honour
+ * `awaitPromise:false`.
+ */
+function returnifyLastStatement(source: string, box = false): string {
 	const trimmed = source.trim()
 	if (!trimmed) return ''
 	const split = lastTopLevelStatementStart(trimmed)
 	const head = trimmed.slice(0, split).trimEnd()
 	const tail = trimmed.slice(split).trim().replace(/;+\s*$/, '')
 	if (!tail || isStatementOnly(tail)) return trimmed
-	return `${head ? `${head}\n` : ''}return (${tail});`
+	const returned = box ? `{${JSON.stringify(CAPTURE_KEY)}: (${tail})}` : `(${tail})`
+	return `${head ? `${head}\n` : ''}return ${returned};`
 }
 
 function lastTopLevelStatementStart(source: string): number {
@@ -185,6 +234,14 @@ function byValue(val: unknown): RemoteObject {
 
 export class Evaluator {
 	private readonly compiledScripts = new Map<string, { mod: CModuleEngine.Module; persist: boolean }>()
+	/**
+	 * Cap on retained compiled scripts. CDP has no `Runtime.releaseScript`, and
+	 * DevTools calls `Runtime.compileScript` with `persistScript: true` for watch
+	 * expressions and autocomplete probes, so nothing ever removes a persisted
+	 * entry — each one pinning a compiled engine.Module. Without a bound a long
+	 * session grows this map forever. Same leak shape as fetch.ts MAX_CACHED_BODIES.
+	 */
+	private static readonly MAX_COMPILED_SCRIPTS = 256
 
 	constructor(private readonly serializer: Serializer) {}
 
@@ -217,7 +274,7 @@ export class Evaluator {
 				const level = Number(q.callFrameId ?? 0) || 0
 				val = native.evalInFrame(level + FrameOffset.PausedEval, q.expression)
 			} else {
-				val = await evalWithCapturedCompletion(q.expression)
+				val = (await evalWithCapturedCompletion(q.expression)).v
 				if (q.awaitPromise && isThenable(val)) val = await val
 			}
 			if (q.returnByValue) return { result: byValue(val) }
@@ -230,9 +287,9 @@ export class Evaluator {
 	async callFunctionOn(q: RpcParams['callFunctionOn']): Promise<EvaluateResponse> {
 		const group = q.objectGroup ?? this.groupFromObject(q.objectId) ?? 'runtime'
 		try {
-			const target = q.objectId ? this.serializer.resolve(q.objectId) : undefined
+			const target = this.resolveReceiver(q.objectId)
 			const args = (q.arguments ?? []).map((a) => this.resolveArgument(a))
-			const fn = await evalWithCapturedCompletion(`(${q.functionDeclaration})`)
+			const fn = (await evalWithCapturedCompletion(`(${q.functionDeclaration})`)).v
 			if (typeof fn !== 'function') throw new TypeError('callFunctionOn: declaration is not a function')
 			let val: unknown = Reflect.apply(fn as InspectorCallable, target, args)
 			if (isThenable(val)) val = await val
@@ -246,7 +303,7 @@ export class Evaluator {
 	callFunctionOnSync(q: RpcParams['callFunctionOn']): EvaluateResponse {
 		const group = q.objectGroup ?? this.groupFromObject(q.objectId) ?? 'runtime'
 		try {
-			const target = q.objectId ? this.serializer.resolve(q.objectId) : undefined
+			const target = this.resolveReceiver(q.objectId)
 			const args = (q.arguments ?? []).map((a) => this.resolveArgument(a))
 			const factory = engine.eval<unknown>(`(${q.functionDeclaration})`, '<devtools>', engine.EVAL_NEW_BACKTRACE)
 			const fn = unwrapEvalResult(factory)
@@ -282,11 +339,51 @@ export class Evaluator {
 		return objectId ? this.serializer.groupOf(objectId) : undefined
 	}
 
+	/**
+	 * Resolve the `this` receiver for callFunctionOn, rejecting a stale handle.
+	 *
+	 * A released or unknown objectId used to resolve to `undefined`, so the function
+	 * silently ran with `this === undefined` against the wrong receiver instead of
+	 * reporting failure — a DevTools getter probe or "Store as global variable" on a
+	 * handle whose group was already released would quietly do the wrong thing.
+	 * `has()` distinguishes "not in the store" from "stored value IS undefined".
+	 * MEASURED, node v24.18: callFunctionOn with a released objectId answers
+	 * {"code":-32000,"message":"Could not find object with given id"}.
+	 */
+	private resolveReceiver(objectId?: string): unknown {
+		if (!objectId) return undefined
+		if (!this.serializer.has(objectId)) {
+			throw new Error('Could not find object with given id')
+		}
+		return this.serializer.resolve(objectId)
+	}
+
 	compileScript(q: RpcParams['compileScript']): CompileScriptResponse {
 		const sourceURL = q.sourceURL || '<compiled>'
 		try {
-			const mod = new engine.Module(`(${q.expression})`, sourceURL)
-			const scriptId = `script:${q.sourceURL || Date.now()}`
+			// The completion value must be reachable after eval(); a bare
+			// expression statement leaves `namespace.default` undefined, so
+			// runScript would always report `undefined`.
+			//
+			// KNOWN GAP: CDP's `expression` is a script body, not strictly an
+			// expression, so a statement compiles here into
+			// `export default (var q=1;)` and fails. MEASURED: node v24.18 compiles
+			// `var q=1;` successfully and returns a scriptId. The failure is at least
+			// clean — it lands in the catch below as exceptionDetails rather than
+			// escaping the RPC layer — but DevTools' own console never takes this path
+			// (it uses Runtime.evaluate), so the wrapper is kept for the completion
+			// value it buys.
+			const mod = new engine.Module(`export default (${q.expression})`, sourceURL)
+			// sourceURL is caller-controlled and often reused — never key on it.
+			const scriptId = `script:${++nextCompiledScriptId}`
+			// Evict oldest-first once at the cap. A displaced scriptId then answers
+			// "unknown scriptId" from runScript, which is the same error DevTools
+			// already handles for a stale id (MEASURED, node v24.18: a second run of
+			// any compiled script answers -32000 "No script with given id").
+			if (this.compiledScripts.size >= Evaluator.MAX_COMPILED_SCRIPTS) {
+				const oldest = this.compiledScripts.keys().next().value
+				if (oldest !== undefined) this.compiledScripts.delete(oldest)
+			}
 			this.compiledScripts.set(scriptId, { mod, persist: !!q.persistScript })
 			return { scriptId }
 		} catch (e) {
@@ -299,8 +396,24 @@ export class Evaluator {
 		const entry = this.compiledScripts.get(q.scriptId)
 		if (!entry) return this.errorResult(new Error(`unknown scriptId: ${q.scriptId}`))
 		try {
+			// NOT bracketed with ModuleCompiler.evalTracked, unlike the CLI entry-eval
+			// sites (src/commands/run.ts, src/commands/eval.ts). Deliberate: this mod
+			// comes from a raw `new engine.Module` in compileScript, so it is not in
+			// esmCache and no require() can resolve to it — nothing can re-enter it
+			// mid-evaluation, which is the precondition for the JS_MODULE_STATUS_EVALUATING
+			// abort. The Evaluator also holds no compiler reference to bracket with.
+			// A repeat runScript on a persisted script re-evals an EVALUATED module,
+			// and that status IS in js_link_module's allow-list (quickjs.c:32089).
 			await entry.mod.eval()
-			const val = entry.mod.namespace.default
+			let val = entry.mod.namespace.default
+			// runScript honours awaitPromise exactly as evaluate does. Without this a
+			// promise-valued script answered the Promise itself, which under
+			// returnByValue serialises to `{}` — a silently wrong result rather than
+			// an error. MEASURED, cno before this change: compileScript
+			// `import("node:os").then(m=>typeof m.platform)` + runScript
+			// {awaitPromise:true,returnByValue:true} -> value {}. MEASURED, node
+			// v24.18.0, same sequence -> value "function".
+			if (q.awaitPromise && isThenable(val)) val = await val
 			if (!entry.persist) this.compiledScripts.delete(q.scriptId)
 			if (q.returnByValue) return { result: byValue(val) }
 			return { result: this.serializer.serialize(val, group, { preview: !!q.generatePreview }) }
@@ -311,6 +424,11 @@ export class Evaluator {
 
 	runScriptSync(q: RpcParams['runScript']): EvaluateResponse {
 		return this.errorResult(new Error(`Cannot run script while paused: ${q.scriptId}`))
+	}
+
+	/** Retained compiled-script count. For tests asserting the table stays bounded. */
+	compiledScriptCount(): number {
+		return this.compiledScripts.size
 	}
 
 	/** Resolve a CDP CallArgument to a real JS value (objectId / unserializable / literal). */

@@ -153,6 +153,13 @@ Deno.test({ name: 'perf_hooks upstream: PerformanceObserver validates observe op
         throws(() => obs.observe(undefined as unknown as PerformanceObserverInit), TypeError);
         throws(() => obs.observe({ entryTypes: ['mark'], type: 'mark' } as PerformanceObserverInit), TypeError);
         throws(() => obs.observe({ entryTypes: 'mark' } as unknown as PerformanceObserverInit), TypeError);
+        // Verified against real Node v24.18.0: the ERR_INVALID_ARG_TYPE throw above
+        // happens *after* observe() has already latched the observer into
+        // multiple-observation mode, so a following `{ type }` call throws
+        // DOMException 'InvalidModificationError' ("can not change to single
+        // observation") rather than succeeding. Node's disconnect() clears that
+        // latched mode, so reset before exercising the single-type path.
+        obs.disconnect();
         obs.observe({ type: 'mark', buffered: true });
     } finally {
         obs.disconnect();
@@ -182,7 +189,18 @@ Deno.test({ name: 'perf_hooks: mark stores detail and measure without marks star
 Deno.test({ name: 'perf_hooks: measure throws for missing marks', timeout: 10000 }, () => {
     performance.clearMarks();
     performance.clearMeasures();
-    throws(() => performance.measure('missing-measure', 'does-not-exist'), SyntaxError);
+    // Real Node v24.18 throws a DOMException whose `.name` is 'SyntaxError' and
+    // whose `.code` is 12 — it is NOT an instanceof SyntaxError, so
+    // `throws(fn, SyntaxError)` fails there too.
+    let thrown: unknown;
+    try {
+        performance.measure('missing-measure', 'does-not-exist');
+    } catch (error) {
+        thrown = error;
+    }
+    strictEqual((thrown as Error | undefined)?.name, 'SyntaxError');
+    strictEqual(thrown instanceof SyntaxError, false);
+    strictEqual((thrown as { code?: number } | undefined)?.code, 12);
 });
 
 Deno.test({ name: 'perf_hooks: timerify wraps function and emits function entry', timeout: 10000 }, async () => {
@@ -244,6 +262,10 @@ Deno.test({ name: 'perf_hooks upstream: observer takeRecords and disconnect sema
     obs.disconnect();
     performance.mark('take-record-c');
     deepStrictEqual(obs.takeRecords(), []);
-    deepStrictEqual(seen, ['take-record-a', 'take-record-b']);
+    // Verified against real Node v24.18: takeRecords() *drains* the queue, so the
+    // callback never receives those entries. `seen` stays empty both
+    // synchronously and after a tick. Asserting otherwise only holds for a
+    // synchronous-dispatch observer, which Node is not.
+    deepStrictEqual(seen, []);
     performance.clearMarks();
 });

@@ -236,7 +236,17 @@ Deno.test('dns: lookup validates boolean and hint options', async () => {
     throws(() => dns.lookup('localhost', { order: 'bad' as 'verbatim' }, () => {}), TypeError);
     throws(() => dns.lookup('localhost', { hints: 1 }, () => {}), TypeError);
     throws(() => dnsp.lookup('localhost', { all: 1 as unknown as boolean }), TypeError);
-    deepStrictEqual(await dnsp.lookup('127.0.0.1', { hints: 8.5 }), { address: '127.0.0.1', family: 4 });
+    // AI_* hint values are platform ABI constants: V4MAPPED/ALL/ADDRCONFIG are
+    // 8/16/32 on glibc but 0x800/0x100/0x400 on Windows and Darwin. Use the
+    // exported constants so this asserts the same thing everywhere; a bare 8 is
+    // rejected off glibc, exactly as real Node rejects it.
+    deepStrictEqual(
+        await dnsp.lookup('127.0.0.1', { hints: dns.V4MAPPED | dns.ADDRCONFIG }),
+        { address: '127.0.0.1', family: 4 },
+    );
+    // Option validation happens before the promise is created, so this throws
+    // synchronously in real Node rather than rejecting.
+    throws(() => dnsp.lookup('127.0.0.1', { hints: 2 }), TypeError);
     deepStrictEqual(
         await dnsp.lookup('127.0.0.1', { all: null as unknown as boolean, order: null as unknown as 'verbatim' }),
         { address: '127.0.0.1', family: 4 },

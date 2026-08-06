@@ -1,4 +1,4 @@
-import { strictEqual, ok, throws } from 'node:assert';
+import { strictEqual, ok, throws, deepStrictEqual } from 'node:assert';
 import {
     EventEmitter,
     EventEmitterAsyncResource,
@@ -532,4 +532,181 @@ Deno.test('events: on() async iterator rejects on error and removes listeners', 
     strictEqual(error.message, 'iter-error');
     strictEqual(ee.listenerCount('data'), 0);
     strictEqual(ee.listenerCount('error'), 0);
+});
+
+// --- MaxListenersExceededWarning goes through process.emitWarning ----------
+
+Deno.test('events upstream: exceeding maxListeners emits MaxListenersExceededWarning', async () => {
+    const seen: Array<Error & { emitter?: unknown; type?: unknown; count?: number }> = [];
+    const onWarning = (w: Error) => seen.push(w);
+    process.on('warning', onWarning);
+
+    class Sub extends EventEmitter {}
+    const emitter = new Sub();
+    emitter.setMaxListeners(1);
+    try {
+        emitter.on('q', () => {});
+        emitter.on('q', () => {});
+        await new Promise((r) => setTimeout(r, 20));
+    } finally {
+        process.off('warning', onWarning);
+    }
+
+    const warning = seen.find((w) => w.name === 'MaxListenersExceededWarning');
+    ok(warning, `no MaxListenersExceededWarning in ${seen.map((w) => w.name).join(',')}`);
+    strictEqual(warning!.emitter, emitter);
+    strictEqual(warning!.type, 'q');
+    strictEqual(warning!.count, 2);
+    ok(
+        warning!.message.includes('2 q listeners added to [Sub]. MaxListeners is 1.'),
+        `message was: ${warning!.message}`,
+    );
+});
+
+// --- unhandled 'error' shape ---------------------------------------------
+
+Deno.test('events upstream: unhandled non-Error error throws ERR_UNHANDLED_ERROR', () => {
+    const emitter = new EventEmitter();
+    try {
+        emitter.emit('error', 'stringy');
+        ok(false, 'should throw');
+    } catch (e) {
+        const err = e as Error & { code?: string; context?: unknown };
+        strictEqual(err.code, 'ERR_UNHANDLED_ERROR');
+        strictEqual(err.context, 'stringy');
+        strictEqual(err.message, "Unhandled error. ('stringy')");
+    }
+
+    try {
+        emitter.emit('error');
+        ok(false, 'should throw');
+    } catch (e) {
+        const err = e as Error & { code?: string; context?: unknown };
+        strictEqual(err.code, 'ERR_UNHANDLED_ERROR');
+        strictEqual(err.message, 'Unhandled error. (undefined)');
+    }
+
+    // Error instances are rethrown untouched
+    const original = new TypeError('boom');
+    try {
+        emitter.emit('error', original);
+        ok(false, 'should throw');
+    } catch (e) {
+        strictEqual(e, original);
+    }
+});
+
+// --- listener validation shape -------------------------------------------
+
+Deno.test('events upstream: listener validation uses ERR_INVALID_ARG_TYPE', () => {
+    const emitter = new EventEmitter();
+    const methods = ['on', 'addListener', 'once', 'prependListener', 'prependOnceListener'] as const;
+    for (const method of methods) {
+        try {
+            (emitter[method] as (n: string, l: unknown) => unknown)('t', 5);
+            ok(false, `${method} should throw`);
+        } catch (e) {
+            const err = e as Error & { code?: string };
+            strictEqual(err.code, 'ERR_INVALID_ARG_TYPE', `${method} code`);
+            strictEqual(err.message, 'The "listener" argument must be of type function. Received type number (5)');
+        }
+    }
+
+    throws(() => emitter.on('t', null as unknown as () => void), (e: Error & { code?: string }) => {
+        strictEqual(e.code, 'ERR_INVALID_ARG_TYPE');
+        strictEqual(e.message, 'The "listener" argument must be of type function. Received null');
+        return true;
+    });
+    throws(() => emitter.on('t', {} as unknown as () => void), (e: Error & { code?: string }) => {
+        strictEqual(e.message, 'The "listener" argument must be of type function. Received an instance of Object');
+        return true;
+    });
+});
+
+// --- events.on({ close }) and the _events representation -------------------
+
+Deno.test('events: on() terminates the iterator when a close event fires', async () => {
+    const emitter = new EventEmitter();
+    const seen: number[] = [];
+    let reachedEnd = false;
+
+    setTimeout(() => {
+        emitter.emit('data', 1);
+        emitter.emit('data', 2);
+        emitter.emit('finished');
+    }, 10);
+
+    // Before: options.close was ignored, so this loop never terminated. The
+    // process then exited 0 with the consumer abandoned mid-run, which reads as
+    // a pass — hence the explicit end marker rather than trusting completion.
+    for await (const [value] of on(emitter, 'data', { close: ['finished'] })) {
+        seen.push(value as number);
+        if (seen.length > 20) break;
+    }
+    reachedEnd = true;
+
+    const listenersAfter = `${emitter.listenerCount('data')}/${emitter.listenerCount('finished')}`;
+    strictEqual(reachedEnd, true, 'the iterator must return after the close event');
+    strictEqual(seen.join(','), '1,2');
+    strictEqual(listenersAfter, '0/0', 'close must detach both data and close listeners');
+});
+
+Deno.test('events: on() close option is iterated, so a bare string is per-character', async () => {
+    const emitter = new EventEmitter();
+    let reachedEnd = false;
+    setTimeout(() => {
+        emitter.emit('data', 1);
+        emitter.emit('f');
+    }, 10);
+    // Node iterates options.close, so the string 'f' yields the name 'f'.
+    for await (const _ of on(emitter, 'data', { close: 'f' })) { void _; }
+    reachedEnd = true;
+    strictEqual(reachedEnd, true);
+});
+
+Deno.test('events: _events matches Node\'s null-prototype object representation', () => {
+    const emitter = new EventEmitter();
+    const store = (emitter as unknown as { _events: Record<string, unknown> })._events;
+
+    // Node uses a null-prototype object, not a Map: libraries read _events[name]
+    // and Object.keys(_events) directly, both of which a Map breaks.
+    strictEqual(Object.getPrototypeOf(store), null);
+    strictEqual(Object.keys(store).length, 0);
+
+    const first = () => {};
+    emitter.on('a', first);
+    // One listener is stored as a bare function; two or more become an array.
+    strictEqual(typeof store.a, 'function');
+    strictEqual(store.a, first);
+    deepStrictEqual(Object.keys(store), ['a']);
+    strictEqual((emitter as unknown as { _eventsCount: number })._eventsCount, 1);
+
+    const second = () => {};
+    emitter.on('a', second);
+    ok(Array.isArray(store.a));
+    strictEqual((store.a as unknown[]).length, 2);
+    strictEqual((store.a as unknown[])[0], first);
+    strictEqual((store.a as unknown[])[1], second);
+
+    // Symbol names stay own keys but never appear in Object.keys.
+    const sym = Symbol('s');
+    emitter.on(sym, () => {});
+    strictEqual(Object.keys(store).length, 1);
+    strictEqual(Reflect.ownKeys(store).length, 2);
+    strictEqual(emitter.listenerCount(sym), 1);
+
+    // Removing the last listener deletes the key outright.
+    emitter.removeListener('a', first);
+    emitter.removeListener('a', second);
+    strictEqual('a' in store, false);
+});
+
+Deno.test('events: once wrappers are unwrapped by listeners but not rawListeners', () => {
+    const emitter = new EventEmitter();
+    const original = () => {};
+    emitter.once('o', original);
+    strictEqual(emitter.listeners('o')[0], original);
+    ok(emitter.rawListeners('o')[0] !== original);
+    strictEqual((emitter.rawListeners('o')[0] as { listener: unknown }).listener, original);
+    strictEqual(emitter.listenerCount('o', original), 1);
 });
