@@ -509,3 +509,155 @@ Deno.test('network: an abandoned request is evicted once it goes stale', async (
     await expectError(() => dispatcher.dispatch('Network.getResponseBody', { requestId: 'abandoned' }),
         CdpErrorCode.InvalidParams, 'stale abandoned request');
 });
+
+// ── 8. eviction is only ever driven by a Done event ──────────────────
+//
+// `cleanupStaleEntries` is called from exactly two places, both inside
+// handleNetworkDoneEvent (network.ts:694 and :750). There is no timer. So a
+// workload that produces no Done events never evicts anything, and the maps the
+// evictor is responsible for grow for the process lifetime.
+//
+// These read private maps deliberately: the leak is invisible from the CDP
+// surface (the whole problem is that nothing is emitted for these ids), so the
+// map is the only observable.
+
+/** Total entries across every requestId-keyed map. */
+function stateSize(net: NetworkDomain): number {
+    const n = net as unknown as Record<string, { size: number } | undefined>;
+    const maps = ['responseBodyCache', 'requestBodyCache', 'pendingBodies', 'streamedBodies',
+        'reqStartTimes', 'reqMeta', 'wsMeta', 'wsUpgradeRequests', 'announced', 'lastSeen'];
+    return maps.reduce((sum, m) => sum + (n[m]?.size ?? 0), 0);
+}
+function mapSize(net: NetworkDomain, name: string): number {
+    return (net as unknown as Record<string, { size: number } | undefined>)[name]?.size ?? 0;
+}
+
+Deno.test('network: EXPECTED-RED requests that never complete do not accumulate state', async () => {
+    // EXPECTED RED -- documents the unbounded leak, unfixed at time of writing.
+    //
+    // OBSERVED growth, measured at three values of N with no decay (exactly 5
+    // retained entries per request: pendingBodies, reqStartTimes, reqMeta,
+    // announced, lastSeen):
+    //     N=100  -> 500 entries
+    //     N=1000 -> 5000 entries
+    //     N=5000 -> 25000 entries
+    // Cause: nothing calls cleanupStaleEntries except a Done event, so a request
+    // that never completes is never reclaimed. The evictor itself is correct --
+    // see the mixed-traffic test below, where it does bound the same ids.
+    const { net, dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+
+    // Timestamps advance 1s per request, so by the end the early ids are far
+    // past the 120s staleness cutoff and SHOULD have been reclaimed.
+    for (let i = 0; i < 1000; i++) {
+        const id = `never-${i}`;
+        fetchReq(net, id, i);
+        fetchRes(net, id, i);
+        fetchData(net, id, 64, i);
+        // deliberately no Done
+    }
+
+    const size = stateSize(net);
+    // A bound comparable to the body caches' own caps. 1000 requests spanning
+    // ~1000 simulated seconds should leave only the recent window live.
+    ok(size < 1000,
+        `requestId-keyed state must stay bounded for requests that never complete; `
+        + `1000 abandoned requests retained ${size} entries `
+        + `(reqMeta=${mapSize(net, 'reqMeta')}, announced=${mapSize(net, 'announced')}, `
+        + `lastSeen=${mapSize(net, 'lastSeen')}, reqStartTimes=${mapSize(net, 'reqStartTimes')}, `
+        + `pendingBodies=${mapSize(net, 'pendingBodies')})`);
+});
+
+Deno.test('network: EXPECTED-RED a closed client websocket does not leak reqStartTimes', async () => {
+    // EXPECTED RED -- documents the second, more reachable leak.
+    //
+    // NetWSKind.Created sets reqStartTimes (network.ts:558). NetWSKind.Closed
+    // deletes reqStartTimes/reqMeta only when the id is in `wsUpgradeRequests`
+    // (network.ts:628-632), and that set is populated ONLY by the serve-side
+    // HTTP-upgrade path (:437, :487). A CLIENT websocket (`new WebSocket()`,
+    // source 'fetch') therefore never takes that branch: Closed drops lastSeen
+    // but keeps reqStartTimes.
+    //
+    // The id is then invisible to cleanupStaleEntries' FIRST loop (it iterates
+    // lastSeen) and reclaimable only by the SECOND loop -- which runs only on an
+    // HTTP Done. A pure-WebSocket workload has none.
+    //
+    // OBSERVED: 100 -> 100, 1000 -> 1000, 5000 -> 5000. One permanent entry per
+    // closed connection, for the process lifetime. Reconnecting clients make it
+    // monotonic. No adversary and no failure required.
+    const { net, dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+
+    for (let i = 0; i < 1000; i++) {
+        const id = `ws-${i}`;
+        net.onWSEvent({
+            ev: NetWSKind.Created, source: 'fetch', requestId: id, timestamp: i,
+            url: `ws://127.0.0.1:9/${id}`, requestHeaders: [['upgrade', 'websocket']],
+        } as Parameters<NetworkDomain['onWSEvent']>[0]);
+        net.onWSEvent({
+            ev: NetWSKind.Closed, source: 'fetch', requestId: id, timestamp: i, code: 1000,
+        } as Parameters<NetworkDomain['onWSEvent']>[0]);
+    }
+
+    strictEqual(mapSize(net, 'reqStartTimes'), 0,
+        `a closed websocket must release reqStartTimes; 1000 open/close cycles left `
+        + `${mapSize(net, 'reqStartTimes')} entries (total state ${stateSize(net)})`);
+});
+
+Deno.test('network: mixed traffic DOES bound the same websocket ids', async () => {
+    // The control that isolates the cause. Identical websocket workload to the
+    // test above, except one HTTP request completes every 50 cycles -- which is
+    // all it takes to drive the cleanup tick. If this passes while the test above
+    // fails, the eviction LOGIC is correct and only its trigger is missing.
+    // OBSERVED: flattens at 170 entries for N=1000 and N=5000 alike.
+    const { net, dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+
+    for (let i = 0; i < 1000; i++) {
+        const id = `wsm-${i}`;
+        net.onWSEvent({
+            ev: NetWSKind.Created, source: 'fetch', requestId: id, timestamp: i,
+            url: `ws://127.0.0.1:9/${id}`, requestHeaders: [['upgrade', 'websocket']],
+        } as Parameters<NetworkDomain['onWSEvent']>[0]);
+        net.onWSEvent({
+            ev: NetWSKind.Closed, source: 'fetch', requestId: id, timestamp: i, code: 1000,
+        } as Parameters<NetworkDomain['onWSEvent']>[0]);
+        if (i % 50 === 0) {
+            fetchReq(net, `http-${i}`, i);
+            fetchDone(net, `http-${i}`, true, i);
+        }
+    }
+
+    ok(mapSize(net, 'reqStartTimes') < 400,
+        `with Done events present the evictor must bound reqStartTimes, got ${mapSize(net, 'reqStartTimes')}`);
+});
+
+Deno.test('network: Network.disable releases all per-request state', async () => {
+    // The one reclamation path that IS reliable today, asserted so a future fix
+    // to the leaks above cannot regress it.
+    const { net, dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+    for (let i = 0; i < 200; i++) {
+        const id = `d-${i}`;
+        fetchReq(net, id, i);
+        fetchRes(net, id, i);
+        fetchData(net, id, 64, i);
+    }
+    ok(stateSize(net) > 0, 'precondition: state accumulated');
+    await dispatcher.dispatch('Network.disable', {});
+    strictEqual(stateSize(net), 0, `Network.disable must release every map, ${stateSize(net)} entries left`);
+});
+
+Deno.test('network: client detach releases all per-request state', async () => {
+    const { net, dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+    for (let i = 0; i < 200; i++) {
+        const id = `x-${i}`;
+        fetchReq(net, id, i);
+        fetchRes(net, id, i);
+        fetchData(net, id, 64, i);
+    }
+    ok(stateSize(net) > 0, 'precondition: state accumulated');
+    net.setConnected(false);
+    strictEqual(stateSize(net), 0, `detach must release every map, ${stateSize(net)} entries left`);
+});
