@@ -243,7 +243,129 @@ Deno.test('network: a buffered body round-trips through getResponseBody', async 
     strictEqual(res.base64Encoded, false);
 });
 
-// ── 4. malformed / hostile CDP input ─────────────────────────────────
+Deno.test('network: searchInResponseBody finds a string the cached body contains', async () => {
+    // Was `() => ({ result: [] })`, which ignored requestId AND query. The defect
+    // was not a missing feature but a WRONG ANSWER on valid input: the same id
+    // that getResponseBody happily returns 'NEEDLE ...' for reported no matches,
+    // so DevTools' Network-panel body search silently found nothing.
+    const { net, dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+    const body = 'first line\nNEEDLE is present in this body\nthird line\nneedle again lowercase\n';
+    fetchReq(net, 'srch');
+    fetchRes(net, 'srch');
+    net.onFetchEvent({
+        ev: NetFetchKind.Data, source: 'fetch', requestId: 'srch', timestamp: 3,
+        data: new TextEncoder().encode(body), byteLength: new TextEncoder().encode(body).byteLength,
+    });
+    fetchDone(net, 'srch', true);
+
+    // Precondition: the body really is readable for this id.
+    const got = await dispatcher.dispatch('Network.getResponseBody', { requestId: 'srch' }) as { body: string };
+    ok(got.body.includes('NEEDLE'), 'precondition: the cached body contains NEEDLE');
+
+    // Default search is case-INsensitive, so both lines match.
+    const res = await dispatcher.dispatch('Network.searchInResponseBody',
+        { requestId: 'srch', query: 'needle' }) as
+        { result: Array<{ lineNumber: number; lineContent: string }> };
+    strictEqual(res.result.length, 2,
+        `a string the body contains must be found, got ${JSON.stringify(res.result)}`);
+    // CDP SearchMatch.lineNumber is 0-based.
+    strictEqual(res.result[0]?.lineNumber, 1);
+    strictEqual(res.result[0]?.lineContent, 'NEEDLE is present in this body');
+    strictEqual(res.result[1]?.lineNumber, 3);
+});
+
+Deno.test('network: searchInResponseBody honours caseSensitive and isRegex', async () => {
+    const { net, dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+    const body = 'alpha\nNEEDLE upper\nneedle lower\nbeta\n';
+    fetchReq(net, 'srch2');
+    fetchRes(net, 'srch2');
+    net.onFetchEvent({
+        ev: NetFetchKind.Data, source: 'fetch', requestId: 'srch2', timestamp: 3,
+        data: new TextEncoder().encode(body), byteLength: new TextEncoder().encode(body).byteLength,
+    });
+    fetchDone(net, 'srch2', true);
+
+    const sensitive = await dispatcher.dispatch('Network.searchInResponseBody',
+        { requestId: 'srch2', query: 'NEEDLE', caseSensitive: true }) as { result: unknown[] };
+    strictEqual(sensitive.result.length, 1, 'caseSensitive must exclude the lowercase line');
+
+    // Anchored regex, case-sensitive: only the lowercase line starts with it.
+    const rx = await dispatcher.dispatch('Network.searchInResponseBody',
+        { requestId: 'srch2', query: '^needle', isRegex: true, caseSensitive: true }) as
+        { result: Array<{ lineNumber: number }> };
+    strictEqual(rx.result.length, 1, 'an anchored regex matches per line');
+    strictEqual(rx.result[0]?.lineNumber, 2);
+
+    // Case-insensitive, same anchor: now both NEEDLE-initial lines match, which
+    // shows the flag reaches the regex path too.
+    const rxi = await dispatcher.dispatch('Network.searchInResponseBody',
+        { requestId: 'srch2', query: '^needle', isRegex: true }) as { result: unknown[] };
+    strictEqual(rxi.result.length, 2, 'caseSensitive must apply to the regex path');
+
+    // The anchor is real: 'lower' occurs in line 2 but not at its start.
+    const anchored = await dispatcher.dispatch('Network.searchInResponseBody',
+        { requestId: 'srch2', query: '^lower', isRegex: true }) as { result: unknown[] };
+    strictEqual(anchored.result.length, 0, 'a mid-line term must not match an anchored pattern');
+
+    const none = await dispatcher.dispatch('Network.searchInResponseBody',
+        { requestId: 'srch2', query: 'ABSENT-FROM-BODY' }) as { result: unknown[] };
+    strictEqual(none.result.length, 0, 'a genuinely absent string yields an empty result');
+});
+
+Deno.test('network: searchInResponseBody rejects an unknown id and a missing param', async () => {
+    // The same standard getResponseBody applies to an unknown id, which the old
+    // implementation contradicted by fabricating a successful empty search.
+    const { dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+    await expectError(() => dispatcher.dispatch('Network.searchInResponseBody',
+        { requestId: 'no-such-id', query: 'x' }), CdpErrorCode.InvalidParams, 'unknown id');
+    await expectError(() => dispatcher.dispatch('Network.searchInResponseBody', {}),
+        CdpErrorCode.InvalidParams, 'no params');
+    await expectError(() => dispatcher.dispatch('Network.searchInResponseBody', { requestId: 'no-such-id' }),
+        CdpErrorCode.InvalidParams, 'missing query');
+    await expectError(() => dispatcher.dispatch('Network.searchInResponseBody',
+        { requestId: 42, query: 'x' }), CdpErrorCode.InvalidParams, 'non-string requestId');
+});
+
+Deno.test('network: searchInResponseBody rejects an invalid regex rather than reporting no matches', async () => {
+    const { net, dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+    fetchReq(net, 'srch3');
+    fetchRes(net, 'srch3');
+    net.onFetchEvent({
+        ev: NetFetchKind.Data, source: 'fetch', requestId: 'srch3', timestamp: 3,
+        data: new TextEncoder().encode('body'), byteLength: 4,
+    });
+    fetchDone(net, 'srch3', true);
+    await expectError(() => dispatcher.dispatch('Network.searchInResponseBody',
+        { requestId: 'srch3', query: '([unclosed', isRegex: true }),
+        CdpErrorCode.InvalidParams, 'invalid regex');
+});
+
+Deno.test('network: searchInResponseBody on a truncated body says so instead of answering no matches', async () => {
+    // A truncated entry holds no bytes, only the "too large" placeholder. `[]`
+    // would claim a search of content the domain never had; searching the
+    // placeholder text would invent matches.
+    const { net, dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+    fetchReq(net, 'big');
+    fetchRes(net, 'big');
+    const over = PREVIEW_CAP + 1024;
+    net.onFetchEvent({
+        ev: NetFetchKind.Data, source: 'fetch', requestId: 'big', timestamp: 3,
+        data: new Uint8Array(over), byteLength: over,
+    });
+    fetchDone(net, 'big', true);
+    // Precondition: getResponseBody reports it as unavailable rather than real bytes.
+    const got = await dispatcher.dispatch('Network.getResponseBody', { requestId: 'big' }) as { body: string };
+    strictEqual(got.body, 'Content too large to display', 'precondition: entry is truncated');
+    await expectError(() => dispatcher.dispatch('Network.searchInResponseBody',
+        { requestId: 'big', query: 'anything' }), CdpErrorCode.InvalidParams, 'truncated body');
+});
+
+
 
 Deno.test('network: unknown Network method reports method-not-found', async () => {
     const { dispatcher } = newDomain();
@@ -269,18 +391,102 @@ Deno.test('network: commands requiring requestId reject wrong param types', asyn
     }
 });
 
-Deno.test('network: wrong-typed params on setter commands do not throw', async () => {
-    // These are best-effort setters; a hostile payload must be ignored, not crash
-    // the worker. A clean result is the correct outcome.
+Deno.test('network: setter commands reject a missing or wrong-typed required param', async () => {
+    // This test previously asserted the OPPOSITE — that every one of these was
+    // absorbed and answered success. That leniency was not harmless: each of the
+    // first three performs a DESTRUCTIVE state change on the degraded path.
+    //   setExtraHTTPHeaders {}        -> stringHeadersFromRecord(undefined) -> {}
+    //                                    -> silently WIPED a previously-set
+    //                                       override, answering {} as success.
+    //   setUserAgentOverride {ua:12345} -> str() -> undefined -> CLEARED the
+    //                                       installed override, answering success.
+    //   deleteCookies {}              -> filter(c.name !== undefined) kept every
+    //                                    cookie, so a client that deleted one and
+    //                                    saw success still had it.
+    //   setCookie {}                  -> stored an empty-NAME cookie, observable
+    //                                    via getCookies, and claimed
+    //                                    {success:true}.
+    //   setCookies {cookies:'nope'}   -> stored nothing, reported the batch set.
+    // A malformed command must not mutate state and must not claim success. All
+    // of these are `required` in the CDP spec.
     const { dispatcher } = newDomain();
     await dispatcher.dispatch('Network.enable', {});
-    await dispatcher.dispatch('Network.setExtraHTTPHeaders', { headers: 'not-an-object' });
+    const cases: Array<[string, Record<string, unknown>]> = [
+        ['Network.setExtraHTTPHeaders', {}],
+        ['Network.setExtraHTTPHeaders', { headers: 'not-an-object' }],
+        ['Network.setUserAgentOverride', { userAgent: 12345 }],
+        ['Network.setUserAgentOverride', {}],
+        ['Network.setCookies', { cookies: 'nope' }],
+        ['Network.setCookie', { name: null, value: [] }],
+        ['Network.setCookie', {}],
+        ['Network.deleteCookies', {}],
+    ];
+    for (const [method, params] of cases) {
+        await expectError(() => dispatcher.dispatch(method, params),
+            CdpErrorCode.InvalidParams, `${method} ${JSON.stringify(params)}`);
+    }
+});
+
+Deno.test('network: a rejected setter leaves previously-set state intact', async () => {
+    // The point of the change above: the destructive path must not run. Uses the
+    // cookie jar because it is readable back through the CDP surface.
+    const { dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+    await dispatcher.dispatch('Network.setCookie', { name: 'keep', value: 'v' });
+    await expectError(() => dispatcher.dispatch('Network.deleteCookies', {}),
+        CdpErrorCode.InvalidParams, 'deleteCookies with no name');
+    await expectError(() => dispatcher.dispatch('Network.setCookie', {}),
+        CdpErrorCode.InvalidParams, 'setCookie with no name/value');
+    const { cookies } = await dispatcher.dispatch('Network.getCookies', {}) as
+        { cookies: Array<{ name: string }> };
+    strictEqual(cookies.length, 1, `a rejected setter must not mutate the jar, got ${JSON.stringify(cookies)}`);
+    strictEqual(cookies[0]?.name, 'keep', 'the surviving cookie must be the one that was set');
+    // And a well-formed delete still works.
+    await dispatcher.dispatch('Network.deleteCookies', { name: 'keep' });
+    const after = await dispatcher.dispatch('Network.getCookies', {}) as { cookies: unknown[] };
+    strictEqual(after.cookies.length, 0, 'a well-formed deleteCookies must still delete');
+});
+
+Deno.test('network: well-formed setter payloads are still accepted, and stay lenient inside', async () => {
+    // The validation is on REQUIRED PARAMS, not on their contents: a well-formed
+    // container with junk inside is still best-effort, which is what keeps a
+    // hostile payload from crashing the worker.
+    const { dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+    // Non-string header VALUES are skipped, not rejected.
     await dispatcher.dispatch('Network.setExtraHTTPHeaders', { headers: { a: 1, b: 'ok' } });
-    await dispatcher.dispatch('Network.setUserAgentOverride', { userAgent: 12345 });
-    await dispatcher.dispatch('Network.setCookies', { cookies: 'nope' });
-    await dispatcher.dispatch('Network.setCookie', { name: null, value: [] });
-    await dispatcher.dispatch('Network.deleteCookies', {});
-    ok(true, 'malformed setter payloads were absorbed');
+    await dispatcher.dispatch('Network.setExtraHTTPHeaders', { headers: {} });
+    await dispatcher.dispatch('Network.setUserAgentOverride', { userAgent: '' });
+    // Junk ENTRIES inside a well-formed array are skipped, not rejected.
+    await dispatcher.dispatch('Network.setCookies', { cookies: ['junk', 42, { name: 'a', value: 'b' }] });
+    const { cookies } = await dispatcher.dispatch('Network.getCookies', {}) as
+        { cookies: Array<{ name: string }> };
+    strictEqual(cookies.length, 1, 'only the well-formed cookie entry is stored');
+    strictEqual(cookies[0]?.name, 'a');
+});
+
+Deno.test('network: emulateNetworkConditions does not claim to emulate what it cannot', async () => {
+    // canEmulateNetworkConditions answers false, so answering {} to a throttling
+    // request was self-contradictory: the domain said it could not emulate, then
+    // reported that it had. A request for NO throttling is a real no-op and is
+    // honoured; a request for actual emulation is refused.
+    const { dispatcher } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+    const can = await dispatcher.dispatch('Network.canEmulateNetworkConditions', {}) as { result: boolean };
+    strictEqual(can.result, false, 'precondition: this domain reports it cannot emulate');
+
+    await expectError(() => dispatcher.dispatch('Network.emulateNetworkConditions', {}),
+        CdpErrorCode.InvalidParams, 'no params at all');
+    await expectError(() => dispatcher.dispatch('Network.emulateNetworkConditions',
+        { offline: false, latency: 500, downloadThroughput: -1, uploadThroughput: -1 }),
+        CdpErrorCode.InvalidParams, 'a real latency request must not report success');
+    await expectError(() => dispatcher.dispatch('Network.emulateNetworkConditions',
+        { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 }),
+        CdpErrorCode.InvalidParams, 'offline must not report success');
+    // The genuine no-op: unthrottled is the state cno is actually in.
+    await dispatcher.dispatch('Network.emulateNetworkConditions',
+        { offline: false, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+    ok(true, 'a no-throttling request is honoured');
 });
 
 Deno.test('network: a huge payload is handled without hanging', async () => {
@@ -497,6 +703,40 @@ Deno.test('network: a long-running request is not evicted while still active', a
     const body = await dispatcher.dispatch('Network.getResponseBody', { requestId: 'slow' }) as { body: string };
     strictEqual(body.body.length, chunks * 2,
         `body must hold every chunk received (${chunks} chunks = ${chunks * 2} bytes), got ${body.body.length}`);
+});
+
+Deno.test('network: a stream survives the request-path cleanup ticks the fix added', async () => {
+    // Specific to FIX 1. Eviction now also runs from the REQUEST path, so a
+    // long-lived stream is exposed to many more ticks than before -- the old test
+    // above drives exactly one (from a single unrelated Done). Here unrelated
+    // traffic ARRIVES continuously for 300 simulated seconds alongside the stream,
+    // so ticks fire throughout its life. It must keep every chunk: eviction is
+    // keyed on last activity, and each data chunk refreshes it.
+    const { net, dispatcher, events } = newDomain();
+    await dispatcher.dispatch('Network.enable', {});
+    fetchReq(net, 'stream', 0);
+    fetchRes(net, 'stream', 1);
+    for (let t = 10; t <= 300; t += 10) {
+        net.onFetchEvent({
+            ev: NetFetchKind.Data, source: 'fetch', requestId: 'stream', timestamp: t,
+            data: new TextEncoder().encode('ab'), byteLength: 2,
+        });
+        // Unrelated request STARTING (not completing) now drives a tick too.
+        fetchReq(net, `noise-${t}`, t);
+    }
+    fetchDone(net, 'stream', true, 310);
+
+    const seq = forId(events, 'stream');
+    const chunks = seq.filter((m) => m === 'Network.dataReceived').length;
+    strictEqual(chunks, 30, 'precondition: every chunk was reported');
+    ok(seq.includes('Network.loadingFinished'), 'the stream must still reach its terminal event');
+    const body = await dispatcher.dispatch('Network.getResponseBody', { requestId: 'stream' }) as { body: string };
+    strictEqual(body.body.length, chunks * 2,
+        `no chunk may be lost to a request-path tick (${chunks * 2} bytes expected), got ${body.body.length}`);
+    // Deliberately NO assertion on the noise ids here. This test is a regression
+    // GUARD -- it must pass both before and against the fix, because its job is to
+    // show the extra ticks are harmless. The leak itself is asserted by the two
+    // growth tests in section 8, which is where a bound belongs.
 });
 
 Deno.test('network: an abandoned request is evicted once it goes stale', async () => {

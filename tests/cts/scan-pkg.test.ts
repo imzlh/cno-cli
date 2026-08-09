@@ -139,6 +139,93 @@ Deno.test('cts pkg: detectFormat follows extension, package type and deno defaul
     }
 });
 
+// Node's rule for a `.js` file with no package.json anywhere up the tree is
+// CommonJS when it is reached by require(). cno keeps the Deno-style ESM default
+// for the import side, so the same path answers differently per context and both
+// answers have to be pinned: a regression in either direction is silent, and
+// getting require() wrong makes a plain `module.exports = 7` child die with
+// "ReferenceError: module is not defined" on its first line.
+Deno.test('cts pkg: detectFormat splits require and import for no-package.json .js', () => {
+    const root = makePosixTempDir('pkg-format-kind');
+    try {
+        clearPkgCache();
+        const bare = write(root, 'bare/child.js', 'module.exports = 7;\n');
+
+        strictEqual(detectFormat(bare, 'require'), 'cjs', 'require() of a no-manifest .js is CJS (node)');
+        strictEqual(detectFormat(bare, 'import'), 'esm', 'import of a no-manifest .js stays Deno-style ESM');
+        strictEqual(detectFormat(bare), 'esm', 'default kind is the import side');
+
+        // Extension always wins over context, in both directions.
+        const mjs = write(root, 'bare/m.mjs');
+        const cjs = write(root, 'bare/c.cjs');
+        strictEqual(detectFormat(mjs, 'require'), 'esm');
+        strictEqual(detectFormat(mjs, 'import'), 'esm');
+        strictEqual(detectFormat(cjs, 'require'), 'cjs');
+        strictEqual(detectFormat(cjs, 'import'), 'cjs');
+
+        // A manifest resolves both contexts identically — only the no-manifest
+        // tail is context-dependent.
+        const noType = joinPaths(root, 'notype');
+        mkdirSync(noType, { recursive: true });
+        writeFileSync(joinPaths(noType, 'package.json'), JSON.stringify({ name: 'notype' }));
+        const noTypeJs = write(noType, 'index.js');
+        strictEqual(detectFormat(noTypeJs, 'require'), 'cjs');
+        strictEqual(detectFormat(noTypeJs, 'import'), 'cjs');
+
+        const moduleType = joinPaths(root, 'moduletype');
+        mkdirSync(moduleType, { recursive: true });
+        writeFileSync(joinPaths(moduleType, 'package.json'), JSON.stringify({ type: 'module' }));
+        const moduleJs = write(moduleType, 'index.js');
+        strictEqual(detectFormat(moduleJs, 'require'), 'esm');
+        strictEqual(detectFormat(moduleJs, 'import'), 'esm');
+
+        // deno.json stays ESM in both contexts.
+        const denoDir = joinPaths(root, 'denodir');
+        mkdirSync(denoDir, { recursive: true });
+        writeFileSync(joinPaths(denoDir, 'deno.json'), '{}');
+        const denoJs = write(denoDir, 'index.js');
+        strictEqual(detectFormat(denoJs, 'require'), 'esm');
+        strictEqual(detectFormat(denoJs, 'import'), 'esm');
+    } finally {
+        clearPkgCache();
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+// The format caches are keyed by path only, so a naive per-context answer stored
+// under a shared key would let whichever context ran first dictate the other's
+// result. The caches store the *reason* (no manifest found) instead, so both
+// query orders must produce both answers.
+Deno.test('cts pkg: no-package.json format cache is not poisoned by query order', () => {
+    const root = makePosixTempDir('pkg-format-cache');
+    try {
+        // import first, then require, on one path.
+        clearPkgCache();
+        const a = write(root, 'a/child.js');
+        strictEqual(detectFormat(a, 'import'), 'esm');
+        strictEqual(detectFormat(a, 'require'), 'cjs', 'import first must not pin the require answer');
+
+        // require first, then import, on one path.
+        clearPkgCache();
+        const b = write(root, 'b/child.js');
+        strictEqual(detectFormat(b, 'require'), 'cjs');
+        strictEqual(detectFormat(b, 'import'), 'esm', 'require first must not pin the import answer');
+
+        // Warm, no clear: the directory walk back-fills every visited parent, so
+        // a sibling deeper in the same manifest-less tree must still answer per
+        // context rather than inheriting the first caller's format.
+        const deep = write(root, 'b/nested/deeper/child.js');
+        strictEqual(detectFormat(deep, 'require'), 'cjs');
+        strictEqual(detectFormat(deep, 'import'), 'esm');
+        const sibling = write(root, 'b/nested/deeper/other.js');
+        strictEqual(detectFormat(sibling, 'import'), 'esm');
+        strictEqual(detectFormat(sibling, 'require'), 'cjs');
+    } finally {
+        clearPkgCache();
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test('cts pkg: resolveExports honors import/require conditions and wildcard maps', () => {
     const root = makePosixTempDir('pkg-exports');
     try {

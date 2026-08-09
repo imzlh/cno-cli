@@ -12,6 +12,19 @@ import {
 } from '../../cts/src/api/index.ts';
 
 const decoder = new TextDecoder();
+const crypto = import.meta.use('crypto');
+
+/** Recompute the header's manifest digest over the manifest bytes as they now
+ *  stand, in place. Models a tamperer who knows the format: the digest is stored
+ *  inside the container it protects, so anyone who edits the manifest can also
+ *  refresh the digest. Used to drive containers PAST the digest gate and onto the
+ *  structural checks behind it. */
+function refreshManifestDigest(bytes: Uint8Array): void {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const manifestLength = view.getUint32(6, true);
+    const manifestBytes = bytes.subarray(42, 42 + manifestLength);
+    bytes.set(new Uint8Array(crypto.sha256(manifestBytes)), 10);
+}
 
 function replaceAsciiOnce(bytes: Uint8Array, from: string, to: string): void {
     const needle = new TextEncoder().encode(from);
@@ -533,13 +546,33 @@ Deno.test({ name: 'pack runtime: validates blob bounds and contains hostile modu
         invalidSpecifier.edges[hostileId] = { ['bad\0specifier']: hostileId };
         throws(() => encodePack(invalidSpecifier, payload), /invalid edge/);
 
+        // Two containers, because the manifest digest and the bounds check are
+        // now separate layers and each must be shown to work on its own.
+        //
+        // (a) A same-length ASCII edit inside the manifest JSON, digest left
+        // stale — the hex-editor case. decodePack must reject it on the digest
+        // before it ever parses or bounds-checks.
         const corruptBytes = encodePack(manifest, payload);
         replaceAsciiOnce(corruptBytes, '"offset":0', '"offset":9');
         const corruptPack = join(root, 'corrupt.jspack');
         writeFileSync(corruptPack, corruptBytes);
         const corruptResult = await runCno([corruptPack], root);
         strictEqual(corruptResult.code !== 0, true, corruptResult.output);
-        strictEqual(corruptResult.output.includes('out of bounds'), true, corruptResult.output);
+        strictEqual(corruptResult.output.includes('manifest digest mismatch'), true, corruptResult.output);
+
+        // (b) The same edit, but with the header digest recomputed the way a
+        // tamperer who understands the format would. The digest now agrees, so
+        // this reaches the bounds check — which must still refuse it. Without
+        // this case, adding the digest would have silently retired the
+        // out-of-bounds gate rather than layering on top of it.
+        const reDigested = encodePack(manifest, payload);
+        replaceAsciiOnce(reDigested, '"offset":0', '"offset":9');
+        refreshManifestDigest(reDigested);
+        const boundsPack = join(root, 'bounds.jspack');
+        writeFileSync(boundsPack, reDigested);
+        const boundsResult = await runCno([boundsPack], root);
+        strictEqual(boundsResult.code !== 0, true, boundsResult.output);
+        strictEqual(boundsResult.output.includes('out of bounds'), true, boundsResult.output);
     } finally {
         try { Deno.removeSync(target); } catch {}
         Deno.removeSync(root, { recursive: true });

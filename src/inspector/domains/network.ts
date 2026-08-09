@@ -40,6 +40,8 @@ const tier = getTierLimits()
 const MAX_CACHED_BODIES = { low: 20, normal: 100, high: 200 }[getMemoryTier()] ?? 100
 const { inspectorPreviewBodyBytes: MAX_BODY_PREVIEW_BYTES } = tier
 const BODY_PREVIEW_UNAVAILABLE = 'Content too large to display'
+/** Cap on SearchMatch entries returned by Network.searchInResponseBody. */
+const MAX_SEARCH_MATCHES = 1000
 const MAX_CACHED_REQUEST_BODIES = { low: 20, normal: 100, high: 200 }[getMemoryTier()] ?? 100
 const MAX_REQUEST_BODY_BYTES = { low: 16 * 1024, normal: 128 * 1024, high: 256 * 1024 }[getMemoryTier()] ?? 128 * 1024
 const FETCH_FRAME_ID = 'cno-fetch-frame-1'
@@ -156,15 +158,52 @@ export class NetworkDomain extends Domain {
 			return {}
 		})
 		this.on('Network.setUserAgentOverride', (p) => {
-			setUserAgentOverride(this.str(p, 'userAgent') || null)
+			// `userAgent` is required. A wrong-typed value used to read as
+			// undefined and CLEAR a previously-installed override while
+			// reporting success — a destructive no-op on malformed input.
+			if (typeof p.userAgent !== 'string') {
+				throw new CDPError(CdpErrorCode.InvalidParams, "CDP param 'userAgent' is required")
+			}
+			setUserAgentOverride(p.userAgent || null)
 			return {}
 		})
 		this.on('Network.setExtraHTTPHeaders', (p) => {
+			// `headers` is required by the CDP spec. Missing or wrong-typed used to
+			// degrade to `{}` and silently WIPE any override a previous call had
+			// installed, while answering {} as though it had succeeded.
+			if (!isRecord(p.headers)) {
+				throw new CDPError(CdpErrorCode.InvalidParams, "CDP param 'headers' is required")
+			}
+			// Non-string VALUES inside a well-formed record stay best-effort: they
+			// are skipped, not rejected.
 			setExtraHTTPHeaders(this.stringHeadersFromRecord(p.headers))
 			return {}
 		})
 		this.on('Network.canEmulateNetworkConditions', () => ({ result: false }))
-		this.on('Network.emulateNetworkConditions', () => ({}))
+		this.on('Network.emulateNetworkConditions', (p) => {
+			// canEmulateNetworkConditions answers `false` in this same domain, so
+			// answering {} here claimed to have applied throttling that this runtime
+			// cannot apply. Required params are validated; a request that asks for
+			// NO throttling is honoured as a genuine no-op, because "unthrottled" is
+			// the state cno is actually in. A request for real emulation is refused
+			// rather than silently ignored.
+			if (typeof p.offline !== 'boolean') {
+				throw new CDPError(CdpErrorCode.InvalidParams, "CDP param 'offline' is required")
+			}
+			for (const key of ['latency', 'downloadThroughput', 'uploadThroughput'] as const) {
+				if (typeof p[key] !== 'number') {
+					throw new CDPError(CdpErrorCode.InvalidParams, `CDP param '${key}' is required`)
+				}
+			}
+			const wantsEmulation = p.offline === true
+				|| (p.latency as number) > 0
+				|| (p.downloadThroughput as number) > 0
+				|| (p.uploadThroughput as number) > 0
+			if (wantsEmulation) {
+				throw new CDPError(CdpErrorCode.InvalidParams, 'Network emulation is not supported')
+			}
+			return {}
+		})
 		this.on('Network.setCacheDisabled', () => ({}))
 		this.on('Network.setBypassServiceWorker', () => ({}))
 		this.on('Network.setAcceptedEncodings', () => ({}))
@@ -193,13 +232,74 @@ export class NetworkDomain extends Domain {
 			await this.rpc.call('streamResourceContent', { requestId, source: this.reqMeta.get(requestId)?.source })
 			return { bufferedData }
 		})
-		this.on('Network.searchInResponseBody', () => ({ result: [] }))
+		/**
+		 * Search a cached response body. This used to be `() => ({ result: [] })`,
+		 * which ignored every parameter and so reported "no matches" for a string
+		 * the cached body demonstrably contained — a wrong answer on valid input,
+		 * not merely an unimplemented one. It also fabricated a successful empty
+		 * search for an id that never existed, contradicting the standard
+		 * getResponseBody applies ~30 lines below.
+		 *
+		 * Shape follows CDP `SearchMatch[]`: one entry per matching LINE, with a
+		 * 0-based lineNumber, as Chrome reports it.
+		 */
+		this.on('Network.searchInResponseBody', (p) => {
+			const requestId = this.reqStr(p, 'requestId')
+			const query = this.reqStr(p, 'query')
+			const entry = this.responseBodyCache.get(requestId)
+			// Same standard as getResponseBody: an unknown or already-evicted id is
+			// an error, not an empty result set.
+			if (!entry) {
+				throw new CDPError(CdpErrorCode.InvalidParams, 'Request not found')
+			}
+			// A truncated entry holds no bytes — only the "too large" placeholder.
+			// Answering `[]` would claim a search of content we never had, and
+			// searching the placeholder text would invent matches. Say so instead.
+			if (entry.truncated) {
+				throw new CDPError(CdpErrorCode.InvalidParams, BODY_PREVIEW_UNAVAILABLE)
+			}
+			const caseSensitive = p.caseSensitive === true
+			const isRegex = p.isRegex === true
+			let matches: (line: string) => boolean
+			if (isRegex) {
+				let re: RegExp
+				// A client-supplied pattern can be invalid; that is InvalidParams,
+				// not an internal error. No 'm' flag: each line is tested on its
+				// own, so ^/$ already anchor per line.
+				try {
+					re = new RegExp(query, caseSensitive ? '' : 'i')
+				} catch {
+					throw new CDPError(CdpErrorCode.InvalidParams, 'Invalid regular expression')
+				}
+				matches = (line) => { re.lastIndex = 0; return re.test(line) }
+			} else {
+				const needle = caseSensitive ? query : query.toLowerCase()
+				matches = (line) => (caseSensitive ? line : line.toLowerCase()).includes(needle)
+			}
+			const text = engine.decodeString(this.mergeBody(entry))
+			const result: Array<{ lineNumber: number; lineContent: string }> = []
+			const lines = text.split('\n')
+			for (let i = 0; i < lines.length; i++) {
+				// An empty query, or a regex like `.*`, matches every line; cap the
+				// answer so one command cannot serialize the whole body back line
+				// by line. The body is already capped, so this is a serialization
+				// bound, not a correctness one.
+				if (result.length >= MAX_SEARCH_MATCHES) break
+				let line = lines[i] ?? ''
+				if (line.endsWith('\r')) line = line.slice(0, -1)
+				if (matches(line)) result.push({ lineNumber: i, lineContent: line })
+			}
+			return { result }
+		})
 
 		// Cookies.
 		this.on('Network.getCookies', () => ({ cookies: this.cookies }))
 		this.on('Network.getAllCookies', () => ({ cookies: this.cookies }))
 		this.on('Network.deleteCookies', (p) => {
-			const name = this.str(p, 'name')
+			// `name` is required. Missing used to read as undefined, so the filter
+			// `c.name !== undefined` kept every cookie and the command answered {}:
+			// a client that deleted a cookie and saw success still had it.
+			const name = this.reqStr(p, 'name')
 			this.cookies = this.cookies.filter((c) => c.name !== name)
 			return {}
 		})
@@ -208,12 +308,23 @@ export class NetworkDomain extends Domain {
 			return {}
 		})
 		this.on('Network.setCookie', (p) => {
+			// `name` and `value` are both required. They used to default to '', so
+			// `setCookie {}` stored an empty-name cookie — observable afterwards via
+			// getCookies — and answered {success:true}, an explicit claim.
+			this.reqStr(p, 'name')
+			this.reqStr(p, 'value')
 			this.cookies.push(this.makeCookie(p))
 			return { success: true }
 		})
 		this.on('Network.setCookies', (p) => {
-			const list = Array.isArray(p.cookies) ? p.cookies.filter(isRecord) : []
-			for (const c of list) this.cookies.push(this.makeCookie(c))
+			// `cookies` is required and must be an array. A wrong-typed value used
+			// to degrade to [] and answer {}, storing nothing while reporting that
+			// the whole batch had been set. Malformed ENTRIES inside a well-formed
+			// array stay best-effort — they are skipped, not rejected.
+			if (!Array.isArray(p.cookies)) {
+				throw new CDPError(CdpErrorCode.InvalidParams, "CDP param 'cookies' is required")
+			}
+			for (const c of p.cookies.filter(isRecord)) this.cookies.push(this.makeCookie(c))
 			return {}
 		})
 		this.on('Network.clearBrowserCache', () => ({}))
@@ -332,6 +443,15 @@ export class NetworkDomain extends Domain {
 					type: resourceType,
 					frameId: context.frameId,
 				})
+				// Staleness eviction used to be reachable ONLY from
+				// handleNetworkDoneEvent, so a workload in which nothing completes
+				// never reclaimed anything and every requestId-keyed map grew for
+				// the process lifetime (OBSERVED: 1000 abandoned requests retained
+				// 5000 entries, 5000 retained 25000 — linear, zero decay). Drive
+				// the tick from the REQUEST path, where the growth happens.
+				// cleanupStaleEntries is internally throttled to once per 30 s, so
+				// this costs one subtraction per request in the common case.
+				this.cleanupStaleEntries(timestamp)
 				break
 			}
 			case NetFetchKind.Res: {
@@ -470,6 +590,9 @@ export class NetworkDomain extends Domain {
 						siteHasCookieInOtherPartition: false,
 					})
 				}
+				// Same reason as the fetch Req path: eviction must not depend on
+				// some other request completing.
+				this.cleanupStaleEntries(timestamp)
 				break
 			}
 			case NetServeKind.Res: {
@@ -624,17 +747,28 @@ export class NetworkDomain extends Domain {
 					})
 				}
 				this.event('Network.webSocketClosed', { requestId: data.requestId, timestamp: data.timestamp })
-				// Clean up WS upgrade tracking.
-				if (this.wsUpgradeRequests.has(data.requestId)) {
-					this.wsUpgradeRequests.delete(data.requestId)
-					this.reqStartTimes.delete(data.requestId)
-					this.reqMeta.delete(data.requestId)
-				}
+				// Release every map this id can appear in, UNCONDITIONALLY.
+				// NetWSKind.Created sets reqStartTimes for every websocket, but this
+				// release used to be guarded by `wsUpgradeRequests.has(id)`, and that
+				// set is populated only by the serve-side HTTP-upgrade path. A CLIENT
+				// websocket (`new WebSocket()`, source 'fetch') therefore never took
+				// the branch and leaked one permanent reqStartTimes entry per closed
+				// connection (OBSERVED: 1000 open/close cycles -> 1000 entries, 5000
+				// -> 5000). The id was then invisible to the first cleanup loop, which
+				// iterates lastSeen, and reclaimable only by the second — which ran
+				// only on an HTTP Done, and a pure-websocket workload has none.
+				// Deleting an absent key is a no-op, so the serve path is unaffected.
+				this.wsUpgradeRequests.delete(data.requestId)
+				this.reqStartTimes.delete(data.requestId)
+				this.reqMeta.delete(data.requestId)
 				this.wsMeta.delete(data.requestId)
 				this.announced.delete(data.requestId)
 				this.lastSeen.delete(data.requestId)
 				break
 		}
+		// A websocket-only workload emits no HTTP Done at all, so without this the
+		// second cleanup loop never runs for ids that were created and never closed.
+		this.cleanupStaleEntries(data.timestamp)
 	}
 
 	// ── shared body buffering (used by both fetch and serve) ───────

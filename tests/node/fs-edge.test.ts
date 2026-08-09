@@ -804,7 +804,12 @@ Deno.test('fs upstream: rename errors include source path and destination', asyn
 
         throws(
             () => fs.renameSync(oldPath, newPath),
-            (err: unknown) => assertRenameError(err, 'renameSync'),
+            // 'rename', not 'renameSync'. Node reports the libuv operation name
+            // for every form (measured v24.18.0: all three of renameSync,
+            // fs.rename and fsp.rename report syscall 'rename'), which is why the
+            // callback and promise arms above already expect it. This arm used to
+            // expect 'renameSync' and was pinning cno's JS-name defect in place.
+            (err: unknown) => assertRenameError(err, 'rename'),
         );
 
         await rejects(

@@ -721,6 +721,255 @@ Deno.test('crypto: ieee-p1363 dsaEncoding round-trips for EC signatures', () => 
     ok(crypto.verify('sha256', data, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature));
 });
 
+Deno.test('crypto: ieee-p1363 round-trips when r or s begins with 0x04', () => {
+    // Regression: normalizeDerInteger once skipped a leading 0x04 byte on each
+    // P1363 half. 0x04 is the uncompressed EC *point* prefix -- it has no meaning
+    // inside a raw r/s scalar, so the skip silently dropped a high-order byte and
+    // the rebuilt DER failed to verify for ~1 signature in 128.
+    //
+    // A single sign/verify (the test above) misses this almost always. Sign until
+    // the 0x04 case is actually hit, assert we hit it, and assert every signature
+    // verifies. Both halves are checked because either can trigger it.
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    let sawLeading04 = 0;
+    let verified = 0;
+
+    for (let i = 0; i < 4000 && sawLeading04 < 3; i++) {
+        const data = Buffer.from(`p1363-leading-04:${i}`);
+        const signature = crypto.sign('sha256', data, { key: privateKey, dsaEncoding: 'ieee-p1363' });
+        strictEqual(signature.length, 64, 'P1363 P-256 signature must be exactly 64 bytes');
+
+        if (signature[0] === 0x04 || signature[32] === 0x04) sawLeading04++;
+
+        ok(
+            crypto.verify('sha256', data, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature),
+            `P1363 signature ${i} must verify (r0=0x${signature[0].toString(16)}, `
+            + `s0=0x${signature[32].toString(16)})`,
+        );
+        verified++;
+    }
+
+    // Guard the guard: if no 0x04-leading signature ever appeared, this test
+    // proved nothing about the regression it exists for.
+    ok(sawLeading04 > 0, `expected at least one r/s half starting with 0x04 across ${verified} signatures`);
+});
+
+Deno.test('crypto: ieee-p1363 round-trips when a half is shorter than the coordinate size', () => {
+    // The mirror of the 0x04 defect, on the other converter. derToP1363 strips one
+    // leading zero from each DER integer, then right-aligns it in a fixed-width
+    // half. When r or s is genuinely SHORT -- its top byte is zero, so OpenSSL's
+    // minimal DER encoding is 31 bytes instead of 32 -- that alignment offset is
+    // the only thing keeping the scalar in the right place.
+    //
+    // ~1 half in 256, so a single-sample test never reaches it.
+    const curves = [
+        { namedCurve: 'P-256', hash: 'sha256', size: 32 },
+        { namedCurve: 'P-521', hash: 'sha512', size: 66 },
+    ] as const;
+
+    for (const { namedCurve, hash, size } of curves) {
+        const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve });
+        let sawShortHalf = 0;
+        let checked = 0;
+
+        for (let i = 0; i < 6000 && sawShortHalf < 3; i++) {
+            const data = Buffer.from(`p1363-short-half:${namedCurve}:${i}`);
+            const signature = crypto.sign(hash, data, { key: privateKey, dsaEncoding: 'ieee-p1363' });
+            strictEqual(signature.length, size * 2, `${namedCurve} P1363 signature must be ${size * 2} bytes`);
+
+            // A leading 0x00 on a half means the true scalar needed fewer than
+            // `size` bytes, i.e. derToP1363 had to left-pad it.
+            if (signature[0] === 0x00 || signature[size] === 0x00) sawShortHalf++;
+
+            ok(
+                crypto.verify(hash, data, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature),
+                `${namedCurve} P1363 signature ${i} must verify `
+                + `(r0=0x${signature[0].toString(16)}, s0=0x${signature[size].toString(16)})`,
+            );
+            checked++;
+        }
+
+        ok(sawShortHalf > 0, `${namedCurve}: expected at least one short r/s half across ${checked} signatures`);
+    }
+});
+
+Deno.test('crypto: ieee-p1363 verify rejects a zero-extended signature', () => {
+    // p1363ToDer used to infer the coordinate size as signature.length / 2, taking
+    // it from the SIGNATURE instead of from the key. Zero-extending a valid
+    // signature to any even length therefore still verified: normalizeDerInteger
+    // stripped the injected zeros and rebuilt byte-identical DER.
+    //
+    // Measured TRUE in cno and FALSE in Node v24.18.0 on 12 of 12 crafted cases.
+    // That is unbounded signature malleability -- one valid signature yields
+    // arbitrarily many distinct accepted byte strings, which breaks any caller
+    // using signature bytes as a dedup or replay key. The length must be checked
+    // against the key's curve.
+    const curves = [
+        { namedCurve: 'P-256', hash: 'sha256', size: 32 },
+        { namedCurve: 'P-384', hash: 'sha384', size: 48 },
+        { namedCurve: 'P-521', hash: 'sha512', size: 66 },
+    ] as const;
+
+    let rejected = 0;
+    for (const { namedCurve, hash, size } of curves) {
+        const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve });
+        const data = Buffer.from(`p1363-extend:${namedCurve}`);
+        const signature = crypto.sign(hash, data, { key: privateKey, dsaEncoding: 'ieee-p1363' });
+
+        // Positive control: the honest signature must still verify, otherwise a
+        // blanket rejection would make every assertion below pass for free.
+        ok(
+            crypto.verify(hash, data, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature),
+            `${namedCurve}: the unmodified signature must verify`,
+        );
+
+        const r = signature.subarray(0, size);
+        const s = signature.subarray(size);
+        for (const pad of [2, 16, 34, size]) {
+            const extended = Buffer.concat([Buffer.alloc(pad), r, Buffer.alloc(pad), s]);
+            strictEqual(extended.length, (size + pad) * 2, 'zero-extended signature length');
+            ok(
+                !crypto.verify(hash, data, { key: publicKey, dsaEncoding: 'ieee-p1363' }, extended),
+                `${namedCurve}: a signature zero-extended to ${extended.length} bytes must NOT verify`,
+            );
+            rejected++;
+        }
+    }
+
+    // Guard the guard: assert the crafted cases were actually built and tested.
+    strictEqual(rejected, 12, 'expected 12 zero-extended signatures to be exercised');
+});
+
+Deno.test('crypto: ieee-p1363 verify returns false for a malformed signature instead of throwing', () => {
+    // Node returns false for a malformed signature; it does not throw. The
+    // signature comes from the remote peer, so throwing converts a failed
+    // verification into an uncaught exception in the caller's request handler.
+    // Measured: cno threw `Error: Invalid IEEE-P1363 ECDSA signature` on 9 of 9
+    // odd-length / empty / DER-shaped inputs where Node v24.18.0 returned false.
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const data = Buffer.from('p1363-malformed');
+    const good = crypto.sign('sha256', data, { key: privateKey, dsaEncoding: 'ieee-p1363' });
+
+    // Positive control first.
+    ok(
+        crypto.verify('sha256', data, { key: publicKey, dsaEncoding: 'ieee-p1363' }, good),
+        'the unmodified signature must verify',
+    );
+
+    const der = crypto.sign('sha256', data, privateKey);
+    const malformed: Array<[string, Buffer]> = [
+        ['empty', Buffer.alloc(0)],
+        ['odd length 63', Buffer.from(good.subarray(0, 63))],
+        ['one trailing zero (65)', Buffer.concat([good, Buffer.alloc(1)])],
+        ['truncated to 62', Buffer.from(good.subarray(0, 62))],
+        ['single half (32)', Buffer.from(good.subarray(0, 32))],
+        ['two bytes', Buffer.from([1, 1])],
+        ['DER signature presented as p1363', Buffer.from(der)],
+    ];
+
+    let checked = 0;
+    for (const [label, signature] of malformed) {
+        let result: boolean | string;
+        try {
+            result = crypto.verify('sha256', data, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature);
+        } catch (error) {
+            result = `THREW ${(error as Error).message}`;
+        }
+        strictEqual(result, false, `${label}: must return false, not throw or accept`);
+        checked++;
+    }
+
+    strictEqual(checked, malformed.length, 'every malformed case must be exercised');
+});
+
+Deno.test('crypto: ieee-p1363 works with PEM and DER EC keys, not only raw ones', () => {
+    // The coordinate size used to come from the raw key byte length, so a PEM or
+    // DER EC key matched no case and sign() threw `TypeError: Unable to determine
+    // EC key size for ieee-p1363 signature` -- measured on all three curves, where
+    // Node v24.18.0 signs normally. The size now comes from the key's curve OID.
+    const curves = [
+        { namedCurve: 'P-256', hash: 'sha256', size: 32 },
+        { namedCurve: 'P-384', hash: 'sha384', size: 48 },
+        { namedCurve: 'P-521', hash: 'sha512', size: 66 },
+    ] as const;
+
+    let combinations = 0;
+    for (const { namedCurve, hash, size } of curves) {
+        const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve });
+        const privPem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+        const pubPem = publicKey.export({ type: 'spki', format: 'pem' }) as string;
+        const privDer = privateKey.export({ type: 'pkcs8', format: 'der' }) as Buffer;
+        const pubDer = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+        const data = Buffer.from(`p1363-keyformats:${namedCurve}`);
+
+        const signers = [
+            ['raw KeyObject', privateKey as crypto.KeyObject | string | Buffer],
+            ['PEM', privPem],
+            ['DER', crypto.createPrivateKey({ key: privDer, format: 'der', type: 'pkcs8' })],
+        ] as const;
+        const verifiers = [
+            ['raw KeyObject', publicKey as crypto.KeyObject | string | Buffer],
+            ['PEM', pubPem],
+            ['DER', crypto.createPublicKey({ key: pubDer, format: 'der', type: 'spki' })],
+        ] as const;
+
+        // Every signer/verifier pairing: the curve must be recovered from each
+        // representation, and all nine combinations must agree.
+        for (const [signerName, signerKey] of signers) {
+            const signature = crypto.sign(hash, data, { key: signerKey, dsaEncoding: 'ieee-p1363' });
+            strictEqual(
+                signature.length,
+                size * 2,
+                `${namedCurve} signed with ${signerName}: P1363 length must be ${size * 2}`,
+            );
+            for (const [verifierName, verifierKey] of verifiers) {
+                ok(
+                    crypto.verify(hash, data, { key: verifierKey, dsaEncoding: 'ieee-p1363' }, signature),
+                    `${namedCurve}: signed with ${signerName}, verified with ${verifierName}`,
+                );
+                combinations++;
+            }
+        }
+    }
+
+    strictEqual(combinations, 27, 'expected 3 curves x 3 signer formats x 3 verifier formats');
+});
+
+Deno.test('crypto: dsaEncoding is ignored for RSA keys', () => {
+    // dsaEncoding describes an ECDSA signature encoding, so Node ignores it for
+    // non-EC keys. cno honoured it for every key type and pushed RSA signatures
+    // through the EC converter: sign() threw `Unable to determine EC key size`,
+    // and verify() returned false for a perfectly valid RSA signature. Measured on
+    // 4 of 4 cases against Node v24.18.0.
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 1024 });
+    const data = Buffer.from('rsa-ignores-dsaencoding');
+
+    const plain = crypto.sign('sha256', data, privateKey);
+    strictEqual(plain.length, 128, 'RSA-1024 signature must be 128 bytes');
+
+    // A valid RSA signature must still verify when dsaEncoding is present.
+    ok(
+        crypto.verify('sha256', data, { key: publicKey, dsaEncoding: 'ieee-p1363' }, plain),
+        'RSA signature must verify even though dsaEncoding was supplied',
+    );
+
+    // Signing with dsaEncoding must produce an ordinary PKCS#1 signature.
+    const withEncoding = crypto.sign('sha256', data, { key: privateKey, dsaEncoding: 'ieee-p1363' });
+    strictEqual(withEncoding.length, 128, 'dsaEncoding must not change the RSA signature length');
+    ok(
+        crypto.verify('sha256', data, publicKey, withEncoding),
+        'a signature made with dsaEncoding set must verify without it',
+    );
+
+    // The streaming API shares the same code path.
+    const streamed = crypto.createSign('SHA256').update(data).sign({ key: privateKey, dsaEncoding: 'ieee-p1363' });
+    strictEqual(streamed.length, 128, 'createSign with dsaEncoding must not change the RSA length');
+    ok(
+        crypto.createVerify('SHA256').update(data).verify({ key: publicKey, dsaEncoding: 'ieee-p1363' }, plain),
+        'createVerify with dsaEncoding must accept a valid RSA signature',
+    );
+});
+
 Deno.test('crypto: EC curve aliases map to the same P-256 key family', () => {
     const aliasNames = ['prime256v1', 'secp256r1', 'P-256'] as const;
     for (const namedCurve of aliasNames) {

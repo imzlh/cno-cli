@@ -373,7 +373,10 @@ Deno.test('url: format object escapes URL delimiters in pathname', () => {
 
 Deno.test('url: urlToHttpOptions exposes request options from URL', () => {
     const u = new URL('https://user:pass@example.com:8080/a b?x=1#frag');
+    // Node returns a NULL-PROTOTYPE object here, and deepStrictEqual compares
+    // prototypes — asserting against a plain `{}` literal fails on real Node.
     deepStrictEqual(nodeUrl.urlToHttpOptions(u), {
+        __proto__: null,
         protocol: 'https:',
         hostname: 'example.com',
         hash: '#frag',

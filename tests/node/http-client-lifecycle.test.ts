@@ -503,3 +503,49 @@ Deno.test({ name: "http client: Agent emits 'free' when a socket returns to the 
         await close(server);
     }
 });
+
+// Node exposes the IncomingMessage as `req.res` from the moment the response
+// callback runs, and it stays set through 'end' and 'close'. cno left it
+// permanently undefined, which is not merely a missing accessor: got's
+// close-handler guard (got@15 core/index.js:1198 `Boolean(request.res)`) uses it
+// to distinguish "socket closed after a response arrived" from "closed with no
+// response", so every *successful* request raised a bogus
+// `ReadError: The server aborted pending request` (ECONNRESET). Measured against
+// node v24.18.0: set=true at all three points, for GET and for a POST with a body.
+Deno.test({ name: 'http client: req.res holds the response through end and close', timeout: 15000 }, async () => {
+    const server = http.createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (c) => chunks.push(Buffer.from(c)));
+        req.on('end', () => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ method: req.method, body: Buffer.concat(chunks).toString('utf8') }));
+        });
+    });
+    const port = await listen(server);
+
+    try {
+        for (const [label, method, body] of [['GET', 'GET', null], ['POST', 'POST', '{"a":1}']] as const) {
+            const seen = await new Promise<{ inCallback: boolean; identical: boolean; atEnd: boolean; atClose: boolean; bytes: number }>((resolve, reject) => {
+                const req = http.request({ host: '127.0.0.1', port, path: '/', method }, (res) => {
+                    const inCallback = Boolean(req.res);
+                    const identical = req.res === res;
+                    let bytes = 0;
+                    let atEnd = false;
+                    res.on('data', (c: Buffer) => { bytes += c.length; });
+                    res.once('end', () => { atEnd = Boolean(req.res); });
+                    req.once('close', () => resolve({ inCallback, identical, atEnd, atClose: Boolean(req.res), bytes }));
+                });
+                req.once('error', reject);
+                if (body) req.end(body); else req.end();
+            });
+
+            ok(seen.inCallback, `${label}: req.res must be set inside the response callback`);
+            ok(seen.identical, `${label}: req.res must be the same object as the callback argument`);
+            ok(seen.atEnd, `${label}: req.res must still be set at 'end'`);
+            ok(seen.atClose, `${label}: req.res must still be set at 'close' -- got's guard reads it here`);
+            ok(seen.bytes > 0, `${label}: body must not be empty`);
+        }
+    } finally {
+        await close(server);
+    }
+});

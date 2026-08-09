@@ -710,3 +710,30 @@ Deno.test('events: once wrappers are unwrapped by listeners but not rawListeners
     strictEqual((emitter.rawListeners('o')[0] as { listener: unknown }).listener, original);
     strictEqual(emitter.listenerCount('o', original), 1);
 });
+
+// `off` must be the SAME function object as `removeListener`, not a wrapper that
+// delegates to it. Measured on node v24.18:
+//   EventEmitter.prototype.off === EventEmitter.prototype.removeListener  -> true
+// The identity is load-bearing, not cosmetic: a subclass that defines
+// `removeListener(...) { return this.off(...) }` -- the pattern minipass (and so
+// tar) uses -- recurses forever against a delegating wrapper. That surfaced as an
+// unhandled `Maximum call stack size exceeded` thrown from inside `off`, which
+// hung `tar.c` until the 60s timeout in tests/npm/ecosystem-more.test.ts.
+Deno.test('events: off is the same function object as removeListener', () => {
+    strictEqual(EventEmitter.prototype.off, EventEmitter.prototype.removeListener);
+});
+
+Deno.test('events: a subclass aliasing removeListener to off does not recurse', () => {
+    class Sub extends EventEmitter {
+        override removeListener(name: string | symbol, fn: (...args: unknown[]) => void): this {
+            return this.off(name, fn) as this;
+        }
+    }
+    const sub = new Sub();
+    const listener = () => {};
+    sub.on('x', listener);
+    strictEqual(sub.listenerCount('x'), 1);
+    // Without the alias this throws RangeError: Maximum call stack size exceeded.
+    sub.removeListener('x', listener);
+    strictEqual(sub.listenerCount('x'), 0);
+});

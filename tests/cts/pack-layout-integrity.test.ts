@@ -15,21 +15,37 @@
  * auditing the artifact.
  */
 import { ok, strictEqual, throws } from 'node:assert';
-import { decodePack, encodePack, type PackManifest, type PackModuleEntry } from '../../cts/src/api/index.ts';
+import {
+    blobSourceFromBytes,
+    completePackManifest,
+    decodePack,
+    encodePack,
+    type PackManifest,
+    type PackModuleEntry,
+} from '../../cts/src/api/index.ts';
 
+const crypto = import.meta.use('crypto');
 const encoder = new TextEncoder();
 
 /** Assemble a container without going through encodePack's validation, the way
- *  a tamperer would: [magic][u16 version][u32 manifestLen][manifest][blob]. */
+ *  a tamperer would:
+ *  [magic][u16 version=4][u32 manifestLen][32B manifestDigest][manifest][blob].
+ *
+ *  The digests ARE computed correctly (via the real completePackManifest), so
+ *  these cases reach the layout checks they are about instead of stopping at a
+ *  digest error. A tamperer recomputes digests too — that is exactly why the
+ *  layout invariants below still have to be enforced independently. */
 function rawPack(manifest: unknown, blob: Uint8Array): Uint8Array {
-    const manifestBytes = encoder.encode(JSON.stringify(manifest));
-    const out = new Uint8Array(10 + manifestBytes.byteLength + blob.byteLength);
+    const completed = completePackManifest(manifest as PackManifest, blobSourceFromBytes(blob));
+    const manifestBytes = encoder.encode(JSON.stringify(completed));
+    const out = new Uint8Array(42 + manifestBytes.byteLength + blob.byteLength);
     const view = new DataView(out.buffer);
     out.set([0x4a, 0x53, 0x50, 0x4b], 0); // "JSPK"
-    view.setUint16(4, 3, true);
+    view.setUint16(4, 4, true);
     view.setUint32(6, manifestBytes.byteLength, true);
-    out.set(manifestBytes, 10);
-    out.set(blob, 10 + manifestBytes.byteLength);
+    out.set(new Uint8Array(crypto.sha256(manifestBytes)), 10);
+    out.set(manifestBytes, 42);
+    out.set(blob, 42 + manifestBytes.byteLength);
     return out;
 }
 
