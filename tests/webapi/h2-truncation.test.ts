@@ -35,7 +35,7 @@
  * Deliberately does NOT import node:http2 — that module is independently broken in
  * this tree (duplicate invalidArgType) and would mask these results as a syntax error.
  */
-import { ok, strictEqual } from 'node:assert';
+import { ok, strictEqual, throws } from 'node:assert';
 import { H2Stream } from '@cnojs/http/h2';
 import { h2Available } from '@cnojs/http/h2-native';
 
@@ -94,6 +94,13 @@ Deno.test('h2 truncation: RST_STREAM(NO_ERROR) mid-body raises ECONNRESET, not a
     strictEqual(r.bytes, 4, 'only 4 of the declared 10 bytes ever arrived');
     strictEqual(r.code, 'ECONNRESET', 'truncation must surface as an error the handler cannot miss');
     ok(/without END_STREAM|truncated/.test(r.message ?? ''), `message names the cause: ${r.message}`);
+});
+
+Deno.test('h2 stream: outbound END_STREAM rejects later writes', () => {
+    const s = rawStream(true);
+    s.respond([[':status', '204']], true);
+    throws(() => s.sendData(enc.encode('late')), /already ended|END_STREAM/i);
+    throws(() => s.respond([[':status', '200']], false), /headers already sent/i);
 });
 
 Deno.test('h2 truncation: a truncated stream is now DISTINGUISHABLE from a complete one', async () => {
@@ -204,6 +211,14 @@ Deno.test('h2 truncation: RST before any HEADERS produces no error (documented b
     strictEqual(r.code, null, 'no headers means no request to truncate');
 });
 
+Deno.test('h2 client: close before response HEADERS rejects the whole-message waiter', async () => {
+    const s = rawStream(false);
+    s.acceptClose(0);
+    let code: string | null = null;
+    try { await s.readMessage(); } catch (e) { code = (e as { code?: string }).code ?? 'NO_CODE'; }
+    strictEqual(code, 'ECONNRESET', 'a client with no response headers must not wait forever');
+});
+
 /* ── unchanged behaviour that must not regress ──────────────────────────────── */
 
 Deno.test('h2 truncation: a non-zero RST_STREAM code still surfaces as ERR_HTTP2_STREAM_ERROR', async () => {
@@ -244,4 +259,16 @@ Deno.test('h2 truncation: client stream — a complete response stays clean', as
     const r = await drain(s);
     strictEqual(r.code, null);
     strictEqual(r.bytes, 4);
+});
+
+Deno.test('h2 client: informational headers do not replace the final response headers', async () => {
+    const s = rawStream(false);
+    s.acceptHeaders([[':status', '103'], ['link', '</app.css>']], 0);
+    // The native adapter reports the later response HEADERS through its generic
+    // headers callback after an informational response.
+    s.acceptTrailers([[':status', '200'], ['content-length', '2']], 0);
+    s.acceptData(enc.encode('ok'), true);
+    const msg = await s.readMessage();
+    strictEqual((msg as { status: number }).status, 200);
+    strictEqual(Array.from((msg as { body: Uint8Array }).body).join(','), '111,107');
 });

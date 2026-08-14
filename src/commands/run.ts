@@ -24,6 +24,8 @@ interface RunOpts {
     config?: Partial<ConfigOptions>;
     /** When false, import.meta.main stays false (Deno.test modules). Default true. */
     asMain?: boolean;
+    /** Called after the entry has evaluated, while its module namespace is live. */
+    onEvaluated?: (namespace: Record<string, unknown>) => void | Promise<void>;
 }
 
 function isJspackFile(entry: string): boolean {
@@ -625,6 +627,7 @@ export async function runFile(opts: RunOpts): Promise<void> {
         //
         // dispatchLoadEvent() is idempotent, which is what makes it safe for
         // `cno test` to reach both this site and startTest's.
+        await opts.onEvaluated?.(mod.namespace);
         dispatchLoadEvent();
     } catch (e) {
         if (isInternalWorkerClose(e)) throw e;

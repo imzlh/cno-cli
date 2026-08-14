@@ -356,9 +356,9 @@ Deno.test('deno FsFile: seek follows Deno offsets from start current and end', a
             strictEqual(await asyncFile.read(last), 1);
             strictEqual(decodeUtf8(last), 'Z');
 
-            strictEqual(await asyncFile.seek(-20, Deno.SeekMode.Current), 0);
+            await rejects(() => asyncFile.seek(-20, Deno.SeekMode.Current));
             strictEqual(await asyncFile.write(Buffer.from('Q')), 1);
-            strictEqual(await Deno.readTextFile(file), 'Qbcdef\u0000\u0000\u0000\u0000Z');
+            strictEqual(await Deno.readTextFile(file), 'abcdef' + '\u0000\u0000\u0000\u0000' + 'ZQ');
         } finally {
             asyncFile.close();
         }

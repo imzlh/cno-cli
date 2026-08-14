@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 import { clearResolveCache, resolveFile } from '../../cts/src/utils/io.ts';
 import { toPosixPath } from '../../cts/src/utils/path.ts';
+import { createConfig } from '../../cts/src/config.ts';
+import { ModuleResolver } from '../../cts/src/resolve/index.ts';
 
 function tree(root: string, files: Record<string, string>): void {
     for (const [rel, body] of Object.entries(files)) {
@@ -76,6 +78,47 @@ Deno.test('cts resolveFile: unresolvable base still throws', () => {
         clearResolveCache();
         throws(() => resolveFile(toPosixPath(join(root, 'nope'))), /Cannot resolve/);
     } finally {
+        clearResolveCache();
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts resolver: local ESM paths reject encoded separators and dot traversal', () => {
+    const root = makePosixTempDir('resolve-encoded-path');
+    const entry = toPosixPath(join(root, 'entry.mjs'));
+    let resolver: ModuleResolver | null = null;
+    try {
+        tree(root, {
+            'entry.mjs': 'export {}\n',
+            'dir/secret.mjs': 'export const value = 1\n',
+            'outside.mjs': 'export const value = 2\n',
+            'with space.mjs': 'export const value = 3\n',
+            'literal%name.mjs': 'export const value = 4\n',
+        });
+        resolver = new ModuleResolver(createConfig({
+            cacheDir: toPosixPath(join(root, 'cache')),
+            disableLock: true,
+        }), root, true);
+
+        for (const spec of ['./dir%2Fsecret.mjs', './dir%5Csecret.mjs', './%2e%2e/outside.mjs']) {
+            let caught: unknown;
+            try {
+                resolver.resolve(spec, entry);
+            } catch (e) {
+                caught = e;
+            }
+            strictEqual((caught as { code?: string } | undefined)?.code,
+                'ERR_INVALID_MODULE_SPECIFIER', `must reject ${spec}`);
+        }
+
+        strictEqual(resolver.resolve('./with%20space.mjs', entry).localPath,
+            toPosixPath(join(root, 'with space.mjs')),
+            'encoded spaces remain valid local URL paths');
+        strictEqual(resolver.resolve('./literal%name.mjs', entry).localPath,
+            toPosixPath(join(root, 'literal%name.mjs')),
+            'a literal percent filename still wins when decoding is invalid');
+    } finally {
+        resolver?.close();
         clearResolveCache();
         rmSync(root, { recursive: true, force: true });
     }

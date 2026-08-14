@@ -147,8 +147,7 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 			return {}
 		},
 		streamResourceContent: (q) => {
-			hooks.enableStreamingForRequest(q.requestId, q.source)
-			return {}
+			return { bufferedData: hooks.enableStreamingForRequest(q.requestId, q.source) }
 		},
 	})
 }

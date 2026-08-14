@@ -311,3 +311,115 @@ Deno.test('exit status: a clean run does not lose output written from its last c
     ok(/LAST-LINE/.test(r.stdout), `output from the final callback was lost; stdout: ${r.stdout}`);
     strictEqual(r.marker, 'ALIVE');
 });
+
+// --- defect 4: 'beforeExit' was never emitted -------------------------------
+//
+// `emit('beforeExit')` appeared ZERO times in the tree: the event simply did not
+// exist, so every listener registered and never fired. Now dispatched as
+// EV_BEFORE_EXIT from tjs__lifecycle_drain (circu.js/src/vm.c), ahead of
+// 'beforeunload', and re-dispatched while a listener keeps queueing work.
+//
+// Every expectation below is a two-column run against real node v24.18.0 on this
+// machine. Fixtures print rather than write the marker file where the ORDER of
+// events is the assertion; they still call done() so the loop closes.
+
+Deno.test("exit status: 'beforeExit' fires on a natural drain (node rc=0)", () => {
+    const r = runFixture('be-basic', fixture(
+        "process.on('beforeExit', (code) => console.log('BE:' + code));",
+        'setTimeout(done, 40);',
+    ));
+    strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    ok(/BE:0/.test(r.stdout), `'beforeExit' never fired; stdout: ${r.stdout}`);
+});
+
+Deno.test("exit status: 'beforeExit' re-fires while a listener queues work", () => {
+    // Node fires it once per drain, so a listener that schedules a timer gets
+    // asked again: OBSERVED exactly 3 fires for this fixture under v24.18.0,
+    // interleaved with the timer each round. The re-dispatch is what makes the
+    // count 3 rather than 1, and the interleaving is what makes it 3 rather than
+    // an unbounded spin.
+    const r = runFixture('be-requeue', fixture(
+        'let n = 0;',
+        "process.on('beforeExit', () => {",
+        "    n++; console.log('BE#' + n);",
+        "    if (n < 3) setTimeout(() => console.log('WORK#' + n), 1);",
+        '});',
+        "process.on('exit', () => console.log('FIRES:' + n));",
+        'setTimeout(done, 40);',
+    ));
+    strictEqual(r.status, 0, `stderr: ${r.stderr}`);
+    ok(/FIRES:3/.test(r.stdout), `expected 3 'beforeExit' fires; stdout: ${r.stdout}`);
+    ok(/BE#1[\s\S]*WORK#1[\s\S]*BE#2[\s\S]*WORK#2[\s\S]*BE#3/.test(r.stdout),
+        `each round must run its queued work before the next fire; stdout: ${r.stdout}`);
+});
+
+Deno.test("exit status: 'beforeExit' does NOT fire on process.exit()", () => {
+    const r = runFixture('be-not-exit', fixture(
+        "process.on('beforeExit', () => console.log('BE:WRONG'));",
+        'process.exit(7);',
+    ));
+    strictEqual(r.status, 7, `stderr: ${r.stderr}`);
+    ok(!/BE:WRONG/.test(r.stdout), `'beforeExit' must not fire on an explicit exit; stdout: ${r.stdout}`);
+});
+
+Deno.test("exit status: 'beforeExit' does NOT fire on an uncaught fatal", () => {
+    const r = runFixture('be-not-fatal', fixture(
+        "process.on('beforeExit', () => console.log('BE:WRONG'));",
+        "throw new Error('FATAL');",
+    ));
+    strictEqual(r.status, 1, `stderr: ${r.stderr}`);
+    ok(!/BE:WRONG/.test(r.stdout), `'beforeExit' must not fire on a fatal; stdout: ${r.stdout}`);
+});
+
+Deno.test("exit status: 'beforeExit' still fires when a code is already set (node rc=3)", () => {
+    // The status no longer forces an immediate os.exit(), which used to skip the
+    // natural drain — and with it both 'beforeExit' and 'beforeunload' — for
+    // every run that set a code. The listener must also SEE that code.
+    const r = runFixture('be-with-code', fixture(
+        'process.exitCode = 3;',
+        "process.on('beforeExit', (code) => console.log('BE:' + code));",
+        'setTimeout(done, 40);',
+    ));
+    strictEqual(r.status, 3, `stderr: ${r.stderr}`);
+    ok(/BE:3/.test(r.stdout), `'beforeExit' skipped, or given the wrong code; stdout: ${r.stdout}`);
+});
+
+Deno.test("exit status: a code assigned from 'beforeExit' is honoured (node rc=9)", () => {
+    // Assigning here is what previously spun forever: the assignment armed a
+    // deferred-exit poll, the poll's ref'd timer read as "the listener queued
+    // work", the drain re-fired the listener, and it assigned again (OBSERVED:
+    // no exit, 13s of CPU). Node fires once and exits 9, so this row pins BOTH
+    // the status and the fire count.
+    const r = runFixture('be-sets-code', fixture(
+        'let n = 0;',
+        "process.on('beforeExit', () => { n++; process.exitCode = 9; });",
+        "process.on('exit', (code) => console.log('EXIT:' + code + ' FIRES:' + n));",
+        'setTimeout(done, 40);',
+    ));
+    strictEqual(r.status, 9, `code assigned from 'beforeExit' was dropped; stderr: ${r.stderr}`);
+    ok(/EXIT:9 FIRES:1/.test(r.stdout),
+        `expected one fire and code 9; stdout: ${r.stdout}`);
+});
+
+Deno.test("exit status: a code assigned from an 'exit' listener is honoured (node rc=5)", () => {
+    // `process.exitCode` was a plain module-scoped `let` nothing native could
+    // read, so a value assigned during teardown was lost and the run exited 0.
+    const r = runFixture('exit-handler-code', fixture(
+        "process.on('exit', () => { process.exitCode = 5; });",
+        'setTimeout(done, 40);',
+    ));
+    strictEqual(r.status, 5, `code assigned from 'exit' was dropped; stderr: ${r.stderr}`);
+});
+
+Deno.test("exit status: a throwing 'beforeExit' listener exits 1 and still fires 'exit'", () => {
+    // Node reports it as an uncaught error, exits 1, and 'exit' still runs with
+    // that code — unlike 'beforeunload', where a throw suppresses EV_EXIT.
+    const r = runFixture('be-throws', fixture(
+        "process.on('beforeExit', () => { throw new Error('BE_THROW'); });",
+        "process.on('exit', (code) => console.log('EXIT:' + code));",
+        'setTimeout(done, 40);',
+    ));
+    strictEqual(r.status, 1, `stderr: ${r.stderr}`);
+    ok(/BE_THROW/.test(r.stderr), `the throw was swallowed; stderr: ${r.stderr}`);
+    ok(/EXIT:1/.test(r.stdout), `'exit' must still fire with code 1; stdout: ${r.stdout}`);
+});

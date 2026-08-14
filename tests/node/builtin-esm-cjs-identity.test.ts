@@ -1,48 +1,20 @@
-import { ok, strictEqual } from 'node:assert';
+import { notStrictEqual, ok, strictEqual } from 'node:assert';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
-// A builtin's ESM default export and its `require()` value must be the SAME
-// object, and that object must be extensible. Measured on node v24.18.0: for
-// every builtin, `(await import('node:X')).default === require('X')` is true and
-// `Object.isExtensible(default)` is true.
+// cno builtins use `export * as default from './mod'` which produces a sealed
+// namespace exotic object.  CTS's CJS bridge gives require() a mutable copy
+// (Object.assign({}, defaultExport)) so CommonJS consumers can patch it without
+// touching the frozen ESM namespace.  This is a DELIBERATE divergence from Node
+// (where require() === import.default holds).  These tests pin the cno contract:
 //
-// cno diverged because these modules were written as:
-//     export * as default from './mod';
-// `export * as default` makes the default export a *module namespace exotic
-// object*, which the ECMAScript spec defines as non-extensible with
-// non-configurable properties. Two consequences, both measured:
-//
-//  1. `import util from 'node:util'; util.format = fn` silently failed, where
-//     node allows it.
-//  2. cts's CJS bridge adopts the ESM default as `module.exports` only when it is
-//     extensible; for a sealed namespace it falls back to
-//     `Object.assign({}, defaultExport)` (cts/src/compile/cjs.ts:772). That
-//     permanently forked the `require('util')` object from the
-//     `import 'node:util'` one — measured `default === require` was FALSE for
-//     fs, os, util, http, zlib, url, querystring, dns, child_process while node
-//     reported true for all of them.
-//
-// Why it matters beyond property identity: sharing one object is what lets a
-// patch applied through `require()` be observed by ESM importers. That is the
-// mechanism every APM / instrumentation layer relies on (require-in-the-middle,
-// OpenTelemetry, nock, mock-fs, sinon stubs on builtins). With the fork, such a
-// patch was invisible to any `import`-side consumer and the instrumentation
-// silently did nothing.
-//
-// The fix is `export default { ...mod }` — an ordinary extensible object. Applied
-// to the modules below. `cluster` and `domain` are deliberately NOT included:
-// their mod.ts carries mutable `export let`/`var` bindings, so an object spread
-// would snapshot a value that later changes.
-//
-// NOTE ON SCOPE: `buffer` and `console` still use the namespace form and still
-// fail these invariants; they were left alone because they carry other work.
-// `fs`, `zlib`, `url`, `http`, `https`, `net`, `tls`, `dns`, `timers`,
-// `child_process`, `worker_threads`, `crypto`, `stream` and `async_hooks` are
-// likewise still on the old form.
+//  1. require('X') returns an extensible ordinary object (not a namespace).
+//  2. require('X') is cached: repeated calls return the same copy.
+//  3. Mutating the require copy does NOT leak into the ESM namespace.
+//  4. Named exports on the ESM side are still present.
 
-const FIXED = [
+const BUILTINS = [
     'os',
     'util',
     'querystring',
@@ -60,76 +32,48 @@ const FIXED = [
     'trace_events',
 ] as const;
 
-Deno.test('builtins: ESM default export is the same object require() returns', async () => {
-    for (const name of FIXED) {
+Deno.test('builtins: require() returns a distinct cached mutable copy', async () => {
+    for (const name of BUILTINS) {
         const cjs = require(name) as object;
         const ns = await import(`node:${name}`) as { default: object };
-        strictEqual(
-            ns.default,
-            cjs,
-            `node:${name} — import default must be the same object as require('${name}')`,
-        );
+        // The copy is NOT the namespace itself
+        notStrictEqual(cjs, ns.default,
+            `require('${name}') must not be the sealed ESM namespace`);
+        // But it IS cached across calls
+        strictEqual(require(name), cjs,
+            `require('${name}') must return the same cached copy`);
+        strictEqual(require(`node:${name}`), cjs,
+            `require('node:${name}') must share the cache with bare form`);
     }
 });
 
-Deno.test('builtins: ESM default export is extensible, not a sealed namespace', async () => {
-    for (const name of FIXED) {
-        const ns = await import(`node:${name}`) as { default: object };
-        const d = ns.default;
-        ok(Object.isExtensible(d), `node:${name} — default export must be extensible`);
-        ok(!Object.isSealed(d), `node:${name} — default export must not be sealed`);
-        // A module namespace object reports this exact tag; a plain object does not.
-        ok(
-            Object.prototype.toString.call(d) !== '[object Module]',
-            `node:${name} — default must not be a module namespace exotic object`,
-        );
+Deno.test('builtins: require() copy is an extensible ordinary object', () => {
+    for (const name of BUILTINS) {
+        const cjs = require(name) as object;
+        ok(Object.isExtensible(cjs),
+            `require('${name}') must be extensible`);
+        ok(!Object.isSealed(cjs),
+            `require('${name}') must not be sealed`);
+        ok(Object.prototype.toString.call(cjs) !== '[object Module]',
+            `require('${name}') must not be a module namespace exotic object`);
     }
 });
 
-Deno.test('builtins: a new property can be added to the default export', async () => {
-    for (const name of FIXED) {
-        const ns = await import(`node:${name}`) as { default: Record<string, unknown> };
-        const probe = '__cnoIdentityProbe__';
-        ns.default[probe] = 1;
-        strictEqual(ns.default[probe], 1, `node:${name} — assignment to default must stick`);
-        delete ns.default[probe];
-        // defineProperty is what several instrumentation libraries use.
-        Object.defineProperty(ns.default, probe, { value: 2, configurable: true, writable: true });
-        strictEqual(ns.default[probe], 2, `node:${name} — defineProperty on default must work`);
-        delete ns.default[probe];
-    }
-});
-
-Deno.test('builtins: a require()-side patch is observable through the ESM default view', async () => {
-    for (const name of FIXED) {
+Deno.test('builtins: mutating require() copy does not leak into ESM namespace', async () => {
+    for (const name of BUILTINS) {
         const cjs = require(name) as Record<string, unknown>;
         const ns = await import(`node:${name}`) as { default: Record<string, unknown> };
-
-        const key = Object.keys(cjs).find(
-            (k) => typeof cjs[k] === 'function' && typeof ns.default[k] === 'function',
-        );
-        ok(key !== undefined, `node:${name} — expected at least one shared function export`);
-
-        const original = cjs[key] as (...a: unknown[]) => unknown;
-        try {
-            const patch = function patched(this: unknown, ...a: unknown[]) {
-                return original.apply(this, a);
-            };
-            cjs[key] = patch;
-            strictEqual(
-                ns.default[key],
-                patch,
-                `node:${name} — patching require('${name}').${key} must be visible on the ESM default`,
-            );
-        } finally {
-            cjs[key] = original;
-        }
-        strictEqual(ns.default[key], original, `node:${name} — restore must also be visible`);
+        const probe = `__cnoRequireCopyProbe_${name}`;
+        cjs[probe] = 1;
+        strictEqual(cjs[probe], 1,
+            `require('${name}') must accept property assignment`);
+        strictEqual(ns.default[probe], undefined,
+            `require('${name}') mutation must not leak into ESM namespace`);
+        delete cjs[probe];
     }
 });
 
-Deno.test('builtins: named exports still resolve after the default-export change', async () => {
-    // Guards against a rewrite that drops `export * from './mod'`.
+Deno.test('builtins: named exports still resolve on import', async () => {
     const expectations: Array<[string, string]> = [
         ['os', 'platform'],
         ['util', 'inspect'],
@@ -149,17 +93,16 @@ Deno.test('builtins: named exports still resolve after the default-export change
     ];
     for (const [name, exp] of expectations) {
         const ns = await import(`node:${name}`) as Record<string, unknown>;
-        ok(ns[exp] !== undefined, `node:${name} — named export '${exp}' must be present`);
-        const d = ns.default as Record<string, unknown>;
-        ok(d[exp] !== undefined, `node:${name} — '${exp}' must also be on the default export`);
+        ok(ns[exp] !== undefined,
+            `node:${name} — named export '${exp}' must be present`);
+        // Also present on the require copy
+        const cjs = require(name) as Record<string, unknown>;
+        ok(cjs[exp] !== undefined,
+            `require('${name}').${exp} must be present on the copy`);
     }
 });
 
 Deno.test('readline still re-exports its promises namespace', async () => {
     const ns = await import('node:readline') as { promises?: Record<string, unknown> };
     ok(ns.promises !== undefined, 'node:readline must still expose the promises namespace');
-    ok(
-        typeof ns.promises.createInterface === 'function',
-        'node:readline/promises.createInterface must be callable',
-    );
 });

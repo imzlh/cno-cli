@@ -419,6 +419,21 @@ Deno.test('structuredClone: uncloneable values still throw DataCloneError', () =
     }
 });
 
+Deno.test('structuredClone: a Proxy in the prototype chain cannot run has traps', () => {
+    let hits = 0;
+    const proxyPrototype = new Proxy({}, {
+        has() {
+            hits++;
+            throw new Error('prototype has trap must not run');
+        },
+    });
+    const source = Object.create(proxyPrototype) as { value: number };
+    source.value = 7;
+    const clone = cloneSource(source) as { value: number };
+    strictEqual(clone.value, 7);
+    strictEqual(hits, 0);
+});
+
 Deno.test('structuredClone: platform objects with internal slots still throw', () => {
     // Request/Response/ReadableStream/WritableStream/TransformStream carry NO
     // @@toStringTag in cno and report `[object Object]`, so a tag-gated rejection would

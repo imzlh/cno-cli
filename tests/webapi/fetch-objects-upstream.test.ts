@@ -188,7 +188,7 @@ Deno.test('webapi fetch upstream: Body consumes large multi-chunk streams', asyn
             else controller.close();
         },
     });
-    const request = new Request('http://foo/', { body: stream, method: 'POST' });
+    const request = new Request('http://foo/', { body: stream, method: 'POST', duplex: 'half' });
     strictEqual((await request.arrayBuffer()).byteLength, parts.length);
     await rejects(() => request.arrayBuffer(), TypeError);
 });
@@ -210,6 +210,7 @@ Deno.test('webapi fetch upstream: Request accepts URL-like input and clones stre
     const request = new Request('http://foo/', {
         body: stream,
         method: 'POST',
+        duplex: 'half',
     });
     const clone = request.clone();
 
@@ -517,4 +518,24 @@ Deno.test('webapi fetch upstream: string bodies encode lone surrogates as U+FFFD
     // Blob parts take the same path.
     deepStrictEqual([...new Uint8Array(await new Blob(['a\ud800b']).arrayBuffer())], [0x61, 0xef, 0xbf, 0xbd, 0x62]);
     strictEqual(new Blob(['a\ud800b']).size, 5);
+});
+
+Deno.test('webapi fetch compatibility: Request and Response survive transparent proxies', async () => {
+    const response = new Proxy(new Response('proxied', { status: 201 }), {});
+    strictEqual(response.ok, true);
+    strictEqual(response.bodyUsed, false);
+    strictEqual(await response.text(), 'proxied');
+    strictEqual(response.bodyUsed, true);
+
+    const request = new Proxy(new Request('https://example.com/', {
+        method: 'POST',
+        body: 'payload',
+    }), {});
+    strictEqual(request.method, 'POST');
+    strictEqual(request.bodyUsed, false);
+    strictEqual(await request.text(), 'payload');
+    strictEqual(request.bodyUsed, true);
+
+    const source = new Proxy(new Request('https://example.com/source'), {});
+    strictEqual(new Request(source).url, 'https://example.com/source');
 });

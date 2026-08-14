@@ -162,3 +162,10 @@ Deno.test('URL: pathname setter preserves empty segments and resolves dots', () 
     strictEqual(set('https://x/', '/a/%2e%2e/b'), '/b');
     strictEqual(set('pack:/a/b', '/c//d'), '/c//d');
 });
+
+Deno.test('URL: file pathname setter normalizes Windows separators', () => {
+    const u = new URL('file:///');
+    u.pathname = 'D:' + '\\' + 'docs' + '\\' + 'project' + '\\' + 'main.ts';
+    strictEqual(u.href, 'file:///D:/docs/project/main.ts');
+    strictEqual(u.pathname, '/D:/docs/project/main.ts');
+});

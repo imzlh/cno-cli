@@ -218,18 +218,22 @@ export class NetworkDomain extends Domain {
 			if (!this.announced.has(requestId)) {
 				throw new CDPError(CdpErrorCode.InvalidParams, 'Request not found')
 			}
-			// Flush any buffered body before switching to live-stream mode.
-			// The Done event (main-thread flush) is already in flight or will
-			// arrive shortly; the body it carries will be cached by the Done
-			// handler.  We return bufferedData from whatever the worker has
-			// accumulated so far as a best-effort snapshot.
 			const pending = this.pendingBodies.get(requestId)
-			const bufferedData = pending && pending.total > 0 ? nativeCrypto.base64Encode(new Uint8Array(this.mergeBody(pending))) : ''
+			const workerData = pending && pending.total > 0
+				? this.copyBytes(this.mergeBody(pending))
+				: new Uint8Array(0)
 			this.enableLiveStreamingForRequest(requestId, false)
-			// Tell the main thread to start live-streaming subsequent chunks.
-			// The main thread will also flush its own buffered body in the
-			// Done event, which the Done handler processes normally.
-			await this.rpc.call('streamResourceContent', { requestId, source: this.reqMeta.get(requestId)?.source })
+			const reply = await this.rpc.call('streamResourceContent', {
+				requestId,
+				source: this.reqMeta.get(requestId)?.source,
+			})
+			const mainData = isRecord(reply) && reply.bufferedData instanceof Uint8Array
+				? reply.bufferedData
+				: new Uint8Array(0)
+			const buffered = mainData.byteLength > 0 && workerData.byteLength > 0
+				? this.mergeChunks([mainData, workerData])
+				: mainData.byteLength > 0 ? mainData : workerData
+			const bufferedData = buffered.byteLength > 0 ? nativeCrypto.base64Encode(buffered) : ''
 			return { bufferedData }
 		})
 		/**
@@ -789,7 +793,9 @@ export class NetworkDomain extends Domain {
 			}
 			this.pendingBodies.set(data.requestId, entry)
 		}
-		if (!entry.truncated && !entry.liveStreamed && this.shouldBufferResponseBody(data.requestId) && entry.total + data.byteLength <= MAX_BODY_PREVIEW_BYTES && this.ensurePendingBodyCapacity(data.requestId, data.byteLength)) {
+		if (entry.liveStreamed) {
+			// Live bytes are carried on dataReceived below and need no second copy.
+		} else if (!entry.truncated && this.shouldBufferResponseBody(data.requestId) && entry.total + data.byteLength <= MAX_BODY_PREVIEW_BYTES && this.ensurePendingBodyCapacity(data.requestId, data.byteLength)) {
 			const chunk = this.copyBytes(data.data)
 			entry.chunks.push(chunk)
 			entry.total += chunk.byteLength
@@ -960,9 +966,7 @@ export class NetworkDomain extends Domain {
 	private enableLiveStreamingForRequest(requestId: string, syncMain = true): void {
 		const alreadyStreaming = this.streamedBodies.has(requestId)
 		this.streamedBodies.add(requestId)
-		const entry = this.pendingBodies.get(requestId)
-		if (entry) entry.liveStreamed = true
-		this.dropBufferedBodyForRequest(requestId)
+		this.dropPendingBody(requestId)
 		if (syncMain && !alreadyStreaming) this.rpc.notify('streamResourceContent', { requestId, source: this.reqMeta.get(requestId)?.source })
 	}
 

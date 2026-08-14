@@ -1263,6 +1263,142 @@ Deno.test('crypto upstream: diffieHellman accepts generated EC KeyObjects', () =
     strictEqual(alice.privateKey.asymmetricKeyDetails?.namedCurve, 'P-256');
 });
 
+/* diffieHellman used to require BOTH keys to be `raw` EC -- the only shape our
+ * own generateKeyPairSync('ec') produces -- so every other origin threw
+ * "Only raw EC KeyObjects are supported by diffieHellman". That rejected X25519
+ * (generated as PKCS#8/SPKI DER) and anything from createPrivateKey/
+ * createPublicKey on a PEM, i.e. the two ways real callers obtain keys. */
+
+Deno.test('crypto upstream: diffieHellman derives the RFC 7748 X25519 test vector', () => {
+    // RFC 7748 s.6.1, so this pins the derived bytes and not merely symmetry.
+    const privateKey = crypto.createPrivateKey({
+        key: Buffer.concat([
+            Buffer.from('302e020100300506032b656e04220420', 'hex'),
+            Buffer.from('77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a', 'hex'),
+        ]),
+        format: 'der',
+        type: 'pkcs8',
+    });
+    const publicKey = crypto.createPublicKey({
+        key: Buffer.concat([
+            Buffer.from('302a300506032b656e032100', 'hex'),
+            Buffer.from('de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f', 'hex'),
+        ]),
+        format: 'der',
+        type: 'spki',
+    });
+
+    const secret = crypto.diffieHellman({ privateKey, publicKey });
+    strictEqual(
+        secret.toString('hex'),
+        '4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742',
+    );
+});
+
+Deno.test('crypto upstream: diffieHellman agrees for generated X25519 and X448 pairs', () => {
+    for (const [type, length] of [['x25519', 32], ['x448', 56]] as const) {
+        const alice = crypto.generateKeyPairSync(type);
+        const bob = crypto.generateKeyPairSync(type);
+        const left = crypto.diffieHellman({ privateKey: alice.privateKey, publicKey: bob.publicKey });
+        const right = crypto.diffieHellman({ privateKey: bob.privateKey, publicKey: alice.publicKey });
+        strictEqual(left.length, length, `${type} secret length`);
+        strictEqual(left.toString('hex'), right.toString('hex'), `${type} agreement`);
+    }
+});
+
+Deno.test('crypto upstream: diffieHellman accepts EC KeyObjects reloaded from PEM', () => {
+    for (const [namedCurve, length] of [['prime256v1', 32], ['secp384r1', 48], ['secp521r1', 66]] as const) {
+        const alice = crypto.generateKeyPairSync('ec', { namedCurve });
+        const bob = crypto.generateKeyPairSync('ec', { namedCurve });
+        // Round-tripping through PEM is what a key loaded from disk looks like.
+        const reloadPrivate = (key: crypto.KeyObject) =>
+            crypto.createPrivateKey(key.export({ type: 'pkcs8', format: 'pem' }) as string);
+        const reloadPublic = (key: crypto.KeyObject) =>
+            crypto.createPublicKey(key.export({ type: 'spki', format: 'pem' }) as string);
+
+        const left = crypto.diffieHellman({
+            privateKey: reloadPrivate(alice.privateKey),
+            publicKey: reloadPublic(bob.publicKey),
+        });
+        const right = crypto.diffieHellman({
+            privateKey: reloadPrivate(bob.privateKey),
+            publicKey: reloadPublic(alice.publicKey),
+        });
+        strictEqual(left.length, length, `${namedCurve} secret length`);
+        strictEqual(left.toString('hex'), right.toString('hex'), `${namedCurve} agreement`);
+
+        // A raw KeyObject paired with an encoded one must reach the same secret.
+        const mixed = crypto.diffieHellman({
+            privateKey: alice.privateKey,
+            publicKey: reloadPublic(bob.publicKey),
+        });
+        strictEqual(mixed.toString('hex'), left.toString('hex'), `${namedCurve} mixed raw/encoded`);
+    }
+});
+
+Deno.test('crypto upstream: diffieHellman rejects mismatched and non-agreement keys', () => {
+    const x25519 = crypto.generateKeyPairSync('x25519');
+    const ec = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+
+    // Different algorithms on the two sides.
+    throws(() => crypto.diffieHellman({
+        privateKey: x25519.privateKey,
+        publicKey: crypto.createPublicKey(ec.publicKey.export({ type: 'spki', format: 'pem' }) as string),
+    }));
+
+    // Ed25519 signs, it does not do key agreement.
+    const ed = crypto.generateKeyPairSync('ed25519');
+    const edPeer = crypto.generateKeyPairSync('ed25519');
+    throws(() => crypto.diffieHellman({ privateKey: ed.privateKey, publicKey: edPeer.publicKey }));
+
+    // Swapped roles, and a secret key where an asymmetric one is required.
+    throws(() => crypto.diffieHellman({
+        privateKey: x25519.publicKey as unknown as crypto.KeyObject,
+        publicKey: x25519.privateKey as unknown as crypto.KeyObject,
+    }), TypeError);
+    throws(() => crypto.diffieHellman({
+        privateKey: crypto.createSecretKey(Buffer.alloc(32)),
+        publicKey: x25519.publicKey,
+    }), TypeError);
+});
+
+Deno.test('crypto upstream: X25519 agreement reproduces the xeapi handshake shape', () => {
+    // Mirrors util/crypto.js in @neteasecloudmusicapienhanced/api: the peer key
+    // arrives as 32 raw bytes and is imported by prepending the RFC 8410 SPKI
+    // header, then the ephemeral secret feeds an HMAC-based KDF.
+    const spkiPrefix = Buffer.from('302a300506032b656e032100', 'hex');
+    const importRaw = (raw: Buffer) =>
+        crypto.createPublicKey({ key: Buffer.concat([spkiPrefix, raw]), format: 'der', type: 'spki' });
+
+    const peer = crypto.generateKeyPairSync('x25519');
+    const peerRaw = Buffer.from(peer.publicKey.export({ format: 'der', type: 'spki' }) as Uint8Array).subarray(-32);
+
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('x25519');
+    const ephemeralRaw = Buffer.from(publicKey.export({ format: 'der', type: 'spki' }) as Uint8Array).subarray(-32);
+
+    const sharedSecret = crypto.diffieHellman({ privateKey, publicKey: importRaw(peerRaw) });
+    strictEqual(sharedSecret.length, 32);
+
+    // The peer reaches the same secret from its own side of the exchange.
+    const fromPeer = crypto.diffieHellman({ privateKey: peer.privateKey, publicKey: importRaw(ephemeralRaw) });
+    strictEqual(fromPeer.toString('hex'), sharedSecret.toString('hex'));
+
+    const prk = crypto.createHmac('sha256', Buffer.alloc(32)).update(sharedSecret).digest();
+    const aesKey = crypto.createHmac('sha256', prk)
+        .update(Buffer.concat([ephemeralRaw, Buffer.from([1])])).digest().subarray(0, 16);
+    strictEqual(aesKey.length, 16);
+
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-128-gcm', aesKey, iv);
+    const encrypted = Buffer.concat([cipher.update(Buffer.from('probe|android|sk')), cipher.final()]);
+    const decipher = crypto.createDecipheriv('aes-128-gcm', aesKey, iv);
+    decipher.setAuthTag(cipher.getAuthTag());
+    strictEqual(
+        Buffer.concat([decipher.update(encrypted), decipher.final()]).toString(),
+        'probe|android|sk',
+    );
+});
+
 Deno.test('crypto upstream: hkdfSync uses ArrayBufferView bytes and enforces info limit', () => {
     const stringResult = crypto.hkdfSync('sha256', 'secret', 'salt', 'info', 10);
     strictEqual(Buffer.from(stringResult).toString('hex'), 'f6d2fcc47cb939deafe3');

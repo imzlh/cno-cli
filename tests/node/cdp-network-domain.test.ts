@@ -23,10 +23,12 @@ const PREVIEW_CAP = getTierLimits().inspectorPreviewBodyBytes;
 
 interface Rec { method: string; params: Record<string, unknown> }
 
-function newDomain(): { net: NetworkDomain; dispatcher: CDPDispatcher; events: Rec[] } {
+function newDomain(
+    call: (method: string, params: unknown) => unknown = () => ({}),
+): { net: NetworkDomain; dispatcher: CDPDispatcher; events: Rec[] } {
     const dispatcher = new CDPDispatcher();
     const events: Rec[] = [];
-    const rpc = { call: () => ({}), notify: () => {} } as unknown as WorkerEndpoint;
+    const rpc = { call, notify: () => {} } as unknown as WorkerEndpoint;
     const net = new NetworkDomain(
         dispatcher,
         (method, params) => events.push({ method, params: (params ?? {}) as Record<string, unknown> }),
@@ -193,6 +195,37 @@ Deno.test('network: streamResourceContent on an unknown requestId is an error', 
     await dispatcher.dispatch('Network.enable', {});
     await expectError(() => dispatcher.dispatch('Network.streamResourceContent', { requestId: 'ghost' }),
         CdpErrorCode.InvalidParams, 'unknown stream requestId');
+});
+
+Deno.test('network: streamResourceContent returns main-thread buffered history', async () => {
+    const history = new TextEncoder().encode('history-before-streaming');
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const { net, dispatcher, events } = newDomain((method, params) => {
+        calls.push({ method, params });
+        return { bufferedData: history };
+    });
+    await dispatcher.dispatch('Network.enable', {});
+    fetchReq(net, 'streamed');
+    fetchRes(net, 'streamed');
+
+    const response = await dispatcher.dispatch('Network.streamResourceContent', {
+        requestId: 'streamed',
+    }) as { bufferedData: string };
+    const decoded = Uint8Array.from(atob(response.bufferedData), c => c.charCodeAt(0));
+    strictEqual(new TextDecoder().decode(decoded), 'history-before-streaming');
+    strictEqual(calls[0]?.method, 'streamResourceContent');
+
+    net.onFetchEvent({
+        ev: NetFetchKind.Data,
+        source: 'fetch',
+        requestId: 'streamed',
+        timestamp: 3,
+        data: new TextEncoder().encode('live'),
+        byteLength: 4,
+    });
+    const dataEvent = events.find(e => e.method === 'Network.dataReceived' && e.params.requestId === 'streamed');
+    ok(typeof dataEvent?.params.data === 'string' && dataEvent.params.data.length > 0,
+        'subsequent chunks must be carried inline after streaming starts');
 });
 
 Deno.test('network: a non-string requestId is rejected, where node v24.18 aborts', async () => {

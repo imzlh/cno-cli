@@ -469,7 +469,7 @@ Deno.test({
  * task that also defines pretest/posttest, confirming the second half.
  *
  * Only the fixture needed POSIX: `echo x >> f` depends on sh redirection and
- * LF line endings. Using `node -e` (PATH-shimmed to cno by taskShellEnv) keeps
+ * LF line endings. Using `node -e` (rewritten by the task command parser) keeps
  * the fixture portable, so this now runs on Windows too.
  */
 const appendLine = (word: string) =>
@@ -590,10 +590,9 @@ Deno.test({
 });
 
 Deno.test({
-    name: 'cts task: shell assignments and nested shells resolve node and deno to cno',
-    ignore: Deno.build.os === 'windows',
+    name: 'cts task: command parsing resolves node and deno to cno',
     async fn() {
-        const root = makePosixTempDir('task-runtime-shims');
+        const root = makePosixTempDir('task-runtime-resolution');
         const lock = new LockStore(root, true);
         try {
             writeFileSync(join(root, 'probe.cjs'), `
@@ -606,7 +605,8 @@ Deno.test({
             `);
             writeFileSync(join(root, 'deno.json'), JSON.stringify({
                 tasks: {
-                    probe: "FOO=outer node probe.cjs assigned-node && FOO=outer deno run probe.cjs assigned-deno && sh -c 'node probe.cjs nested-node'",
+                    probe: "node probe.cjs assigned-node && deno run probe.cjs assigned-deno",
+                    serveHelp: 'deno serve --help',
                 },
             }));
 
@@ -615,11 +615,12 @@ Deno.test({
             strictEqual(await loaded.runner.run('probe'), 0);
             const events = readFileSync(join(root, 'runtime.jsonl'), 'utf8')
                 .trim().split('\n').map((line) => JSON.parse(line));
-            deepStrictEqual(events.map((event) => event.tag), ['assigned-node', 'assigned-deno', 'nested-node']);
+            deepStrictEqual(events.map((event) => event.tag), ['assigned-node', 'assigned-deno']);
             const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
             for (const event of events) strictEqual(event.execPath.replace(/ \(deleted\)$/, ''), execPath);
-            strictEqual(events[0].foo, 'outer');
-            strictEqual(events[1].foo, 'outer');
+            strictEqual(events[0].foo, undefined);
+            strictEqual(events[1].foo, undefined);
+            strictEqual(await loaded.runner.run('serveHelp'), 0);
         } finally {
             lock.close();
             rmSync(root, { recursive: true, force: true });
@@ -630,7 +631,7 @@ Deno.test({
 /**
  * Diamond dedup and cycle rejection are graph semantics in the task runner,
  * independent of the shell. The gate existed only because the fixture used
- * `echo x >> order.txt`. `appendLine` (node -e, PATH-shimmed to cno) is
+ * `echo x >> order.txt`. `appendLine` (node -e, rewritten by the task parser) is
  * portable, so this runs on Windows too.
  */
 Deno.test({
@@ -736,6 +737,63 @@ Deno.test({
             strictEqual(sequence.stdout, 'GOOD\n');
         } finally {
             lock.close();
+            rmSync(root, { recursive: true, force: true });
+        }
+    },
+});
+
+Deno.test({
+    name: 'cts task: Windows internal shell preserves quotes, state, pipelines and redirects',
+    ignore: Deno.build.os !== 'windows',
+    async fn() {
+        const root = makePosixTempDir('task-windows-internal-shell');
+        try {
+            mkdirSync(join(root, 'nested'));
+            writeFileSync(join(root, 'stdin.cjs'),
+                "process.stdin.setEncoding('utf8');let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>console.log('got:'+s.trim()));");
+            writeFileSync(join(root, 'env.cjs'),
+                "console.log([process.env.ONCE ?? '', process.env.KEEP ?? ''].join(':'));");
+            writeFileSync(join(root, 'deno.json'), JSON.stringify({
+                tasks: {
+                    quotes: `echo "quoted $FOO" '$FOO'`,
+                    logic: 'false && echo BAD || echo GOOD',
+                    redirect: 'echo one > out.txt ; echo two >> out.txt',
+                    redirectedPipe: 'echo hidden > redirected.txt | node stdin.cjs',
+                    pipe: 'echo value | node stdin.cjs',
+                    scopedEnv: 'ONCE=one node env.cjs ; node env.cjs',
+                    state: 'cd nested ; export KEEP=yes ; node ../env.cjs ; pwd',
+                },
+            }));
+
+            const quotes = await runCnoTask(['task', '-q', 'quotes'], root, { FOO: 'VALUE' });
+            strictEqual(quotes.code, 0, quotes.stderr);
+            strictEqual(quotes.stdout, 'quoted VALUE $FOO\n');
+
+            const logic = await runCnoTask(['task', '-q', 'logic'], root);
+            strictEqual(logic.code, 0, logic.stderr);
+            strictEqual(logic.stdout, 'GOOD\n');
+
+            const redirect = await runCnoTask(['task', '-q', 'redirect'], root);
+            strictEqual(redirect.code, 0, redirect.stderr);
+            strictEqual(readFileSync(join(root, 'out.txt'), 'utf8'), 'one\ntwo\n');
+
+            const redirectedPipe = await runCnoTask(['task', '-q', 'redirectedPipe'], root);
+            strictEqual(redirectedPipe.code, 0, redirectedPipe.stderr);
+            strictEqual(redirectedPipe.stdout, 'got:\n');
+            strictEqual(readFileSync(join(root, 'redirected.txt'), 'utf8'), 'hidden\n');
+
+            const pipe = await runCnoTask(['task', '-q', 'pipe'], root);
+            strictEqual(pipe.code, 0, pipe.stderr);
+            strictEqual(pipe.stdout, 'got:value\n');
+
+            const scopedEnv = await runCnoTask(['task', '-q', 'scopedEnv'], root);
+            strictEqual(scopedEnv.code, 0, scopedEnv.stderr);
+            strictEqual(scopedEnv.stdout, 'one:\n:\n');
+
+            const state = await runCnoTask(['task', '-q', 'state'], root);
+            strictEqual(state.code, 0, state.stderr);
+            strictEqual(state.stdout, `:yes\n${normalizePath(joinPaths(root, 'nested'))}\n`);
+        } finally {
             rmSync(root, { recursive: true, force: true });
         }
     },

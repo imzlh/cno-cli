@@ -87,7 +87,7 @@ Deno.test('WebAssembly: Table can be created', () => {
 
 Deno.test('WebAssembly: Table.get/set round-trips', () => {
     const tbl = new WebAssembly.Table({ initial: 2, element: 'anyfunc' });
-    const fn = () => 42;
+    const fn = new WebAssembly.Instance(new WebAssembly.Module(ADD_WASM)).exports.add;
     tbl.set(0, fn);
     ok(tbl.get(0) === fn);
 });

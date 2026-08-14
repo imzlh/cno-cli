@@ -1,4 +1,4 @@
-import { joinPaths, normalizePath, isAbsolute, cwd, toPosixPath } from '../../cts/src/api';
+import { joinPaths, normalizePath, isAbsolute, cwd, toPosixPath, isWindows } from '../../cts/src/api';
 import { C } from '../help';
 
 const os = import.meta.use('os');
@@ -6,6 +6,22 @@ const console = import.meta.use('console');
 const process = import.meta.use('process');
 const fs = import.meta.use('fs');
 const timers = import.meta.use('timers');
+
+// A test module that exits before opening IPC (or inherits the descriptor into
+// a daemon) must not leave `cno test` waiting forever. Keep this configurable
+// for slow CI machines while retaining a finite default for accidental hangs.
+const DEFAULT_CHILD_TIMEOUT_MS = 60_000;
+
+function childTimeoutMs(): number {
+    try {
+        const raw = os.getenv('CNO_TEST_CHILD_TIMEOUT_MS');
+        if (raw !== undefined && raw !== null && raw !== '') {
+            const value = Number(raw);
+            if (Number.isFinite(value) && value >= 0) return Math.floor(value);
+        }
+    } catch { /* environment access can be unavailable in a worker */ }
+    return DEFAULT_CHILD_TIMEOUT_MS;
+}
 
 // Env sentinel selecting testChildEntry() in src/main.ts (unset on entry,
 // so it never leaks into a grandchild the test file spawns itself).
@@ -45,21 +61,42 @@ function killChildQuietly(child: { kill(): void }): void {
 async function settleChild(
     child: { kill(): void },
     waitPromise: Promise<CModuleProcess.ExitInfo>,
-): Promise<void> {
+): Promise<CModuleProcess.ExitInfo | undefined> {
     let timer: number | undefined;
+    let info: CModuleProcess.ExitInfo | undefined;
     const exited = await Promise.race([
-        waitPromise.then(() => true, () => true),
+        waitPromise.then((value) => { info = value; return true; }, () => true),
         new Promise<boolean>((resolve) => {
             timer = timers.setTimeout(() => resolve(false), 500);
         }),
     ]);
     if (timer !== undefined) timers.clearTimeout(timer);
-    if (exited) return;
+    if (exited) return info;
     killChildQuietly(child);
-    await waitPromise.catch(() => {});
+    return waitPromise.catch(() => undefined);
 }
 
-function* walkSync(dir: string): Generator<string> {
+function directoryKey(path: string): string {
+    let value = path;
+    try { value = fs.realpath(path); } catch { /* use the lexical path */ }
+    value = normalizePath(toPosixPath(value));
+    return isWindows ? value.toLowerCase() : value;
+}
+
+function fileKey(path: string): string {
+    let value = path;
+    try { value = fs.realpath(path); } catch { /* use the lexical path */ }
+    value = normalizePath(toPosixPath(value));
+    return isWindows ? value.toLowerCase() : value;
+}
+
+function* walkSync(dir: string, visited = new Set<string>()): Generator<string> {
+    // stat() follows symlinks/junctions. Without an identity set a project
+    // containing `test/loop -> .` recurses until the native stack is exhausted.
+    const identity = directoryKey(dir);
+    if (visited.has(identity)) return;
+    visited.add(identity);
+
     const entries = readDirOrNull(dir);
     if (!entries) return;
     for (const e of entries) {
@@ -68,14 +105,14 @@ function* walkSync(dir: string): Generator<string> {
         const s = statOrNull(full);
         if (!s) continue;
         if (s.isDirectory) {
-            yield* walkSync(full);
+            yield* walkSync(full, visited);
         } else if (s.isFile && TEST_RE.test(e)) {
             yield full;
         }
     }
 }
 
-function collectTests(rawPaths: string[]): string[] {
+export function collectTests(rawPaths: string[]): string[] {
     const posixCwd = cwd();
     const roots = rawPaths.length
         ? rawPaths.map(p => {
@@ -89,8 +126,9 @@ function collectTests(rawPaths: string[]): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
     const push = (file: string): void => {
-        if (seen.has(file)) return;
-        seen.add(file);
+        const identity = fileKey(file);
+        if (seen.has(identity)) return;
+        seen.add(identity);
         out.push(file);
     };
     for (const r of roots) {
@@ -269,17 +307,57 @@ async function runOne(file: string, flags: Record<string, string | boolean>, scr
     const channel = new IPCChannel(child.ipc);
     try {
         let received: TestChildMessage | undefined;
-        channel.once('message', (m: unknown) => { received = isRecord(m) ? m : { error: `invalid test worker message: ${String(m)}` }; });
-        await new Promise<void>((resolve, reject) => {
-            channel.once('close', () => resolve());
-            channel.once('error', reject);
+        let closeResolve!: () => void;
+        const closePromise = new Promise<void>((resolve) => { closeResolve = resolve; });
+        let errorReject!: (error: unknown) => void;
+        const errorPromise = new Promise<never>((_resolve, reject) => { errorReject = reject; });
+        channel.once('message', (m: unknown) => {
+            received = isRecord(m) ? m : { error: `invalid test worker message: ${String(m)}` };
         });
-        // A pipe only reaches EOF/close after all previously-written bytes
-        // are delivered, so a message sent just before exit is guaranteed to
-        // have arrived here already — no need to race against child.wait().
+        channel.once('close', () => { closeResolve(); });
+        channel.once('error', (error: unknown) => { errorReject(error); });
+        const timeout = childTimeoutMs();
+        let timeoutId: number | undefined;
+        const timeoutPromise = new Promise<'timeout'>((resolve) => {
+            timeoutId = timers.setTimeout(() => resolve('timeout'), timeout);
+        });
+        const outcome = await Promise.race([
+            closePromise.then(() => 'closed' as const),
+            waitPromise.then((info) => ({ kind: 'exit' as const, info }), (error) => ({ kind: 'wait-error' as const, error })),
+            errorPromise.then(() => 'error' as const),
+            timeoutPromise,
+        ]);
+        if (timeoutId !== undefined) timers.clearTimeout(timeoutId);
+
+        if (outcome === 'timeout') {
+            killChildQuietly(child);
+            await settleChild(child, waitPromise);
+            throw new Error(`test worker timed out after ${timeout}ms without reporting a result`);
+        }
+        if (outcome === 'error') {
+            throw new Error('test worker IPC channel failed');
+        }
+        // A normal child closes the pipe after its final frame. If it exits
+        // before the close event is delivered, give one short turn for queued
+        // bytes; otherwise surface the exit status instead of waiting forever.
+        if (received === undefined && outcome !== 'closed') {
+            let graceTimer: number | undefined;
+            await Promise.race([
+                closePromise,
+                new Promise<void>((resolve) => {
+                    graceTimer = timers.setTimeout(resolve, 100);
+                }),
+            ]);
+            if (graceTimer !== undefined) timers.clearTimeout(graceTimer);
+        }
         if (received === undefined) {
-            const info = await waitPromise;
-            throw new Error(`test worker exited (code=${info.exit_status}, signal=${info.term_signal ?? 'none'}) without reporting a result`);
+            if (typeof outcome === 'object' && outcome.kind === 'wait-error') {
+                throw new Error(`test worker wait failed: ${errorText(outcome.error) ?? String(outcome.error)}`);
+            }
+            const info = outcome === 'closed'
+                ? await settleChild(child, waitPromise)
+                : outcome.info;
+            throw new Error(`test worker exited (code=${info?.exit_status ?? 'unknown'}, signal=${info?.term_signal ?? 'none'}) without reporting a result`);
         }
         const failedTests = parseFailedTests(received.failedTests);
         return { file, passed: received.passed === true, duration: performance.now() - start, error: received.error, failedTests };
@@ -319,7 +397,15 @@ async function runAll(
         workers.push(worker());
     }
     await Promise.all(workers);
+    // Workers finish in timing order, but reports should follow discovery
+    // order so repeated runs and CI annotations remain stable.
+    const order = new Map(files.map((file, index) => [file, index]));
+    results.sort((a, b) => (order.get(a.file) ?? 0) - (order.get(b.file) ?? 0));
     return results;
+}
+
+interface TestChildChannel {
+    once(event: string, listener: (value?: unknown) => void): unknown;
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────

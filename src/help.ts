@@ -31,6 +31,7 @@ ${C.bold('USAGE')}
 
 ${C.bold('COMMANDS')}
   ${C.cyan('run')}    ${C.cyan('<file|task>')} [args…]     Run a TypeScript/JavaScript file or package script
+  ${C.cyan('serve')}  ${C.cyan('<file>')} [args…]           Serve the entrypoint's default.fetch export
   ${C.cyan('task')}   [name] [args…]          Run a task from ${C.cyan('deno.json')} or ${C.cyan('package.json')}
   ${C.cyan('exec')}   ${C.cyan('<command>')} [args…]       Run an npm package binary, same as pnpx
   ${C.cyan('eval')}   ${C.cyan('<code>')}                  Evaluate inline code
@@ -70,6 +71,10 @@ ${C.bold('RUN OPTIONS')}
   ${C.cyan('--location')}=${C.dim('<url>')}               Value for ${C.cyan('globalThis.location')}
   ${C.cyan('--conditions')}=${C.dim('<list>')}, ${C.cyan('-C')} ${C.dim('<list>')}  Extra package.json export conditions
   ${C.dim(`Use ${C.cyan('-')} as the entry to read the program from stdin.`)}
+
+${C.bold('SERVE OPTIONS')}
+  ${C.cyan('--port')}=${C.dim('<n>')}                  Listening port ${C.dim('(default: 8000)')}
+  ${C.cyan('--host')}=${C.dim('<hostname>')}           Listening hostname ${C.dim('(default: 0.0.0.0)')}
 
 ${C.bold('EVAL OPTIONS')}
   ${C.cyan('--eval')}, ${C.cyan('-e')} ${C.dim('<code>')}              Evaluate inline code

@@ -410,16 +410,18 @@ export class Hooks {
 	 * `source` is optional so an older worker still works; it then falls back to
 	 * the old both-sets behaviour, but the timestamp below keeps it reclaimable.
 	 */
-	enableStreamingForRequest(requestId: string, source?: 'fetch' | 'serve'): void {
+	enableStreamingForRequest(requestId: string, source?: 'fetch' | 'serve'): Uint8Array {
+		let fetchData: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
+		let serveData: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
 		if (source !== 'serve') {
+			fetchData = this.takeFetchBodyBuffer(requestId)
 			this.liveStreamedFetchRequests.add(requestId)
 			this.droppedFetchBodyRequests.delete(requestId)
-			this.dropFetchBodyBuffer(requestId)
 		}
 		if (source !== 'fetch') {
+			serveData = this.takeServeBodyBuffer(requestId)
 			this.liveStreamedServeRequests.add(requestId)
 			this.droppedServeBodyRequests.delete(requestId)
-			this.dropServeBodyBuffer(requestId)
 		}
 		// Streaming drops the body buffer, so this id is no longer present in
 		// fetchBodyBuffers/serveBodyBuffers — the only maps the reaper iterates.
@@ -427,6 +429,9 @@ export class Hooks {
 		// reclaim it if the Done event is lost, which is exactly the case the
 		// reaper exists to cover.
 		this.streamRegisteredAt.set(requestId, Date.now())
+		if (fetchData.byteLength === 0) return serveData
+		if (serveData.byteLength === 0) return fetchData
+		return this.mergeChunks([fetchData, serveData])
 	}
 
 	// ── lifecycle ───────────────────────────────────────────────────
@@ -761,6 +766,26 @@ export class Hooks {
 		if (!existing) return
 		this.serveBodyBufferBytes = Math.max(0, this.serveBodyBufferBytes - existing.total)
 		this.serveBodyBuffers.delete(requestId)
+	}
+
+	private takeFetchBodyBuffer(requestId: string): Uint8Array<ArrayBufferLike> {
+		const completed = this.completedFetchBodies.get(requestId)?.data
+		const active = this.fetchBodyBuffers.get(requestId)
+		const chunks = completed ? [completed] : active?.chunks ?? []
+		const data = chunks.length > 0 ? this.copyBytes(this.mergeChunks(chunks)) : new Uint8Array(0)
+		this.completedFetchBodies.delete(requestId)
+		this.dropFetchBodyBuffer(requestId)
+		return data
+	}
+
+	private takeServeBodyBuffer(requestId: string): Uint8Array<ArrayBufferLike> {
+		const completed = this.completedServeBodies.get(requestId)?.data
+		const active = this.serveBodyBuffers.get(requestId)
+		const chunks = completed ? [completed] : active?.chunks ?? []
+		const data = chunks.length > 0 ? this.copyBytes(this.mergeChunks(chunks)) : new Uint8Array(0)
+		this.completedServeBodies.delete(requestId)
+		this.dropServeBodyBuffer(requestId)
+		return data
 	}
 
 	private dropFetchRequestBody(requestId: string): void {

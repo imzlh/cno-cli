@@ -26,6 +26,29 @@ function sendRawHttpRequest(port: number, lines: string[]): Promise<string> {
     });
 }
 
+function sendRawHttpSegments(port: number, segments: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const sock = net.connect(port, '127.0.0.1', async () => {
+            try {
+                for (const segment of segments) {
+                    await new Promise<void>((written, failed) => {
+                        sock.write(segment, (error?: Error | null) => error ? failed(error) : written());
+                    });
+                    await new Promise((next) => setTimeout(next, 10));
+                }
+            } catch (error) {
+                sock.destroy();
+                reject(error);
+            }
+        });
+        let body = '';
+        sock.setEncoding('utf8');
+        sock.on('data', (chunk) => { body += chunk; });
+        sock.once('error', reject);
+        sock.once('close', () => resolve(body));
+    });
+}
+
 // --- 1. rawHeaders preserves original casing and order -----------------------
 
 Deno.test({ name: 'http: rawHeaders preserves original casing and order', timeout: 10000 }, async () => {
@@ -52,6 +75,30 @@ Deno.test({ name: 'http: rawHeaders preserves original casing and order', timeou
             'Connection: close',
             '',
             '',
+        ]);
+    } finally {
+        await close(server);
+    }
+});
+
+Deno.test({ name: 'http: server accumulates header field and value across TCP chunks', timeout: 10000 }, async () => {
+    const server = http.createServer((req, res) => {
+        strictEqual(req.headers['x-fragmented-header'], 'alpha-beta');
+        const index = req.rawHeaders.indexOf('X-Fragmented-Header');
+        ok(index >= 0);
+        strictEqual(req.rawHeaders[index + 1], 'alpha-beta');
+        res.end('ok');
+    });
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        await sendRawHttpSegments(addr.port, [
+            'GET /split HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Frag',
+            'mented-He',
+            'ader: alpha-',
+            'beta\r\nConnection: clo',
+            'se\r\n\r\n',
         ]);
     } finally {
         await close(server);
@@ -104,6 +151,32 @@ Deno.test({ name: 'http: requestTimeout zero disables first request timeout', ti
             req.end();
         });
         strictEqual(body, 'ok');
+    } finally {
+        await close(server);
+    }
+});
+
+Deno.test({ name: 'http: keep-alive response adapters remove socket close listeners', timeout: 10000 }, async () => {
+    const counts: number[] = [];
+    const server = http.createServer((req, res) => {
+        counts.push(res.socket?.listenerCount('close') ?? 0);
+        res.end('ok');
+    });
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        for (let i = 0; i < 24; i++) {
+            await new Promise<void>((resolve, reject) => {
+                const request = http.get(`http://127.0.0.1:${addr.port}/`, response => {
+                    response.resume();
+                    response.once('end', resolve);
+                });
+                request.once('error', reject);
+            });
+        }
+        ok(Math.max(...counts) - Math.min(...counts) <= 1,
+            `socket close listener count grew across keep-alive requests: ${counts.join(',')}`);
     } finally {
         await close(server);
     }

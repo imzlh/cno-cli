@@ -4,6 +4,12 @@
 # ext-oxc step is skipped with a notice and the build still succeeds.
 set -eu
 
+# Resolve paths relative to this script, rather than the caller's cwd.  This
+# keeps `./build.sh` and `path/to/build.sh` equivalent (CI often invokes the
+# latter from a separate staging directory).
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$ROOT_DIR"
+
 BUILD_DIR="build"
 OXC_BUILD_DIR="ext-oxc/build"
 DIST_DIR="dist/exe"

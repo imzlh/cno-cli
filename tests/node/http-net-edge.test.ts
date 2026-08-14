@@ -156,6 +156,37 @@ Deno.test({ name: 'http upstream: Agent keepAlive reuses sockets and tracks free
     }
 });
 
+Deno.test({ name: 'http upstream: URL requests reuse the Agent socket', timeout: 10000 }, async () => {
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    const sockets = new Set<unknown>();
+    const reused: boolean[] = [];
+    const server = http.createServer((req, res) => {
+        sockets.add(req.socket);
+        res.end('ok');
+    });
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        const url = `http://127.0.0.1:${addr.port}/`;
+        for (let i = 0; i < 3; i++) {
+            await new Promise<void>((resolve, reject) => {
+                const req = http.get(url, { agent }, res => {
+                    reused.push(req.reusedSocket);
+                    res.resume();
+                    res.once('end', resolve);
+                });
+                req.once('error', reject);
+            });
+        }
+        strictEqual(reused.join(','), 'false,true,true');
+        strictEqual(sockets.size, 1);
+    } finally {
+        agent.destroy();
+        await close(server);
+    }
+});
+
 Deno.test({ name: 'http upstream: Agent keepAlive stale idle sockets do not fail next request', timeout: 10000 }, async () => {
     let requestCount = 0;
     const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
@@ -768,6 +799,51 @@ Deno.test({ name: 'http: server.close callback fires and stops accepting', timeo
         socket.once('error', () => resolve(true));
     });
     ok(refused, 'connection must be refused after server closes');
+});
+
+Deno.test({ name: 'http: server.close lets an active response finish', timeout: 10000 }, async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const server = http.createServer(async (_req, res) => {
+        entered.resolve();
+        await release.promise;
+        res.end('complete');
+    });
+    await listen(server);
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('no port');
+
+    const response = new Promise<string>((resolve, reject) => {
+        const req = http.get(`http://127.0.0.1:${addr.port}/`, (res) => {
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (chunk: string) => body += chunk);
+            res.on('end', () => resolve(body));
+        });
+        req.once('error', reject);
+    });
+    let closed = false;
+    let closeDone: Promise<void> | null = null;
+    try {
+        await entered.promise;
+        closeDone = new Promise<void>((resolve, reject) => {
+            server.close((err?: Error) => {
+                if (err) { reject(err); return; }
+                closed = true;
+                resolve();
+            });
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        strictEqual(closed, false, 'close callback must wait for the active request');
+        release.resolve();
+        strictEqual(await response, 'complete');
+        await closeDone;
+        strictEqual(closed, true);
+    } finally {
+        release.resolve();
+        if (closeDone) await closeDone.catch(() => {});
+        else if (server.listening) await close(server);
+    }
 });
 
 // --- net: repeated resume() must not throw EALREADY -------------------------

@@ -20,6 +20,7 @@ Deno.serve({ port: PORT, hostname: '127.0.0.1', onListen: ({ port }) => {
             },
         }));
     }
+    if (url.pathname === '/throw') throw new Error('serve-target-boom');
     if (url.pathname === '/bad') return 'not a response' as unknown as Response;
     return new Response('not found', { status: 404 });
 });

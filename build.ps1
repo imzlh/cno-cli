@@ -8,6 +8,11 @@ $OxcBuildDir = "ext-oxc\build"
 $DistDir     = "dist\exe"
 $Root        = $PSScriptRoot
 
+# CMake's `-S .` and all relative output paths must refer to the checkout,
+# even when this script is launched from another working directory.
+Push-Location $Root
+try {
+
 # ── 1. Main project ───────────────────────────────────────────────────────────
 cmake -S . -B $BuildDir -DCMAKE_BUILD_TYPE=Release
 cmake --build $BuildDir --config Release --parallel
@@ -50,13 +55,12 @@ if (-not $HasCargo) {
     # allocated on one side and freed on the other across the host boundary
     # (JS_* memory is freed inside qjs.dll, Rust memory via cjs_oxc_result_free),
     # so one clean CRT per module is correct.
-    # USING_QJS_SHARED matches the host and gives the JS_* prototypes
-    # __declspec(dllimport), as required when they come from qjs.dll.
+    # ext-oxc's CMake target defines USING_QJS_SHARED on Windows so the JS_*
+    # prototypes use __declspec(dllimport), as required for qjs.dll.
     try {
         cmake -S ext-oxc -B $OxcBuildDir -DCMAKE_BUILD_TYPE=Release `
           -DCJS_DIR="$Root\circu.js" `
-          -DCNO_IMPLIB="$CnoLib" `
-          -DCMAKE_C_FLAGS="/DUSING_QJS_SHARED"
+          -DCNO_IMPLIB="$CnoLib"
         cmake --build $OxcBuildDir --config Release --parallel
         $OxcBuilt = $true
     } catch {
@@ -88,3 +92,6 @@ if ($OxcBuilt) {
 Write-Host ""
 Write-Host "dist\exe\ contents:"
 Get-ChildItem "$DistDir", "$DistDir\ext" | Format-Table Name, Length
+} finally {
+    Pop-Location
+}

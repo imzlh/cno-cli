@@ -150,7 +150,7 @@ Deno.test('process: versions.node exists', () => {
     ok(process.versions.node.length > 0);
 });
 
-Deno.test('process upstream: versions exposes Node and Deno compatibility fields', () => {
+Deno.test('process upstream: versions exposes Node compatibility fields', () => {
     const versions = process.versions as Record<string, string | undefined>;
     for (const key of [
         'node',
@@ -168,11 +168,11 @@ Deno.test('process upstream: versions exposes Node and Deno compatibility fields
         'icu',
         'tz',
         'unicode',
-        'deno',
         'typescript',
     ] as const) {
         strictEqual(typeof versions[key], 'string', `process.versions.${key}`);
     }
+    strictEqual(versions.deno, undefined);
 });
 
 // --- 8. process.memoryUsage returns numeric fields ------------------------
@@ -189,6 +189,14 @@ Deno.test('process upstream: memoryUsage.rss returns a numeric resident set size
     strictEqual(typeof process.memoryUsage.rss, 'function');
     const rss = process.memoryUsage.rss();
     ok(typeof rss === 'number' && rss >= 0);
+});
+
+Deno.test('process upstream: constrainedMemory does not report physical RAM as a limit', () => {
+    const constrained = process.constrainedMemory();
+    ok(typeof constrained === 'number' && constrained >= 0);
+    if (process.platform === 'win32') strictEqual(constrained, 0);
+    strictEqual(process.constrainedMemory, processDefault.constrainedMemory);
+    strictEqual(processDefault.constrainedMemory, globalThis.process.constrainedMemory);
 });
 
 // --- 9: process.uptime returns positive number ----------------------------
@@ -252,6 +260,23 @@ Deno.test('process: kill(veryLargePid) throws ESRCH', () => {
     ok(threw, 'kill on nonexistent pid must throw');
 });
 
+Deno.test('process upstream: kill validates pid and signal shapes', () => {
+    for (const pid of [1.5, '1.5', NaN, Infinity]) {
+        throws(
+            () => Reflect.apply(process.kill, process, [pid, 0]),
+            (error: unknown) => error !== null && typeof error === 'object' &&
+                Reflect.get(error, 'code') === 'ERR_INVALID_ARG_TYPE',
+        );
+    }
+    throws(
+        () => process.kill(99999999, 'BAD'),
+        (error: unknown) => error !== null && typeof error === 'object' &&
+            Reflect.get(error, 'code') === 'ERR_UNKNOWN_SIGNAL',
+    );
+    strictEqual(process.kill, processDefault.kill);
+    strictEqual(processDefault.kill, globalThis.process.kill);
+});
+
 // --- 14. process.nextTick defers ------------------------------------------
 
 Deno.test('process: nextTick defers after current work', async () => {
@@ -300,6 +325,81 @@ Deno.test('process upstream: uncaughtException catches errors thrown from nextTi
         });
     });
     strictEqual(caught, error);
+});
+
+Deno.test('process upstream: uncaught exception capture callback validates shared state', () => {
+    strictEqual(
+        process.setUncaughtExceptionCaptureCallback,
+        processDefault.setUncaughtExceptionCaptureCallback,
+    );
+    strictEqual(
+        process.hasUncaughtExceptionCaptureCallback,
+        globalThis.process.hasUncaughtExceptionCaptureCallback,
+    );
+    for (const value of [1, undefined, 'callback']) {
+        throws(
+            () => Reflect.apply(process.setUncaughtExceptionCaptureCallback, process, [value]),
+            (error: unknown) => error !== null && typeof error === 'object' &&
+                Reflect.get(error, 'code') === 'ERR_INVALID_ARG_TYPE',
+        );
+    }
+
+    try {
+        process.setUncaughtExceptionCaptureCallback(() => {});
+        strictEqual(process.hasUncaughtExceptionCaptureCallback(), true);
+        throws(
+            () => processDefault.setUncaughtExceptionCaptureCallback(() => {}),
+            (error: unknown) => error !== null && typeof error === 'object' &&
+                Reflect.get(error, 'code') === 'ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET',
+        );
+    } finally {
+        process.setUncaughtExceptionCaptureCallback(null);
+    }
+    strictEqual(process.hasUncaughtExceptionCaptureCallback(), false);
+});
+
+Deno.test('process upstream: capture callback replaces uncaughtException after monitor', async () => {
+    const failure = new Error('captured next tick');
+    const events: string[] = [];
+    const onMonitor = (error: unknown, origin: string) => {
+        strictEqual(error, failure);
+        strictEqual(origin, 'uncaughtException');
+        events.push('monitor');
+    };
+    const onUncaught = () => events.push('event');
+    process.on('uncaughtExceptionMonitor', onMonitor);
+    process.on('uncaughtException', onUncaught);
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('capture callback did not run')), 100);
+            process.setUncaughtExceptionCaptureCallback((error) => {
+                clearTimeout(timer);
+                strictEqual(error, failure);
+                events.push('capture');
+                resolve();
+            });
+            process.nextTick(() => { throw failure; });
+        });
+        deepStrictEqual(events, ['monitor', 'capture']);
+    } finally {
+        process.setUncaughtExceptionCaptureCallback(null);
+        process.off('uncaughtExceptionMonitor', onMonitor);
+        process.off('uncaughtException', onUncaught);
+    }
+});
+
+Deno.test('process upstream: capture callback does not intercept a manual process.emit', () => {
+    const events: string[] = [];
+    const onUncaught = () => events.push('event');
+    process.on('uncaughtException', onUncaught);
+    try {
+        process.setUncaughtExceptionCaptureCallback(() => events.push('capture'));
+        process.emit('uncaughtException', new Error('manual'));
+        deepStrictEqual(events, ['event']);
+    } finally {
+        process.setUncaughtExceptionCaptureCallback(null);
+        process.off('uncaughtException', onUncaught);
+    }
 });
 
 // --- 16. process.exit must not be called in tests (smoke only) ------------
@@ -446,6 +546,44 @@ Deno.test({ name: 'process upstream: stdout round-trips arbitrary binary bytes',
 Deno.test('process: umask() returns a number', () => {
     const m = process.umask();
     ok(typeof m === 'number');
+    strictEqual(process.umask, processDefault.umask);
+    strictEqual(processDefault.umask, globalThis.process.umask);
+});
+
+Deno.test('process upstream: umask validates masks before changing state', () => {
+    const before = process.umask();
+    const cases: Array<[unknown, string]> = [
+        ['foo', 'ERR_INVALID_ARG_VALUE'],
+        ['77x', 'ERR_INVALID_ARG_VALUE'],
+        ['', 'ERR_INVALID_ARG_VALUE'],
+        ['0o22', 'ERR_INVALID_ARG_VALUE'],
+        [-1, 'ERR_OUT_OF_RANGE'],
+        [1.5, 'ERR_OUT_OF_RANGE'],
+        [0x1_0000_0000, 'ERR_OUT_OF_RANGE'],
+        [null, 'ERR_INVALID_ARG_TYPE'],
+        [{}, 'ERR_INVALID_ARG_TYPE'],
+        [Symbol('mask'), 'ERR_INVALID_ARG_TYPE'],
+    ];
+
+    for (const [value, code] of cases) {
+        throws(
+            () => Reflect.apply(process.umask, process, [value]),
+            (error: unknown) => error !== null && typeof error === 'object' && Reflect.get(error, 'code') === code,
+        );
+        strictEqual(process.umask(), before);
+    }
+});
+
+Deno.test('process upstream: umask setter returns and updates the effective mask', () => {
+    const before = process.umask();
+    try {
+        strictEqual(process.umask(0o777), before);
+        strictEqual(process.umask(), process.platform === 'win32' ? 0o600 : 0o777);
+        process.umask('022');
+        strictEqual(process.umask(), 0o022 & (process.platform === 'win32' ? 0o600 : 0o777));
+    } finally {
+        process.umask(before);
+    }
 });
 
 Deno.test('process: argv0 and execArgv have Node-like shapes', () => {
@@ -576,6 +714,33 @@ Deno.test('process: getBuiltinModule resolves node builtins', () => {
     ok(path);
     strictEqual(typeof path!.join, 'function');
     strictEqual(process.getBuiltinModule('node:not-real'), undefined);
+    strictEqual(process.getBuiltinModule, processDefault.getBuiltinModule);
+    strictEqual(processDefault.getBuiltinModule, globalThis.process.getBuiltinModule);
+});
+
+Deno.test('process upstream: getBuiltinModule rejects non-string ids', () => {
+    for (const value of [123, null, Symbol('id')]) {
+        throws(
+            () => Reflect.apply(process.getBuiltinModule, process, [value]),
+            (error: unknown) => error !== null && typeof error === 'object' &&
+                Reflect.get(error, 'code') === 'ERR_INVALID_ARG_TYPE',
+        );
+    }
+});
+
+Deno.test('process upstream: ref and unref delegate to refable objects', () => {
+    const calls: string[] = [];
+    const refable = {
+        ref() { calls.push('ref'); },
+        unref() { calls.push('unref'); },
+    };
+    strictEqual(process.ref(refable), undefined);
+    strictEqual(process.unref(refable), undefined);
+    process.ref(null);
+    process.unref(undefined);
+    deepStrictEqual(calls, ['ref', 'unref']);
+    strictEqual(process.ref, processDefault.ref);
+    strictEqual(processDefault.unref, globalThis.process.unref);
 });
 
 Deno.test('process upstream: versions, execArgv and sourceMapsEnabled have Node-compatible shapes', () => {
@@ -586,6 +751,13 @@ Deno.test('process upstream: versions, execArgv and sourceMapsEnabled have Node-
     ok(process.moduleLoadList.every((entry) => typeof entry === 'string'));
     strictEqual(process.sourceMapsEnabled, true);
     process.setSourceMapsEnabled(false);
+    strictEqual(process.sourceMapsEnabled, false);
+    strictEqual(processDefault.sourceMapsEnabled, false);
+    throws(
+        () => Reflect.apply(process.setSourceMapsEnabled, process, [0]),
+        (error: unknown) => error !== null && typeof error === 'object' &&
+            Reflect.get(error, 'code') === 'ERR_INVALID_ARG_TYPE',
+    );
     process.setSourceMapsEnabled(true);
     strictEqual(process.sourceMapsEnabled, true);
 });

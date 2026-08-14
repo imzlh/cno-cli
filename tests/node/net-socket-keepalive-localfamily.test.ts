@@ -146,3 +146,47 @@ Deno.test('net: socket.pending is a boolean, true before connect and false after
         alive.done();
     }
 });
+
+// --- server.listen(callback) must invoke the callback ------------------------
+//
+// Node's normalizeArgs peels a leading callback and binds an ephemeral port.
+// cno used to fall through to the object/path branch: the server DID come up
+// (listening === true, an ephemeral port bound) but the callback was never
+// registered, so the caller's readiness handler silently never ran. That is the
+// quiet failure mode — no throw, no error event, a working server, and dead
+// application code. Verified against node v24.18.0.
+
+Deno.test('net: server.listen(callback) invokes the callback and emits listening', async () => {
+    const alive = keepLoopAlive();
+    const server = net.createServer();
+    try {
+        const events: string[] = [];
+        server.on('listening', () => events.push('listening'));
+        await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(
+                () => reject(new Error('listen(cb) never invoked its callback')),
+                3000,
+            );
+            server.listen(() => {
+                clearTimeout(timer);
+                events.push('callback');
+                resolve();
+            });
+        });
+
+        ok(events.includes('callback'), 'listen(cb) callback did not run');
+        ok(events.includes('listening'), "'listening' was not emitted");
+        strictEqual(events[0], 'listening', "'listening' must precede the callback");
+        strictEqual(server.listening, true);
+
+        // An ephemeral port must actually be bound, not port 0 or 80.
+        const addr = server.address() as net.AddressInfo;
+        strictEqual(typeof addr.port, 'number');
+        ok(addr.port > 0, 'no port was bound');
+        ok(addr.port !== 80, 'listen(cb) bound port 80 instead of an ephemeral port');
+
+        await close(server);
+    } finally {
+        alive.done();
+    }
+});

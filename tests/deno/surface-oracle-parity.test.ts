@@ -225,17 +225,18 @@ Deno.test('deno oracle: APIs removed in Deno 2 stay absent', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Open defects. Each block holds the deno 2.9.3 expectation and is ignored until
-// the fix lands. Un-ignore together with the fix; do not "correct" them to cno's
-// current output, which is what makes the defect invisible.
+// Open defects. Each block holds the deno 2.9.3 expectation. Keep genuinely
+// unresolved cases ignored, but run a case as soon as its implementation lands.
 // ---------------------------------------------------------------------------
 
-// DEFECT: seekPosition() in cno/src/deno/03_fopen.ts clamps with Math.max(0, ...) on
-// all three whence branches, so a negative target silently becomes position 0 and a
-// following write corrupts the head of the file. deno throws (os error 131) and leaves
-// the file untouched. NOTE: tests/deno/fs-file.test.ts:359-361 currently asserts the
-// corrupted result and must be converted to a `rejects` when this is fixed.
-Deno.test({ name: 'deno oracle: negative seek rejects instead of clamping to zero', ignore: true }, async () => {
+// REGRESSION GUARD (was a defect, fixed 2026-08-10): seekPosition() in
+// cno/src/deno/03_fopen.ts used to clamp with Math.max(0, ...) on all three whence
+// branches, so a negative target silently became position 0 and a following write
+// corrupted the head of the file ("ABCDEFGHIJ" -> "ZZCDEFGHIJ"). It now throws, matching
+// deno, which raises os error 131 and leaves the file untouched. The companion assertion
+// in tests/deno/fs-file.test.ts had snapshotted the corrupted bytes and has been
+// converted to a rejects(); do not re-snapshot this runtime's output there.
+Deno.test('deno oracle: negative seek rejects instead of clamping to zero', async () => {
     await withTempDir('deno-oracle-seek', async (dir) => {
         const file = join(dir, 'seek.txt');
         await Deno.writeTextFile(file, 'ABCDEFGHIJ');
@@ -253,12 +254,14 @@ Deno.test({ name: 'deno oracle: negative seek rejects instead of clamping to zer
     });
 });
 
-// DEFECT: a failed async spawn leaves the uv_process_t linked into the loop handle
-// queue while cno/src/mod_process.c frees the containing struct, so the process
-// segfaults at teardown (exit 139) even though the error was caught correctly.
-// Root cause: circu.js/src/mod_process.c fail path calls tjs__free(p) without
-// uv_close(), and uv_spawn registers the handle before it can fail.
-Deno.test({ name: 'deno oracle: a caught spawn failure still exits cleanly', ignore: true, timeout: 30000 }, async () => {
+// REGRESSION GUARD (was a defect, fixed 2026-08-10): a failed async spawn used to leave
+// the uv_process_t linked into the loop handle queue while the fail path in
+// circu.js/src/mod_process.c freed the containing struct, so the process segfaulted at
+// teardown with exit 139 even though the error had been caught correctly. uv_spawn
+// registers the handle via uv__process_init -> uv__handle_init before it can fail, so the
+// fail path now hands it to uv_close() instead of tjs__free(). Measured before the fix:
+// 13/15 runs exited 139; deno always 0. Verified fixed in the 2026-08-10 12:58 binary.
+Deno.test({ name: 'deno oracle: a caught spawn failure still exits cleanly', timeout: 30000 }, async () => {
     const child = await new Deno.Command(Deno.execPath(), {
         args: ['eval', 'try { await new Deno.Command("definitely-not-a-real-binary-cno-oracle").output(); } catch { /* handled */ }'],
         stdout: 'piped',

@@ -877,14 +877,12 @@ Deno.test('sqlite: an int64 past 2**53 is never returned silently wrong', () => 
     db.exec('CREATE TABLE big (v INTEGER)');
     db.exec('INSERT INTO big VALUES (9007199254740993)');
 
-    // The binding reads int64 through JS_NewInt64, which narrows to double, so
-    // 9007199254740993 came back as ...992 and setReadBigInts(true) then widened
-    // the already-broken double. Both paths must now refuse rather than lie.
+    // The default path rejects an INTEGER that cannot be represented safely.
     const outOfRange = (err: unknown) => (err as { code?: string })?.code === 'ERR_OUT_OF_RANGE';
     throws(() => db.prepare('SELECT v FROM big').get(), outOfRange);
     const wide = db.prepare('SELECT v FROM big');
     wide.setReadBigInts(true);
-    throws(() => wide.get(), outOfRange);
+    strictEqual((wide.get() as { v: bigint }).v, 9007199254740993n);
 
     // Safe integers stay exact on both paths.
     db.exec('CREATE TABLE ok (v INTEGER)');
@@ -901,10 +899,31 @@ Deno.test('sqlite: an int64 past 2**53 is never returned silently wrong', () => 
     mn.setReadBigInts(true);
     strictEqual((mn.get() as { v: bigint }).v, -9223372036854775808n);
 
-    // A large REAL is not an int64 and must not be widened or rejected.
-    const real = db.prepare('SELECT 1e300 AS v');
-    real.setReadBigInts(true);
-    strictEqual((real.get() as { v: number }).v, 1e300);
-    strictEqual((db.prepare('SELECT 1e300 AS v').get() as { v: number }).v, 1e300);
+    // A REAL is never an int64: readBigInts keys off the column's storage class,
+    // not the value's shape, so every magnitude stays a Number on both paths.
+    // 1e300 alone proved nothing here -- it sits above int64 range and so could
+    // never reach the integer path. The magnitudes that matter are the
+    // integer-valued REALs *inside* int64 range, where a shape-guessing
+    // converter widens to BigInt or throws ERR_OUT_OF_RANGE. Values are node
+    // v24.18.0's, measured on this machine.
+    for (const [sql, expected] of [
+        ['9007199254740992.0', 9007199254740992],   // 2**53, integral, in range
+        ['1000000000000000000.0', 1e18],            // ~nanosecond epoch
+        ['-1000000000000000000.0', -1e18],          // negative, integral
+        ['9000000000000000000.0', 9e18],            // just under 2**63
+        ['2.0', 2],                                 // small integral REAL
+        ['1.5', 1.5],                               // non-integral control
+        ['1e300', 1e300],                           // above int64 range
+    ] as [string, number][]) {
+        strictEqual((db.prepare(`SELECT typeof(${sql}) AS t`).get() as { t: string }).t, 'real');
+        const off = db.prepare(`SELECT ${sql} AS v`).get() as { v: number };
+        strictEqual(off.v, expected, `readBigInts off: ${sql}`);
+        strictEqual(typeof off.v, 'number', `readBigInts off must not widen: ${sql}`);
+        const on = db.prepare(`SELECT ${sql} AS v`);
+        on.setReadBigInts(true);
+        const got = on.get() as { v: number };
+        strictEqual(got.v, expected, `readBigInts on: ${sql}`);
+        strictEqual(typeof got.v, 'number', `readBigInts on must not widen a REAL: ${sql}`);
+    }
     db.close();
 });

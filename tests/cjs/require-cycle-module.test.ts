@@ -239,6 +239,25 @@ Deno.test('cycle: the evaluation window closes even when evaluation throws', () 
         'a throwing evaluation must not leave the module permanently in flight');
 });
 
+Deno.test('compiler: a source read failure does not strand ESM load state', () => {
+    const dir = makePosixTempDir('esm-load-failure');
+    const missing = `${dir}/missing.mjs`;
+    const esm = new EsmCompiler(createConfig({ cacheDir: `${dir}/cache`, disableLock: true }));
+    const info = infoFor(missing, 'esm');
+
+    throws(() => esm.load(info), /./);
+    strictEqual(esm.isInFlight(missing), false,
+        'a failed source read must clear the in-flight path');
+    strictEqual(esm.hasPendingLoads(), false,
+        'a failed source read must clear the loading cache key');
+
+    // A retry must execute the normal read path and fail again, rather than
+    // returning the empty circular-dependency placeholder left by the first try.
+    throws(() => esm.load(info), /./);
+    strictEqual(esm.isInFlight(missing), false);
+    strictEqual(esm.hasPendingLoads(), false);
+});
+
 // --- 10. self-require: the shortest path to .eval() on an EVALUATING module --
 //
 // A module that require()s itself is the minimal require()-crossed cycle. Node:

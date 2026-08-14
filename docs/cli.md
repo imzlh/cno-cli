@@ -25,6 +25,7 @@ are installed.
 | Command | Owner | Notes |
 | --- | --- | --- |
 | `run <file>` | `src/commands/run.ts` | Creates CTS runtime and evaluates entry |
+| `serve <file>` | `src/commands/serve.ts` | Loads the default server export and calls `Deno.serve()` |
 | implicit `<file>` | `src/main.ts` -> `run.ts` | First non-command token becomes entry |
 | `eval <code>` | `src/commands/eval.ts` | Evaluates source entry |
 | `repl` | `src/commands/repl/` | Interactive evaluator |
@@ -34,6 +35,12 @@ are installed.
 | `pack <file>` | `src/commands/pack.ts` | Writes a self-contained `.jspack` module container |
 | `setup` | `src/commands/setup.ts` | Installs Node builtin polyfills into cache |
 | `exec <bin>` | `src/commands/bin.ts` | Resolves and spawns npm/package binaries |
+
+`serve` evaluates the entry module, reads its default export, and starts
+`Deno.serve()` with that export's `fetch` and optional `onListen` handlers. It
+requires a non-null object default export with a function-valued `fetch`; an
+optional `onListen` must also be a function. Other properties are ignored. It
+does not run a file that calls `Deno.serve()` itself; use `run` for that shape.
 
 `fmt`, `lint`, and `upgrade` are currently recognized but not implemented.
 

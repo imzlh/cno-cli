@@ -20,9 +20,12 @@ interface HooksInternals {
     droppedServeBodyRequests: Set<string>;
     fetchBodyTotals: Map<string, number>;
     serveBodyTotals: Map<string, number>;
-    fetchBodyBuffers: Map<string, unknown>;
-    serveBodyBuffers: Map<string, unknown>;
+    fetchBodyBuffers: Map<string, { chunks: Uint8Array[]; total: number; createdAt: number }>;
+    serveBodyBuffers: Map<string, { chunks: Uint8Array[]; total: number; createdAt: number }>;
     completedFetchBodies: Map<string, unknown>;
+    completedServeBodies: Map<string, unknown>;
+    fetchBodyBufferBytes: number;
+    serveBodyBufferBytes: number;
     streamRegisteredAt: Map<string, number>;
     lastBufferCleanupTime: number;
     cleanupStaleBodyBuffers(): void;
@@ -101,6 +104,39 @@ Deno.test('hooks: an omitted source still works and stays reclaimable', () => {
     runReaper(priv);
     strictEqual(priv.liveStreamedFetchRequests.size, 0, 'reclaimed from the fetch set');
     strictEqual(priv.liveStreamedServeRequests.size, 0, 'reclaimed from the serve set');
+});
+
+Deno.test('hooks: enabling fetch streaming returns and releases buffered history', () => {
+    const { hooks, priv } = newHooks();
+    const first = new TextEncoder().encode('alpha-');
+    const second = new TextEncoder().encode('beta');
+    priv.fetchBodyBuffers.set('history', {
+        chunks: [first, second],
+        total: first.byteLength + second.byteLength,
+        createdAt: Date.now(),
+    });
+    priv.fetchBodyBufferBytes = first.byteLength + second.byteLength;
+
+    const buffered = hooks.enableStreamingForRequest('history', 'fetch');
+    strictEqual(new TextDecoder().decode(buffered), 'alpha-beta');
+    strictEqual(priv.fetchBodyBuffers.has('history'), false, 'the handed-off bytes must not remain retained');
+    strictEqual(priv.fetchBodyBufferBytes, 0);
+    ok(priv.liveStreamedFetchRequests.has('history'));
+});
+
+Deno.test('hooks: completed truncated history is handed off exactly once', () => {
+    const { hooks, priv } = newHooks();
+    priv.completedFetchBodies.set('completed', {
+        data: new TextEncoder().encode('prefix'),
+        createdAt: Date.now(),
+    });
+
+    strictEqual(
+        new TextDecoder().decode(hooks.enableStreamingForRequest('completed', 'fetch')),
+        'prefix',
+    );
+    strictEqual(hooks.enableStreamingForRequest('completed', 'fetch').byteLength, 0);
+    strictEqual(priv.completedFetchBodies.has('completed'), false);
 });
 
 Deno.test('hooks: a double console install still tears down cleanly', () => {

@@ -59,8 +59,9 @@
             "request": "launch",
             "program": "${workspaceFolder}/build/stage/cno.exe",
             "args": [
-                "run",
-                "${file}"
+                // "run",
+                // "${file}"
+                "serve", "_fresh/server.js"
             ],
             // "args": ["cache"],
             // "args": ["--inspect"],

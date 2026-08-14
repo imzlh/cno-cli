@@ -107,6 +107,7 @@ class DefinitiveError extends Error {}
 interface Target {
     proc: ChildProcess;
     readonly failure: Error | null;
+    readonly stderr: string;
     stop(): Promise<void>;
 }
 
@@ -118,10 +119,13 @@ interface Target {
 function startTarget(args: string[]): Target {
     const proc = spawn(CNO, args, {
         env: { ...process.env, CNO_SERVE_PORT: String(PORT) },
-        stdio: ['ignore', 'ignore', 'inherit'],
+        stdio: ['ignore', 'ignore', 'pipe'],
     });
     let failure: Error | null = null;
+    let stderr = '';
     let stopping = false;
+    proc.stderr?.setEncoding('utf8');
+    proc.stderr?.on('data', (chunk: string) => { stderr += chunk; });
     proc.on('error', (e: Error) => {
         failure ??= new DefinitiveError(`failed to spawn ${CNO}: ${e.message}`);
     });
@@ -135,6 +139,9 @@ function startTarget(args: string[]): Target {
         proc,
         get failure() {
             return failure;
+        },
+        get stderr() {
+            return stderr;
         },
         async stop() {
             stopping = true;
@@ -479,7 +486,7 @@ Deno.test({ name: 'deno: Deno.serve handles request body HEAD stream and handler
             method: 'POST',
             body: 'request-body',
         });
-        strictEqual(echoed.status, 200);
+        strictEqual(echoed.status, 200, target.stderr);
         strictEqual(await echoed.text(), 'request-body');
 
         const head = await fetch(`http://127.0.0.1:${PORT}/text`, { method: 'HEAD' });
@@ -493,6 +500,14 @@ Deno.test({ name: 'deno: Deno.serve handles request body HEAD stream and handler
         const bad = await fetch(`http://127.0.0.1:${PORT}/bad`);
         strictEqual(bad.status, 500);
         strictEqual(await bad.text(), 'Internal Server Error');
+
+        const thrown = await fetch(`http://127.0.0.1:${PORT}/throw`);
+        strictEqual(thrown.status, 500);
+        strictEqual(await thrown.text(), 'Internal Server Error');
+        await withTimeout((async () => {
+            while (!target.stderr.includes('serve-target-boom')) await sleep(10);
+        })());
+        ok(target.stderr.includes('Deno.serve request error'));
     } finally {
         await target.stop();
     }

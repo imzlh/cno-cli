@@ -42,6 +42,8 @@ const KNOWN_FLAGS = new Set<string>([
     'no-http', 'no-jsr', 'no-node', 'no-oxc', 'ignore-scripts',
     'npm-mode', 'polyfill', 'ext', 'cwd',
     'reload', 'r', 'precache', 'env', 'env-file', 'preload',
+    // serve
+    'port', 'host',
     // pack
     'out', 'o',
     // test
@@ -146,6 +148,7 @@ const PACK_FLAGS = new Set<string>(['out', 'o']);
 
 /** taskLookup (commands/task.ts:24) reads cwd + config; runTask reads eval. */
 const TASK_FLAGS = new Set<string>(['cwd', 'config', 'eval']);
+const SERVE_FLAGS = new Set<string>(['port', 'host']);
 
 function unionFlags(...sets: ReadonlySet<string>[]): Set<string> {
     const out = new Set<string>(GLOBAL_FLAGS);
@@ -162,6 +165,7 @@ function unionFlags(...sets: ReadonlySet<string>[]): Set<string> {
  */
 const COMMAND_FLAGS: Record<CnoSubcommand, Set<string>> = {
     run:     unionFlags(CONFIG_FLAGS, PROGRAM_FLAGS, INSPECT_FLAGS),
+    serve:   unionFlags(CONFIG_FLAGS, PROGRAM_FLAGS, INSPECT_FLAGS, SERVE_FLAGS),
     // `cno eval` shares flagsToConfig with run (eval.ts:59) and accepts the
     // eval/print pair on top. It has no entry directory, hence no env/preload.
     eval:    unionFlags(CONFIG_FLAGS, PROGRAM_FLAGS, INSPECT_FLAGS, EVAL_FLAGS),
@@ -226,6 +230,7 @@ function isDenoNoopFlag(name: string): boolean {
 
 const VALUE_FLAGS = new Set<string>([
     'cache-dir', 'lock-dir', 'npm-mode', 'polyfill', 'ext', 'cwd',
+    'port', 'host',
     'memory-limit', 'max-stack-size', 'concurrency', 'filter',
     'cert', 'config', 'import-map', 'lock', 'location', 'log-level',
     'seed', 'v8-flags',
@@ -248,6 +253,7 @@ const NODE_INSPECT_FLAGS = new Set<string>(['inspect', 'inspect-brk', 'inspect-w
  */
 const REQUIRED_VALUE_FLAGS = new Set<string>([
     'cache-dir', 'lock-dir', 'npm-mode', 'polyfill', 'ext', 'cwd',
+    'port', 'host',
     'memory-limit', 'max-stack-size', 'concurrency', 'filter',
     'cert', 'config', 'import-map', 'lock', 'location', 'log-level', 'seed',
     'require', 'import', 'loader', 'env', 'env-file', 'preload',
@@ -409,11 +415,11 @@ export function parseArgv(argv: string[]): ParsedCli {
     }
 
     function shouldStopParsingFlagsAfterPositional(): boolean {
-        // run/implicit-run: first positional is the script.
+        // run/serve/implicit-run: first positional is the script.
         // exec: first positional is the package/bin name (pnpx-style); rest is for that bin.
         // task: the first positional is the task name; all following tokens
         // belong to the task command (including flags unknown to cno).
-        return cmd === null || cmd === 'run' || cmd === 'exec' || cmd === 'task';
+        return cmd === null || cmd === 'run' || cmd === 'serve' || cmd === 'exec' || cmd === 'task';
     }
 
     function consumeEvalAlias(print: boolean): void {
@@ -618,15 +624,15 @@ export function parseArgv(argv: string[]): ParsedCli {
         i++;
     }
 
-    const splitPreCommand = splitNodeRuntimeTokens(preCommandTokens, cmd === 'run');
-    const splitAction = splitNodeRuntimeTokens(actionTokens, cmd === 'run');
-    const runLike = cmd === null || cmd === 'run';
+    const runLike = cmd === null || cmd === 'run' || cmd === 'serve';
+    const splitPreCommand = splitNodeRuntimeTokens(preCommandTokens, cmd === 'run' || cmd === 'serve');
+    const splitAction = splitNodeRuntimeTokens(actionTokens, cmd === 'run' || cmd === 'serve');
     const internalArgs = runLike
         ? appendTokens(splitPreCommand.internal.slice(), splitAction.internal)
         : preCommandTokens.slice();
     const actionArgs = cmd === null
         ? splitPreCommand.rest
-        : cmd === 'run'
+        : runLike
             ? appendTokens(splitPreCommand.rest.slice(), splitAction.rest)
             : actionTokens.slice();
     const rawArgs: Args = {

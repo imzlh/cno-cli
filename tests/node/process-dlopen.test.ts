@@ -3,7 +3,7 @@
  * Success path: repo-local N-API fixture (built from addon.c if needed).
  */
 import { strictEqual, ok, throws } from 'node:assert';
-import { existsSync, mkdtempSync, openSync, readSync, closeSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, openSync, readSync, closeSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -128,7 +128,11 @@ function buildFixturePosix(): string | null {
  * Returns the path, or null when no C toolchain is available to build it.
  */
 function ensureNapiFixture(): string | null {
-    if (existsSync(FIXTURE_NODE) && hasNativeObjectFormat(FIXTURE_NODE)) return FIXTURE_NODE;
+    if (existsSync(FIXTURE_NODE) && hasNativeObjectFormat(FIXTURE_NODE)
+        && statSync(FIXTURE_NODE).mtimeMs >= statSync(join(FIXTURE_DIR, 'addon.c')).mtimeMs
+        && statSync(FIXTURE_NODE).mtimeMs >= statSync(join(FIXTURE_DIR, 'cno.def')).mtimeMs) {
+        return FIXTURE_NODE;
+    }
 
     const reason = process.platform === 'win32' ? buildFixtureMsvc() : buildFixturePosix();
     if (reason !== null) {
@@ -188,6 +192,27 @@ Deno.test('process.dlopen: loads Node-API fixture into module.exports', () => {
     strictEqual(exp.tag, 'cno-napi-fixture');
     ok(typeof exp.hello === 'function', 'hello export is a function');
     strictEqual((exp.hello as () => string)(), 'from-napi');
+});
+
+Deno.test('process.dlopen: failed wrap/finalizer keeps native ownership with addon', () => {
+    const addon = ensureNapiFixture();
+    if (!addon) return;
+
+    const mod: { exports?: unknown } = { exports: {} };
+    process.dlopen(mod, addon);
+    const fn = (mod.exports as {
+        tryFailedAttachment?: (mode: number, target: object) => number;
+    }).tryFailedAttachment;
+    ok(typeof fn === 'function');
+
+    for (const mode of [0, 1]) {
+        const encoded = fn(mode, Object.preventExtensions({}));
+        const status = Math.trunc(encoded / 100);
+        const synchronousFinalizers = encoded % 100;
+        ok(status !== 0, `mode ${mode}: attaching to a non-extensible object must fail`);
+        strictEqual(synchronousFinalizers, 0,
+            `mode ${mode}: a failed attachment must not run the addon finalizer`);
+    }
 });
 
 Deno.test({

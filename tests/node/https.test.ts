@@ -159,6 +159,57 @@ Deno.test({ name: 'https: createServer serves a real TLS response', timeout: 100
     }
 });
 
+Deno.test({ name: 'https: server.close lets an active response finish', timeout: 15000 }, async () => {
+    const { cert, key } = ssl.createSelfSignedCert({ commonName: '127.0.0.1', days: 1 });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const server = https.createServer({ cert, key }, async (_req, res) => {
+        entered.resolve();
+        await release.promise;
+        res.end('complete');
+    });
+
+    await new Promise<void>((resolve, reject) => {
+        server.listen(0, '127.0.0.1', resolve);
+        server.once('error', reject);
+    });
+
+    let closeDone: Promise<void> | null = null;
+    let closed = false;
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        const response = new Promise<string>((resolve, reject) => {
+            const req = https.get(`https://127.0.0.1:${addr.port}/`, { rejectUnauthorized: false }, (res) => {
+                let body = '';
+                res.setEncoding('utf8');
+                res.on('data', (chunk: string) => body += chunk);
+                res.on('end', () => resolve(body));
+            });
+            req.once('error', reject);
+        });
+
+        await entered.promise;
+        closeDone = new Promise<void>((resolve, reject) => {
+            server.close((err?: Error) => {
+                if (err) { reject(err); return; }
+                closed = true;
+                resolve();
+            });
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        strictEqual(closed, false, 'close callback must wait for the active HTTPS request');
+        release.resolve();
+        strictEqual(await response, 'complete');
+        await closeDone;
+        strictEqual(closed, true);
+    } finally {
+        release.resolve();
+        if (closeDone) await closeDone.catch(() => {});
+        else if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+});
+
 Deno.test({ name: 'https: request honors custom lookup with global agent', timeout: 10000 }, async () => {
     const { cert, key } = ssl.createSelfSignedCert({ commonName: '127.0.0.1', days: 1 });
     const server = https.createServer({ cert, key }, (req, res) => {
@@ -718,6 +769,36 @@ Deno.test({ name: 'https: keep-alive reuses one TLS agent across sequential requ
     } finally {
         try { agent.destroy(); } catch { /* already closed */ }
         server.close();
+    }
+});
+
+Deno.test({ name: 'https: URL requests reuse the TLS Agent socket', timeout: 25000 }, async () => {
+    const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
+    const server = https.createServer({ cert, key }, (_req, res) => res.end('served'));
+    const agent = new https.Agent({ ca: cert, keepAlive: true, maxSockets: 1 });
+    await new Promise<void>((resolve, reject) => {
+        server.listen(0, '127.0.0.1', () => resolve());
+        server.once('error', reject);
+    });
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        const reused: boolean[] = [];
+        const url = `https://127.0.0.1:${addr.port}/`;
+        for (let i = 0; i < 3; i++) {
+            await new Promise<void>((resolve, reject) => {
+                const req = https.get(url, { agent, servername: 'localhost' }, res => {
+                    reused.push(req.reusedSocket);
+                    res.resume();
+                    res.once('end', resolve);
+                });
+                req.once('error', reject);
+            });
+        }
+        strictEqual(reused.join(','), 'false,true,true');
+    } finally {
+        agent.destroy();
+        await new Promise<void>(resolve => server.close(() => resolve()));
     }
 });
 

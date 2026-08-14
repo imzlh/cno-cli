@@ -39,6 +39,21 @@ Deno.test('cli: run stops flag parsing after entry file', () => {
     deepStrictEqual(cli.rawArgs.args, ['--user-flag', 'value']);
 });
 
+Deno.test('cli: serve parses listener options and forwards entry arguments', () => {
+    const cli = parseArgv([
+        'serve', '--port', '3000', '--host', '127.0.0.1',
+        'server.ts', '--port=script-argument', 'value',
+    ]);
+    strictEqual(cli.cmd, 'serve');
+    strictEqual(cli.flags.port, '3000');
+    strictEqual(cli.flags.host, '127.0.0.1');
+    deepStrictEqual(cli.positional, ['server.ts', '--port=script-argument', 'value']);
+    deepStrictEqual(unknownFlags(cli), []);
+    strictEqual(cli.rawArgs.action, 'serve');
+    strictEqual(cli.rawArgs.entry, 'server.ts');
+    deepStrictEqual(cli.rawArgs.args, ['--port=script-argument', 'value']);
+});
+
 Deno.test('cli: implicit run keeps pre-entry runtime flags separate', () => {
     const cli = parseArgv(['--reload', 'script.ts', '--script-flag']);
     strictEqual(cli.cmd, null);

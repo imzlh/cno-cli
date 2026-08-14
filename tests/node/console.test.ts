@@ -20,6 +20,18 @@ async function captureWarnings(fn: () => void): Promise<string[]> {
 
 // --- 1. console.log/info/warn/error write to the right stream --------------
 
+Deno.test('console: Console is callable without new', async () => {
+    let out = '';
+    const stdout = new Writable({ write(c: Buffer, _e, cb) { out += c.toString(); cb(); } });
+    const CallableConsole = Console as unknown as (stream: NodeJS.WritableStream) => InstanceType<typeof Console>;
+    const c = CallableConsole(stdout);
+    ok(c instanceof Console);
+    strictEqual(Console.name, 'Console');
+    c.log('called');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    strictEqual(out, 'called\n');
+});
+
 Deno.test('console: log/info go to stdout, warn/error go to stderr', async () => {
     let out = '';
     let err = '';

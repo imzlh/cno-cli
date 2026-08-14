@@ -21,6 +21,15 @@ function resolveFlagPath(value: string | boolean | undefined, base: string): str
     return isAbsolute(path) ? normalizePath(path) : normalizePath(joinPaths(base, path));
 }
 
+/** os.exit() is a native libc exit and does not execute JavaScript finally
+ * blocks. Close task-owned locks before delegating so an explicit task status
+ * cannot leave cts.lock handles open. */
+function exitWithTaskLock(lockStore: LockStore, code: number): never {
+    try { lockStore.close(); } catch { /* preserve the child status */ }
+    os.exit(code);
+    throw new Error('unreachable');
+}
+
 function taskLookup(flags: Record<string, string | boolean>): {
     invocationCwd: string;
     requestedConfigPath: string | undefined;
@@ -61,7 +70,7 @@ export async function runTask(args: string[], flags: Record<string, string | boo
             });
             if (result) {
                 const code = await result.runner.runEval(evalFlag, args);
-                if (code !== 0) os.exit(code);
+                if (code !== 0) exitWithTaskLock(lockStore, code);
                 return;
             }
             // No tasks config: still run ad-hoc shell (Deno allows task --eval without named tasks).
@@ -75,7 +84,7 @@ export async function runTask(args: string[], flags: Record<string, string | boo
                 { ...os.environ(), ...taskShellEnv({ INIT_CWD: invocationCwd }, cwd) },
                 cwd,
             );
-            if (code !== 0) os.exit(code);
+            if (code !== 0) exitWithTaskLock(lockStore, code);
         } finally {
             lockStore.close();
         }
@@ -91,6 +100,8 @@ export async function runTask(args: string[], flags: Record<string, string | boo
             initCwd: invocationCwd,
         });
         if (!result) {
+            // fatal() calls os.exit() directly, so close the lock before it.
+            try { lockStore.close(); } catch { /* preserve diagnostics */ }
             fatal(new Error(
                 'Cannot find tasks everywhere. Please add some in package.json or deno.json'
             ), 'cno task');
@@ -107,12 +118,12 @@ export async function runTask(args: string[], flags: Record<string, string | boo
         const matched = runner.matchNames(name);
         if (!matched.length) {
             const code = await runner.run(name, rest);
-            if (code !== 0) os.exit(code);
+            if (code !== 0) exitWithTaskLock(lockStore, code);
             return;
         }
         for (const taskName of matched) {
             const code = await runner.run(taskName, rest);
-            if (code !== 0) os.exit(code);
+            if (code !== 0) exitWithTaskLock(lockStore, code);
         }
     } finally {
         lockStore.close();

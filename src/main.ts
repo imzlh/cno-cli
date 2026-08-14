@@ -40,6 +40,7 @@ import { runEval } from './commands/eval';
 import { runPack } from './commands/pack';
 import { runRepl } from './commands/repl';
 import { runFile } from './commands/run';
+import { runServe } from './commands/serve';
 import { runSetup } from './commands/setup';
 import { printTaskList, runTask, taskExists } from './commands/task';
 import { parseTestChildArgs, runTest, TEST_CHILD_ENV, type TestChildMessage } from './commands/test';
@@ -291,6 +292,45 @@ function resolveExitCode(): number {
 }
 
 /**
+ * Is a teardown dispatch ('beforeExit' or 'exit') currently running?
+ *
+ * Published by cno/src/node/process/mod.ts on a `Symbol.for()` slot; see the
+ * comment there for why arming the poll inside that window spins forever.
+ */
+const IN_TEARDOWN_SLOT = Symbol.for('cno.runtime.inTeardown');
+
+function inTeardown(): boolean {
+    try {
+        return (globalThis as unknown as Record<symbol, unknown>)[IN_TEARDOWN_SLOT] === true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Hand a nonzero status to the runtime and report whether it stuck.
+ *
+ * `os.setExitCode()` writes the field TJS_Run resolves its return value from, so
+ * once this succeeds the status no longer depends on calling `os.exit()` — which
+ * matters because that call is immediate and skips the natural-drain teardown
+ * (both 'beforeExit' and 'beforeunload'). Returns false on a core that predates
+ * the binding, where the forced exit remains the only way the status is carried.
+ *
+ * `requestedExitCode` reaches the runtime only here: unlike `process.exitCode` it
+ * is not an assignment the process object's setter can intercept.
+ */
+function pushRuntimeExitCode(code: number): boolean {
+    const setExitCode = (os as unknown as Record<string, unknown>).setExitCode;
+    if (typeof setExitCode !== 'function') return false;
+    try {
+        (setExitCode as (v?: number) => void)(code);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Ask for a nonzero status without stopping the loop. First nonzero wins, and an
  * already-set `process.exitCode` is never clobbered.
  */
@@ -382,6 +422,18 @@ function armExitWhenIdle(): void {
             runProcessCleanup();
             return;
         }
+        // A nonzero status no longer requires os.exit(): pushRuntimeExitCode has
+        // put it where TJS_Run resolves its return value from, so standing down
+        // lets the loop drain naturally — and the natural drain is what fires
+        // 'beforeExit' and 'beforeunload', both of which the immediate exit
+        // silently skipped for every run that set a code (the gap the comment on
+        // watchProcessExitCode below acknowledged). Falls back to the forced exit
+        // when the binding is absent, so an older core still reports the status.
+        if (pushRuntimeExitCode(code)) {
+            idleExitArmed = false;
+            runProcessCleanup();
+            return;
+        }
         exitAfterCleanup(code);
     };
     timers.setTimeout(tick, 0);
@@ -420,7 +472,11 @@ function watchProcessExitCode(): void {
                 // Throws (non-integer) propagate to the assigning code, as before.
                 Reflect.apply(set, this, [value]);
                 const code = currentProcessExitCode();
-                if (typeof code === 'number' && code !== 0) armExitWhenIdle();
+                // Not during teardown: the inner setter has already pushed the
+                // value into the runtime, so the status is carried either way,
+                // and arming the poll here would queue work that makes the C
+                // re-dispatch 'beforeExit' — which assigns again, forever.
+                if (typeof code === 'number' && code !== 0 && !inTeardown()) armExitWhenIdle();
             },
         });
     } catch {
@@ -534,6 +590,15 @@ async function dispatch(): Promise<void> {
             return runTest(cli.positional, cli.flags);
         case 'setup':
             return runSetup(cli.flags);
+        case 'serve': {
+            const [file, ...args] = cli.positional;
+            if (!file) {
+                console.error(`Usage: ${C.cyan('cno serve')} ${C.cyan('<file>')} [args…]`);
+                os.exit(1);
+                return;
+            }
+            return runServe(file, args, cli.flags, cli.rawArgs);
+        }
         case 'run':
         case null: {
             // `cno run <file>` or `cno <file>` (implicit run).

@@ -25,6 +25,14 @@ Deno.test('zlib: deflateSync then inflateSync round-trips', () => {
     strictEqual(decodeUtf8(back), s);
 });
 
+Deno.test('zlib: inflateSync info reports consumed bytes before trailing data', () => {
+    const compressed = zlib.deflateSync(Buffer.from('payload'));
+    const input = Buffer.concat([compressed, Buffer.from('trailing')]);
+    const result = zlib.inflateSync(input, { info: true });
+    strictEqual(result.buffer.toString(), 'payload');
+    strictEqual(result.engine.bytesWritten, compressed.byteLength);
+});
+
 Deno.test('zlib: deflateRawSync then inflateRawSync round-trips', () => {
     const s = 'raw deflate payload';
     const d = zlib.deflateRawSync(encodeUtf8(s));

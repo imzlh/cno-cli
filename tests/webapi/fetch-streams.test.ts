@@ -139,6 +139,7 @@ Deno.test({ name: 'fetch upstream node: accepts fs ReadStream request bodies', t
         const response = await fetch(`http://127.0.0.1:${port}/echo`, {
             method: 'POST',
             body: createReadStream(file) as unknown as BodyInit,
+            duplex: 'half',
         });
         strictEqual(await response.text(), payload);
     } finally {
@@ -160,6 +161,44 @@ Deno.test({ name: 'fetch: follows 302 redirect by default', timeout: 10000 }, as
         strictEqual(res.status, 200);
         strictEqual(res.url, `http://127.0.0.1:${port}/final`);
         strictEqual(await res.text(), 'final-body');
+    } finally {
+        await closeServer(server);
+    }
+});
+
+Deno.test({ name: 'fetch: non-redirect 3xx responses resolve normally', timeout: 10000 }, async () => {
+    const started = await startServer((req, res) => {
+        if (req.url === '/no-location') { res.statusCode = 302; res.end('not a redirect'); return; }
+        res.statusCode = 304;
+        res.setHeader('x-cache', 'hit');
+        res.end();
+    });
+    if (!started) return;
+    const { server, port } = started;
+    try {
+        const noLocation = await fetch(`http://127.0.0.1:${port}/no-location`);
+        strictEqual(noLocation.status, 302);
+        strictEqual(await noLocation.text(), 'not a redirect');
+        const notModified = await fetch(`http://127.0.0.1:${port}/not-modified`);
+        strictEqual(notModified.status, 304);
+        strictEqual(notModified.headers.get('x-cache'), 'hit');
+        strictEqual(notModified.body, null);
+    } finally {
+        await closeServer(server);
+    }
+});
+
+Deno.test({ name: 'fetch: redirect error ignores 3xx without Location', timeout: 10000 }, async () => {
+    const started = await startServer((_req, res) => {
+        res.statusCode = 302;
+        res.end('not a redirect');
+    });
+    if (!started) return;
+    const { server, port } = started;
+    try {
+        const response = await fetch(`http://127.0.0.1:${port}/`, { redirect: 'error' });
+        strictEqual(response.status, 302);
+        strictEqual(await response.text(), 'not a redirect');
     } finally {
         await closeServer(server);
     }

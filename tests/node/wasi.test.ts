@@ -99,12 +99,12 @@ Deno.test('wasi: initialize with invalid instance throws ERR_INVALID_ARG_TYPE', 
     strictEqual(err?.code, 'ERR_INVALID_ARG_TYPE');
 });
 
-Deno.test('wasi: initialize after failed start reports already started', () => {
+Deno.test('wasi: a failed start does NOT mark the instance started', () => {
     const wasi = new WASICtor({ version: 'preview1' });
     try {
         Reflect.apply(wasi.start, wasi, [{}]);
     } catch {
-        // Start still marks the instance as started in Node.
+        /* Argument validation rejects the bogus instance. */
     }
 
     let err: NodeJS.ErrnoException | null = null;
@@ -114,5 +114,16 @@ Deno.test('wasi: initialize after failed start reports already started', () => {
         err = error as NodeJS.ErrnoException;
     }
     ok(err instanceof Error);
-    strictEqual(err?.code, 'ERR_WASI_ALREADY_STARTED');
+    /*
+     * node validates its arguments BEFORE marking the instance consumed, so a
+     * start() that threw leaves the instance unstarted and the next call fails
+     * its own argument check rather than reporting ERR_WASI_ALREADY_STARTED.
+     *
+     * Measured on node v24.18.0, all four orderings -- start-then-initialize,
+     * start-then-start, initialize-then-start, initialize-then-initialize --
+     * every call returns ERR_INVALID_ARG_TYPE. This test previously asserted
+     * ERR_WASI_ALREADY_STARTED on the stated belief that "start still marks the
+     * instance as started in Node", which that measurement contradicts.
+     */
+    strictEqual(err?.code, 'ERR_INVALID_ARG_TYPE');
 });

@@ -111,6 +111,7 @@ Deno.test('cache command: collectSpecifiers merges deno imports and package depe
             // comments are accepted
             "imports": {
                 "std/": "https://deno.land/std@0.224.0/",
+                "@/": "./",
                 "local": "./local.ts",
                 "blank": "   ",
                 "bad": { "target": "./bad.ts" }
@@ -137,9 +138,11 @@ Deno.test('cache command: collectSpecifiers merges deno imports and package depe
             },
         }));
 
+        // Trailing-slash targets ("std/", "@/") are directory prefixes, not
+        // modules: precaching them verbatim asks the resolver for a directory
+        // and fails the whole scan. Reachable subpaths come via the entry graph.
         deepStrictEqual([...collectSpecifiers(root)].sort(), [
             './local.ts',
-            'https://deno.land/std@0.224.0/',
             'npm:@scope/gamma@~3.1.0',
             'npm:alpha@^1.0.0',
             'npm:beta@2.0.0',

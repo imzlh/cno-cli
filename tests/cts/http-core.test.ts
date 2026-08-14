@@ -93,6 +93,21 @@ Deno.test('http h1: response parser handles incremental headers and body', () =>
     strictEqual(dec(concat(...data)), 'hello');
 });
 
+Deno.test('http h1: response parser joins callback fragments across feed boundaries', () => {
+    const parser = new HttpResponseParser();
+    parser.feed(enc('HTTP/1.1 200 O'));
+    parser.feed(enc('K\r\nContent-Len'));
+    parser.feed(enc('gth: 3\r\nX-Test: a'));
+    parser.feed(enc('bc\r\n\r\nxyz'));
+
+    strictEqual(parser.getStatusText(), 'OK');
+    deepStrictEqual(parser.getHeaders(), [
+        ['content-length', '3'],
+        ['x-test', 'abc'],
+    ]);
+    strictEqual(dec(concat(...parser.getBodyChunks())), 'xyz');
+});
+
 Deno.test('http h1: response parser buffers body when no data callback is set', () => {
     const parser = new HttpResponseParser();
     parser.feed(enc('HTTP/1.0 204 No Content\r\nContent-Length: 0\r\n\r\n'));
@@ -118,6 +133,56 @@ Deno.test('http h1: parse errors call onError instead of throwing when installed
 
     const throwingParser = new HttpResponseParser();
     throws(() => throwingParser.feed(enc('not a response\r\n\r\n')), /HTTP parse error/);
+});
+
+Deno.test('http h1: response parser skips informational responses and preserves final body', () => {
+    const parser = new HttpResponseParser();
+    const statuses: number[] = [];
+    const body: Uint8Array[] = [];
+    parser.onHeadersComplete = (status) => statuses.push(status);
+    parser.onData = (chunk) => body.push(chunk);
+    parser.feed(enc('HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello'));
+    deepStrictEqual(statuses, [200]);
+    strictEqual(dec(concat(...body)), 'hello');
+    strictEqual(parser.getStatusCode(), 200);
+});
+
+Deno.test('http h1: response parser handles informational response split across reads', () => {
+    const parser = new HttpResponseParser();
+    const statuses: number[] = [];
+    const body: Uint8Array[] = [];
+    parser.onHeadersComplete = (status) => statuses.push(status);
+    parser.onData = (chunk) => body.push(chunk);
+    parser.feed(enc('HTTP/1.1 100 Continue\r\n\r\n'));
+    parser.feed(enc('HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok'));
+    deepStrictEqual(statuses, [200]);
+    strictEqual(dec(concat(...body)), 'ok');
+    strictEqual(parser.isCompleted, true);
+});
+
+Deno.test('http h1: gzip response validates and emits complete decoded body', () => {
+    const source = enc('compressed response payload');
+    const compressed = createCompressor('gzip')!(source);
+    const parser = new HttpResponseParser();
+    const body: Uint8Array[] = [];
+    parser.onData = (chunk) => body.push(chunk);
+    const head = enc(`HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: ${compressed.length}\r\n\r\n`);
+    parser.feed(concat(head, compressed));
+    strictEqual(dec(concat(...body)), dec(source));
+    strictEqual(parser.isCompleted, true);
+});
+
+Deno.test('http h1: truncated gzip response fails completion', () => {
+    const source = enc('truncated compressed response');
+    const compressed = createCompressor('gzip')!;
+    const truncated = compressed(source).slice(0, -8);
+    const parser = new HttpResponseParser();
+    parser.feed(concat(
+        enc(`HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: ${truncated.length}\r\n\r\n`),
+        truncated,
+    ));
+    parser.finishOnEof();
+    strictEqual(parser.isCompleted, false);
 });
 
 Deno.test('http zlib: accept-encoding ignores q=0 and picks supported codecs', () => {
