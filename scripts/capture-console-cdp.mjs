@@ -34,9 +34,13 @@ const child = spawn(runtime, childArgs, {
 	windowsHide: true,
 })
 
+let childError
 let stderr = ''
 let stdout = ''
 let wsUrl = ''
+child.once('error', error => {
+	childError = error
+})
 child.stderr.setEncoding('utf8')
 child.stdout.setEncoding('utf8')
 child.stderr.on('data', chunk => {
@@ -73,9 +77,9 @@ try {
 	await cdp.send('Runtime.enable')
 	await cdp.send('Console.enable')
 	await cdp.send('Debugger.enable')
-	await cdp.send('Runtime.runIfWaitingForDebugger').catch(() => undefined)
+	await cdp.send('Runtime.runIfWaitingForDebugger')
 
-	await waitForExitOrEvents(child, events, timeoutMs)
+	await waitForExitOrEvents(child, events, timeoutMs, () => childError)
 	ws.close()
 
 	const result = {
@@ -196,10 +200,11 @@ function isInterestingEvent(msg) {
 		String(msg.params?.url ?? '').includes('console-sample.ts')
 }
 
-async function waitForExitOrEvents(child, events, timeoutMs) {
+async function waitForExitOrEvents(child, events, timeoutMs, readChildError) {
 	const deadline = Date.now() + timeoutMs
 	while (Date.now() < deadline) {
-		if (child.exitCode != null) return
+		const childError = readChildError()
+		if (childError) throw childError
 		const consoleEvents = events.filter(e =>
 			e.method === 'Runtime.consoleAPICalled' ||
 			e.method === 'Console.messageAdded'
@@ -208,8 +213,17 @@ async function waitForExitOrEvents(child, events, timeoutMs) {
 			await delay(300)
 			return
 		}
+		if (child.exitCode != null) {
+			await delay(300)
+			if (events.filter(e =>
+				e.method === 'Runtime.consoleAPICalled' ||
+				e.method === 'Console.messageAdded'
+			).length >= 4) return
+			throw new Error(`Runtime exited with ${consoleEvents.length}/4 expected console events (code ${child.exitCode})`)
+		}
 		await delay(100)
 	}
+	throw new Error(`Timed out waiting for four console events; captured ${events.length}`)
 }
 
 function delay(ms) {

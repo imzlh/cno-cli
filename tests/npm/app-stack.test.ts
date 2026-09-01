@@ -59,6 +59,11 @@ Deno.test({ name: 'vite: builds a disk app through rolldown/native resolver path
         writeFileSync(join(root, 'index.html'), '<div id="app"></div><script type="module" src="/src/main.js"></script>\n');
         writeFileSync(join(root, 'src', 'dep.js'), 'export const value = 20 + 2;\n');
         writeFileSync(join(root, 'src', 'main.js'), 'import { value } from "./dep.js"; document.querySelector("#app").textContent = String(value);\n');
+        writeFileSync(join(root, 'vite.config.mjs'), `
+            const dependency = import.meta.resolve('./src/dep.js');
+            if (!dependency.endsWith('/src/dep.js')) throw new Error('unexpected config resolution: ' + dependency);
+            export default { build: { assetsDir: 'hooked-assets' } };
+        `);
 
         const vite = await import('npm:vite');
         await vite.build({
@@ -72,7 +77,7 @@ Deno.test({ name: 'vite: builds a disk app through rolldown/native resolver path
         });
 
         ok(existsSync(join(root, 'dist', 'index.html')), 'vite should emit index.html');
-        const js = readFirstJsFile(join(root, 'dist', 'assets'));
+        const js = readFirstJsFile(join(root, 'dist', 'hooked-assets'));
         ok(js.includes('20 + 2') || js.includes('22'), `vite output should include bundled dependency value: ${js}`);
     } finally {
         rmSync(root, { recursive: true, force: true });

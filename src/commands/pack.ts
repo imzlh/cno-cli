@@ -2,9 +2,9 @@ import { createRuntime, cwd, loadConfigFile, writePack, basename, extname, dirna
 import type { PackManifest } from '../../cts/src/api';
 import { C } from '../help';
 import { entryAndDir } from '../utils';
+import { CliExit } from '../command-error';
 import { buildCacheConfig } from './cache-utils';
 
-const os = import.meta.use('os');
 const console = import.meta.use('console');
 const fs = import.meta.use('fs');
 
@@ -52,14 +52,12 @@ export async function runPack(files: string[], flags: Record<string, string | bo
     if (files.length !== 1) {
         console.error(`Usage: ${C.cyan('cno pack')} ${C.cyan('<entry>')} [-o out.jspack]`);
         if (files.length > 1) console.error('Pack accepts exactly one entry file.');
-        os.exit(1);
-        return;
+        throw new CliExit(1);
     }
     const file = files[0]!;
     if (flags['out'] === true || flags['out'] === '') {
         console.error(`${C.warn('⚠')} Pack failed: -o/--out requires a file path`);
-        os.exit(1);
-        return;
+        throw new CliExit(1);
     }
 
     const outputDir = cwd();
@@ -76,22 +74,16 @@ export async function runPack(files: string[], flags: Record<string, string | bo
     const remoteEntry = !isAbsolute(entry) && /^[a-z][a-z0-9+.-]*:/i.test(entry);
     if (!remoteEntry && resolvePath(outPath) === resolvePath(entry)) {
         console.error(`${C.warn('⚠')} Pack failed: output path must not overwrite the entry source`);
-        os.exit(1);
-        return;
+        throw new CliExit(1);
     }
     if (extname(outPath).toLowerCase() !== '.jspack') {
         console.error(`${C.warn('⚠')} Pack failed: output path must end with .jspack`);
-        os.exit(1);
-        return;
+        throw new CliExit(1);
     }
-    // The atomic writer parks an existing destination as `<out>.old-N` before
-    // renaming the temp file over it. For a directory that park succeeds and the
-    // follow-up unlink silently fails, so pack would report success while having
-    // displaced a directory tree and left the litter behind.
+    // Reject directories before entering writePack's file-replacement path.
     if (isExistingDirectory(outPath)) {
         console.error(`${C.warn('⚠')} Pack failed: output path is a directory`);
-        os.exit(1);
-        return;
+        throw new CliExit(1);
     }
 
     const explicitExtValue = typeof flags['ext'] === 'string'
@@ -102,8 +94,7 @@ export async function runPack(files: string[], flags: Record<string, string | bo
     // manifest, so the ABI-mismatch recompile would mis-parse the entry.
     if (explicitExt !== undefined && !PACK_LANGS.has(explicitExt.toLowerCase())) {
         console.error(`${C.warn('⚠')} Pack failed: --ext must be one of ${[...PACK_LANGS].join(', ')}`);
-        os.exit(1);
-        return;
+        throw new CliExit(1);
     }
     const entryLang = explicitExt ?? (extname(entry) === '' ? 'ts' : undefined);
     const runtime = createRuntime(cfg, projectDir);
@@ -117,7 +108,7 @@ export async function runPack(files: string[], flags: Record<string, string | bo
         }
     } catch (e) {
         console.error(`${C.warn('⚠')} Pack failed: ${e instanceof Error ? e.message : String(e)}`);
-        os.exit(1);
+        throw new CliExit(1);
     } finally {
         runtime.cleanup();
     }

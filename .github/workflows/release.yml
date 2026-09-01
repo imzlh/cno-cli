@@ -31,10 +31,11 @@ jobs:
           docker run --rm --platform ${{ matrix.platform }} \
             -v ${{ github.workspace }}:/work -w /work \
             debian:bookworm-slim bash -c "
-              apt update && apt install -y cmake ninja-build gcc g++ \
+              apt update && apt install -y cmake ninja-build gcc g++ nodejs npm \
                 libcurl4-openssl-dev libltdl-dev libffi-dev \
                 libsqlite3-dev libssl-dev zlib1g-dev libexpat1-dev &&
-              npm install -g pnpm &&
+              npm install -g pnpm@10.17.1 &&
+              pnpm install --frozen-lockfile &&
               cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release &&
               cmake --build build --parallel &&
               strip build/stage/cno"
@@ -69,7 +70,8 @@ jobs:
             -v ${{ github.workspace }}:/work -w /work \
             alpine:3.21 sh -c "
               apk add --no-cache cmake ninja-build gcc g++ musl-dev nodejs npm &&
-              npm install -g pnpm &&
+              npm install -g pnpm@10.17.1 &&
+              pnpm install --frozen-lockfile &&
               apk add --no-cache \
                 sqlite-dev sqlite-static \
                 openssl-dev openssl-libs-static \
@@ -112,7 +114,8 @@ jobs:
             -v ${{ github.workspace }}:/work -w /work \
             alpine:3.21 sh -c "
               apk add --no-cache cmake ninja-build gcc g++ musl-dev nodejs npm &&
-              npm install -g pnpm &&
+              npm install -g pnpm@10.17.1 &&
+              pnpm install --frozen-lockfile &&
               apk add --no-cache \
                 sqlite-dev sqlite-static \
                 openssl-dev openssl-libs-static \
@@ -140,7 +143,13 @@ jobs:
         with:
           submodules: recursive
       - name: Install deps
-        run: brew install cmake ninja libffi sqlite3 openssl zlib expat curl pnpm
+        run: brew install cmake ninja libffi sqlite3 openssl zlib expat curl
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - uses: pnpm/action-setup@v4
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
       - name: Build cno
         run: |
@@ -180,6 +189,11 @@ jobs:
           vcpkg install sqlite3:x64-windows openssl:x64-windows zlib:x64-windows `
             expat:x64-windows curl:x64-windows libffi:x64-windows libiconv:x64-windows
       - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
@@ -196,7 +210,7 @@ jobs:
           cmake -S ext-oxc -B ext-oxc\build -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
             -DCJS_DIR="$PWD\circu.js" `
-            -DCNO_IMPLIB="$PWD\build\circu.js\Release\cjs.lib"
+            -DCNO_IMPLIB="$PWD\build\circu.js\deps\quickjs\qjs.lib"
           cmake --build ext-oxc\build --config Release --parallel
           Copy-Item ext-oxc\build\Release\oxc.dll build\stage\ext\oxc.dll
       - name: Package

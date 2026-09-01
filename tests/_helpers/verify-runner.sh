@@ -80,3 +80,8 @@ fail=$(grep -cE '^  fail ' "$LOG" 2>/dev/null); fail=${fail:-0}
 skip=$(grep -cE '^  skip ' "$LOG" 2>/dev/null); skip=${skip:-0}
 
 echo "RESULT|$FILE|ok=$ok|fail=$fail|skip=$skip|status=$status|elapsed=${elapsed}s"
+
+total=$((ok + fail + skip))
+if [ "$fail" -gt 0 ] || [ "$total" -eq 0 ] || [ "$status" = "hard-cap" ] || [ "$status" = "quiesced-no-results" ]; then
+    exit 1
+fi

@@ -1,13 +1,17 @@
 import { joinPaths, normalizePath, isAbsolute, cwd, toPosixPath, isWindows } from '../../cts/src/api';
+import { parseArgv } from '../cli';
+import { CliExit } from '../command-error';
 import { C } from '../help';
+import { readTestChildResult, type TestChildMessage } from './test-result-pipe';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
 const process = import.meta.use('process');
 const fs = import.meta.use('fs');
 const timers = import.meta.use('timers');
+const sysError = import.meta.use('error');
 
-// A test module that exits before opening IPC (or inherits the descriptor into
+// A test module that exits before opening its result pipe (or inherits fd 3 into
 // a daemon) must not leave `cno test` waiting forever. Keep this configurable
 // for slow CI machines while retaining a finite default for accidental hangs.
 const DEFAULT_CHILD_TIMEOUT_MS = 60_000;
@@ -34,19 +38,27 @@ const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'build_relea
 
 // ─── File discovery ──────────────────────────────────────────────────────────
 
+function isNotFound(error: unknown): boolean {
+    if (error === null || typeof error !== 'object') return false;
+    const code = (error as { code?: unknown }).code;
+    return code === sysError.errno.ENOENT || code === 'ENOENT';
+}
+
 function readDirOrNull(dir: string): string[] | null {
     try {
         return fs.readdir(dir);
-    } catch {
-        return null;
+    } catch (error) {
+        if (isNotFound(error)) return null;
+        throw error;
     }
 }
 
 function statOrNull(path: string): CModuleFS.Stats | null {
     try {
         return fs.stat(path);
-    } catch {
-        return null;
+    } catch (error) {
+        if (isNotFound(error)) return null;
+        throw error;
     }
 }
 
@@ -54,7 +66,7 @@ function killChildQuietly(child: { kill(): void }): void {
     try {
         child.kill();
     } catch {
-        // The child may already have exited after IPC close.
+        // The child may already have exited after its result pipe closed.
     }
 }
 
@@ -76,14 +88,7 @@ async function settleChild(
     return waitPromise.catch(() => undefined);
 }
 
-function directoryKey(path: string): string {
-    let value = path;
-    try { value = fs.realpath(path); } catch { /* use the lexical path */ }
-    value = normalizePath(toPosixPath(value));
-    return isWindows ? value.toLowerCase() : value;
-}
-
-function fileKey(path: string): string {
+function pathKey(path: string): string {
     let value = path;
     try { value = fs.realpath(path); } catch { /* use the lexical path */ }
     value = normalizePath(toPosixPath(value));
@@ -93,13 +98,13 @@ function fileKey(path: string): string {
 function* walkSync(dir: string, visited = new Set<string>()): Generator<string> {
     // stat() follows symlinks/junctions. Without an identity set a project
     // containing `test/loop -> .` recurses until the native stack is exhausted.
-    const identity = directoryKey(dir);
+    const identity = pathKey(dir);
     if (visited.has(identity)) return;
     visited.add(identity);
 
     const entries = readDirOrNull(dir);
     if (!entries) return;
-    for (const e of entries) {
+    for (const e of entries.sort()) {
         if (SKIP_DIRS.has(e)) continue;
         const full = joinPaths(dir, e);
         const s = statOrNull(full);
@@ -126,7 +131,7 @@ export function collectTests(rawPaths: string[]): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
     const push = (file: string): void => {
-        const identity = fileKey(file);
+        const identity = pathKey(file);
         if (seen.has(identity)) return;
         seen.add(identity);
         out.push(file);
@@ -158,12 +163,6 @@ interface TestResult {
     failedTests:  FailedTest[];
 }
 
-export interface TestChildMessage {
-    passed?: boolean;
-    error?: unknown;
-    failedTests?: unknown;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -188,7 +187,7 @@ function parseFailedTests(value: unknown): FailedTest[] {
         if (!isRecord(t)) return { name: String(t) };
         return {
             name: typeof t.name === 'string' ? t.name : String(t),
-            // Objects that lost their prototype over JSON IPC stringify to
+            // Objects that lost their prototype over the JSON result frame stringify to
             // "[object Object]" — pull message/stack out instead.
             error: t.error ? failureText(t.error) : undefined,
         };
@@ -201,13 +200,13 @@ function errorText(value: unknown): string | undefined {
     return String(value);
 }
 
-function flagsToArgs(flags: Record<string, string | boolean>): string[] {
-    const args: string[] = [];
-    for (const [key, value] of Object.entries(flags)) {
-        if (value === true) args.push(`--${key}`);
-        else if (typeof value === 'string') args.push(`--${key}=${value}`);
-    }
-    return args;
+export interface TestChildArgs {
+    /** Parsed view used for test-runner control flags. */
+    flags: Record<string, string | boolean>;
+    /** Original flag tokens, preserving duplicates, order, and spelling. */
+    flagArgs: string[];
+    /** User arguments exposed to the test module through Deno.args. */
+    scriptArgs: string[];
 }
 
 function childEnv(flags: Record<string, string | boolean>): Record<string, string> {
@@ -219,36 +218,17 @@ function childEnv(flags: Record<string, string | boolean>): Record<string, strin
     return env;
 }
 
-function applyCacheDirEnv(flags: Record<string, string | boolean>): void {
-    const cacheDir = flags['cache-dir'];
-    if (typeof cacheDir !== 'string') return;
-    try {
-        os.setenv('CTS_CACHE_DIR', cacheDir);
-    } catch {
-        // Keep running; the child still receives an explicit env below.
-    }
-}
-
 export function parseTestChildFlags(args: string[]): Record<string, string | boolean> {
-    const flags: Record<string, string | boolean> = {};
-    for (const arg of args) {
-        if (!arg.startsWith('--')) continue;
-        const eq = arg.indexOf('=');
-        if (eq < 0) flags[arg.slice(2)] = true;
-        else flags[arg.slice(2, eq)] = arg.slice(eq + 1);
-    }
-    return flags;
+    return parseArgv(['test', ...args]).flags;
 }
 
-export function parseTestChildArgs(args: string[]): {
-    flags: Record<string, string | boolean>;
-    scriptArgs: string[];
-} {
+export function parseTestChildArgs(args: string[]): TestChildArgs {
     const separator = args.indexOf('--');
-    if (separator < 0) return { flags: parseTestChildFlags(args), scriptArgs: [] };
+    const flagArgs = separator < 0 ? args.slice() : args.slice(0, separator);
     return {
-        flags: parseTestChildFlags(args.slice(0, separator)),
-        scriptArgs: args.slice(separator + 1),
+        flags: parseTestChildFlags(flagArgs),
+        flagArgs,
+        scriptArgs: separator < 0 ? [] : args.slice(separator + 1),
     };
 }
 
@@ -270,13 +250,16 @@ function usesInspector(flags: Record<string, string | boolean>): boolean {
     return false;
 }
 
-async function runOne(file: string, flags: Record<string, string | boolean>, scriptArgs: string[]): Promise<TestResult> {
+async function runOne(
+    file: string,
+    flags: Record<string, string | boolean>,
+    flagArgs: string[],
+    scriptArgs: string[],
+): Promise<TestResult> {
     const start = performance.now();
-    applyCacheDirEnv(flags);
-    const { IPCChannel } = await import('../../cno/src/node/ipc_channel/mod');
     let child: ReturnType<typeof process.spawn>;
     try {
-        child = process.spawn([os.exePath, file, ...flagsToArgs(flags), '--', ...scriptArgs], {
+        child = process.spawn([os.exePath, file, ...flagArgs, '--', ...scriptArgs], {
             stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', ipc: true,
             env: childEnv(flags),
         });
@@ -300,71 +283,69 @@ async function runOne(file: string, flags: Record<string, string | boolean>, scr
             file,
             passed: false,
             duration: performance.now() - start,
-            error: 'test worker IPC channel was not created',
+            error: 'test worker result pipe was not created',
             failedTests: [],
         };
     }
-    const channel = new IPCChannel(child.ipc);
+    const resultReader = readTestChildResult(child.ipc);
     try {
-        let received: TestChildMessage | undefined;
-        let closeResolve!: () => void;
-        const closePromise = new Promise<void>((resolve) => { closeResolve = resolve; });
-        let errorReject!: (error: unknown) => void;
-        const errorPromise = new Promise<never>((_resolve, reject) => { errorReject = reject; });
-        channel.once('message', (m: unknown) => {
-            received = isRecord(m) ? m : { error: `invalid test worker message: ${String(m)}` };
-        });
-        channel.once('close', () => { closeResolve(); });
-        channel.once('error', (error: unknown) => { errorReject(error); });
+        const report = resultReader.outcome.then((value) => ({ kind: 'report' as const, value }));
+        const toResult = (received: TestChildMessage): TestResult => {
+            const failedTests = parseFailedTests(received.failedTests);
+            return { file, passed: received.passed === true, duration: performance.now() - start, error: received.error, failedTests };
+        };
         const timeout = childTimeoutMs();
         let timeoutId: number | undefined;
-        const timeoutPromise = new Promise<'timeout'>((resolve) => {
-            timeoutId = timers.setTimeout(() => resolve('timeout'), timeout);
+        const timeoutPromise = new Promise<{ kind: 'timeout' }>((resolve) => {
+            timeoutId = timers.setTimeout(() => resolve({ kind: 'timeout' }), timeout);
         });
-        const outcome = await Promise.race([
-            closePromise.then(() => 'closed' as const),
+        let outcome = await Promise.race([
+            report,
             waitPromise.then((info) => ({ kind: 'exit' as const, info }), (error) => ({ kind: 'wait-error' as const, error })),
-            errorPromise.then(() => 'error' as const),
             timeoutPromise,
         ]);
         if (timeoutId !== undefined) timers.clearTimeout(timeoutId);
 
-        if (outcome === 'timeout') {
+        if (outcome.kind === 'timeout') {
             killChildQuietly(child);
             await settleChild(child, waitPromise);
             throw new Error(`test worker timed out after ${timeout}ms without reporting a result`);
         }
-        if (outcome === 'error') {
-            throw new Error('test worker IPC channel failed');
-        }
-        // A normal child closes the pipe after its final frame. If it exits
-        // before the close event is delivered, give one short turn for queued
-        // bytes; otherwise surface the exit status instead of waiting forever.
-        if (received === undefined && outcome !== 'closed') {
+        // A child can exit before libuv dispatches already-buffered result
+        // bytes. Give the reader one short turn before treating that exit as a
+        // missing report, while retaining the outer timeout for hung children.
+        if (outcome.kind === 'exit' || outcome.kind === 'wait-error') {
             let graceTimer: number | undefined;
-            await Promise.race([
-                closePromise,
-                new Promise<void>((resolve) => {
-                    graceTimer = timers.setTimeout(resolve, 100);
+            const grace = await Promise.race([
+                report,
+                new Promise<{ kind: 'grace' }>((resolve) => {
+                    graceTimer = timers.setTimeout(() => resolve({ kind: 'grace' }), 100);
                 }),
             ]);
             if (graceTimer !== undefined) timers.clearTimeout(graceTimer);
+            if (grace.kind === 'report') outcome = grace;
         }
-        if (received === undefined) {
-            if (typeof outcome === 'object' && outcome.kind === 'wait-error') {
-                throw new Error(`test worker wait failed: ${errorText(outcome.error) ?? String(outcome.error)}`);
+
+        if (outcome.kind === 'report') {
+            if (outcome.value.kind === 'result') {
+                return toResult(outcome.value.message);
             }
-            const info = outcome === 'closed'
-                ? await settleChild(child, waitPromise)
-                : outcome.info;
+            if (outcome.value.kind === 'error') {
+                throw new Error(`test worker result pipe failed: ${errorText(outcome.value.error) ?? String(outcome.value.error)}`);
+            }
+            const info = await settleChild(child, waitPromise);
             throw new Error(`test worker exited (code=${info?.exit_status ?? 'unknown'}, signal=${info?.term_signal ?? 'none'}) without reporting a result`);
         }
-        const failedTests = parseFailedTests(received.failedTests);
-        return { file, passed: received.passed === true, duration: performance.now() - start, error: received.error, failedTests };
+
+        if (resultReader.message !== undefined) return toResult(resultReader.message);
+        if (outcome.kind === 'wait-error') {
+            throw new Error(`test worker wait failed: ${errorText(outcome.error) ?? String(outcome.error)}`);
+        }
+        throw new Error(`test worker exited (code=${outcome.info.exit_status}, signal=${outcome.info.term_signal ?? 'none'}) without reporting a result`);
     } catch (e) {
         return { file, passed: false, duration: performance.now() - start, error: e, failedTests: [] };
     } finally {
-        channel.close();
+        resultReader.close();
         await settleChild(child, waitPromise);
     }
 }
@@ -373,6 +354,7 @@ async function runAll(
     files: string[],
     concurrency: number,
     flags: Record<string, string | boolean>,
+    flagArgs: string[],
     scriptArgs: string[],
 ): Promise<TestResult[]> {
     const results: TestResult[] = [];
@@ -384,7 +366,7 @@ async function runAll(
         while (queue.length) {
             const file = queue.shift();
             if (file === undefined) continue;
-            const result = await runOne(file, flags, scriptArgs);
+            const result = await runOne(file, flags, flagArgs, scriptArgs);
             results.push(result);
             if (failFast && !result.passed) {
                 queue.length = 0;
@@ -404,15 +386,12 @@ async function runAll(
     return results;
 }
 
-interface TestChildChannel {
-    once(event: string, listener: (value?: unknown) => void): unknown;
-}
-
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 export async function runTest(
     rawPaths: string[],
     flags: Record<string, string | boolean>,
+    flagArgs: string[],
 ): Promise<void> {
     const separator = rawPaths.indexOf('--');
     const paths = separator < 0 ? rawPaths : rawPaths.slice(0, separator);
@@ -425,14 +404,13 @@ export async function runTest(
             return;
         }
         console.error('error: No test modules found');
-        os.exit(1);
+        throw new CliExit(1);
     }
 
     const requestedConcurrency = parseConcurrency(flags['concurrency']);
     if (requestedConcurrency === null) {
         console.error(`error: --concurrency must be a positive integer, got ${String(flags['concurrency'])}`);
-        os.exit(1);
-        return;
+        throw new CliExit(1);
     }
     // Each test file is a child process; `--inspect*` is forwarded to all of
     // them, so anything above 1 makes every child but the first die with
@@ -443,7 +421,7 @@ export async function runTest(
     console.log(`${C.dim('Running')} ${files.length} test file${files.length === 1 ? '' : 's'} (concurrency=${concurrency})`);
     console.log('');
 
-    const results = await runAll(files, concurrency, flags, scriptArgs);
+    const results = await runAll(files, concurrency, flags, flagArgs, scriptArgs);
 
     let passed = 0, failed = 0;
     const allFailed: Array<{ file: string; tests: FailedTest[] }> = [];
@@ -483,7 +461,7 @@ export async function runTest(
     const summary = `${passed}/${total}`;
     if (failed > 0) {
         console.log(C.red(`✖ ${summary}`));
-        os.exit(1);
+        throw new CliExit(1);
     } else {
         console.log(C.green(`✔ ${summary}`));
     }

@@ -214,6 +214,7 @@ compile/       ESM, CJS, WASM, JSON/text/binary, interop bridge
 | `cts/src/runtime/index.ts` | `TypeScriptRuntime`, composition root and cleanup |
 | `cts/src/runtime/hooks.ts` | `engine.onModule` resolve/load/init/attribute hooks |
 | `cts/src/runtime/meta.ts` | `import.meta` fields and `import.meta.resolve()` |
+| `cts/src/module-hooks.ts` | Process-wide synchronous `node:module` customization-hook chain |
 | `cts/src/runtime/resources.ts` | Per-runtime resource ownership and release |
 | `cts/src/resolve/index.ts` | Resolver facade and resolution caches |
 | `cts/src/resolve/protocols/` | `file`, `npm`, `jsr`, HTTP, Node, data and pack handlers |

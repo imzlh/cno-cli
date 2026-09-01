@@ -143,6 +143,7 @@ Deno.test('deno ffi: dlopen calls native functions and handles optional symbols'
     } finally {
         library.close();
     }
+    library.close();
     throws(() => library.symbols.strlen(new TextEncoder().encode('closed\0')), /Library is closed/);
 });
 
@@ -157,6 +158,33 @@ Deno.test('deno ffi: dlopen validates symbol definitions before loading', () => 
     throws(() => dlopen(ffi.LIBC_NAME, {
         errno: { parameters: [], result: 'not-a-result-type' },
     }), TypeError);
+});
+
+Deno.test('deno ffi: dlopen closes a library when required symbol lookup fails', () => {
+    const ffi = import.meta.use('ffi');
+    throws(() => dlopen(ffi.LIBC_NAME, {
+        missing: { name: 'cno_missing_required_ffi_symbol', parameters: [], result: 'void' },
+    }));
+    const library = dlopen(ffi.LIBC_NAME, {
+        strlen: { parameters: ['buffer'], result: 'usize' },
+    });
+    library.close();
+});
+
+Deno.test('deno ffi: dlopen ignores inherited symbol definitions', () => {
+    const ffi = import.meta.use('ffi');
+    const symbols = Object.create({
+        inherited: { name: 'cno_missing_inherited_ffi_symbol', parameters: [], result: 'void' },
+    }) as Record<string, unknown>;
+    const library = dlopen(ffi.LIBC_NAME, symbols) as {
+        symbols: Record<string, unknown>;
+        close(): void;
+    };
+    try {
+        deepStrictEqual(Object.keys(library.symbols), []);
+    } finally {
+        library.close();
+    }
 });
 
 Deno.test('deno ffi: dlopen reports missing libraries without requiring a fixture binary', () => {

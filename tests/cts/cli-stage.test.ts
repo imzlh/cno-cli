@@ -449,6 +449,8 @@ Deno.test({ name: 'cli stage: run loads env files before entry', timeout: 15000 
             'ANOTHER_FOO=ANOTHER_${FOO}',
             'MULTILINE="First Line',
             'Second Line"',
+            'ESCAPED_NEWLINE="First Line\\nSecond Line"',
+            'ESCAPED_QUOTE="First \\"Quoted\\" Line"',
             '',
         ].join('\n'));
         await Deno.writeTextFile(join(root, 'env_one'), 'ANOTHER_FOO=OVERRIDEN_BY_ENV_ONE\n');
@@ -460,6 +462,8 @@ Deno.test({ name: 'cli stage: run loads env files before entry', timeout: 15000 
             console.log(Deno.env.get("FOO"));
             console.log(Deno.env.get("ANOTHER_FOO"));
             console.log(Deno.env.get("MULTILINE"));
+            console.log(Deno.env.get("ESCAPED_NEWLINE"));
+            console.log(Deno.env.get("ESCAPED_QUOTE"));
         `);
 
         const basic = await runCno(['run', '--env=./env', main], root);
@@ -469,6 +473,9 @@ Deno.test({ name: 'cli stage: run loads env files before entry', timeout: 15000 
             'ANOTHER_BAR',
             'First Line',
             'Second Line',
+            'First Line',
+            'Second Line',
+            'First "Quoted" Line',
         ]);
 
         const multiple = await runCno(['run', '--env=./env', '--env=./env_one', '--env-file=./env_two', main], root);
@@ -478,17 +485,20 @@ Deno.test({ name: 'cli stage: run loads env files before entry', timeout: 15000 
             'OVERRIDEN_BY_ENV_ONE',
             'First Line',
             'Second Line',
+            'First Line',
+            'Second Line',
+            'First "Quoted" Line',
         ]);
 
         const missing = await runCno(['run', '--env=./missing_env', main], root);
         strictEqual(missing.code, 0, missing.stderr);
         ok(missing.stderr.includes('Warning Failed to load env file'), missing.stderr);
-        deepStrictEqual(missing.stdout.trim().split(/\r?\n/), ['undefined', 'undefined', 'undefined']);
+        deepStrictEqual(missing.stdout.trim().split(/\r?\n/), ['undefined', 'undefined', 'undefined', 'undefined', 'undefined']);
 
         const bad = await runCno(['run', '--env=./bad_env', main], root);
         strictEqual(bad.code, 0, bad.stderr);
         ok(bad.stderr.includes('Warning Failed to parse env file'), bad.stderr);
-        deepStrictEqual(bad.stdout.trim().split(/\r?\n/), ['undefined', 'undefined', 'undefined']);
+        deepStrictEqual(bad.stdout.trim().split(/\r?\n/), ['undefined', 'undefined', 'undefined', 'undefined', 'undefined']);
     });
 });
 

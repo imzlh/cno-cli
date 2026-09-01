@@ -174,7 +174,7 @@ function hostileDataView(source: Uint8Array, onGet: () => void, prop: 'buffer' |
 }
 
 Deno.test({
-    name: 'native buffer safety: JS_GetAnyBuffer rejects a DataView whose own accessors can run JS',
+    name: 'native buffer safety: JS_GetAnyBuffer reads DataView internal slots without invoking own accessors',
     timeout: 15000,
 }, () => {
     for (const prop of ['buffer', 'byteOffset', 'byteLength'] as const) {
@@ -188,21 +188,10 @@ Deno.test({
         // pointer into `key`'s backing store when this getter would run.
         const view = hostileDataView(data, () => { getterRuns++; key.buffer.transfer(); }, prop);
 
-        let digest: string | null = null;
-        let error: unknown = null;
-        try {
-            digest = hex(crypto.hmacSha256(key, view as unknown as Uint8Array));
-        } catch (e) {
-            error = e;
-        }
-
-        ok(
-            error instanceof TypeError,
-            `hmacSha256 with a DataView carrying an own '${prop}' must throw TypeError, got ${String(error)} / digest ${String(digest)}`,
-        );
+        const digest = hex(crypto.hmacSha256(key, view as unknown as Uint8Array));
         strictEqual(getterRuns, 0, `the own '${prop}' getter must never run inside JS_GetAnyBuffer`);
         strictEqual(key.buffer.detached, false, `the key buffer must not have been detached via '${prop}'`);
-        strictEqual(digest, null, 'no digest may be produced over freed memory');
+        strictEqual(digest, hex(crypto.hmacSha256(key, data)), 'DataView must use its internal buffer range');
     }
 });
 

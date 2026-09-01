@@ -166,11 +166,12 @@ Deno.test({
     ignore: !quicAvailable(),
     timeout: 15000,
 }, async () => {
-    const cert = await Deno.readTextFile('/tmp/cno-quic-certs/cert.pem').catch(() => null);
-    const key = await Deno.readTextFile('/tmp/cno-quic-certs/key.pem').catch(() => null);
-    if (!cert || !key) {
-        // mint if missing
-        const dir = await Deno.makeTempDir({ prefix: 'cno-quic-' });
+    const dir = await Deno.makeTempDir({ prefix: 'cno-quic-' });
+    let server: CModuleExternalQuic.Socket | undefined;
+    let client: CModuleExternalQuic.Socket | undefined;
+    let peer: CModuleExternalQuic.Connection | null = null;
+    let conn: CModuleExternalQuic.Connection | undefined;
+    try {
         const keyPath = `${dir}/key.pem`;
         const certPath = `${dir}/cert.pem`;
         const cmd = new Deno.Command('openssl', {
@@ -185,35 +186,34 @@ Deno.test({
         });
         const { code } = await cmd.output();
         ok(code === 0, 'openssl for UAF test');
-        const c = await Deno.readTextFile(certPath);
-        const k = await Deno.readTextFile(keyPath);
-        await Deno.mkdir('/tmp/cno-quic-certs', { recursive: true }).catch(() => {});
-        await Deno.writeTextFile('/tmp/cno-quic-certs/cert.pem', c);
-        await Deno.writeTextFile('/tmp/cno-quic-certs/key.pem', k);
-        try { await Deno.remove(dir, { recursive: true }); } catch { /* */ }
+        const cert = await Deno.readTextFile(certPath);
+        const key = await Deno.readTextFile(keyPath);
+        const { Socket } = requireQuic();
+        const port = 19600 + (Math.floor(Math.random() * 100) | 0);
+        server = new Socket({
+            isServer: true, host: '127.0.0.1', port, cert, key, alpn: 'cno-quic',
+        });
+        server.onconnection = (connection) => { peer = connection; };
+        client = new Socket({ host: '127.0.0.1', port, alpn: 'cno-quic' });
+        conn = client.connect('127.0.0.1', port);
+        await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('hs timeout')), 8000);
+            conn!.onconnected = () => { clearTimeout(t); resolve(); };
+            conn!.onerror = (message) => { clearTimeout(t); reject(new Error(String(message))); };
+        });
+        // Close sockets while Connection JS objects still live.
+        client.close();
+        server.close();
+        // Methods must not crash (opaque cleared / qconn gone).
+        try { conn.openStream(true); } catch { /* may throw or no-op */ }
+        try { conn.close(); } catch { /* */ }
+        try { peer?.close(); } catch { /* */ }
+        ok(true);
+    } finally {
+        try { conn?.close(); } catch { /* already closed */ }
+        try { peer?.close(); } catch { /* already closed */ }
+        try { client?.close(); } catch { /* already closed */ }
+        try { server?.close(); } catch { /* already closed */ }
+        await Deno.remove(dir, { recursive: true }).catch(() => undefined);
     }
-    const cert2 = await Deno.readTextFile('/tmp/cno-quic-certs/cert.pem');
-    const key2 = await Deno.readTextFile('/tmp/cno-quic-certs/key.pem');
-    const { Socket } = requireQuic();
-    const port = 19600 + (Math.floor(Math.random() * 100) | 0);
-    const server = new Socket({
-        isServer: true, host: '127.0.0.1', port, cert: cert2, key: key2, alpn: 'cno-quic',
-    });
-    let peer: CModuleExternalQuic.Connection | null = null;
-    server.onconnection = (c) => { peer = c; };
-    const client = new Socket({ host: '127.0.0.1', port, alpn: 'cno-quic' });
-    const conn = client.connect('127.0.0.1', port);
-    await new Promise<void>((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error('hs timeout')), 8000);
-        conn.onconnected = () => { clearTimeout(t); resolve(); };
-        conn.onerror = (m) => { clearTimeout(t); reject(new Error(String(m))); };
-    });
-    // Close sockets while Connection JS objects still live.
-    client.close();
-    server.close();
-    // Methods must not crash (opaque cleared / qconn gone).
-    try { conn.openStream(true); } catch { /* may throw or no-op */ }
-    try { conn.close(); } catch { /* */ }
-    try { peer?.close(); } catch { /* */ }
-    ok(true);
 });

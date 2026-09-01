@@ -34,6 +34,9 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -44,6 +47,11 @@ jobs:
           cmake -S ext-oxc -B ext-oxc/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCJS_DIR="$PWD/circu.js"
           cmake --build ext-oxc/build --parallel
+
+      - name: Type check and smoke test
+        run: |
+          pnpm run type-check
+          build/stage/cno test tests/cts/cli-flag-consumers.test.ts
 
       - uses: actions/upload-artifact@v4
         with:
@@ -73,6 +81,9 @@ jobs:
         with:
           version: latest
 
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -84,6 +95,11 @@ jobs:
           cmake -S ext-oxc -B ext-oxc/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCJS_DIR="$PWD/circu.js"
           cmake --build ext-oxc/build --parallel
+
+      - name: Type check and smoke test
+        run: |
+          pnpm run type-check
+          build/stage/cno test tests/cts/cli-flag-consumers.test.ts
 
       - uses: actions/upload-artifact@v4
         with:
@@ -125,6 +141,9 @@ jobs:
         with:
           version: latest
 
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Build
         shell: cmd
         run: |
@@ -136,12 +155,18 @@ jobs:
       - name: Build ext-oxc
         shell: pwsh
         run: |
-          $CnoLib = "build\circu.js\Release\cjs.lib"
+          $CnoLib = "build\circu.js\deps\quickjs\qjs.lib"
           cmake -S ext-oxc -B ext-oxc\build -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
             -DCJS_DIR="$PWD\circu.js" `
             -DCNO_IMPLIB="$PWD\$CnoLib"
           cmake --build ext-oxc\build --config Release --parallel
+
+      - name: Type check and smoke test
+        shell: pwsh
+        run: |
+          pnpm run type-check
+          build\stage\cno.exe test tests/cts/cli-flag-consumers.test.ts
 
       - uses: actions/upload-artifact@v4
         with:

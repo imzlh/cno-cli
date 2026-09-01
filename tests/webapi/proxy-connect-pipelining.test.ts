@@ -249,5 +249,3 @@ Deno.test({ name: 'CONNECT pushback: a second CRLFCRLF in the payload does not m
         await closeServer(proxy.server);
     }
 });
-
-console.log('REACHED END');

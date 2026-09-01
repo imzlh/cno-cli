@@ -18,9 +18,8 @@ import v8 from 'node:v8';
  * V8 fires PromiseHook synchronously; these events describe a moment, so
  * reporting them later reports the wrong moment.
  *
- * FAILS UNTIL THE PENDING REBUILD -- the fix is compiled into the binary. The
- * assertions below are the intended post-rebuild behaviour, so do NOT relax them
- * to match the current binary.
+ * These assertions require the native promise-hook fix to be present in the
+ * staged binary and guard against regressions to deferred dispatch.
  *
  * NOTE this does NOT fix AsyncLocalStorage under concurrency. QuickJS emits no
  * event when an await continuation resumes, so there is nothing to hook there at
@@ -28,8 +27,7 @@ import v8 from 'node:v8';
  */
 
 Deno.test({
-    name: 'v8.promiseHooks: init fires synchronously with promise creation (fails until C rebuild)',
-    ignore: true,
+    name: 'v8.promiseHooks: init fires synchronously with promise creation',
     fn: () => {
         let seen = 0;
         const stop = v8.promiseHooks.onInit(() => { seen++; });
@@ -46,8 +44,7 @@ Deno.test({
 });
 
 Deno.test({
-    name: 'v8.promiseHooks: no event is delivered after its hook was removed (fails until C rebuild)',
-    ignore: true,
+    name: 'v8.promiseHooks: no event is delivered after its hook was removed',
     fn: async () => {
         // Force thenable adoption, the one shape that emits BEFORE/AFTER in this
         // engine, then tear the hook down and confirm nothing arrives late.

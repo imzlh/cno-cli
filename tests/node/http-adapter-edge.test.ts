@@ -334,7 +334,67 @@ Deno.test({
             new Promise((_, reject) => setTimeout(() => reject(new Error('closeAllConnections timeout')), 3000)),
         ]);
     } finally {
-        await close(server!);
+        await close(server);
+    }
+});
+
+Deno.test({ name: 'http: short-lived core connections release Node socket facades', timeout: 30000 }, async () => {
+    const server = http.createServer((_req, res) => res.end('ok'));
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        for (let i = 0; i < 250; i++) {
+            await new Promise<void>((resolve, reject) => {
+                const req = http.get({
+                    host: '127.0.0.1',
+                    port: addr.port,
+                    path: `/?i=${i}`,
+                    agent: false,
+                    headers: { connection: 'close' },
+                }, (res) => {
+                    res.resume();
+                    res.once('end', resolve);
+                });
+                req.once('error', reject);
+            });
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const tracked = Reflect.get(server, '_httpConnections') as Set<unknown>;
+        strictEqual(tracked.size, 0, 'all short-lived HTTP socket facades must be released');
+    } finally {
+        await close(server);
+    }
+});
+
+Deno.test({ name: 'http: keep-alive reuses one facade and releases it at terminal close', timeout: 15000 }, async () => {
+    const sockets = new Set<unknown>();
+    const server = http.createServer((req, res) => {
+        sockets.add(req.socket);
+        res.end('ok');
+    });
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1 });
+    await listen(server);
+    try {
+        const addr = server.address();
+        if (!addr || typeof addr === 'string') throw new Error('no port');
+        const request = () => new Promise<void>((resolve, reject) => {
+            const req = http.get({ host: '127.0.0.1', port: addr.port, agent }, (res) => {
+                res.resume();
+                res.once('end', resolve);
+            });
+            req.once('error', reject);
+        });
+        await request();
+        await request();
+        strictEqual(sockets.size, 1, 'keep-alive requests must share one Node facade');
+        strictEqual((Reflect.get(server, '_httpConnections') as Set<unknown>).size, 1);
+        agent.destroy();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        strictEqual((Reflect.get(server, '_httpConnections') as Set<unknown>).size, 0);
+    } finally {
+        agent.destroy();
+        await close(server);
     }
 });
 

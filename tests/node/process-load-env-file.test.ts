@@ -13,6 +13,8 @@ const names = [
     'CNO_LOAD_ENV_EXPORT',
     'CNO_LOAD_ENV_DOUBLE',
     'CNO_LOAD_ENV_SINGLE',
+    'CNO_LOAD_ENV_BACKTICK',
+    'CNO_LOAD_ENV_COMMENT',
     'CNO_LOAD_ENV_DUP',
 ];
 
@@ -36,6 +38,8 @@ Deno.test('process upstream: loadEnvFile follows Node dotenv precedence and pars
         'export CNO_LOAD_ENV_EXPORT=exported',
         'CNO_LOAD_ENV_DOUBLE="line1\\nline2"',
         "CNO_LOAD_ENV_SINGLE='single # literal'",
+        'CNO_LOAD_ENV_BACKTICK=`backtick # literal` # trailing comment',
+        'CNO_LOAD_ENV_COMMENT=unquoted#comment',
         'CNO_LOAD_ENV_DUP=first',
         'CNO_LOAD_ENV_DUP=second',
     ].join('\n'));
@@ -52,6 +56,8 @@ Deno.test('process upstream: loadEnvFile follows Node dotenv precedence and pars
             'exported',
             'line1\nline2',
             'single # literal',
+            'backtick # literal',
+            'unquoted',
             'second',
         ]);
         strictEqual(loadEnvFile, process.loadEnvFile);
@@ -103,6 +109,22 @@ Deno.test('process upstream: loadEnvFile accepts Uint8Array paths', () => {
     } finally {
         if (previous === undefined) delete process.env[name];
         else process.env[name] = previous;
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('process upstream: loadEnvFile preserves entries hidden by an ordinary object', () => {
+    const root = makePosixTempDir('process-load-env-proto');
+    const file = `${root}/proto.env`;
+    const previous = Object.hasOwn(process.env, '__proto__') ? process.env.__proto__ : undefined;
+    writeFileSync(file, '__proto__=from-file\n');
+    try {
+        delete process.env.__proto__;
+        loadEnvFile(file);
+        strictEqual(process.env.__proto__, 'from-file');
+    } finally {
+        if (previous === undefined) delete process.env.__proto__;
+        else process.env.__proto__ = previous;
         rmSync(root, { recursive: true, force: true });
     }
 });

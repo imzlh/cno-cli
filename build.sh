@@ -15,7 +15,7 @@ OXC_BUILD_DIR="ext-oxc/build"
 DIST_DIR="dist/exe"
 
 # ── 1. Main project ───────────────────────────────────────────────────────────
-cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DCNO_RELEASE=ON
 cmake --build "$BUILD_DIR" --config Release --parallel
 
 # ── 2. ext-oxc (optional) ─────────────────────────────────────────────────────

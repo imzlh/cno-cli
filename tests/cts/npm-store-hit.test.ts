@@ -218,8 +218,6 @@ Deno.test('npm warm multi-package: complete views re-resolve under 2s', async ()
         ok(existsSync(join(midX, 'node_modules', 'leaf-a', 'package.json')));
         ok(existsSync(join(midX, 'node_modules', 'leaf-b', 'package.json')));
         rt2.cleanup();
-        // Expose timing for scratch logs when run under a harness that scrapes stdout.
-        console.log(`npm-warm-timing: multi-package second precache ${elapsed.toFixed(1)}ms`);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -310,7 +308,6 @@ Deno.test('npm warm: incomplete package view is repaired on second pass', async 
         ok(!existsSync(join(cacheDir, 'npm', 'need-me', 'meta.json')), 'repair must not need meta');
         ok(!existsSync(join(cacheDir, 'npm', 'hollow', 'meta.json')), 'repair must not need meta');
         rt.cleanup();
-        console.log('npm-warm-repair: incomplete hollow@1.0.0 linked need-me@2.0.0');
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

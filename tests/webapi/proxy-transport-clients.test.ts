@@ -47,6 +47,10 @@ const BAKED_EVENT_GLOBALS = {
 const { EventSource } = await import('../../cno/src/webapi/sse.ts');
 const { WebSocket } = await import('../../cno/src/webapi/websocket.ts');
 
+Deno.test.afterAll(() => {
+    for (const [name, cls] of Object.entries(BAKED_EVENT_GLOBALS)) Reflect.set(globalThis, name, cls);
+});
+
 /**
  * True when the disk graph really did overwrite the globals.
  *
@@ -317,16 +321,4 @@ Deno.test({ name: 'WebSocket: WSS uses CONNECT, TLS, upgrade and frames', timeou
         setRawConnectionHook(null);
         await Promise.all([closeServer(proxy.server), closeServer(target.server)]);
     }
-});
-
-// MUST STAY LAST. Puts the baked event classes back so the worker's teardown
-// path (bridgeEvent -> globalEvent.dispatchEvent(new Event('beforeunload'))) is
-// not handed a disk Event by a baked EventTarget, which throws
-// `TypeError: Invalid event object` at exit and silently kills
-// 'beforeunload' / 'unload' for this file.
-Deno.test('proxy clients: baked event globals restored for teardown', () => {
-    for (const [name, cls] of Object.entries(BAKED_EVENT_GLOBALS)) Reflect.set(globalThis, name, cls);
-    strictEqual(globalThis.Event, BAKED_EVENT_GLOBALS.Event);
-    strictEqual(globalThis.MessageEvent, BAKED_EVENT_GLOBALS.MessageEvent);
-    new EventTarget().dispatchEvent(new Event('probe'));
 });

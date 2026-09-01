@@ -97,16 +97,7 @@ export class CnoRepl {
     #stdout: CModuleStreams.Pipe | CModuleStreams.Stream | ReplOutputHandle;
     /** stdin is a TTY — governs echo, repaint and raw-mode key handling. */
     #isatty: boolean = false;
-    /**
-     * stdout is a TTY — governs colour only.
-     *
-     * Deliberately separate from `#isatty`. The two answer different questions
-     * and node splits them the same way: readline's `terminal` option (echo and
-     * repaint) follows the *input* stream, while `util.inspect`'s colour follows
-     * `process.stdout.isTTY`. They differ in exactly the cases this REPL has to
-     * survive — `cno repl < script.txt` on a terminal, and `cno repl > log.txt`
-     * from one.
-     */
+    /** stdout TTY state controls color independently of interactive input. */
     #stdoutIsatty: boolean = false;
     #reading = false;
     #termWidth = 80;
@@ -145,10 +136,7 @@ export class CnoRepl {
             colors: true,
             utf8: true,
         };
-        // Set up stdout: TTY for a terminal, otherwise a Pipe when libuv can
-        // adopt the fd and an fd-level shim when it cannot. `Pipe.open()` used
-        // to run unconditionally here, which made `cno repl > out.txt` die with
-        // ENOTSOCK and `cno repl < in.txt` with EINVAL — see file-stdio.ts.
+        // Redirected stdio needs the fd shim; Pipe.open() accepts pipes only.
         if (os.guessHandle(os.STDOUT_FILENO) === 'tty') {
             this.#stdout = new streams.TTY(os.STDOUT_FILENO, false);
             this.#stdoutIsatty = true;
@@ -166,10 +154,7 @@ export class CnoRepl {
             console.warn('stdin is not a TTY, some features may not work');
         }
 
-        // Intercept SIGINT so Ctrl+C / terminal-close does not reach the
-        // default handler (process kill) before the REPL can stop the pending
-        // read cleanly. Without this, libuv cancels the active uv_read_start
-        // and the onread callback surfaces EIO as an error.
+        // Keep Ctrl+C under REPL control while a read is active.
         try {
             const sig = import.meta.use('signals');
             if (sig) {
@@ -790,15 +775,7 @@ export class CnoRepl {
     }
 
     #update(): void {
-        // Non-TTY stdin means there is no cursor to move and no line to
-        // repaint: every printable character used to trigger a full
-        // re-render, so a piped 48-char line emitted 3764 bytes / 506 escape
-        // sequences instead of nothing (node --interactive with a piped stdin
-        // emits 78 bytes and zero escapes; `deno repl -q` emits 20). That
-        // O(n^2) echo storm is invisible interactively but corrupts every
-        // programmatic consumer of REPL stdout, which is how the cli-stage
-        // REPL assertions see it. node's readline takes the same branch via
-        // `terminal: false`.
+        // Piped input has no cursor to repaint.
         if (!this.#isatty) return;
 
         this.#moveToStart();
@@ -1019,11 +996,7 @@ export class CnoRepl {
             }
             const result = (await engine.eval<EngineEvalResult>(code, '<eval>', engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)).value;
 
-            // Colour only on a terminal. These two writes used to be
-            // unconditional, which put `\x1b[97m` ... `\x1b[0m` around every
-            // result even when stdout was a pipe or a file — 2 escapes per
-            // evaluated expression, corrupting any programmatic reader of REPL
-            // stdout. node applies the same rule via `process.stdout.isTTY`.
+            // ANSI color belongs only on a terminal.
             this.#printColor(COLOR.brightWhite);
             this.#flush();
             if (this.#config.hexMode && (typeof result === 'number' || typeof result === 'bigint')) {
@@ -1092,41 +1065,12 @@ export class CnoRepl {
         this.#flush();
     }
 
-    /**
-     * Emit an ANSI colour escape, but only when stdout is a terminal.
-     *
-     * Separate from `#print` so the colour decision lives in one place: every
-     * other `#print` carries real text that must survive redirection, whereas a
-     * colour code on a pipe or a file is pure corruption.
-     */
+    /** Emit an ANSI color escape only to a terminal. */
     #printColor(code: string): void {
         if (this.#stdoutIsatty && this.#config.colors) this.#print(code);
     }
 
-    /**
-     * A REPL session that ended normally exits 0, whatever individual
-     * expressions did along the way.
-     *
-     * The cts diagnostics receiver calls `requestFailureExitCode()` for an
-     * unhandled rejection (cts/src/runtime/index.ts:455) and an unhandled job
-     * exception (:483). That is right for `cno run script.js`, where node also
-     * exits 1 — but wrong for an interactive session, where node reports the
-     * error, keeps evaluating, and exits 0 (OBSERVED on v24.18.0: a throwing
-     * `setTimeout` and a `Promise.reject` both exit 0 under `--interactive`).
-     * Without this, `cno repl` exited 1 after any async error, so every REPL
-     * session that touched one reported failure despite working correctly.
-     *
-     * Fixed here rather than in the receiver because the receiver is correct for
-     * every non-REPL entry point; the REPL is the exception and owns the
-     * exception.
-     *
-     * `process.exitCode` is only read here, never a runtime request: the two are
-     * kept in separate slots (src/main.ts:301 writes the private field alone) and
-     * an explicit value wins, including an explicit 0 (resolveExitCode,
-     * src/main.ts:286). So "still undefined" means *only* the runtime asked for
-     * failure — and assigning 0 to that case neutralises the request while
-     * leaving a deliberate `process.exitCode = 3` from the user intact.
-     */
+    /** Preserve an explicit exit code; otherwise successful REPL exit is zero. */
     #settleExitCode(): void {
         try {
             const proc = Reflect.get(globalThis, 'process');
@@ -1134,10 +1078,7 @@ export class CnoRepl {
             if (Reflect.get(proc, 'exitCode') === undefined) {
                 Reflect.set(proc, 'exitCode', 0);
             }
-        } catch {
-            // No process object, or an exotic exitCode setter threw. The status
-            // is not worth failing cleanup over.
-        }
+        } catch { /* Exit-code cleanup is best effort. */ }
     }
 
     #alert(): void {

@@ -190,6 +190,30 @@ Deno.test('webapi: aborting after the lock is granted is ignored', async () => {
     strictEqual(await isHeld('test-lock-abort-late'), false, 'the lock must be released');
 });
 
+Deno.test('webapi: aborting the last queued request releases the empty queue', async () => {
+    let releaseHolder!: () => void;
+    const holder = navigator.locks.request('test-lock-empty-queue', async () => {
+        await new Promise<void>((resolve) => { releaseHolder = resolve; });
+    });
+    await sleep(10);
+
+    const controller = new AbortController();
+    const queued = navigator.locks.request(
+        'test-lock-empty-queue',
+        { signal: controller.signal },
+        () => { throw new Error('aborted queued request must not run'); },
+    );
+    controller.abort();
+    await rejects(queued, (e: Error) => e.name === 'AbortError');
+
+    releaseHolder();
+    await holder;
+    strictEqual(await navigator.locks.request('test-lock-empty-queue', () => 'reacquired'), 'reacquired');
+    const state = await navigator.locks.query();
+    strictEqual(state.held.some(({ name }) => name === 'test-lock-empty-queue'), false);
+    strictEqual(state.pending.some(({ name }) => name === 'test-lock-empty-queue'), false);
+});
+
 Deno.test('webapi: steal breaks the held lock, jumps the queue, and releases', async () => {
     // OBSERVED deno 2.9.3: the victim rejects with AbortError 'The lock was
     // broken', its callback still runs to completion, and the thief is granted

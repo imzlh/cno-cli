@@ -18,6 +18,41 @@ function writeWorker(source: string): string {
     return file;
 }
 
+async function runWorkerProcess(source: string, timeoutMs = 10000): Promise<{
+    code: number;
+    stdout: string;
+    stderr: string;
+    timedOut: boolean;
+}> {
+    const dir = Deno.makeTempDirSync({ prefix: 'cno-web-worker-exit-' });
+    const file = `${dir}/main.ts`;
+    Deno.writeTextFileSync(file, source);
+    const child = new Deno.Command(Deno.execPath(), {
+        args: ['run', '--no-lock', file],
+        stdout: 'piped',
+        stderr: 'piped',
+        env: { CTS_SILENT: 'true' },
+    }).spawn();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+        timedOut = true;
+        try { child.kill(); } catch {}
+    }, timeoutMs);
+
+    try {
+        const output = await child.output();
+        return {
+            code: output.code,
+            stdout: decodeUtf8(output.stdout),
+            stderr: decodeUtf8(output.stderr),
+            timedOut,
+        };
+    } finally {
+        clearTimeout(timer);
+        Deno.removeSync(dir, { recursive: true });
+    }
+}
+
 Deno.test({ name: 'Worker upstream: data URL worker echoes messages and receives name', timeout: 10000 }, async () => {
     const source = `
         if (self.name !== 'data-worker') {
@@ -50,9 +85,7 @@ Deno.test({ name: 'Worker upstream: data URL worker echoes messages and receives
 
 Deno.test({ name: 'Worker upstream: blob URL worker can dynamically import blob modules', timeout: 10000 }, async () => {
     const moduleCode = `
-        console.log('module start');
         const hash = await crypto.subtle.digest('SHA-1', new TextEncoder().encode('data'));
-        console.log('module finish');
         export default { hashLength: hash.byteLength, value: 'blob-module' };
     `;
     const workerUrl = URL.createObjectURL(new Blob([`
@@ -315,6 +348,92 @@ Deno.test({ name: 'Worker: postMessage is queued until worker installs onmessage
             worker.postMessage('queued');
         });
         strictEqual(reply.value, 'queued');
+    } finally {
+        worker.terminate();
+        unlinkSync(file);
+    }
+});
+
+Deno.test({ name: 'Worker: message listener cleanup releases its control pipe', timeout: 50000 }, async () => {
+    const workerProgram = (workerSource: string, receiveMessage: boolean) => `
+        const source = ${JSON.stringify(workerSource)};
+        const worker = new Worker('data:application/typescript;base64,' + btoa(source), { type: 'module' });
+        ${receiveMessage ? `
+            worker.onmessage = (event) => console.log(String(event.data));
+            worker.postMessage('go');
+        ` : ''}
+    `;
+    const cases = [
+        {
+            name: 'once',
+            source: workerProgram(`
+                self.addEventListener('message', () => self.postMessage('once'), { once: true });
+            `, true),
+            output: 'once',
+        },
+        {
+            name: 'abort signal',
+            source: workerProgram(`
+                const controller = new AbortController();
+                self.addEventListener('message', () => {}, { signal: controller.signal });
+                controller.abort();
+            `, false),
+            output: '',
+        },
+        {
+            name: 'duplicate and capture listeners',
+            source: workerProgram(`
+                // Ensure the parent message is queued before registration so
+                // listener identity/capture cleanup is exercised deterministically.
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                let calls = 0;
+                const listener = () => {
+                    calls++;
+                    self.removeEventListener('message', listener, true);
+                    self.postMessage(calls);
+                };
+                self.addEventListener('message', listener);
+                self.addEventListener('message', listener);
+                self.addEventListener('message', listener, true);
+                self.removeEventListener('message', listener);
+            `, true),
+            output: '1',
+        },
+    ];
+
+    for (const testCase of cases) {
+        const result = await runWorkerProcess(testCase.source);
+        strictEqual(result.timedOut, false, `${testCase.name}: process did not exit`);
+        strictEqual(result.code, 0, `${testCase.name}: ${result.stderr}`);
+        strictEqual(result.stdout.trim(), testCase.output, `${testCase.name}: ${result.stdout}`);
+    }
+});
+
+Deno.test({ name: 'Worker: listener-free message gaps are not replayed after re-registration', timeout: 10000 }, async () => {
+    const file = writeWorker(`
+        const first = () => {};
+        self.addEventListener('message', first);
+        self.removeEventListener('message', first);
+        self.postMessage('ready');
+        setTimeout(() => {
+            self.addEventListener('message', (event) => {
+                self.postMessage(event.data);
+                self.close();
+            }, { once: true });
+            self.postMessage('listening');
+        }, 100);
+    `);
+    const worker = new Worker(file);
+    try {
+        const received = await new Promise<unknown>((resolve, reject) => {
+            worker.onerror = reject;
+            worker.onmessage = (event) => {
+                if (event.data === 'ready') worker.postMessage('dropped');
+                else if (event.data === 'listening') worker.postMessage('live');
+                else resolve(event.data);
+            };
+        });
+        strictEqual(received, 'live');
     } finally {
         worker.terminate();
         unlinkSync(file);
@@ -1470,6 +1589,32 @@ Deno.test({ name: 'Worker upstream: message and error listeners all receive even
         });
         await errorDone;
         strictEqual(JSON.stringify(errorCalls), JSON.stringify(['onerror', 'error-listener-a', 'error-listener-b']));
+    } finally {
+        worker.terminate();
+        unlinkSync(file);
+    }
+});
+
+Deno.test({ name: 'Worker: queued messages survive GC before message listener registration', timeout: 10000 }, async () => {
+    const file = writeWorker(`
+        const value = { marker: 'queued-before-listener' };
+        value.self = value;
+        self.postMessage(value);
+    `);
+    const worker = new Worker(file, { type: 'module' });
+    try {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const allocations: Uint8Array[] = [];
+        for (let i = 0; i < 256; i++) {
+            allocations.push(new Uint8Array(256 * 1024));
+        }
+        const reply: any = await new Promise((resolve, reject) => {
+            worker.onmessage = (event) => resolve(event.data);
+            worker.onerror = reject;
+        });
+        strictEqual(reply.marker, 'queued-before-listener');
+        strictEqual(reply.self, reply);
+        ok(allocations.length > 0);
     } finally {
         worker.terminate();
         unlinkSync(file);

@@ -1,5 +1,6 @@
 import { joinPaths, stripJsonc } from '../../cts/src/utils';
 import type { ConfigOptions } from '../../cts/src/types';
+import { flagsToConfig } from './config-flags';
 
 const fs = import.meta.use('fs');
 const engine = import.meta.use('engine');
@@ -25,22 +26,17 @@ export function buildCacheConfig(
 ): Partial<ConfigOptions> {
     const cfg: Partial<ConfigOptions> = {
         ...fileCfg,
+        ...flagsToConfig(flags),
         disableLock: false,
         persistLock: true,
     };
 
-    if (flags['silent'] === true) cfg.silent = true;
-    if (flags['no-oxc'] === true) cfg.enableOxc = false;
     if (flags['ignore-scripts'] === true) cfg.ignoreScripts = true;
-    if (flags['cached-only'] === true) cfg.cachedOnly = true;
 
     const npmMode = flags['npm-mode'];
     if (npmMode === 'normal' || npmMode === 'soft' || npmMode === 'hard') {
         cfg.nodeModulesMode = npmMode;
     }
-
-    if (typeof flags['cache-dir'] === 'string') cfg.cacheDir = flags['cache-dir'];
-    if (typeof flags['lock-dir'] === 'string') cfg.lockDir = flags['lock-dir'];
 
     return cfg;
 }

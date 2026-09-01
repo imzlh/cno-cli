@@ -62,7 +62,7 @@ function startServe(
         Reflect.apply(fetch, serverExport, [request, info]) as Response | Promise<Response>;
     const listen = typeof onListen === 'function'
         ? (addr: Deno.NetAddr) => { Reflect.apply(onListen, serverExport, [addr]); }
-        : (addr: Deno.NetAddr) => console.log(`Listening on ${formatListenUrl(addr)}`);
+        : (addr: Deno.NetAddr) => console.log(`cno serve: Listening on ${formatListenUrl(addr)}`);
 
     const server = Deno.serve({
         hostname: serveHost(flags),
@@ -72,12 +72,14 @@ function startServe(
     });
 
     let shuttingDown = false;
-    let shutdown: () => void;
+    const installedSignals = new Set<Deno.Signal>();
     const removeSignalListeners = () => {
-        try { Deno.removeSignalListener('SIGINT', shutdown); } catch { /* unavailable */ }
-        try { Deno.removeSignalListener('SIGTERM', shutdown); } catch { /* unavailable */ }
+        for (const signal of installedSignals) {
+            try { Deno.removeSignalListener(signal, shutdown); } catch { /* unavailable */ }
+        }
+        installedSignals.clear();
     };
-    shutdown = () => {
+    const shutdown = () => {
         if (shuttingDown) return;
         shuttingDown = true;
         removeSignalListeners();
@@ -85,10 +87,14 @@ function startServe(
     };
     void server.finished.then(removeSignalListeners, removeSignalListeners);
     try {
-        Deno.addSignalListener('SIGINT', shutdown);
-        Deno.addSignalListener('SIGTERM', shutdown);
+        for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+            Deno.addSignalListener(signal, shutdown);
+            installedSignals.add(signal);
+        }
     } catch {
-        // Signal support can be unavailable in a restricted host.
+        // Signal support can be unavailable in a restricted host. Roll back any
+        // listener installed before a later registration failed.
+        removeSignalListeners();
     }
 }
 

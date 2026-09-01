@@ -1,9 +1,5 @@
-// Windows `shell:true` quoting. The async path passes the command line to
-// CreateProcess verbatim, exactly as Node does; the sync path cannot (the native
-// tjs_spawn_sync builds its own command line and never reads the verbatim flag),
-// so it still routes a quoted command through an environment variable.
-//
-// Every expectation here was measured against real Node v24.18.0 on Windows.
+// Windows `shell:true` quoting. Both paths pass quoted cmd.exe commands through
+// CreateProcess verbatim, matching Node.
 import { strictEqual, ok } from 'node:assert';
 import { exec, spawnSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -99,27 +95,22 @@ Deno.test({
 });
 
 Deno.test({
-    name: 'child_process: sync shell refuses a redirect it cannot resolve',
+    name: 'child_process: sync shell resolves a redirect through a variable',
     ignore: !isWindows,
-    timeout: 20000,
-}, () => {
-    // KNOWN DIVERGENCE, pinned deliberately. spawnSync cannot use verbatim args
-    // (mod_process.c tjs_spawn_sync builds its own command line and ignores the
-    // flag), so a quoted command still travels in an environment variable and a
-    // redirect target is resolved before that variable expands. Rather than write
-    // to the wrong path with status 0, the sync path reports an error.
-    //
-    // TRIPWIRE: when tjs_spawn_sync honours windowsVerbatimArguments, this test
-    // starts failing. At that point delete it, drop the refusal in spawnSync, and
-    // let the async redirect expectation above cover the sync path too.
-    const r = spawnSync('echo redir > "%SP_OUT%"', [], {
-        shell: true,
-        env: { SP_OUT: 'D:\\nonexistent-dir-for-test\\out.txt' },
-        windowsHide: true,
+}, async () => {
+    await withTempDir('cp-shell-sync-redirect', async (dir) => {
+        const target = join(dir, 'out.txt');
+        const r = spawnSync('echo redir > "%SP_OUT%"', [], {
+            shell: true,
+            env: { SP_OUT: target },
+            windowsHide: true,
+        });
+        strictEqual(r.error, undefined);
+        strictEqual(r.status, 0);
+        ok(fs.existsSync(target), 'redirect must write the expanded path');
+        strictEqual(fs.readFileSync(target, 'utf8').trim(), 'redir');
+        ok(!fs.existsSync('%SP_OUT%'), 'must not create a literally named file');
     });
-    ok(r.error, 'sync path must report an error rather than misplace the file');
-    strictEqual((r.error as { code?: string } | undefined)?.code, 'ERR_CNO_SYNC_SHELL_REDIRECT_VAR');
-    ok(!fs.existsSync('%SP_OUT%'), 'must not create a literally named file');
 });
 
 Deno.test({
@@ -127,8 +118,6 @@ Deno.test({
     ignore: !isWindows,
     timeout: 20000,
 }, async () => {
-    // Guards the refusal above against over-reach: only a %VAR% target is
-    // refused, an already-expanded path must keep working.
     await withTempDir('cp-shell-sync-lit', async (dir) => {
         const target = join(dir, 'lit.txt');
         const r = spawnSync(`echo "sync lit" > "${target}"`, [], {
@@ -145,8 +134,6 @@ Deno.test({
     ignore: !isWindows,
     timeout: 20000,
 }, () => {
-    // Second over-reach guard: %VAR% in an ordinary argument is fine, because
-    // `call` does expand it — only the redirect target is mis-resolved.
     const r = spawnSync('echo "[%FOO%]"', [], {
         shell: true, env: { FOO: 'fooval' }, windowsHide: true, encoding: 'utf8',
     });

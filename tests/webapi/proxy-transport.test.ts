@@ -588,5 +588,9 @@ Deno.test('raw transport: NO_PROXY respects domain boundaries and ports', () => 
     strictEqual(shouldBypassProxy(new URL('http://badexample.com/'), 'example.com'), false);
     strictEqual(shouldBypassProxy(new URL('http://example.com:8080/'), 'example.com:8080'), true);
     strictEqual(shouldBypassProxy(new URL('http://example.com:8081/'), 'example.com:8080'), false);
+    strictEqual(shouldBypassProxy(new URL('https://api.example.com/'), 'other.invalid; example.com:443'), true);
     strictEqual(shouldBypassProxy(new URL('http://intranet/'), '<local>'), true);
+    strictEqual(shouldBypassProxy(new URL('http://api.example.com/'), '*.example.com'), true);
+    strictEqual(shouldBypassProxy(new URL('http://[::1]:8080/'), '[::1]:8080'), true);
+    strictEqual(shouldBypassProxy(new URL('http://[::1]:8081/'), '[::1]:8080'), false);
 });

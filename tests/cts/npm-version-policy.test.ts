@@ -262,7 +262,6 @@ Deno.test('npm version policy: constrained ranges keep the warm-store fast path'
                 `constrained range must not need registry meta for verfast${i}`);
         }
         ok(elapsed < 5000, `12 constrained store-hit ranges took ${elapsed.toFixed(1)}ms (want <5000ms)`);
-        console.log(`npm-verpolicy-timing: 12 constrained store-hit ranges ${elapsed.toFixed(1)}ms`);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -290,7 +289,6 @@ Deno.test('npm version policy: mixed constrained and unconstrained resolve toget
         strictEqual(result.errors.length, 0, `errors: ${JSON.stringify(result.errors)}`);
         strictEqual(resolvedVersionOf(result, 'vermixa'), '1.0.0', 'constrained range unaffected');
         strictEqual(resolvedVersionOf(result, 'vermixb'), '3.0.0', 'unconstrained resolves via store fallback');
-        console.log(`npm-verpolicy-timing: mixed constrained+unconstrained ${elapsed.toFixed(1)}ms`);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

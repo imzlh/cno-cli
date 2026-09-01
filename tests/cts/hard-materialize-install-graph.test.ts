@@ -124,6 +124,17 @@ Deno.test('hard materialize: optional missing dep is skipped', async () => {
             nodeModulesMode: 'hard',
         }, projectDir);
 
+        const handlers = Reflect.get(rt.resolver, 'handlers') as Map<string, {
+            isPackageViewComplete(dir: string): boolean;
+        }>;
+        const npm = handlers.get('npm');
+        ok(npm, 'runtime must register the npm handler');
+        strictEqual(
+            npm.isPackageViewComplete(hostDir),
+            true,
+            'a missing optional dependency must not invalidate an otherwise complete package view',
+        );
+
         const result = await rt.precache(
             joinPaths(projectDir, 'main.ts'),
             joinPaths(projectDir, 'main.ts'),

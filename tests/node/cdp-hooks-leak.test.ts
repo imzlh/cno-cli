@@ -175,3 +175,24 @@ Deno.test('hooks: side maps are cleared by teardown', () => {
     strictEqual(priv.liveStreamedFetchRequests.size, 0, 'teardown clears the side maps');
     strictEqual(priv.streamRegisteredAt.size, 0, 'and the timestamp map');
 });
+
+Deno.test('hooks: releasing pending interceptions resumes every request exactly once', () => {
+    const { hooks } = newHooks();
+    const pending = (hooks as unknown as {
+        pendingIntercepts: Map<string, (result: unknown) => void>;
+        releasePendingIntercepts(): void;
+    });
+    const results: unknown[] = [];
+
+    pending.pendingIntercepts.set('first', (result) => results.push(result));
+    pending.pendingIntercepts.set('second', (result) => results.push(result));
+
+    pending.releasePendingIntercepts();
+    strictEqual(results.length, 2);
+    strictEqual(results[0], null);
+    strictEqual(results[1], null);
+    strictEqual(pending.pendingIntercepts.size, 0);
+
+    pending.releasePendingIntercepts();
+    strictEqual(results.length, 2, 'releasing an already-empty map must be idempotent');
+});

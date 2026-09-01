@@ -248,7 +248,6 @@ async function runPauseOnce(): Promise<PausedFrame> {
 
 		const top = paused.callFrames?.[0]
 		ok(top)
-		console.log(JSON.stringify({ expected, top }, null, 2))
 		strictEqual(top.functionName, expected.functionName)
 		strictEqual(top.location?.scriptId, expected.filePath)
 		strictEqual((top.location?.lineNumber ?? -999) + 1, expected.line)

@@ -21,6 +21,25 @@ static napi_value Hello(napi_env env, napi_callback_info info) {
     return result;
 }
 
+static napi_value GetDataViewInfo(napi_env env, napi_callback_info info) {
+    size_t argc = 1, length = 0, offset = 0;
+    napi_value argv[1], result, value, arraybuffer;
+    void *data;
+    napi_status st = napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+    if (st != napi_ok || argc != 1) return NULL;
+    st = napi_get_dataview_info(env, argv[0], &length, &data, &arraybuffer, &offset);
+    if (st != napi_ok) return NULL;
+    st = napi_create_object(env, &result);
+    if (st != napi_ok) return NULL;
+    st = napi_create_uint32(env, (uint32_t)offset, &value);
+    if (st != napi_ok || napi_set_named_property(env, result, "offset", value) != napi_ok) return NULL;
+    st = napi_create_uint32(env, (uint32_t)length, &value);
+    if (st != napi_ok || napi_set_named_property(env, result, "length", value) != napi_ok) return NULL;
+    st = napi_set_named_property(env, result, "buffer", arraybuffer);
+    if (st != napi_ok) return NULL;
+    return result;
+}
+
 /* mode 0 = napi_wrap, mode 1 = napi_add_finalizer. Returns status * 100
  * plus the number of finalizer calls made synchronously by the failed API. */
 static napi_value TryFailedAttachment(napi_env env, napi_callback_info info) {
@@ -70,6 +89,12 @@ NAPI_MODULE_INIT() {
                               TryFailedAttachment, NULL, &fn);
     if (st != napi_ok) return NULL;
     st = napi_set_named_property(env, exports, "tryFailedAttachment", fn);
+    if (st != napi_ok) return NULL;
+
+    st = napi_create_function(env, "getDataViewInfo", NAPI_AUTO_LENGTH,
+                              GetDataViewInfo, NULL, &fn);
+    if (st != napi_ok) return NULL;
+    st = napi_set_named_property(env, exports, "getDataViewInfo", fn);
     if (st != napi_ok) return NULL;
 
     return exports;

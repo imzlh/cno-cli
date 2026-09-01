@@ -2,6 +2,7 @@ import { strictEqual, ok } from 'node:assert';
 import * as http from 'node:http';
 import type { OutgoingHttpHeaders, ServerResponse } from 'node:http';
 import * as net from 'node:net';
+import { emitNodeServerUpgrade } from '../../cno/src/node/_internal/server-upgrade';
 
 function listen(server: http.Server, port = 0, host = '127.0.0.1'): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -242,30 +243,93 @@ Deno.test({ name: 'http: req.method and req.url reflect request line', timeout: 
 Deno.test({ name: 'http: server emits upgrade event on Connection: Upgrade', timeout: 10000 }, async () => {
     const server = http.createServer();
     let upgraded = false;
+    let upgradedSocket: import('node:net').Socket | null = null;
     server.on('upgrade', (req, socket, head) => {
         upgraded = true;
+        upgradedSocket = socket;
         ok(typeof req.url === 'string');
         ok(socket);
         ok(head instanceof Uint8Array);
-        socket.destroy();
     });
     await listen(server);
     try {
         const addr = server.address();
         if (!addr || typeof addr === 'string') throw new Error('no port');
-        await sendRawHttpRequest(addr.port, [
-            'GET / HTTP/1.1',
-            'Host: 127.0.0.1',
-            'Connection: Upgrade',
-            'Upgrade: websocket',
-            '',
-            '',
-        ]);
-        await new Promise((r) => setTimeout(r, 50));
-        ok(upgraded, 'server must emit upgrade event');
+        const client = net.connect(addr.port, '127.0.0.1');
+        try {
+            await new Promise<void>((resolve, reject) => {
+                client.once('connect', () => {
+                    client.write([
+                        'GET / HTTP/1.1',
+                        'Host: 127.0.0.1',
+                        'Connection: Upgrade',
+                        'Upgrade: websocket',
+                        '',
+                        '',
+                    ].join('\r\n'));
+                });
+                client.once('error', reject);
+                const wait = () => {
+                    if (upgradedSocket) resolve();
+                    else setTimeout(wait, 5);
+                };
+                wait();
+            });
+            ok(upgraded, 'server must emit upgrade event');
+            ok(upgradedSocket, 'server must expose the upgraded socket');
+            strictEqual(upgradedSocket.destroyed, false, 'ordinary H1 completion must not close an upgraded socket');
+        } finally {
+            client.destroy();
+        }
     } finally {
+        upgradedSocket?.destroy();
         await close(server);
     }
+});
+
+Deno.test({ name: 'http internal: upgrade without listener remains unhandled', timeout: 10000 }, () => {
+    let upgradeCalled = false;
+    const emitter = {
+        listenerCount: () => 0,
+        emit: () => false,
+    };
+    const response = {
+        upgrade: () => {
+            upgradeCalled = true;
+            throw new Error('upgrade must not be called');
+        },
+    };
+    const incoming = {
+        headers: { connection: 'Upgrade', upgrade: 'websocket' },
+    };
+
+    const result = emitNodeServerUpgrade(emitter as never, response as never, incoming as never);
+    strictEqual(result.handled, false);
+    strictEqual(result.upgraded, false);
+    strictEqual(upgradeCalled, false);
+});
+
+Deno.test({ name: 'http internal: upgrade failure emits error', timeout: 10000 }, () => {
+    const failure = new Error('upgrade failed');
+    let emittedError: unknown;
+    const emitter = {
+        listenerCount: (event: string | symbol) => event === 'upgrade' ? 1 : 0,
+        emit: (event: string | symbol, value: unknown) => {
+            if (event === 'error') emittedError = value;
+            return true;
+        },
+    };
+    const response = {
+        upgrade: () => { throw failure; },
+    };
+    const incoming = {
+        headers: { connection: 'keep-alive, Upgrade', upgrade: 'websocket' },
+    };
+
+    const result = emitNodeServerUpgrade(emitter as never, response as never, incoming as never);
+    strictEqual(result.handled, true);
+    strictEqual(result.upgraded, false);
+    strictEqual(emittedError, failure);
 });
 
 // --- 5b. server emits 'connect' for CONNECT tunnel ---------------------------

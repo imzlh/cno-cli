@@ -1,7 +1,9 @@
 // Regression tests for flags that were parsed and advertised but had no
 // consumer. See applyMaxOldSpaceSize / flagsToConfig for the measurements.
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { parseArgv, unknownFlags } from '../../src/cli.ts';
+import { buildCacheConfig } from '../../src/commands/cache-utils.ts';
+import { decodeWorkerRuntimeConfig } from '../../src/commands/config-flags.ts';
 import { applyMaxOldSpaceSize } from '../../src/commands/flags-config.ts';
 import { flagsToConfig } from '../../src/commands/run.ts';
 import type { ConfigOptions } from '../../cts/src/types.ts';
@@ -61,14 +63,17 @@ Deno.test('max-old-space-size: cno-native limits win', () => {
     }
 });
 
-Deno.test('max-old-space-size: garbage is ignored, not fatal', () => {
+Deno.test('max-old-space-size: invalid values fail early', () => {
     withoutCtsMemoryLimit(() => {
-        for (const value of ['abc', '0', '-8', '']) {
+        for (const value of ['abc', '0', '-8']) {
             const cfg: Partial<ConfigOptions> = {};
-            applyMaxOldSpaceSize(cfg, { 'max-old-space-size': value });
-            strictEqual(cfg.memoryLimit, undefined, `value ${JSON.stringify(value)}`);
+            throws(
+                () => applyMaxOldSpaceSize(cfg, { 'max-old-space-size': value }),
+                /max-old-space-size must be a positive number/,
+                `value ${JSON.stringify(value)}`,
+            );
         }
-        // Bare boolean form (no value supplied) must not become NaN.
+        // Missing values are rejected by the CLI before this mapping runs.
         const bare: Partial<ConfigOptions> = {};
         applyMaxOldSpaceSize(bare, { 'max-old-space-size': true });
         strictEqual(bare.memoryLimit, undefined);
@@ -130,6 +135,68 @@ Deno.test('flagsToConfig: absent flags stay undefined so file config still appli
     });
 });
 
+Deno.test('worker runtime config: decodes only the bootstrap schema', () => {
+    const cfg = decodeWorkerRuntimeConfig({
+        cacheDir: '/cache',
+        enableHttp: false,
+        memoryLimit: 64 * MB,
+        maxStackSize: 512 * 1024,
+        conditions: ['node', 'import'],
+        importMap: { '@ok': '/map.ts', invalid: false },
+        importMapScopes: {
+            'file:///scope/': { '@ok': '/scope.ts', invalid: 1 },
+            invalid: 'not-a-map',
+        },
+        pathAliases: { '@/*': ['src/*'], invalid: ['src/*', false] },
+        ignored: true,
+    });
+
+    deepStrictEqual(cfg, {
+        cacheDir: '/cache',
+        enableHttp: false,
+        memoryLimit: 64 * MB,
+        maxStackSize: 512 * 1024,
+        conditions: ['node', 'import'],
+        importMap: { '@ok': '/map.ts' },
+        importMapScopes: { 'file:///scope/': { '@ok': '/scope.ts' } },
+        pathAliases: { '@/*': ['src/*'] },
+    });
+    strictEqual(decodeWorkerRuntimeConfig({
+        enableHttp: 'false',
+        memoryLimit: -1,
+        maxStackSize: Infinity,
+        conditions: ['node', 1],
+    }), undefined);
+    strictEqual(decodeWorkerRuntimeConfig({
+        importMap: ['/map.ts'],
+        importMapScopes: [['/scope.ts']],
+        pathAliases: [['src/*']],
+    }), undefined);
+});
+
+Deno.test('cache config: resolution and resource flags are preserved', () => {
+    withoutCtsMemoryLimit(() => {
+        const cfg = buildCacheConfig({}, {
+            'frozen': true,
+            'no-http': true,
+            'no-jsr': true,
+            'no-node': true,
+            'disable-cache': true,
+            'cached-only': true,
+            'memory-limit': '32MB',
+            'max-old-space-size': '64',
+        });
+        strictEqual(cfg.frozen, true);
+        strictEqual(cfg.enableHttp, false);
+        strictEqual(cfg.enableJsr, false);
+        strictEqual(cfg.enableNode, false);
+        strictEqual(cfg.enableCache, false);
+        strictEqual(cfg.cachedOnly, true);
+        strictEqual(cfg.memoryLimit, 32 * MB);
+        strictEqual(cfg.disableLock, false);
+    });
+});
+
 Deno.test('cli: --loader is parsed as a node runtime value flag', () => {
     // Parsing is correct; the gap is downstream — runNodePreloads in
     // src/commands/run.ts handles kind 'require' and 'import' but drops
@@ -168,26 +235,7 @@ Deno.test('cli: max-old-space-size accepts both = and space forms', () => {
     strictEqual(spaced.rawArgs.entry, 'main.ts');
 });
 
-// ---------------------------------------------------------------------------
-// EXPECTED-RED. `unknownFlags` validates against one flat KNOWN_FLAGS set
-// (src/cli.ts:530) with no per-subcommand scoping, so a flag that is valid for
-// *some* command is accepted by *every* command and then silently dropped by a
-// consumer that never reads it.
-//
-// OBSERVED against build/stage/cno.exe (2026-08-04 15:59):
-//   cno repl --filter=xyz          -> rc 0
-//   cno repl --out=x.jspack        -> rc 0
-//   cno run  --out=x entry.js      -> rc 0, entry ran, flag ignored
-//   cno eval --filter=x 1+1        -> rc 0
-//   cno pack --filter=x entry.js   -> rc 0, packed anyway
-// deno rejects the same shape (`deno run --filter=x` -> rc 1 "unexpected
-// argument '--filter' found"); node exits 9 ("bad option"). A user who types
-// `cno run --filter=foo` meaning `cno test` gets a clean exit 0 and no warning.
-//
-// This test states the contract cno should meet. It FAILS today: every
-// assertion below currently gets `[]` back. Do not "fix" it by deleting the
-// cases — the fix is to give unknownFlags a per-command allow-list.
-// ---------------------------------------------------------------------------
+// Flags valid only for another subcommand must be rejected before dispatch.
 Deno.test('flag scoping: a flag valid elsewhere is rejected for this command', () => {
     // test-only flags must not be silently accepted by run/repl/eval/pack.
     deepStrictEqual(unknownFlags(parseArgv(['repl', '--filter=xyz'])), ['--filter']);
@@ -203,10 +251,13 @@ Deno.test('flag scoping: a flag valid elsewhere is rejected for this command', (
     // task-only --cwd must not be accepted by test (help.ts calls it
     // "task only; ignored elsewhere" — so "ignored" should mean "rejected").
     deepStrictEqual(unknownFlags(parseArgv(['test', '--cwd=/tmp'])), ['--cwd']);
+    deepStrictEqual(unknownFlags(parseArgv(['cache', '--no-lock', 'main.ts'])), ['--no-lock']);
+    deepStrictEqual(unknownFlags(parseArgv(['eval', '--env=.env', '1+1'])), ['--env']);
 
     // Sanity: each flag IS valid for its own command, so the scoping must not
     // over-reject. These pass today and must keep passing.
     deepStrictEqual(unknownFlags(parseArgv(['test', '--filter=t', '--fail-fast'])), []);
     deepStrictEqual(unknownFlags(parseArgv(['pack', 'main.ts', '--out=o.jspack'])), []);
     deepStrictEqual(unknownFlags(parseArgv(['task', 'build', '--cwd=/tmp'])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['cache', '--frozen', '--no-http', 'main.ts'])), []);
 });

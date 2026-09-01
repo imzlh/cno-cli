@@ -1,5 +1,6 @@
-import { loadTasks, LockStore, fatal, joinPaths, normalizePath, isAbsolute, toPosixPath, dirname } from '../../cts/src/api';
+import { loadTasks, LockStore, joinPaths, normalizePath, isAbsolute, toPosixPath, dirname } from '../../cts/src/api';
 import { runTaskChild, taskShellArgv, taskShellEnv } from '../../cts/src/task';
+import { CliCommandError, CliExit } from '../command-error';
 import { C } from '../help';
 
 const os = import.meta.use('os');
@@ -19,15 +20,6 @@ function resolveFlagPath(value: string | boolean | undefined, base: string): str
     if (typeof value !== 'string' || value.length === 0) return undefined;
     const path = toPosixPath(value);
     return isAbsolute(path) ? normalizePath(path) : normalizePath(joinPaths(base, path));
-}
-
-/** os.exit() is a native libc exit and does not execute JavaScript finally
- * blocks. Close task-owned locks before delegating so an explicit task status
- * cannot leave cts.lock handles open. */
-function exitWithTaskLock(lockStore: LockStore, code: number): never {
-    try { lockStore.close(); } catch { /* preserve the child status */ }
-    os.exit(code);
-    throw new Error('unreachable');
 }
 
 function taskLookup(flags: Record<string, string | boolean>): {
@@ -53,12 +45,11 @@ export async function runTask(args: string[], flags: Record<string, string | boo
             console.error('error: [TASK] must be specified when using --eval');
             console.error('');
             console.error(`Usage: ${C.cyan('cno task')} [OPTIONS] [TASK]`);
-            os.exit(1);
+            throw new CliExit(1);
         }
         if (typeof evalFlag !== 'string') {
             console.error('error: [TASK] must be specified when using --eval');
-            os.exit(1);
-            throw new Error('unreachable');
+            throw new CliExit(1);
         }
         const lockStore = new LockStore(startDir, true);
         try {
@@ -70,7 +61,7 @@ export async function runTask(args: string[], flags: Record<string, string | boo
             });
             if (result) {
                 const code = await result.runner.runEval(evalFlag, args);
-                if (code !== 0) exitWithTaskLock(lockStore, code);
+                if (code !== 0) throw new CliExit(code);
                 return;
             }
             // No tasks config: still run ad-hoc shell (Deno allows task --eval without named tasks).
@@ -84,7 +75,7 @@ export async function runTask(args: string[], flags: Record<string, string | boo
                 { ...os.environ(), ...taskShellEnv({ INIT_CWD: invocationCwd }, cwd) },
                 cwd,
             );
-            if (code !== 0) exitWithTaskLock(lockStore, code);
+            if (code !== 0) throw new CliExit(code);
         } finally {
             lockStore.close();
         }
@@ -100,9 +91,7 @@ export async function runTask(args: string[], flags: Record<string, string | boo
             initCwd: invocationCwd,
         });
         if (!result) {
-            // fatal() calls os.exit() directly, so close the lock before it.
-            try { lockStore.close(); } catch { /* preserve diagnostics */ }
-            fatal(new Error(
+            throw new CliCommandError(new Error(
                 'Cannot find tasks everywhere. Please add some in package.json or deno.json'
             ), 'cno task');
         }
@@ -118,12 +107,12 @@ export async function runTask(args: string[], flags: Record<string, string | boo
         const matched = runner.matchNames(name);
         if (!matched.length) {
             const code = await runner.run(name, rest);
-            if (code !== 0) exitWithTaskLock(lockStore, code);
+            if (code !== 0) throw new CliExit(code);
             return;
         }
         for (const taskName of matched) {
             const code = await runner.run(taskName, rest);
-            if (code !== 0) exitWithTaskLock(lockStore, code);
+            if (code !== 0) throw new CliExit(code);
         }
     } finally {
         lockStore.close();

@@ -77,12 +77,7 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 		})
 	}
 
-	/**
-	 * Parsed in TS, not via `new URL('http://[v]/')`: the cno URL polyfill accepts
-	 * ANY bracketed content as an IPv6 host (measured: `[not-an-ip]`, `[g::1]`, `[]`
-	 * all parse, where real node throws), so the URL round-trip never rejected
-	 * anything and the Host guard let a rebound literal through.
-	 */
+	/** Do not rely on URL parsing here: the cno polyfill accepts invalid bracketed hosts. */
 	function isIpv6Literal(value: string): boolean {
 		if (value === '' || value.includes('%')) return false	// zone IDs are invalid in a URL host
 		const halves = value.split('::')

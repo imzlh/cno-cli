@@ -7,16 +7,16 @@
  * This is what ts-node, @babel/register, pirates and require-in-the-middle
  * depend on — and therefore every APM agent.
  *
- * SCOPE: these pin the contract for requires produced by Module.createRequire().
- * The `require` injected into a .cjs module body is manufactured by cts
- * (cts/src/compile/cjs.ts mkRequire, handed to the wrapper as a positional arg
- * by cts/src/compile/cjs-wrap.ts) and is NOT reachable from the node:module
- * polyfill. Tests marked NEEDS-CTS-REBUILD below cover that half and are
- * expected to fail until cts routes in-body require through this table.
+ * The CJS cases pin requires produced by Module.createRequire(). The ESM cases
+ * pin the shared CTS resolve chain used by import.meta.resolve and import().
+ * The `require` injected into a .cjs module body is manufactured by CjsLoader,
+ * but its cache and extension views must be the same process-wide objects as
+ * node:module's createRequire() views.
  */
 import { ok, strictEqual } from 'node:assert';
 import Module, * as module from 'node:module';
 import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { withTempDir } from '../_helpers/temp.ts';
 
 /**
@@ -184,6 +184,102 @@ Deno.test('module hooks: registerHooks resolve and load hooks fire', () => {
     });
 });
 
+Deno.test('module hooks: resolve hook is shared with CTS import.meta.resolve', () => {
+    return withTempDir('module-hooks-meta-resolve', (root) => {
+        const importer = path.join(root, 'vite.config.mjs');
+        const dependency = path.join(root, 'dep.mjs');
+        Deno.writeTextFileSync(importer, 'export default {};\n');
+        Deno.writeTextFileSync(dependency, 'export const value = 42;\n');
+
+        const prefix = 'vite-module-runner:import-meta-resolve/v1/';
+        let calls = 0;
+        const controller = module.registerHooks({
+            resolve(specifier: string, context: { parentURL?: string }, nextResolve: (s: string, c?: unknown) => { url: string }) {
+                calls++;
+                if (specifier.startsWith(prefix)) {
+                    const [nextSpecifier, parentURL] = JSON.parse(specifier.slice(prefix.length)) as [string, string];
+                    specifier = nextSpecifier;
+                    context.parentURL = parentURL;
+                }
+                return nextResolve(specifier, context);
+            },
+        } as never);
+
+        let resolved: string;
+        try {
+            const request = prefix + JSON.stringify(['./dep.mjs', pathToFileURL(importer).href]);
+            resolved = import.meta.resolve(request);
+        } finally {
+            controller.deregister();
+        }
+
+        strictEqual(fileURLToPath(resolved), dependency);
+        strictEqual(calls, 1, 'CTS import.meta.resolve must traverse the registered hook exactly once');
+        import.meta.resolve('./module.test.ts');
+        strictEqual(calls, 1, 'deregister must detach the hook from CTS');
+    });
+});
+
+Deno.test('module hooks: resolve hook is shared with CTS dynamic import', async () => {
+    await withTempDir('module-hooks-dynamic-import', async (root) => {
+        const importer = path.join(root, 'entry.mjs');
+        const dependency = path.join(root, 'dep.mjs');
+        Deno.writeTextFileSync(importer, 'export default {};\n');
+        Deno.writeTextFileSync(dependency, 'export const value = 42;\n');
+
+        const prefix = 'cno-module-hook:dynamic-import/';
+        let calls = 0;
+        const controller = module.registerHooks({
+            resolve(specifier: string, context: { parentURL?: string }, nextResolve: (s: string, c?: unknown) => { url: string }) {
+                calls++;
+                if (specifier.startsWith(prefix)) {
+                    const [nextSpecifier, parentURL] = JSON.parse(specifier.slice(prefix.length)) as [string, string];
+                    specifier = nextSpecifier;
+                    context.parentURL = parentURL;
+                }
+                return nextResolve(specifier, context);
+            },
+        } as never);
+
+        try {
+            const request = prefix + JSON.stringify(['./dep.mjs', pathToFileURL(importer).href]);
+            const namespace = await import(request) as { value?: number };
+            strictEqual(namespace.value, 42);
+            strictEqual(calls, 1, 'CTS dynamic import must traverse the registered hook exactly once');
+        } finally {
+            controller.deregister();
+        }
+    });
+});
+
+Deno.test('module hooks: CTS honors an in-place nextResolve URL rewrite', () => {
+    return withTempDir('module-hooks-result-rewrite', (root) => {
+        const importer = path.join(root, 'entry.mjs');
+        const first = path.join(root, 'first.mjs');
+        const second = path.join(root, 'second.mjs');
+        Deno.writeTextFileSync(importer, 'export default {};\n');
+        Deno.writeTextFileSync(first, 'export const value = 1;\n');
+        Deno.writeTextFileSync(second, 'export const value = 2;\n');
+
+        const controller = module.registerHooks({
+            resolve(specifier: string, context: { parentURL?: string }, nextResolve: (s: string, c?: unknown) => { url: string }) {
+                if (specifier !== 'cno-hook:rewrite-result') return nextResolve(specifier, context);
+                context.parentURL = pathToFileURL(importer).href;
+                const result = nextResolve('./first.mjs', context);
+                result.url = pathToFileURL(second).href;
+                return result;
+            },
+        } as never);
+
+        try {
+            const resolved = import.meta.resolve('cno-hook:rewrite-result');
+            strictEqual(fileURLToPath(resolved), second);
+        } finally {
+            controller.deregister();
+        }
+    });
+});
+
 Deno.test('module hooks: a load hook may replace module source', () => {
     return withTempDir('module-hooks-loadsrc', (root) => {
         markCommonJS(root);
@@ -243,6 +339,100 @@ Deno.test('module hooks: deleting from require.cache re-executes the module', ()
         strictEqual((req('./counter.js') as { runs: number }).runs, first + 1);
         delete (Module._cache as Record<string, unknown>)[req.resolve('./counter.js')];
         strictEqual((req('./counter.js') as { runs: number }).runs, first + 2);
+    });
+});
+
+Deno.test('module hooks: Module._cache replacement is the live CJS loader backend', () => {
+    return withTempDir('module-hooks-cache-replace', (root) => {
+        markCommonJS(root);
+        Deno.writeTextFileSync(
+            path.join(root, 'counter.js'),
+            'globalThis.__moduleCacheReplaceRuns = (globalThis.__moduleCacheReplaceRuns || 0) + 1; module.exports = { runs: globalThis.__moduleCacheReplaceRuns };',
+        );
+        const a = module.createRequire(path.join(root, 'a.cjs')) as unknown as { cache: Record<string, unknown>; resolve(id: string): string; (id: string): unknown };
+        const b = module.createRequire(path.join(root, 'b.cjs')) as unknown as { cache: Record<string, unknown>; (id: string): unknown };
+        const original = Module._cache;
+        const replacement = Object.create(null) as Record<string, unknown>;
+        try {
+            strictEqual((a('./counter.js') as { runs: number }).runs, 1);
+            Module._cache = replacement;
+            strictEqual(Module._cache, replacement);
+            strictEqual(a.cache, replacement);
+            strictEqual(b.cache, replacement);
+
+            strictEqual((a('./counter.js') as { runs: number }).runs, 2, 'replacement must not retain the old cache entry');
+            const resolved = a.resolve('./counter.js');
+            original[resolved] = { exports: { runs: 77 } };
+            strictEqual((b('./counter.js') as { runs: number }).runs, 2, 'a saved cache object must not mutate the replacement backend');
+            delete replacement[resolved];
+            strictEqual((b('./counter.js') as { runs: number }).runs, 3, 'delete on replacement must evict the loader entry');
+
+            replacement[resolved] = { exports: { runs: 99 } };
+            strictEqual((a('./counter.js') as { runs: number }).runs, 99, 'manual cache entries must be read directly');
+            Module._cache = original;
+            strictEqual(a.cache, original);
+            strictEqual((b('./counter.js') as { runs: number }).runs, 77, 'restoring a saved cache object must restore its current entries');
+        } finally {
+            Module._cache = original;
+        }
+    });
+});
+
+Deno.test('module hooks: require.cache replacement is process-wide', () => {
+    return withTempDir('module-hooks-require-cache-replace', (root) => {
+        markCommonJS(root);
+        Deno.writeTextFileSync(
+            path.join(root, 'counter.js'),
+            'globalThis.__requireCacheReplaceRuns = (globalThis.__requireCacheReplaceRuns || 0) + 1; module.exports = { runs: globalThis.__requireCacheReplaceRuns };',
+        );
+        const a = module.createRequire(path.join(root, 'a.cjs')) as unknown as { cache: Record<string, unknown>; (id: string): unknown };
+        const b = module.createRequire(path.join(root, 'b.cjs')) as unknown as { cache: Record<string, unknown>; (id: string): unknown };
+        const original = Module._cache;
+        const replacement = Object.create(null) as Record<string, unknown>;
+        try {
+            strictEqual((a('./counter.js') as { runs: number }).runs, 1);
+            a.cache = replacement;
+            strictEqual(a.cache, replacement);
+            strictEqual(b.cache, replacement);
+            strictEqual(Module._cache, replacement);
+            strictEqual((b('./counter.js') as { runs: number }).runs, 2, 'replacement must evict prior entries for every createRequire view');
+            strictEqual((a('./counter.js') as { runs: number }).runs, 2, 'all createRequire views must use the same replacement');
+        } finally {
+            Module._cache = original;
+        }
+    });
+});
+
+Deno.test('module hooks: in-body require.extensions replacement remains shared and live', () => {
+    return withTempDir('module-hooks-inbody-extensions-replace', (root) => {
+        markCommonJS(root);
+        Deno.writeTextFileSync(path.join(root, 'data.js'), 'ignored');
+        Deno.writeTextFileSync(
+            path.join(root, 'probe.cjs'),
+            `const M = require('module');
+             const table = Object.create(null);
+             require.extensions = table;
+             table['.js'] = (mod, filename) => { mod.exports = { handled: true, filename }; };
+             const value = require('./data.js');
+             module.exports = {
+                 sameRequire: require.extensions === table,
+                 sameModule: M._extensions === table,
+                 handled: value.handled === true,
+                 filename: value.filename,
+             };`,
+        );
+        const req = module.createRequire(path.join(root, 'entry.cjs'));
+        const original = Module._extensions;
+        try {
+            const result = req('./probe.cjs') as { sameRequire: boolean; sameModule: boolean; handled: boolean; filename: string };
+            strictEqual(result.sameRequire, true);
+            strictEqual(result.sameModule, true);
+            strictEqual(result.handled, true);
+            ok(result.filename.endsWith('data.js'));
+            strictEqual(req.extensions, Module._extensions, 'new createRequire views must observe the replacement');
+        } finally {
+            Module._extensions = original;
+        }
     });
 });
 
@@ -333,33 +523,46 @@ Deno.test('module hooks: a prototype _compile patch does not break requiring ESM
 });
 
 /**
- * NEEDS-CTS-REBUILD — the in-body `require` half.
- *
- * cts/src/compile/cjs.ts:598 builds a fresh `require.extensions` object inside
- * every mkRequire() call, and cts/src/compile/cjs.ts:419 exec() dispatches on a
- * hardcoded extension switch without ever reading that table. Until cjs.ts is
- * changed AND cno.exe rebuilt, a .cjs module body's own `require` shares nothing
- * with node:module, so ts-node / pirates registered from inside a CJS module
- * still will not intercept its siblings.
+ * The in-body `require` half: both identity and actual extension dispatch are
+ * covered here because ts-node / pirates register from inside CJS modules and
+ * then expect to intercept their siblings.
  */
 Deno.test({
-    name: 'module hooks: in-body require shares the node:module extension table [NEEDS-CTS-REBUILD]',
-    ignore: true,
+    name: 'module hooks: in-body require shares node:module cache and extensions',
+    ignore: false,
     fn: () => {
         return withTempDir('module-hooks-inbody', (root) => {
             markCommonJS(root);
             Deno.writeTextFileSync(
                 path.join(root, 'probe.cjs'),
                 `const M = require('module');
+                 const original = M._extensions['.js'];
+                 let hookCalls = 0;
+                 M._extensions['.js'] = (mod, filename) => {
+                     hookCalls++;
+                     original(mod, filename);
+                     mod.exports.fromInBodyHook = true;
+                 };
+                 const sibling = require('./sibling.cjs');
+                 M._extensions['.js'] = original;
+                 delete require.cache[require.resolve('./sibling.cjs')];
+                 const restored = require('./sibling.cjs');
                  module.exports = {
                      sameExtensions: require.extensions === M._extensions,
                      sameCache: require.cache === M._cache,
+                     hookCalls,
+                     siblingHooked: sibling.fromInBodyHook === true,
+                     handlerRestored: restored.fromInBodyHook === undefined,
                  };`,
             );
+            Deno.writeTextFileSync(path.join(root, 'sibling.cjs'), 'module.exports = { sibling: true };');
             const req = module.createRequire(path.join(root, 'entry.cjs'));
             const result = req('./probe.cjs') as { sameExtensions: boolean; sameCache: boolean };
             strictEqual(result.sameExtensions, true);
             strictEqual(result.sameCache, true);
+            strictEqual((result as typeof result & { hookCalls: number }).hookCalls, 1);
+            strictEqual((result as typeof result & { siblingHooked: boolean }).siblingHooked, true);
+            strictEqual((result as typeof result & { handlerRestored: boolean }).handlerRestored, true);
         });
     },
 });

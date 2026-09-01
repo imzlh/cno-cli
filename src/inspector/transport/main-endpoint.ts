@@ -9,7 +9,7 @@
  * worker chooses, so 'evaluate' (say) works identically running or paused.
  */
 
-import { PipeServer } from './pipe-rpc';
+import { PipeServer, type PipeLifecycle } from './pipe-rpc';
 import { ChannelServer } from './channel-rpc';
 import { isRpcMethod, type RpcMethod, type RpcParams } from '../shared/rpc-contract';
 import { isRecord } from '../shared/cdp';
@@ -18,6 +18,8 @@ import { WorkerEvent } from '../shared/wire';
 import { log } from '../../../cts/src/api';
 
 type Pipe = CModuleWorker.MessagePipe;
+
+export type MainEndpointLifecycle = PipeLifecycle;
 
 /** A handler for a single RPC method, strongly typed by its params. */
 export type RpcHandler<M extends RpcMethod> = (params: RpcParams[M]) => unknown | Promise<unknown>;
@@ -33,8 +35,8 @@ export class MainEndpoint {
 	private channelServer: ChannelServer;
 	private handlers = new Map<string, ErasedHandler>();
 
-	constructor(pipe: Pipe, dc: DebugChannelMain) {
-		this.pipeServer = new PipeServer(pipe);
+	constructor(pipe: Pipe, dc: DebugChannelMain, lifecycle?: MainEndpointLifecycle) {
+		this.pipeServer = new PipeServer(pipe, lifecycle);
 		this.pipeServer.onRequest = (method, params) => this.dispatchAsync(method, params);
 		this.channelServer = new ChannelServer(dc);
 	}

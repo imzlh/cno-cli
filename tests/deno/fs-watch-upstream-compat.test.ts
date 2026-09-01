@@ -96,6 +96,22 @@ Deno.test({ name: 'deno fs upstream: watchFs supports multiple roots and iterato
     });
 });
 
+Deno.test({ name: 'deno fs upstream: watcher exposes next and close resolves a pending next', timeout: 10000 }, async () => {
+    await withTempDir('deno-watchfs-next-close', async (root) => {
+        const watcher = Deno.watchFs(root);
+        strictEqual(typeof watcher.next, 'function');
+        strictEqual(watcher[Symbol.asyncIterator](), watcher);
+
+        const pending = watcher.next();
+        watcher.close();
+
+        const result = await pending;
+        strictEqual(result.done, true);
+        strictEqual((await watcher.next()).done, true);
+        strictEqual((await watcher.return!()).done, true);
+    });
+});
+
 Deno.test('deno fs upstream: watchFs throws for missing paths', async () => {
     await withTempDir('deno-watchfs-missing', async (root) => {
         throws(() => Deno.watchFs(join(root, 'missing')), Deno.errors.NotFound);

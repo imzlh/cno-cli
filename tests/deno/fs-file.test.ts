@@ -447,6 +447,37 @@ Deno.test('deno FsFile: lock tryLock unlock and disposal are callable', async ()
     });
 });
 
+Deno.test('deno FsFile: wrong access mode raises PermissionDenied without closing the handle', async () => {
+    await withTempDir('deno-fsfile-mode', async (dir) => {
+        const file = join(dir, 'mode.txt');
+        Deno.writeTextFileSync(file, 'x');
+
+        const readOnly = Deno.openSync(file, { read: true });
+        try {
+            throws(() => readOnly.writeSync(Buffer.from('x')), Deno.errors.PermissionDenied);
+            await rejects(async () => {
+                await readOnly.write(Buffer.from('x'));
+            }, Deno.errors.PermissionDenied);
+            throws(() => readOnly.truncateSync(0), Deno.errors.PermissionDenied);
+            await rejects(async () => {
+                await readOnly.truncate(0);
+            }, Deno.errors.PermissionDenied);
+            ok(readOnly.statSync().isFile);
+        } finally {
+            readOnly.close();
+        }
+
+        const writeOnly = await Deno.open(file, { write: true });
+        try {
+            throws(() => writeOnly.readSync(new Uint8Array(1)), Deno.errors.PermissionDenied);
+            await rejects(() => writeOnly.read(new Uint8Array(1)), Deno.errors.PermissionDenied);
+            ok(writeOnly.statSync().isFile);
+        } finally {
+            writeOnly.close();
+        }
+    });
+});
+
 Deno.test('deno FsFile: closed handles reject further operations', async () => {
     await withTempDir('deno-fsfile', async (dir) => {
         const file = join(dir, 'closed.txt');

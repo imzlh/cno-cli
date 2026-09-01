@@ -713,9 +713,16 @@ Deno.test('process: getBuiltinModule resolves node builtins', () => {
     const path = process.getBuiltinModule('node:path') as typeof import('node:path') | undefined;
     ok(path);
     strictEqual(typeof path!.join, 'function');
+    strictEqual(process.getBuiltinModule('path'), path);
     strictEqual(process.getBuiltinModule('node:not-real'), undefined);
     strictEqual(process.getBuiltinModule, processDefault.getBuiltinModule);
     strictEqual(processDefault.getBuiltinModule, globalThis.process.getBuiltinModule);
+});
+
+Deno.test('process: getBuiltinModule never falls back to application modules', () => {
+    strictEqual(process.getBuiltinModule('./package.json'), undefined);
+    strictEqual(process.getBuiltinModule('typescript'), undefined);
+    strictEqual(process.getBuiltinModule('not-a-real-cno-package'), undefined);
 });
 
 Deno.test('process upstream: getBuiltinModule rejects non-string ids', () => {

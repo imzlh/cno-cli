@@ -29,7 +29,7 @@ import {
 } from '../../../cno/src/utils/network-hooks'
 import type { ModuleInfo } from '../../../cts/src/api'
 import { getMemoryFile } from '../../../cts/src/api'
-import { toPosixPath } from '../../../cts/src/api'
+import { fileUrlToPath, toFileUrl, toPosixPath } from '../../../cts/src/api'
 import { native } from '../shared/native'
 import { remapConsoleFrame, type SourceMapLookup } from '../shared/console-utils'
 import { isUserFile } from '../shared/user-files'
@@ -105,6 +105,7 @@ export class Hooks {
 	 */
 	private readonly streamRegisteredAt = new Map<string, number>()
 	private scriptHookInstalled = false
+	private loadListener: (() => void) | null = null
 	private consoleOriginals: Record<string, ConsoleMethod> | null = null
 
 	/** Set by installScript(); run.ts wires this into runtime.addInitHook(). */
@@ -401,6 +402,12 @@ export class Hooks {
 		resolve(result)
 	}
 
+	/** Release every request paused by Fetch interception. */
+	releasePendingIntercepts(): void {
+		for (const resolve of this.pendingIntercepts.values()) resolve(null)
+		this.pendingIntercepts.clear()
+	}
+
 	/**
 	 * Mark a request as live-streamed. `source` comes from the worker, which knows
 	 * whether the id is a fetch or a serve request (NetworkDomain tracks it in
@@ -436,11 +443,16 @@ export class Hooks {
 
 	// ── lifecycle ───────────────────────────────────────────────────
 	private installLifecycle(): void {
+		if (this.loadListener) return
 		const add = Reflect.get(globalThis, 'addEventListener')
 		if (typeof add !== 'function') return
+		this.loadListener = () => {
+			this.loadListener = null
+			this.safeEmit(WorkerEvent.Load, { timestamp: Date.now() / 1000 } satisfies LoadPayload)
+		}
 		Reflect.apply(add, globalThis, [
 			'load',
-			() => this.safeEmit(WorkerEvent.Load, { timestamp: Date.now() / 1000 } satisfies LoadPayload),
+			this.loadListener,
 			{ once: true },
 		])
 	}
@@ -547,8 +559,14 @@ export class Hooks {
 	// ── teardown ────────────────────────────────────────────────────
 	teardown(): void {
 		// Resolve all pending intercepts so native hooks don't hang.
-		for (const resolve of this.pendingIntercepts.values()) resolve(null)
-		this.pendingIntercepts.clear()
+		this.releasePendingIntercepts()
+		if (this.loadListener) {
+			const remove = Reflect.get(globalThis, 'removeEventListener')
+			if (typeof remove === 'function') {
+				Reflect.apply(remove, globalThis, ['load', this.loadListener])
+			}
+			this.loadListener = null
+		}
 		// Delete the properties, not just forget the names: clearing the set alone
 		// left every Runtime.addBinding function alive on globalThis after detach,
 		// each closing over a dead endpoint. removeBinding() already does this.
@@ -932,8 +950,7 @@ function npmDevtoolsUrl(specPath: string): string {
 }
 
 function fileUrl(path: string): string {
-	const normalized = toPosixPath(path).replace(/^\//, '')
-	return `file:///${normalized}`
+	return toFileUrl(path)
 }
 
 function sameScriptPath(a: string, b: string): boolean {
@@ -941,8 +958,11 @@ function sameScriptPath(a: string, b: string): boolean {
 }
 
 function normalizeScriptPath(path: string): string {
-	let normalized = toPosixPath(path)
-	if (normalized.startsWith('file:///')) normalized = normalized.slice('file:///'.length)
+	let normalized = path
+	if (normalized.startsWith('file:')) {
+		try { normalized = fileUrlToPath(normalized) } catch { /* preserve unknown script ids */ }
+	}
+	normalized = toPosixPath(normalized)
 	const drive = normalized[0]
 	if (drive !== undefined && /^[A-Za-z]:/.test(normalized)) return drive.toUpperCase() + normalized.slice(1)
 	return normalized

@@ -279,21 +279,23 @@ Deno.test('util: aborted resolves for already and later aborted signals', async 
     strictEqual((await event).type, 'abort');
 });
 
-Deno.test('util: parseEnv supports comments quoting multiline and expansion', () => {
+Deno.test('util: parseEnv follows Node dotenv quoting and comment rules', () => {
     const parsed = parseEnv([
         '# comment',
-        'A=one # stripped',
+        'A=one#stripped',
         'export B="two\\n${A}"',
-        "C='literal ${A}'",
-        'D',
+        "C='literal # ${A}'",
+        'D=`tick # literal` # trailing comment',
         'E="multi',
-        'line"',
+        '  line" ignored trailing text',
+        'IGNORED_WITHOUT_EQUALS',
     ].join('\n'));
     deepStrictEqual(parsed, {
         A: 'one',
-        B: 'two\none',
-        C: 'literal ${A}',
-        D: '',
-        E: 'multi\nline',
+        B: 'two\n${A}',
+        C: 'literal # ${A}',
+        D: 'tick # literal',
+        E: 'multi\n  line',
     });
+    strictEqual(Object.hasOwn(parseEnv('__proto__=hidden'), '__proto__'), false);
 });

@@ -33,9 +33,11 @@ import setArgs from '../cno/src/utils/args';
 import { disableRawCertVerify } from '../cno/src/utils/http';
 import { resolveObjectURLBytes } from '../cno/src/webapi/url';
 import { registerExtensions } from './bootstrap';
+import { CliExit, commandErrorInfo } from './command-error';
 import { missingFlagValues, parseArgv, readArgv, unknownFlags } from './cli';
 import { spawnBinary } from './commands/bin';
 import { runCache } from './commands/cache';
+import { decodeWorkerRuntimeConfig } from './commands/config-flags';
 import { runEval } from './commands/eval';
 import { runPack } from './commands/pack';
 import { runRepl } from './commands/repl';
@@ -43,7 +45,8 @@ import { runFile } from './commands/run';
 import { runServe } from './commands/serve';
 import { runSetup } from './commands/setup';
 import { printTaskList, runTask, taskExists } from './commands/task';
-import { parseTestChildArgs, runTest, TEST_CHILD_ENV, type TestChildMessage } from './commands/test';
+import { parseTestChildArgs, runTest, TEST_CHILD_ENV } from './commands/test';
+import { writeTestChildResult, type TestChildMessage } from './commands/test-result-pipe';
 import { C, showHelp, showVersion } from './help';
 import { disableCertVerify, startProxy, stopNetwork } from './network';
 
@@ -70,37 +73,48 @@ const ACTION_TOKEN_FLAGS = ['env', 'env-file', 'preload'] as const;
 /** Flags whose values runFile reads back out of `internalArgs` (node-style preloads). */
 const INTERNAL_TOKEN_FLAGS = ['require', 'import', 'loader', 'conditions', 'max-old-space-size'] as const;
 
-/**
- * Rebuild the `--flag=value` tokens runFile re-parses out of rawArgs.
- *
- * runFile does not read these from `flags`; it re-scans `rawArgs.actionArgs`
- * (loadEnvFiles / runDenoPreloads) and `rawArgs.internalArgs`
- * (nodeExecArgv → collectNodePreloads). A test child gets its flags via
- * flagsToArgs → parseTestChildArgs, but makeRunArgs used to hand runFile empty
- * token lists, so every one of these was silently dropped under `cno test`
- * while working under `cno run`. OBSERVED: `cno test --env-file=.env` printed
- * FOO=undefined where `cno run --env-file=.env` printed FOO=from_env_file.
- *
- * The child's flags are a flat record, so a repeated flag has already collapsed
- * to its last value before reaching here — `--env-file a --env-file b` loads
- * only b under `cno test`. Fixing that needs the child protocol to carry a
- * list, which is a wider change than this.
- */
-function tokensFromFlags(flags: Record<string, string | boolean>, names: readonly string[]): string[] {
-    const tokens: string[] = [];
-    for (const name of names) {
-        const value = flags[name];
-        if (typeof value === 'string' && value.length > 0) tokens.push(`--${name}=${value}`);
-    }
-    return tokens;
+function flagName(token: string): string | undefined {
+    if (token === '-C') return 'conditions';
+    if (!token.startsWith('--')) return undefined;
+    const equals = token.indexOf('=');
+    return token.slice(2, equals < 0 ? undefined : equals);
 }
 
-function makeRunArgs(file: string, args: string[] = [], flags: Record<string, string | boolean> = {}): Args {
+function selectFlagTokens(tokens: string[], names: readonly string[]): string[] {
+    const selected = new Set<string>(names);
+    const out: string[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i];
+        if (token === undefined) continue;
+        const name = flagName(token);
+        if (name === undefined || !selected.has(name)) continue;
+        out.push(token);
+        if (!token.includes('=')) {
+            const value = tokens[i + 1];
+            if (value !== undefined) {
+                out.push(value);
+                i++;
+            }
+        }
+    }
+    return out;
+}
+
+function makeRunArgs(
+    file: string,
+    args: string[] = [],
+    flags: Record<string, string | boolean> = {},
+    flagArgs?: string[],
+): Args {
+    const rawTokens = flagArgs ?? Object.entries(flags).flatMap(([name, value]) => {
+        if (value === true) return [`--${name}`];
+        return typeof value === 'string' ? [`--${name}=${value}`] : [];
+    });
     return {
         binary: os.args[0],
-        internalArgs: tokensFromFlags(flags, INTERNAL_TOKEN_FLAGS),
+        internalArgs: selectFlagTokens(rawTokens, INTERNAL_TOKEN_FLAGS),
         action: 'run',
-        actionArgs: tokensFromFlags(flags, ACTION_TOKEN_FLAGS),
+        actionArgs: selectFlagTokens(rawTokens, ACTION_TOKEN_FLAGS),
         entry: file,
         args,
     };
@@ -121,72 +135,6 @@ function isNodeWorkerData(value: unknown): value is Record<string, unknown> {
 function isWorkerCloseError(value: unknown): boolean {
     return (isRecord(value) && value.__cno_worker_close === true)
         || (value instanceof Error && value.name === 'WorkerCloseError' && value.message === 'Worker closed');
-}
-
-function workerRuntimeConfig(value: unknown): Partial<ConfigOptions> | undefined {
-    if (!isRecord(value)) return undefined;
-    const cfg: Partial<ConfigOptions> = {};
-    if (typeof value.cacheDir === 'string') cfg.cacheDir = value.cacheDir;
-    if (typeof value.lockDir === 'string') cfg.lockDir = value.lockDir;
-    if (typeof value.polyfill === 'string') cfg.polyfill = value.polyfill;
-    if (typeof value.baseUrl === 'string') cfg.baseUrl = value.baseUrl;
-    for (const key of ['enableHttp', 'enableJsr', 'enableNode', 'enableCache', 'cachedOnly', 'enableOxc', 'frozen', 'disableLock', 'ignoreScripts'] as const) {
-        if (typeof value[key] === 'boolean') cfg[key] = value[key];
-    }
-    // Resource limits must cross the Worker boundary too. A worker re-derives
-    // its config from os.args, which does not carry the parent's CLI flags, so
-    // without this the worker silently reverts to the memory-tier default.
-    // See publishWorkerRuntimeConfig in src/commands/run.ts for the measurement.
-    for (const key of ['memoryLimit', 'maxStackSize'] as const) {
-        const n = value[key];
-        if (typeof n === 'number' && Number.isFinite(n) && n >= 0) cfg[key] = n;
-    }
-    if (Array.isArray(value.conditions) && value.conditions.every((item) => typeof item === 'string')) {
-        cfg.conditions = value.conditions.slice();
-    }
-    // publishWorkerRuntimeConfig has always SENT importMap/pathAliases, but this
-    // reader never read them back, so both were silently dropped for BOTH worker
-    // kinds. A worker re-derives them only from loadConfigFile(dir), and `dir` is
-    // the worker script's own directory (src/utils.ts:22) — so a worker whose
-    // script lives outside the project tree lost every bare-specifier mapping.
-    //
-    // OBSERVED (2026-08-02): parent with deno.json `imports: {mapped-canary: ...}`
-    // resolved it; a worker under a config-less directory reported
-    // `Cannot resolve "mapped-canary"` for node:worker_threads AND for the webapi
-    // Worker given an equivalent bare path. The webapi Worker only *appeared* to
-    // work when handed a file:// URL, because entryAndDir maps a URL entry to
-    // dir=cwd() and it then re-read the parent's deno.json by luck of cwd.
-    //
-    // importMap values arrive already resolved to absolute paths, so they are
-    // position-independent. pathAliases are relative and are interpreted against
-    // baseUrl, which is inherited just above.
-    if (isRecord(value.importMap)) {
-        const map: Record<string, string> = {};
-        for (const [k, v] of Object.entries(value.importMap)) {
-            if (typeof v === 'string') map[k] = v;
-        }
-        if (Object.keys(map).length > 0) cfg.importMap = map;
-    }
-    if (isRecord(value.importMapScopes)) {
-        const scopes: Record<string, Record<string, string>> = {};
-        for (const [scope, entries] of Object.entries(value.importMapScopes)) {
-            if (!isRecord(entries)) continue;
-            const inner: Record<string, string> = {};
-            for (const [k, v] of Object.entries(entries)) {
-                if (typeof v === 'string') inner[k] = v;
-            }
-            if (Object.keys(inner).length > 0) scopes[scope] = inner;
-        }
-        if (Object.keys(scopes).length > 0) cfg.importMapScopes = scopes;
-    }
-    if (isRecord(value.pathAliases)) {
-        const aliases: Record<string, string[]> = {};
-        for (const [k, v] of Object.entries(value.pathAliases)) {
-            if (Array.isArray(v) && v.every((item) => typeof item === 'string')) aliases[k] = v.slice();
-        }
-        if (Object.keys(aliases).length > 0) cfg.pathAliases = aliases;
-    }
-    return Object.keys(cfg).length > 0 ? cfg : undefined;
 }
 
 function nodeWorkerErrorInfo(error: unknown): { name: string; message: string; stack?: string } {
@@ -240,6 +188,7 @@ function runProcessCleanup(fast = false): void {
 
 /** os.exit() never unwinds JS, so the finally-based cleanup must run first. */
 function exitAfterCleanup(code: number): never {
+    stopNetwork();
     runProcessCleanup();
     os.exit(code);
     throw new Error('unreachable');
@@ -271,20 +220,7 @@ function currentProcessExitCode(): number | undefined {
     }
 }
 
-/**
- * The status this process should exit with on a natural drain.
- *
- * Precedence, matching Node where Node has an opinion:
- *  - An explicit `process.exitCode` wins, INCLUDING an explicit 0. Node's
- *    contract is that the final value of `process.exitCode` at natural exit is
- *    the exit code, so last write wins for user assignments (OBSERVED against
- *    v24.18.0: `process.exitCode = 3` then `process.exitCode = 0` exits 0).
- *  - Otherwise a runtime-requested code (first nonzero wins).
- *  - Otherwise 0.
- *
- * `process.exit(N)` never reaches here at all: it is immediate (os.exit →
- * mod_os.c:89 libc exit), so its precedence is absolute by construction.
- */
+/** Explicit process.exitCode wins; otherwise use the first runtime request. */
 function resolveExitCode(): number {
     const explicit = currentProcessExitCode();
     if (typeof explicit === 'number') return explicit;
@@ -356,50 +292,17 @@ const REQUEST_EXIT_CODE_SLOT = Symbol.for('cno.runtime.requestExitCode');
 
 let idleExitArmed = false;
 
-/**
- * Consecutive zero readings of `os.refHandleCount()` required before exiting.
- *
- * One reading is not enough, and this is a second pre-existing defect in this
- * function rather than a precaution. OBSERVED on the baked binary with
- * `process.exitCode = 3` at top level and timers at 5/10/20/30/40/60/80ms: the
- * callbacks logged refHandleCount 5,6,5,2,3,1 and then the 80ms timer never ran
- * at all — the poll caught a zero while JS timers were still pending and exited
- * through it. A `console.log` issued from the last callback that did run was
- * also lost when stdout was a pipe (empty capture, `MARK: drained` on a TTY),
- * because os.exit() is libc exit() and does not drain a queued pipe write.
- *
- * Requiring several readings on separate loop turns closes the window: a handle
- * that is merely between arms reappears on the next turn, whereas a genuinely
- * idle loop reads zero every time. It also buys queued writes a few more loop
- * passes to complete. This matters more after this change than before it,
- * because resolving the status at fire time means an early exit now returns the
- * WRONG code as well as truncating work — an assignment of 3 at 10ms followed by
- * 5 at 30ms must exit 5, as node does.
- */
+/** Consecutive zero handle counts required before treating the loop as idle. */
 const IDLE_CONFIRMATIONS = 3;
 
-/**
- * Apply a nonzero exit code the way Deno does: after the loop drains.
- * os.exit() is immediate, so exiting straight after the entry module
- * resolved would kill still-pending timers/IO.
- *
- * The status is resolved at FIRE time, not at arm time. Reading it at arm time
- * was the defect: `mainEntry` read `process.exitCode` exactly once, immediately
- * after `dispatch()` resolved and therefore BEFORE the loop drained, so every
- * assignment made from a timer or an IO callback landed after the only read and
- * was lost (OBSERVED: `setTimeout(() => { process.exitCode = 3 })` exited 0
- * where node v24.18.0 exits 3; the top-level and microtask cases matched
- * because both complete before that read).
- */
+/** Apply the latest nonzero exit status after timers and IO drain. */
 function armExitWhenIdle(): void {
     if (idleExitArmed) return;
     idleExitArmed = true;
     const timers = import.meta.use('timers');
     let idleSeen = 0;
     const tick = () => {
-        // The firing timer itself is inactive here, so 0 means nothing else
-        // referenced is keeping the loop alive — but only if it stays 0 across
-        // several turns; see IDLE_CONFIRMATIONS.
+        // Confirm idle across several turns to avoid transient zero counts.
         if (os.refHandleCount() === 0) idleSeen++;
         else idleSeen = 0;
         if (idleSeen < IDLE_CONFIRMATIONS) {
@@ -408,27 +311,12 @@ function armExitWhenIdle(): void {
         }
         const code = resolveExitCode();
         if (code === 0) {
-            // The status was withdrawn — `process.exitCode = 3` and then an
-            // explicit `= 0`, which node honours (rc 0). Stand down instead of
-            // calling os.exit(0): a natural drain is what dispatches
-            // EV_BEFORE_UNLOAD (vm.c:851), and forcing the exit here would
-            // silently skip 'beforeunload' for that program. Clearing the flag
-            // keeps it re-armable, so a 'beforeunload' listener that cancels
-            // teardown and then assigns a code is still honoured.
+            // A withdrawn status must drain naturally so beforeunload still fires.
             idleExitArmed = false;
-            // mainEntry's finally deferred cleanup to this path, so it has to
-            // happen here or the LockStore handle never closes. Idempotent, and
-            // safe now: three consecutive idle turns mean nothing is pending.
             runProcessCleanup();
             return;
         }
-        // A nonzero status no longer requires os.exit(): pushRuntimeExitCode has
-        // put it where TJS_Run resolves its return value from, so standing down
-        // lets the loop drain naturally — and the natural drain is what fires
-        // 'beforeExit' and 'beforeunload', both of which the immediate exit
-        // silently skipped for every run that set a code (the gap the comment on
-        // watchProcessExitCode below acknowledged). Falls back to the forced exit
-        // when the binding is absent, so an older core still reports the status.
+        // Prefer natural drain; older cores fall back to a forced exit.
         if (pushRuntimeExitCode(code)) {
             idleExitArmed = false;
             runProcessCleanup();
@@ -439,23 +327,7 @@ function armExitWhenIdle(): void {
     timers.setTimeout(tick, 0);
 }
 
-/**
- * Arm the deferred exit lazily, on the first assignment to `process.exitCode`.
- *
- * Arming unconditionally would be simpler and is wrong twice over: the 5ms poll
- * would hold the loop open for every run that never sets a code, and — because
- * `exitAfterCleanup` goes through `os.exit()` — every run would then exit via
- * EV_EXIT and the natural-drain EV_BEFORE_UNLOAD (vm.c:851) would never fire,
- * silently disabling 'beforeunload' for the whole product. So the watcher is
- * armed only once something has actually asked for a nonzero status, which is
- * exactly the case that already bypassed beforeunload before this change.
- *
- * The property is a configurable accessor pair (process/mod.ts:1613-1619;
- * OBSERVED `{configurable: true, get: 'function', set: 'function'}` on the live
- * binary), so wrapping it keeps `exit()`'s own read of the module-scoped
- * binding, the TypeError on a non-integer, and the string coercion intact —
- * this only adds a notification after a successful set.
- */
+/** Arm exit polling lazily after a successful nonzero exitCode assignment. */
 function watchProcessExitCode(): void {
     try {
         const proc = Reflect.get(globalThis, 'process');
@@ -472,10 +344,7 @@ function watchProcessExitCode(): void {
                 // Throws (non-integer) propagate to the assigning code, as before.
                 Reflect.apply(set, this, [value]);
                 const code = currentProcessExitCode();
-                // Not during teardown: the inner setter has already pushed the
-                // value into the runtime, so the status is carried either way,
-                // and arming the poll here would queue work that makes the C
-                // re-dispatch 'beforeExit' — which assigns again, forever.
+                // Re-arming during teardown would recursively dispatch beforeExit.
                 if (typeof code === 'number' && code !== 0 && !inTeardown()) armExitWhenIdle();
             },
         });
@@ -506,9 +375,7 @@ async function dispatch(): Promise<void> {
         return;
     }
 
-    // A misspelled flag must not run the program with the intent dropped.
-    // Checked after --help/--version so `cno --help` still works, and before
-    // any side effect. Deno-compat no-ops are excluded inside unknownFlags.
+    // Validate after help/version and before side effects.
     const unknown = unknownFlags(cli);
     if (unknown.length > 0) {
         for (const name of unknown) {
@@ -527,9 +394,7 @@ async function dispatch(): Promise<void> {
         exitAfterCleanup(1);
     }
 
-    // Set runtime argv for EVERY command (eval/repl/task/test/cache/…), not just
-    // run — otherwise those paths fall back to the cno submodule's naive parser
-    // and Deno.args / process.argv come out wrong.
+    // Every command shares the same Deno.args/process.argv source.
     setArgs(cli.rawArgs);
 
     // common setup
@@ -541,10 +406,7 @@ async function dispatch(): Promise<void> {
             console.warn(`${C.warn('!')} Configure proxy failed: ${errMsg(e)}`);
         }
     }
-    // Both halves are needed: disableCertVerify() reaches libcurl (fetch), while
-    // disableRawCertVerify() reaches the raw path (wss:/WebSocket/EventSource and
-    // direct https: sockets), which builds its own ssl.Context and now verifies by
-    // default. Without the second call the flag was a no-op there.
+    // Fetch and raw TLS maintain separate verification state.
     if (cli.flags['skip-cert-verify']) {
         disableCertVerify();
         disableRawCertVerify();
@@ -560,7 +422,7 @@ async function dispatch(): Promise<void> {
             const code = cli.positional[0];
             if (!code) {
                 console.error(`Usage: ${C.cyan('cno eval')} ${C.cyan('"<code>"')}`);
-                os.exit(1);
+                exitAfterCleanup(1);
             }
             return runEval({ code, flags: cli.flags });
         }
@@ -576,8 +438,7 @@ async function dispatch(): Promise<void> {
             const [bin, ...args] = cli.positional;
             if (!bin) {
                 console.error(`Usage: ${C.cyan('cno exec')} ${C.cyan('<command>')} [args…]`);
-                os.exit(1);
-                return;
+                exitAfterCleanup(1);
             }
             const cacheDir = typeof cli.flags['cache-dir'] === 'string' ? cli.flags['cache-dir'] : undefined;
             const code = await spawnBinary(bin, args, {}, os.cwd, cacheDir);
@@ -587,24 +448,24 @@ async function dispatch(): Promise<void> {
         case 'repl':
             return runRepl(cli.flags);
         case 'test':
-            return runTest(cli.positional, cli.flags);
+            return runTest(
+                cli.positional,
+                cli.flags,
+                [...cli.rawArgs.internalArgs, ...cli.rawArgs.actionArgs],
+            );
         case 'setup':
             return runSetup(cli.flags);
         case 'serve': {
             const [file, ...args] = cli.positional;
             if (!file) {
                 console.error(`Usage: ${C.cyan('cno serve')} ${C.cyan('<file>')} [args…]`);
-                os.exit(1);
-                return;
+                exitAfterCleanup(1);
             }
             return runServe(file, args, cli.flags, cli.rawArgs);
         }
         case 'run':
         case null: {
-            // `cno run <file>` or `cno <file>` (implicit run).
-            // `cno run task <name>` runs a task (like `deno run task`).
-            // `cno run` (no args) lists available tasks.
-            // Bare `cno` (no subcommand, no positional) drops into the REPL, like deno.
+            // Bare cno opens the REPL; cno run without a target lists tasks.
             const [file, ...args] = cli.positional;
             if (!file) {
                 if (cli.cmd === null) return runRepl(cli.flags);
@@ -618,19 +479,16 @@ async function dispatch(): Promise<void> {
         }
         default:
             showHelp();
-            os.exit(1);
+            exitAfterCleanup(1);
         }
     } finally {
         stopNetwork();
     }
 }
 
-// Hidden sentinel: `cno test` spawns a real child process per test file
-// (see src/commands/test.ts) instead of a worker thread, so signal handling
-// (import.meta.use('signals')) works inside test files — it's unconditionally
-// null in a worker thread by native-layer design (process-wide, not per-thread).
+// Test files use child processes because native signals are process-scoped.
 
-/** Flatten a test failure to text; Errors JSON-serialize to `{}` over IPC. */
+/** Flatten a test failure to text; Errors JSON-serialize to `{}` in the result frame. */
 function errorDetail(error: unknown): string | undefined {
     if (error === undefined || error === null) return undefined;
     if (error instanceof Error) return String(error.stack ?? `${error.name}: ${error.message}`);
@@ -638,48 +496,47 @@ function errorDetail(error: unknown): string | undefined {
     return errMsg(error);
 }
 
-// Runs one test file and reports its result via `send` — shared by both the
-// worker-thread transport (workerEntry) and the child-process transport
-// (testChildEntry) so the two only differ in how the result gets back.
+// Shared test execution; transports differ only in the result sender.
 async function runTestFileAndReport(
     file: string,
     flags: Record<string, string | boolean>,
+    flagArgs: string[],
     scriptArgs: string[],
-    send: (msg: TestChildMessage) => void,
+    send: (msg: TestChildMessage) => void | Promise<void>,
 ): Promise<void> {
+    let message: TestChildMessage;
     try {
         // Deno test modules are not "main"; import.meta.main is false under `deno test`.
-        await runFile({ file, args: scriptArgs, flags, rawArgs: makeRunArgs(file, scriptArgs, flags), asMain: false });
+        await runFile({ file, args: scriptArgs, flags, rawArgs: makeRunArgs(file, scriptArgs, flags, flagArgs), asMain: false });
         // Use the module-level startTest / getFailedTests exports directly
         const { startTest, getFailedTests } = await import('../cno/src/deno/index');
         const passed = await startTest(file, true, true, {
             filter: typeof flags.filter === 'string' ? flags.filter : undefined,
             failFast: flags['fail-fast'] === true,
         });
-        // Error does not survive JSON IPC ({} → "[object Object]"); flatten first.
-        send({
+        // Error does not survive the JSON result frame ({} → "[object Object]"); flatten first.
+        message = {
             passed,
             failedTests: getFailedTests().map((t) => ({ name: t.name, error: errorDetail(t.error) })),
-        });
+        };
     } catch (e) {
-        send({ passed: false, error: e instanceof Error ? String(e.stack ?? e.message) : String(e), failedTests: [] });
+        const { error } = commandErrorInfo(e);
+        message = {
+            passed: false,
+            error: error instanceof Error ? String(error.stack ?? error.message) : String(error),
+            failedTests: [],
+        };
     }
+    await send(message);
 }
 
-async function testChildEntry(file: string, flags: Record<string, string | boolean>, scriptArgs: string[]): Promise<void> {
-    const { IPCChannel } = await import('../cno/src/node/ipc_channel/mod');
-    const streams = import.meta.use('streams');
-    // fd 3 is where the native `process` module always hands a spawned child
-    // its IPC endpoint when ipc:true (see child_process/mod.ts's own use of
-    // this same convention).
-    const pipe = new streams.Pipe();
-    pipe.open(3);
-    const channel = new IPCChannel(pipe);
-    try {
-        await runTestFileAndReport(file, flags, scriptArgs, (msg) => channel.send(msg));
-    } finally {
-        channel.close();
-    }
+async function testChildEntry(
+    file: string,
+    flags: Record<string, string | boolean>,
+    flagArgs: string[],
+    scriptArgs: string[],
+): Promise<void> {
+    await runTestFileAndReport(file, flags, flagArgs, scriptArgs, writeTestChildResult);
 }
 
 async function workerEntry(): Promise<void> {
@@ -697,7 +554,7 @@ async function workerEntry(): Promise<void> {
     if (testEntry) {
         const pipe = worker.pipe;
         if (!pipe) throw new Error('test worker pipe was not created');
-        await runTestFileAndReport(String(testEntry), {}, [], (msg) => pipe.postMessage(msg));
+        await runTestFileAndReport(String(testEntry), {}, [], [], (msg) => pipe.postMessage(msg));
         return;
     }
 
@@ -708,7 +565,7 @@ async function workerEntry(): Promise<void> {
         const isNodeWorker = isNodeWorkerData(workerData);
         if (isNodeWorker) worker.pipe?.unref();
         try {
-            await runEntry(file, [], {}, makeRunArgs(file), workerRuntimeConfig(workerData?.__cts_runtime_config));
+            await runEntry(file, [], {}, makeRunArgs(file), decodeWorkerRuntimeConfig(workerData?.__cts_runtime_config));
         } catch (e) {
             if (!isWorkerCloseError(e)) throw e;
         }
@@ -739,30 +596,22 @@ async function mainEntry(): Promise<void> {
             // below is a no-op and the SQLite handle leaks (cts.lock EINVAL).
             await installProcessCleanup();
             const invocation = parseTestChildArgs(os.args.slice(2));
-            await testChildEntry(os.args[1], invocation.flags, invocation.scriptArgs);
+            await testChildEntry(os.args[1], invocation.flags, invocation.flagArgs, invocation.scriptArgs);
         }
         else {
-            // Publish the exit-code request slot and hook `process.exitCode`
-            // BEFORE any user code can run, so an async throw or a timer
-            // assignment during the very first tick is already covered.
+            // Install exit tracking before user code runs.
             Reflect.set(globalThis, REQUEST_EXIT_CODE_SLOT, requestExitCode);
             watchProcessExitCode();
 
             await dispatch();
 
-            // Re-read after dispatch as well as via the setter hook. The hook
-            // covers the drain; this covers the case where the accessor could
-            // not be wrapped at all (watchProcessExitCode bailing out), which
-            // is the pre-existing behaviour and must not regress.
+            // Re-read in case the process accessor could not be wrapped.
             const code = resolveExitCode();
             if (code !== 0) {
                 deferredExit = true;
                 armExitWhenIdle();
             } else if (idleExitArmed) {
-                // Something already armed the watcher during dispatch (a
-                // nonzero assignment, or a runtime request from a job
-                // exception). It owns the exit; do not let the finally below
-                // close locks underneath the still-draining loop.
+                // The armed watcher owns cleanup while the loop drains.
                 deferredExit = true;
             }
         }
@@ -776,10 +625,12 @@ async function mainEntry(): Promise<void> {
 // start main app
 mainEntry().catch(e => {
     runProcessCleanup();
+    if (e instanceof CliExit) exitAfterCleanup(e.code);
     if (worker.isWorker && isWorkerCloseError(e)) return;
+    const { error: cause, context } = commandErrorInfo(e);
     if (worker.isWorker && isNodeWorkerData(worker.workerData)) {
-        worker.pipe?.postMessage({ __cno_node_worker_error__: nodeWorkerErrorInfo(e) });
+        worker.pipe?.postMessage({ __cno_node_worker_error__: nodeWorkerErrorInfo(cause) });
         return;
     }
-    fatal(e);
+    fatal(cause, context);
 });

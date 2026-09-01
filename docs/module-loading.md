@@ -13,6 +13,7 @@ polyfills, CommonJS, ESM, JSON, text, binary, and WASM.
 | `ModuleCompiler` | `../cts/src/compile/index.ts` | ESM/CJS/WASM loading facade |
 | `EsmCompiler` | `../cts/src/compile/esm.ts` | ESM, JSON, text, binary, bytecode cache |
 | `CjsLoader` | `../cts/src/compile/cjs.ts` | CommonJS execution and require cache |
+| module hook registry | `../cts/src/module-hooks.ts` | Synchronous `node:module` customization hooks |
 | `DepScanner` | `../cts/src/deps.ts` | Precache dependency graph scan |
 | `ParseDriver` | `../cts/src/parse.ts` | Worker-backed scan and precompile |
 
@@ -66,6 +67,18 @@ L3 protocol dispatch:
 
 The in-process resolver also has LRU caches for repeated hot-path lookups and
 stat results.
+
+## Node Customization Hooks
+
+`node:module.registerHooks()` registers through the internal Node/CTS bridge
+into the process-wide registry in `cts/src/module-hooks.ts`. Both
+`import.meta.resolve()` and the QuickJS engine resolve hook traverse that same
+newest-first chain, so a hook can rewrite the specifier, parent URL, import
+attributes, or result URL before CTS resolves and compiles the module.
+
+When `nextResolve()` returns CTS's normal result unchanged, the loader retains
+the original `ModuleInfo` instead of resolving its displayed `file:` URL again.
+This preserves canonical npm, JSR, HTTP, and pack identity across the hook.
 
 ## Lock Store
 

@@ -1,5 +1,5 @@
 import { ok, strictEqual } from 'node:assert';
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 import { LockStore } from '../../cts/src/lock.ts';
@@ -162,12 +162,9 @@ Deno.test('cts lock: deleting the lock mid-run does not throw and re-persists', 
         ok(existsSync(join(root, DB)));
 
         // Simulate an external `rm cts.lock` while the store is open.
-        let unlinked = true;
         try {
             rmSync(join(root, DB), { force: true });
-        } catch {
-            unlinked = false; // Windows may hold a lock on the open handle
-        }
+        } catch { /* Windows may hold a lock on the open handle. */ }
 
         // Further writes must not crash the process.
         store.setModule({
@@ -180,7 +177,6 @@ Deno.test('cts lock: deleting the lock mid-run does not throw and re-persists', 
         const got = store.getModule('npm:gamma@3.0.0/g.js');
         store.close();
         ok(got, 'write after mid-run unlink was lost');
-        console.log(`[lock-unlink] unlinked=${unlinked} recreated=${existsSync(join(root, DB))}`);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -220,7 +216,6 @@ Deno.test('cts lock: second writer on the same file waits rather than corrupting
         const e = verify.getModule('npm:eps@5.0.0/e.js');
         const seed = verify.getModule('npm:alpha@1.0.0/index.js');
         verify.close();
-        console.log(`[lock-concurrent] delta=${!!d} eps=${!!e} seed=${!!seed} size=${statSync(join(root, DB)).size}`);
         ok(seed, 'first writer entry lost after concurrent access');
         ok(d, 'second writer entry lost');
         ok(e, 'first writer post-concurrency entry lost');

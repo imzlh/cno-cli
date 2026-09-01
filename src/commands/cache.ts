@@ -1,6 +1,7 @@
 import { createRuntime, cwd, loadConfigFile } from '../../cts/src/api';
 import { C } from '../help';
 import { entryAndDir } from '../utils';
+import { CliExit } from '../command-error';
 import { buildCacheConfig, collectSpecifiers } from './cache-utils';
 import { ensureNodePolyfills } from './setup';
 
@@ -41,8 +42,7 @@ export async function runCache(files: string[], flags: Record<string, string | b
         } catch (e) {
             console.error(`${C.warn('⚠')} Cannot resolve entry: ${entry}`);
             console.error(`  ${(e instanceof Error ? e.message : String(e))}`);
-            os.exit(1);
-            return;
+            throw new CliExit(1);
         }
     }
     // Also seed package.json declared deps (including devDependencies) —
@@ -66,7 +66,7 @@ async function runCacheNoArgs(flags: Record<string, string | boolean>): Promise<
 
     if (specs.size === 0) {
         console.error(`${C.warn('⚠')} No imports in deno.json or dependencies in package.json`);
-        os.exit(1); return;
+        throw new CliExit(1);
     }
 
     await runtime.precacheFromSpecifiers([...specs], dir);

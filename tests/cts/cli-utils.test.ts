@@ -193,6 +193,7 @@ Deno.test('cli: value flags can consume dash-prefixed non-option values', () => 
     const dashPath = parseArgv(['run', '--cache-dir', '-cache', 'main.ts']);
     strictEqual(dashPath.flags['cache-dir'], '-cache');
     ok(!('cache' in dashPath.flags));
+    deepStrictEqual(missingFlagValues(dashPath), []);
     deepStrictEqual(dashPath.rawArgs.actionArgs, ['--cache-dir', '-cache']);
     strictEqual(dashPath.rawArgs.entry, 'main.ts');
 
@@ -255,16 +256,59 @@ Deno.test('cli: option terminator is preserved only for test script args', () =>
     deepStrictEqual(cache.positional, ['main.ts']);
 });
 
-Deno.test('cli: test child separates runner flags from script args', () => {
+Deno.test('cli: test child separates runner flags from script args without losing raw tokens', () => {
     const invocation = parseTestChildArgs([
-        '--filter=selected',
+        '--filter', 'selected',
+        '--env=base.env',
+        '--preload', './first.ts',
+        '--conditions=development',
+        '--env=override.env',
+        '--preload=./second.ts',
+        '--conditions', 'custom',
+        '-r',
         '--fail-fast',
         '--',
         'fixture',
         '--filter=user-value',
     ]);
-    deepStrictEqual(invocation.flags, { filter: 'selected', 'fail-fast': true });
+    deepStrictEqual(invocation.flags, {
+        filter: 'selected',
+        env: 'override.env',
+        preload: './second.ts',
+        conditions: 'development,custom',
+        reload: true,
+        'fail-fast': true,
+    });
+    deepStrictEqual(invocation.flagArgs, [
+        '--filter', 'selected',
+        '--env=base.env',
+        '--preload', './first.ts',
+        '--conditions=development',
+        '--env=override.env',
+        '--preload=./second.ts',
+        '--conditions', 'custom',
+        '-r',
+        '--fail-fast',
+    ]);
     deepStrictEqual(invocation.scriptArgs, ['fixture', '--filter=user-value']);
+});
+
+Deno.test('cli: test child preserves command-prefix runtime flags', () => {
+    const parent = parseArgv([
+        '--conditions=development',
+        'test',
+        '--memory-limit', '64',
+        'example.test.ts',
+    ]);
+    const invocation = parseTestChildArgs([
+        ...parent.rawArgs.internalArgs,
+        ...parent.rawArgs.actionArgs,
+    ]);
+
+    deepStrictEqual(invocation.flags, {
+        conditions: 'development',
+        'memory-limit': '64',
+    });
 });
 
 Deno.test('cli: exec keeps command args after option terminator', () => {
@@ -305,6 +349,15 @@ Deno.test('cli: eval aliases collect code as entry', () => {
     strictEqual(inline.rawArgs.action, 'eval');
     strictEqual(inline.rawArgs.entry, 'console.log(3)');
     deepStrictEqual(inline.rawArgs.args, []);
+
+    const print = parseArgv(['-p', '1 + 1']);
+    deepStrictEqual(print.rawArgs.evalToken, { flag: '-p', inline: false });
+
+    const inlinePrint = parseArgv(['--print=1 + 2']);
+    strictEqual(inlinePrint.cmd, 'eval');
+    strictEqual(inlinePrint.flags.print, true);
+    deepStrictEqual(inlinePrint.positional, ['1 + 2']);
+    deepStrictEqual(inlinePrint.rawArgs.evalToken, { flag: '--print', inline: true });
 });
 
 Deno.test('cli: option terminator is never consumed as a value-flag value', () => {
@@ -413,6 +466,15 @@ Deno.test('cts path: normalizePath collapses dot segments without escaping roots
     strictEqual(normalizePath('npm:pkg//subpath'), 'npm:pkg//subpath');
 });
 
+Deno.test('cts path: normalizePath preserves UNC and device roots', () => {
+    if (Deno.build.os !== 'windows') return;
+
+    strictEqual(normalizePath('\\\\server\\share\\dir\\..'), '//server/share');
+    strictEqual(normalizePath('\\\\?\\C:\\dir\\..'), '//?/C:');
+    strictEqual(normalizePath('\\\\?\\UNC\\server\\share\\dir\\..'), '//?/UNC/server/share');
+    strictEqual(normalizePath('\\\\.\\pipe\\cno'), '//./pipe/cno');
+});
+
 Deno.test('cts path: isRelative accepts only explicit relative specifiers', () => {
     for (const spec of ['.', '..', './x', '../x', '.\\x', '..\\x']) {
         ok(isRelative(spec), `${spec} should be relative`);
@@ -517,4 +579,67 @@ Deno.test('cts misc: parseArgs handles long, short, inline and positional bounda
     const unknown = parseArgs(['--debug=wire', '--loose'], {});
     strictEqual(unknown.debug, 'wire');
     strictEqual(unknown.loose, true);
+});
+
+Deno.test('cts misc: parseArgs preserves option boundaries and positional contract', () => {
+    const parsed = parseArgs(['--silent', '--', '--script-flag', 'value'], { silent: 'boolean' });
+    strictEqual(parsed.silent, true);
+    strictEqual(parsed._, '--script-flag');
+    deepStrictEqual(parsed._args, ['value']);
+    strictEqual(parsed._offset, 3);
+
+    const missingString = parseArgs(['--cache-dir', '--silent', 'entry.ts'], {
+        'cache-dir': 'string',
+        silent: 'boolean',
+    });
+    strictEqual(missingString['cache-dir'], undefined);
+    strictEqual(missingString.silent, true);
+    strictEqual(missingString._, 'entry.ts');
+    deepStrictEqual(missingString._args, []);
+    strictEqual(missingString._offset, 3);
+
+    const negativeNumber = parseArgs(['--jsr-cache-ttl', '-2', 'entry.ts'], {
+        'jsr-cache-ttl': 'number',
+    });
+    strictEqual(negativeNumber['jsr-cache-ttl'], -2);
+    strictEqual(negativeNumber._, 'entry.ts');
+    deepStrictEqual(negativeNumber._args, []);
+    strictEqual(negativeNumber._offset, 3);
+});
+
+Deno.test('cli: value flags do not consume option-shaped tokens', () => {
+    const unknownOption = parseArgv(['test', '--filter', '--not-a-cno-option', 'example.test.ts']);
+    strictEqual(unknownOption.flags.filter, true);
+    strictEqual(unknownOption.flags['not-a-cno-option'], true);
+    deepStrictEqual(missingFlagValues(unknownOption), ['filter']);
+
+    const terminator = parseArgv(['test', '--filter', '--', 'example.test.ts']);
+    strictEqual(terminator.flags.filter, true);
+    deepStrictEqual(terminator.positional, ['--', 'example.test.ts']);
+    deepStrictEqual(missingFlagValues(terminator), ['filter']);
+
+    const negative = parseArgv(['test', '--concurrency', '-2']);
+    strictEqual(negative.flags.concurrency, '-2');
+    deepStrictEqual(missingFlagValues(negative), []);
+});
+
+Deno.test('cli: eval aliases do not consume option-shaped tokens', () => {
+    const shortAlias = parseArgv(['-e', '--quiet']);
+    strictEqual(shortAlias.cmd, 'eval');
+    deepStrictEqual(shortAlias.positional, []);
+    strictEqual(shortAlias.flags.quiet, true);
+
+    const longAlias = parseArgv(['--eval', '--', '-1']);
+    strictEqual(longAlias.cmd, 'eval');
+    deepStrictEqual(longAlias.positional, ['-1']);
+
+    const negativeCode = parseArgv(['-e', '-1']);
+    strictEqual(negativeCode.cmd, 'eval');
+    deepStrictEqual(negativeCode.positional, []);
+    deepStrictEqual(unknownFlags(negativeCode), ['-1']);
+
+    const separatedNegativeCode = parseArgv(['-e', '--', '-1']);
+    strictEqual(separatedNegativeCode.cmd, 'eval');
+    deepStrictEqual(separatedNegativeCode.positional, ['-1']);
+    deepStrictEqual(separatedNegativeCode.rawArgs.args, []);
 });

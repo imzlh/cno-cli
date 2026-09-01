@@ -154,3 +154,51 @@ Deno.test('fs.watch: ref/unref return the watcher itself', async () => {
         await fsp.rm(WATCH_DIR, { recursive: true, force: true });
     }
 });
+
+Deno.test('fs.watch: close removes its AbortSignal listener', async () => {
+    await fsp.mkdir(WATCH_DIR, { recursive: true });
+    const listeners = new Set<(...args: any[]) => void>();
+    const signal = {
+        aborted: false,
+        addEventListener(_type: string, listener: (...args: any[]) => void) {
+            listeners.add(listener);
+        },
+        removeEventListener(_type: string, listener: (...args: any[]) => void) {
+            listeners.delete(listener);
+        },
+    } as unknown as AbortSignal;
+    try {
+        const watcher = fs.watch(WATCH_DIR, { signal });
+        strictEqual(listeners.size, 1, 'watch must register one abort listener');
+        watcher.close();
+        strictEqual(listeners.size, 0, 'close must detach the abort listener');
+    } finally {
+        await fsp.rm(WATCH_DIR, { recursive: true, force: true });
+    }
+});
+
+Deno.test('fs.watch: failed native creation removes its AbortSignal listener', async () => {
+    const listeners = new Set<(...args: any[]) => void>();
+    const signal = {
+        aborted: false,
+        addEventListener(_type: string, listener: (...args: any[]) => void) {
+            listeners.add(listener);
+        },
+        removeEventListener(_type: string, listener: (...args: any[]) => void) {
+            listeners.delete(listener);
+        },
+    } as unknown as AbortSignal;
+    const missing = path.join(WATCH_DIR, 'does-not-exist');
+    let threw = false;
+    let watcher: ReturnType<typeof fs.watch> | undefined;
+    try {
+        watcher = fs.watch(missing, { signal });
+    } catch {
+        // Expected: the native watcher rejects a missing path.
+        threw = true;
+    } finally {
+        watcher?.close();
+    }
+    ok(threw, 'watching a missing path must fail synchronously');
+    strictEqual(listeners.size, 0, 'failed watch must detach the abort listener');
+});

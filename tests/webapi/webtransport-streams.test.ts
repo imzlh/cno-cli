@@ -20,6 +20,7 @@ class FakeConnection implements CModuleExternalQuic.Connection {
     readonly resets: { id: number; code: number }[] = [];
     readonly stops: { id: number; code: number }[] = [];
     readonly datagrams: Uint8Array[] = [];
+    readonly closeCalls: { code: number; reason: string }[] = [];
     #nextStreamId = 0;
 
     openStream(bidirectional = true): number {
@@ -47,6 +48,7 @@ class FakeConnection implements CModuleExternalQuic.Connection {
     }
 
     close(errorCode = 0, reason = ''): void {
+        this.closeCalls.push({ code: errorCode, reason });
         invoke(this.onclose, errorCode, reason);
     }
 
@@ -130,4 +132,21 @@ Deno.test('WebTransport: rejects insecure URLs and unsupported certificate hashe
     throws(() => new WebTransport('https://example.com/', {
         serverCertificateHashes: [{ algorithm: 'sha-256', value: new Uint8Array(32) }],
     }), error => error instanceof DOMException && error.name === 'NotSupportedError');
+});
+
+Deno.test('WebTransportSession: releases a native connection after an error', async () => {
+    const conn = new FakeConnection();
+    const session = new WebTransportSession(conn);
+    const ready = session.ready.then(() => null, error => error);
+    const closed = session.closed.then(() => null, error => error);
+
+    invoke(conn.onerror, 'handshake failed');
+
+    const [readyError, closedError] = await Promise.all([ready, closed]);
+    ok(readyError instanceof WebTransportError);
+    ok(closedError instanceof WebTransportError);
+    strictEqual((readyError as WebTransportError).message, 'handshake failed');
+    strictEqual((closedError as WebTransportError).message, 'handshake failed');
+    deepStrictEqual(conn.closeCalls, [{ code: 0, reason: 'handshake failed' }]);
+    strictEqual(conn.onclose, null);
 });

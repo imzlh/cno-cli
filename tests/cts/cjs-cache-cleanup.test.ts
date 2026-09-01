@@ -19,7 +19,7 @@ Deno.test('cts cjs: failed child loads leave neither cache nor module.children e
         }
         module.exports = {
             children: module.children.map(child => child.filename),
-            cached: require.cache[require.resolve('./child.cjs')] !== undefined,
+            cached: require.cache[${JSON.stringify(childPath)}] !== undefined,
         };
     `);
 
@@ -40,4 +40,38 @@ Deno.test('cts cjs: failed child loads leave neither cache nor module.children e
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
+});
+
+Deno.test('cts cjs: clearLoadedModules drops cache and cycle bookkeeping', () => {
+    const deps: CjsDeps = {
+        resolveBuiltin: unused,
+        loadEsmSync: unused,
+        resolveExternal: () => null,
+    };
+    const loader = new CjsLoader(deps);
+    loader.loadSourceAndGet('module.exports = { payload: "held" };\n', '/virtual/retained.cjs');
+    loader.preRegister('/virtual/pending.cjs', '/virtual/retained.cjs');
+
+    // Exercise the private side tables as well as the public require cache. A
+    // real builtin load and an in-flight cycle populate the same tables, but
+    // inserting sentinels keeps this regression test independent of the host's
+    // builtin resolver and filesystem.
+    const state = loader as unknown as {
+        builtinCache: Map<string, unknown>;
+        executing: Set<string>;
+        esmImporters: Map<string, string>;
+        mainModule: unknown;
+    };
+    state.builtinCache.set('node:sentinel', {});
+    state.executing.add('/virtual/in-flight.cjs');
+    state.esmImporters.set('/virtual/in-flight.cjs', '/virtual/retained.cjs');
+    state.mainModule = {};
+
+    loader.clearLoadedModules();
+
+    strictEqual(loader.cache.size, 0, 'require cache must release all CJS modules');
+    strictEqual(state.builtinCache.size, 0, 'builtin wrappers must be released');
+    strictEqual(state.executing.size, 0, 'cycle state must not retain paths');
+    strictEqual(state.esmImporters.size, 0, 'importer state must not retain paths');
+    strictEqual(state.mainModule, null, 'main module reference must be released');
 });

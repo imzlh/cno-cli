@@ -27,7 +27,8 @@
  */
 import { strictEqual, ok } from 'node:assert';
 import { createServer, type Server, type Socket } from 'node:net';
-import { getRawConnectionHook, setRawConnectionHook } from '../../cno/src/utils/network-hooks.ts';
+import { getCurlInitHook as getCnoCurlInitHook, getRawConnectionHook, setRawConnectionHook } from '../../cno/src/utils/network-hooks.ts';
+import { getCurlInitHook as getCtsCurlInitHook } from '../../cts/src/utils/curl.ts';
 
 const PROXY_ENV = [
     'HTTP_PROXY', 'http_proxy',
@@ -60,6 +61,10 @@ const BAKED_EVENT_GLOBALS = {
 const { EventSource } = await import('../../cno/src/webapi/sse.ts');
 const { WebSocket } = await import('../../cno/src/webapi/websocket.ts');
 
+Deno.test.afterAll(() => {
+    for (const [name, cls] of Object.entries(BAKED_EVENT_GLOBALS)) Reflect.set(globalThis, name, cls);
+});
+
 // --- loopback counting sink --------------------------------------------------
 
 interface Sink {
@@ -69,6 +74,25 @@ interface Sink {
     lines: string[];
     /** Every accepted connection, whether or not a request line was seen. */
     arrivals: number;
+}
+
+interface CurlRecorder {
+    handle: CModuleCURL.CURL;
+    proxies: Array<{ url: string; type: unknown }>;
+}
+
+function recordCurl(): CurlRecorder {
+    const proxies: Array<{ url: string; type: unknown }> = [];
+    const handle = {
+        setProxy(url: string, type?: unknown) {
+            proxies.push({ url, type });
+            return this;
+        },
+        setOpt(_option: number, _value: unknown) {
+            return this;
+        },
+    } as unknown as CModuleCURL.CURL;
+    return { handle, proxies };
 }
 
 function startSink(): Promise<Sink> {
@@ -117,6 +141,19 @@ function closeSink(sink: Sink): Promise<void> {
 
 function clearProxyEnv(): void {
     for (const name of PROXY_ENV) { try { Deno.env.delete(name); } catch { /* absent */ } }
+}
+
+function childProxyEnv(values: { http?: string; https?: string }): Record<string, string> {
+    return {
+        HTTP_PROXY: values.http ?? '',
+        http_proxy: values.http ?? '',
+        HTTPS_PROXY: values.https ?? '',
+        https_proxy: values.https ?? '',
+        ALL_PROXY: '',
+        all_proxy: '',
+        NO_PROXY: '',
+        no_proxy: '',
+    };
 }
 
 /** Replace the proxy env with exactly `values`, then re-read configuration. */
@@ -251,6 +288,44 @@ Deno.test('a malformed env proxy does not prevent hook installation', () => {
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
+Deno.test('CURL hooks select the system proxy from the target scheme', () => {
+    try {
+        withProxyEnv({
+            HTTP_PROXY: 'http://127.0.0.1:19008',
+            HTTPS_PROXY: 'http://127.0.0.1:19009',
+        });
+        for (const hook of [getCnoCurlInitHook(), getCtsCurlInitHook()]) {
+            ok(hook, 'startProxy() must install each curl hook');
+            const http = recordCurl();
+            hook(http.handle, new URL('http://example.invalid/x'));
+            strictEqual(http.proxies[0]?.url, 'http://127.0.0.1:19008/');
+
+            const https = recordCurl();
+            hook(https.handle, new URL('https://example.invalid/x'));
+            strictEqual(https.proxies[0]?.url, 'http://127.0.0.1:19009/');
+        }
+    } finally { clearProxyEnv(); stopNetwork(); }
+});
+
+Deno.test('a malformed HTTPS_PROXY does not fall back to HTTP_PROXY', () => {
+    try {
+        withProxyEnv({
+            HTTP_PROXY: 'http://127.0.0.1:19010',
+            HTTPS_PROXY: 'gopher://invalid',
+        });
+        const hook = getCnoCurlInitHook();
+        ok(hook, 'startProxy() must install the curl hook');
+
+        const http = recordCurl();
+        hook(http.handle, new URL('http://example.invalid/x'));
+        strictEqual(http.proxies[0]?.url, 'http://127.0.0.1:19010/');
+
+        const https = recordCurl();
+        hook(https.handle, new URL('https://example.invalid/x'));
+        strictEqual(https.proxies.length, 0);
+    } finally { clearProxyEnv(); stopNetwork(); }
+});
+
 Deno.test('startProxy installs the raw-connection hook that the clients read', () => {
     try {
         withProxyEnv({ HTTP_PROXY: 'http://127.0.0.1:19007' });
@@ -296,18 +371,13 @@ Deno.test({ name: 'WebSocket reaches the env-named proxy', timeout: 20000 }, asy
 /**
  * fetch is pinned against the real binary, not the disk graph.
  *
- * fetch reaches the network through libcurl in C. Its proxy comes from two
- * places, neither of which a disk import can represent: libcurl's own reading of
- * the proxy env vars, and the *baked* `setCurlInitHook`. A disk-imported
- * `src/network.ts` writes the disk copy of that hook, so an in-process
- * assertion here measures the wrong module and reads 0 arrivals while a real run
- * proxies correctly. Spawning the binary sidesteps the whole question: the child
- * gets HTTP_PROXY in its launch environment and either shows up at the sink or
- * does not.
+ * The curl hook lives in the baked graph, so a disk import cannot observe fetch.
+ * The child invokes the actual CLI path with `--system-proxy` instead.
  */
 Deno.test({ name: 'fetch reaches the env-named proxy (spawned binary)', timeout: 60000 }, async () => {
     const sink = await startSink();
-    const script = `${Deno.cwd()}/tmp-envproxy-fetch-child.mjs`;
+    const tempDir = await Deno.makeTempDir({ prefix: 'cno-envproxy-' });
+    const script = `${tempDir}/fetch-child.mjs`;
     await Deno.writeTextFile(script, [
         `try {`,
         `  const r = await fetch('http://example.invalid/x', { signal: AbortSignal.timeout(8000) });`,
@@ -318,8 +388,8 @@ Deno.test({ name: 'fetch reaches the env-named proxy (spawned binary)', timeout:
     ].join('\n'));
     try {
         const command = new Deno.Command(Deno.execPath(), {
-            args: ['run', script],
-            env: { HTTP_PROXY: `http://127.0.0.1:${sink.port}` },
+            args: ['--system-proxy', 'run', script],
+            env: childProxyEnv({ http: `http://127.0.0.1:${sink.port}` }),
             stdout: 'piped',
             stderr: 'piped',
         });
@@ -330,8 +400,44 @@ Deno.test({ name: 'fetch reaches the env-named proxy (spawned binary)', timeout:
         ok(sink.lines[0]?.startsWith('GET http://example.invalid/x'),
             `absolute-form request expected, got ${JSON.stringify(sink.lines[0])}`);
     } finally {
-        await Deno.remove(script).catch(() => undefined);
+        await Deno.remove(tempDir, { recursive: true }).catch(() => undefined);
         await closeSink(sink);
+    }
+});
+
+Deno.test({ name: 'fetch system proxy selects HTTP_PROXY and HTTPS_PROXY independently', timeout: 60000 }, async () => {
+    const httpProxy = await startSink();
+    const httpsProxy = await startSink();
+    const tempDir = await Deno.makeTempDir({ prefix: 'cno-proxy-schemes-' });
+    const script = `${tempDir}/fetch-child.mjs`;
+    await Deno.writeTextFile(script, [
+        `for (const url of ['http://example.invalid/http', 'https://example.invalid/https']) {`,
+        `  try { await fetch(url, { signal: AbortSignal.timeout(8000) }); } catch {}`,
+        `}`,
+        `console.log('REACHED END');`,
+    ].join('\n'));
+    try {
+        const command = new Deno.Command(Deno.execPath(), {
+            args: ['--system-proxy', 'run', script],
+            env: childProxyEnv({
+                http: `http://127.0.0.1:${httpProxy.port}`,
+                https: `http://127.0.0.1:${httpsProxy.port}`,
+            }),
+            stdout: 'piped',
+            stderr: 'piped',
+        });
+        const output = await command.output();
+        const stdout = new TextDecoder().decode(output.stdout);
+        ok(stdout.includes('REACHED END'), `child did not finish: ${stdout}`);
+        strictEqual(httpProxy.arrivals, 1, 'HTTP fetch must reach HTTP_PROXY');
+        strictEqual(httpsProxy.arrivals, 1, 'HTTPS fetch must reach HTTPS_PROXY');
+        ok(httpProxy.lines[0]?.startsWith('GET http://example.invalid/http'),
+            `HTTP proxy must receive an absolute-form request, got ${JSON.stringify(httpProxy.lines[0])}`);
+        ok(httpsProxy.lines[0]?.startsWith('CONNECT example.invalid:443'),
+            `HTTPS proxy must receive CONNECT, got ${JSON.stringify(httpsProxy.lines[0])}`);
+    } finally {
+        await Deno.remove(tempDir, { recursive: true }).catch(() => undefined);
+        await Promise.all([closeSink(httpProxy), closeSink(httpsProxy)]);
     }
 });
 
@@ -382,16 +488,6 @@ Deno.test('stopNetwork clears the hook and the config', () => {
     stopNetwork();
     strictEqual(getProxyInfo(), null);
     strictEqual(getRawConnectionHook(), null);
-});
-
-// MUST STAY LAST. Puts the baked event classes back so worker teardown
-// (bridgeEvent -> globalEvent.dispatchEvent(new Event('beforeunload'))) is not
-// handed a disk Event by a baked EventTarget, which throws
-// `TypeError: Invalid event object` at exit and silently kills
-// 'beforeunload' / 'unload' for this file.
-Deno.test('proxy env: baked event globals restored for teardown', () => {
-    for (const [name, cls] of Object.entries(BAKED_EVENT_GLOBALS)) Reflect.set(globalThis, name, cls);
-    strictEqual(globalThis.Event, BAKED_EVENT_GLOBALS.Event);
-    strictEqual(globalThis.MessageEvent, BAKED_EVENT_GLOBALS.MessageEvent);
-    new EventTarget().dispatchEvent(new Event('probe'));
+    strictEqual(getCnoCurlInitHook(), null);
+    strictEqual(getCtsCurlInitHook(), null);
 });

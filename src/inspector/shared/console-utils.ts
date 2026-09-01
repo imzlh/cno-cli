@@ -11,6 +11,7 @@
  */
 
 import type { ConsoleCallFrame } from './wire'
+import { toPosixPath } from '../../../cts/src/api'
 
 export interface SourceMapMappingResult {
 	found?: boolean
@@ -144,7 +145,7 @@ function sourceMapLookupCandidates(filePath: string): string[] {
 	const out = new Set<string>()
 	out.add(filePath)
 
-	const normalized = filePath.replace(/\\/g, '/')
+	const normalized = toPosixPath(filePath)
 	out.add(normalized)
 
 	if (normalized.startsWith('file:///')) {

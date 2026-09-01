@@ -14,7 +14,7 @@ Push-Location $Root
 try {
 
 # ── 1. Main project ───────────────────────────────────────────────────────────
-cmake -S . -B $BuildDir -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B $BuildDir -DCMAKE_BUILD_TYPE=Release -DCNO_RELEASE=ON
 cmake --build $BuildDir --config Release --parallel
 
 # ── 2. ext-oxc (optional) ─────────────────────────────────────────────────────

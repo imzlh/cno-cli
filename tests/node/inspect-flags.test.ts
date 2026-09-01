@@ -111,3 +111,17 @@ Deno.test('inspector: inspect-wait takes precedence over inspect', () => {
     strictEqual(o.breakOnStart, false);
     strictEqual(o.port, 9444);
 });
+
+Deno.test('inspector: bare IPv6 addresses remain hosts', () => {
+    for (const host of ['::1', '2001:db8::1']) {
+        const o = parseInspectFlags({ inspect: host })!;
+        strictEqual(o.host, host);
+        strictEqual(o.port, 9229);
+    }
+});
+
+Deno.test('inspector: bracketed IPv6 supports an explicit port', () => {
+    const o = parseInspectFlags({ inspect: '[::1]:9444' })!;
+    strictEqual(o.host, '::1');
+    strictEqual(o.port, 9444);
+});

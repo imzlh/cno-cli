@@ -215,6 +215,31 @@ Deno.test('process.dlopen: failed wrap/finalizer keeps native ownership with add
     }
 });
 
+Deno.test('process.dlopen: napi_get_dataview_info ignores shadowed accessors', () => {
+    const addon = ensureNapiFixture();
+    if (!addon) return;
+
+    const mod: { exports?: unknown } = { exports: {} };
+    process.dlopen(mod, addon);
+    const fn = (mod.exports as {
+        getDataViewInfo?: (view: DataView) => { offset: number; length: number; buffer: ArrayBuffer };
+    }).getDataViewInfo;
+    ok(typeof fn === 'function');
+
+    const bytes = new Uint8Array([10, 20, 30, 40]);
+    const view = new DataView(bytes.buffer, 1, 2);
+    for (const name of ['buffer', 'byteOffset', 'byteLength']) {
+        Object.defineProperty(view, name, {
+            configurable: true,
+            get() { throw new Error(`napi_get_dataview_info read ${name}`); },
+        });
+    }
+    const result = fn(view);
+    strictEqual(result.offset, 1);
+    strictEqual(result.length, 2);
+    strictEqual(result.buffer, bytes.buffer);
+});
+
 Deno.test({
     name: 'process.dlopen: legacy better-sqlite3 fails closed like require',
     timeout: 15000,

@@ -30,6 +30,9 @@ Deno.test('module: default export exposes Module static helpers', () => {
     strictEqual(Module.isBuiltin('node:path'), true);
     strictEqual(Module.createRequire, module.createRequire);
     strictEqual(Module._cache, module._cache);
+    strictEqual(Module.builtinModules, module.builtinModules);
+    ok(Module.builtinModules.includes('node:test'));
+    ok(Module.builtinModules.includes('node:sqlite'));
 });
 
 Deno.test('module: createRequire accepts file URL strings and objects', () => {

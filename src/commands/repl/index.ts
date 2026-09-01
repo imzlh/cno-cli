@@ -5,6 +5,7 @@ import { CnoRepl } from './runner';
 import { HISTORY_DB_NAME, HISTORY_TEXT_NAME } from './history';
 import { Inspector } from '../../inspector';
 import { installInspectorBridge, uninstallInspectorBridge } from '../../inspector/bridge';
+import { flagsToConfig, publishWorkerRuntimeConfig } from '../config-flags';
 import { parseInspectFlags } from '../inspect';
 
 const os = import.meta.use('os');
@@ -41,87 +42,64 @@ function exists(path: string): boolean {
 }
 
 export async function runRepl(flags: Record<string, string | boolean>): Promise<void> {
-    // ---- CDP inspector ----
-    let dbg = await startInspector(flags);
+    let dbg: Inspector | null = null;
+    let runtime: ReturnType<typeof createRuntime> | null = null;
+    let repl: CnoRepl | null = null;
+    let removeReplReceiver: (() => void) | null = null;
+    let bridgeInstalled = false;
 
-    // 1. Initialize cts runtime (this sets up module loader, resolver, etc.)
-    const cwdPath = cwd();
-    const cfg = loadConfigFile(cwdPath);
-    const runtime = createRuntime(cfg, cwdPath);
-    installInspectorBridge({
-        entryFile: 'repl',
-        addInitHook: (hook) => runtime.addInitHook(hook),
-        getCurrentInspector: () => dbg,
-        setCurrentInspector: (inspector) => { dbg = inspector; },
-    });
+    try {
+        dbg = await startInspector(flags);
+        const cwdPath = cwd();
+        const cliCfg = flagsToConfig(flags);
+        cliCfg.ignoreScripts = true;
+        runtime = createRuntime({ ...loadConfigFile(cwdPath), ...cliCfg }, cwdPath);
+        publishWorkerRuntimeConfig(runtime.config);
+        installInspectorBridge({
+            entryFile: 'repl',
+            addInitHook: (hook) => runtime!.addInitHook(hook),
+            getCurrentInspector: () => dbg,
+            setCurrentInspector: (inspector) => { dbg = inspector; },
+        });
+        bridgeInstalled = true;
 
-    // Wire up CDP scriptParsed hook
-    if (dbg?.scriptInitHook) {
-        runtime.addInitHook(dbg.scriptInitHook);
-    }
+        if (dbg?.scriptInitHook) runtime.addInitHook(dbg.scriptInitHook);
 
-    // Polyfill is bundled into the cno binary itself (src/main.ts imports it),
-    // so it has already run by the time we reach here.
+        removeReplReceiver = installEventReceiver(
+            'repl',
+            (name) => name === EV.JOB_EXCEPTION,
+            PRIORITY_FALLBACK,
+        );
 
-    // 2. Prevent default unhandled-rejection crash so a bad expression doesn't
-    //    take down the whole REPL.
-    //
-    // This was a raw `engine.onEvent((_e) => false)`. Two defects:
-    //
-    //  a) onEvent is a single-slot setter that frees the previous receiver
-    //     (circu.js/src/mod_engine.c:871), so it displaced the multiplexer that
-    //     createRuntime() had just installed one call earlier — and the mux
-    //     cannot detect this, because the native layer exposes no getter. Inside
-    //     the REPL, 'unhandledrejection'/'load'/'unload' were dead again and the
-    //     cts diagnostics receiver was silenced, so async errors vanished
-    //     without a trace.
-    //
-    //  b) the flat `false` was wrong for EV_JOB_EXCEPTION. The native polarity
-    //     is not uniform: utils.c:180 treats `false` as "fatal" and calls
-    //     TJS_Stop. So a throw from a timer or a stray callback would have torn
-    //     down the REPL — the opposite of this receiver's stated purpose.
-    //
-    // PRIORITY_FALLBACK puts this last in dispatch order, and the last explicit
-    // boolean wins, so the REPL's non-fatal guarantee overrides any other
-    // receiver while still letting webapi dispatch and diagnostics print first.
-    installEventReceiver('repl', (name) => {
-        // false = "handled, do not abort" for a rejection (vm.c:242 aborts on
-        // any non-false); true = "continue" for a job exception (utils.c:180
-        // calls TJS_Stop on false). Same intent, opposite constants.
-        if (name === EV.JOB_EXCEPTION) return true;
-        return false;
-    }, PRIORITY_FALLBACK);
+        const transformer = new Transformer({ sourceMaps: false });
+        const home = homeDir();
+        const histPath = home ? joinPaths(home, HISTORY_DB_NAME) : undefined;
+        const legacyText = home ? joinPaths(home, HISTORY_TEXT_NAME) : null;
+        repl = new CnoRepl({
+            transform: (code) => transformer.transform(code, '<repl>.ts'),
+            banner: `cno REPL v${version}. ".help" for help, ".q" to quit.\n`,
+            historyPath: histPath,
+        });
 
-    // 3. Build the TypeScript transformer. Use a stable virtual filename so
-    //    source-map noise is predictable.
-    const transformer = new Transformer(/* sourceMaps */ {
-        "sourceMaps": false
-    });
-    const transform = (code: string): string =>
-        transformer.transform(code, '<repl>.ts');
-
-    // 4. History — SQLite under HOME; migrate legacy text if DB is empty.
-    const home = homeDir();
-    const histPath = home ? joinPaths(home, HISTORY_DB_NAME) : undefined;
-    const legacyText = home ? joinPaths(home, HISTORY_TEXT_NAME) : null;
-
-    const repl = new CnoRepl({
-        transform,
-        banner: `cno REPL v${version}. ".help" for help, ".q" to quit.\n`,
-        historyPath: histPath,
-    });
-
-    if (legacyText && exists(legacyText)) {
+        if (legacyText && exists(legacyText)) {
+            try {
+                repl.historyStore.migrateFromTextFile(legacyText);
+            } catch { /* best-effort */ }
+        }
+        await repl.start();
+    } finally {
         try {
-            repl.historyStore.migrateFromTextFile(legacyText);
-        } catch { /* best-effort */ }
+            repl?.cleanup();
+        } finally {
+            removeReplReceiver?.();
+            try {
+                await dbg?.detach();
+            } finally {
+                if (bridgeInstalled) uninstallInspectorBridge();
+                runtime?.cleanup();
+            }
+        }
     }
-
-    // 5. Run; cleanup closes the history DB.
-    await repl.start();
-    repl.cleanup();
-    await dbg?.detach();
-    uninstallInspectorBridge();
 }
 
 async function startInspector(flags: Record<string, string | boolean>): Promise<Inspector | null> {

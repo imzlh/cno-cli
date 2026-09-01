@@ -591,6 +591,55 @@ Deno.test({ name: 'deno: KV set with expireIn makes entry expire', timeout: 1000
     });
 });
 
+Deno.test({ name: 'deno: KV expireIn zero expires immediately', timeout: 10000 }, async () => {
+    await withKv('expire-zero', async (kv) => {
+        await kv.set(['e'], 'ttl', { expireIn: 0 });
+        strictEqual((await kv.get(['e'])).value, null);
+    });
+});
+
+Deno.test({ name: 'deno: KV raw watch reports mutations without an observable change', timeout: 10000 }, async () => {
+    await withKv('watch-raw', async (kv) => {
+        const reader = kv.watch<[string][]>([['raw-watch']] as any, { raw: true }).getReader();
+        try {
+            const initial = await reader.read();
+            strictEqual(initial.value?.[0]?.value, null);
+
+            await kv.delete(['raw-watch']);
+            const changed = await withTimeout(reader.read());
+            strictEqual(changed.done, false);
+            strictEqual(changed.value?.[0]?.value, null);
+            strictEqual(changed.value?.[0]?.versionstamp, null);
+        } finally {
+            await reader.cancel();
+        }
+    });
+});
+
+Deno.test({ name: 'deno: KV delayed queue remains durable before a listener starts', timeout: 10000 }, async () => {
+    await withKv('queue-delayed-listener', async (kv) => {
+        await kv.enqueue('delayed', { delay: 25, backoffSchedule: [] });
+        await new Promise(resolve => setTimeout(resolve, 1200));
+
+        const delivered = new Promise<unknown>((resolve) => {
+            kv.listenQueue(resolve);
+        });
+        strictEqual(await withTimeout(delivered), 'delayed');
+    });
+});
+
+Deno.test({ name: 'deno: KV uses serialized byte ordering and enforces size limits', timeout: 10000 }, async () => {
+    await withKv('key-value-limits', async (kv) => {
+        await kv.set(['z'], 'z');
+        await kv.set(['é'], 'accent');
+        const range = await collect(kv.list({ start: ['z'], end: ['é'] }));
+        deepStrictEqual(range.map(entry => entry.key), [['z']]);
+
+        await rejects(async () => await kv.set(['k'.repeat(2050)], 'too large'), /maximum serialized length/);
+        await rejects(async () => await kv.set(['large'], 'x'.repeat(65536)), /maximum serialized length/);
+    });
+});
+
 Deno.test({ name: 'deno: KV operations reject after close', timeout: 10000 }, async () => {
     await withTempPath('kv-closed', async (path) => {
         const kv = await Deno.openKv(path);

@@ -62,6 +62,28 @@ Deno.test({ name: 'child_process: fork defaults to inherited stdio and accepts o
     await new Promise<void>((resolve) => child.once('close', () => resolve()));
 });
 
+Deno.test({ name: 'child_process: fork inherits process.execArgv when it is not supplied', timeout: 10000 }, async () => {
+    await withTempDir('child-process-fork-exec-argv', async (dir) => {
+        const script = join(dir, 'child.js');
+        fs.writeFileSync(script, 'process.send(process.execArgv); process.disconnect();\n');
+        const original = [...process.execArgv];
+        process.execArgv.splice(0, process.execArgv.length, '--conditions=fork-inherited');
+        try {
+            const inherited = await new Promise<string[]>((resolve, reject) => {
+                const child = fork(script, [], {
+                    silent: true,
+                    env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
+                });
+                child.once('message', (message) => resolve(message as string[]));
+                child.once('error', reject);
+            });
+            deepStrictEqual(inherited, ['--conditions=fork-inherited']);
+        } finally {
+            process.execArgv.splice(0, process.execArgv.length, ...original);
+        }
+    });
+});
+
 Deno.test({ name: 'child_process: exec returns stdout/stderr to callback', timeout: 10000 }, async () => {
     const r = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
         exec(`${process.execPath} -e "console.log('hello'); console.error('err');"`, (err, stdout, stderr) => {
@@ -71,6 +93,42 @@ Deno.test({ name: 'child_process: exec returns stdout/stderr to callback', timeo
     });
     strictEqual(r.stdout, 'hello');
     strictEqual(r.stderr, 'err');
+});
+
+Deno.test('child_process: exec and execFile validate maxBuffer before spawning', () => {
+    for (const invoke of [
+        () => exec('echo should-not-start', { maxBuffer: -1 }),
+        () => execFile(process.execPath, ['-e', '0'], { maxBuffer: Number.NaN }),
+    ]) {
+        throws(invoke, (err: Error & { code?: string }) => {
+            strictEqual(err.code, 'ERR_OUT_OF_RANGE');
+            return true;
+        });
+    }
+});
+
+Deno.test('child_process: spawn rejects more than one IPC stdio pipe', () => {
+    throws(
+        () => spawn(process.execPath, ['-e', '0'], { stdio: ['ignore', 'ipc', 'ipc'] }),
+        (err: Error & { code?: string }) => {
+            strictEqual(err.code, 'ERR_IPC_ONE_PIPE');
+            strictEqual(err.message, 'Child process can have only one IPC pipe');
+            return true;
+        },
+    );
+});
+
+Deno.test({ name: 'child_process: abort after close does not emit a late error', timeout: 10000 }, async () => {
+    const controller = new AbortController();
+    const child = spawn(process.execPath, ['-e', '0'], { signal: controller.signal });
+    let abortErrors = 0;
+    child.on('error', (err: Error & { code?: string }) => {
+        if (err.code === 'ABORT_ERR') abortErrors++;
+    });
+    await new Promise<void>((resolve) => child.once('close', () => resolve()));
+    controller.abort();
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    strictEqual(abortErrors, 0);
 });
 
 Deno.test({ name: 'child_process: execFile runs a file with args', timeout: 10000 }, async () => {
@@ -342,6 +400,19 @@ Deno.test({ name: 'child_process: execFile enforces stdout maxBuffer before call
         ok(Buffer.isBuffer(result.stdout));
         strictEqual(result.stdout.toString('utf8'), 'yik');
     });
+});
+
+Deno.test({ name: 'child_process: execFile maxBuffer preserves decoded Unicode text', timeout: 10000 }, async () => {
+    const result = await new Promise<{ err: Error & { code?: string } | null; stdout: string }>((resolve) => {
+        execFile(
+            process.execPath,
+            ['-e', 'process.stdout.write(String.fromCharCode(0x20ac, 0x20ac))'],
+            { maxBuffer: 4 },
+            (err, stdout) => resolve({ err: err as Error & { code?: string } | null, stdout: stdout as string }),
+        );
+    });
+    strictEqual(result.err?.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+    strictEqual(result.stdout, String.fromCharCode(0x20ac, 0x20ac));
 });
 
 Deno.test({ name: 'child_process upstream: execFile enforces stderr maxBuffer before callback', timeout: 10000 }, async () => {

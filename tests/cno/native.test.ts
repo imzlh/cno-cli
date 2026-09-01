@@ -150,6 +150,11 @@ Deno.test('CNO native text: iconv encoder decoder streaming and conversion seman
     const utf8Bytes = utf8.encode('Hi \u4e16\u754c');
     strictEqual(new text.Decoder('utf-8').decode(utf8Bytes), 'Hi \u4e16\u754c');
 
+    const utf32 = new text.Encoder('UTF-32LE').encode('a'.repeat(300));
+    strictEqual(utf32.length, 1200);
+    deepStrictEqual([...utf32.subarray(0, 8)], [0x61, 0, 0, 0, 0x61, 0, 0, 0]);
+    deepStrictEqual([...new text.Encoder('ASCII').encode('A\u00e9B')], [0x41, 0x3f, 0x42]);
+
     const target = new Uint8Array(8);
     const into = utf8.encodeInto('Hello', target);
     deepStrictEqual(into, { read: 5, written: 5 });
@@ -159,10 +164,18 @@ Deno.test('CNO native text: iconv encoder decoder streaming and conversion seman
     strictEqual(streaming.decode(bytes(0xe4, 0xb8), { stream: true }), '');
     strictEqual(streaming.decode(bytes(0xad), { stream: false }), '\u4e2d');
 
+    const prefixedStreaming = new text.Decoder('utf-8');
+    strictEqual(prefixedStreaming.decode(bytes(0x41, 0xc2), { stream: true }), 'A');
+    strictEqual(prefixedStreaming.decode(bytes(0xa2), { stream: false }), '\u00a2');
+
     const gbk = new text.Encoder('GBK').encode('\u4f60\u597d');
     deepStrictEqual([...gbk], [0xc4, 0xe3, 0xba, 0xc3]);
     strictEqual(new text.Decoder('GBK').decode(gbk), '\u4f60\u597d');
     strictEqual(text.convert('GBK', 'UTF-8', gbk), '\u4f60\u597d');
+
+    const shiftJis = new text.Decoder('Shift_JIS');
+    strictEqual(shiftJis.decode(bytes(0x82), { stream: true }), '');
+    strictEqual(shiftJis.decode(bytes(0xa0), { stream: false }), '\u3042');
     ok(text.listEncodings().some((encoding: string) => encoding.toLowerCase() === 'utf-8'));
 });
 

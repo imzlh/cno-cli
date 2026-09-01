@@ -361,15 +361,19 @@ Deno.test({ name: 'deno test harness: assertSnapshot creates matches and reports
         const result = [];
         Deno.test('snapshot child', async (t) => {
             const dir = Deno.makeTempDirSync({ prefix: 'cno-snapshot-' });
+            const nestedDir = dir + '/nested/deep';
             try {
-                await t.assertSnapshot({ value: 1 }, { dir, name: 'case' });
-                await t.assertSnapshot({ value: 1 }, { dir, name: 'case' });
+                await t.assertSnapshot({ value: 1 }, { dir: nestedDir, name: 'case' });
+                await t.assertSnapshot({ value: 1 }, { dir: nestedDir, name: 'case' });
                 try {
-                    await t.assertSnapshot({ value: 2 }, { dir, name: 'case', msg: 'custom snapshot mismatch' });
+                    await t.assertSnapshot({ value: 2 }, { dir: nestedDir, name: 'case', msg: 'custom snapshot mismatch' });
                     result.push('accepted-mismatch');
                 } catch (error) {
                     result.push(error.message);
                 }
+                const files = [];
+                for await (const entry of Deno.readDir(nestedDir)) files.push(entry.name);
+                result.push(files.length === 1 && files[0].endsWith('.snap') ? 'nested-file' : 'wrong-file');
             } finally {
                 Deno.removeSync(dir, { recursive: true });
             }
@@ -381,7 +385,40 @@ Deno.test({ name: 'deno test harness: assertSnapshot creates matches and reports
     strictEqual(child.code, 0, child.stderr);
     const result = resultLine(child.stdout);
     strictEqual(result.passed, true);
-    deepStrictEqual(result.result, ['custom snapshot mismatch']);
+    deepStrictEqual(result.result, ['custom snapshot mismatch', 'nested-file']);
+});
+
+Deno.test({ name: 'deno test harness: snapshot dir and path are relative to the test file', timeout: 10000 }, async () => {
+    const child = await runEval(`
+        const root = Deno.makeTempDirSync({ prefix: 'cno-snapshot-paths-' });
+        const origin = root + '/fixture.ts';
+        const result = [];
+        try {
+            Deno.test('snapshot paths', async (t) => {
+                await t.assertSnapshot('relative dir', { dir: 'nested/deep', name: 'relative-dir' });
+                await t.assertSnapshot('explicit path', {
+                    dir: 'ignored', path: 'custom.snap', name: 'explicit-path',
+                });
+            });
+            const passed = await Deno.__startTest(origin, 'test');
+            result.push(Deno.statSync(root + '/nested/deep/fixture.ts.snap').isFile);
+            result.push(Deno.statSync(root + '/custom.snap').isFile);
+            try {
+                Deno.statSync(root + '/ignored');
+                result.push('dir-used');
+            } catch {
+                result.push('dir-ignored');
+            }
+            console.log('RESULT ' + JSON.stringify({ passed, result }));
+        } finally {
+            Deno.removeSync(root, { recursive: true });
+        }
+    `);
+
+    strictEqual(child.code, 0, child.stderr);
+    const result = resultLine(child.stdout);
+    strictEqual(result.passed, true);
+    deepStrictEqual(result.result, [true, true, 'dir-ignored']);
 });
 
 Deno.test({ name: 'deno bench harness: overload names ignore and only filters are reflected', timeout: 10000 }, async () => {

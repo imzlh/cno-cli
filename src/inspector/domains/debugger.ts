@@ -6,7 +6,7 @@
  * DebugChannel), while source/eval queries go over the inspect transport.
  */
 
-import { log, toPosixPath } from '../../../cts/src/api'
+import { fileUrlToPath, log, toPosixPath } from '../../../cts/src/api'
 import type {
 	CallFrame,
 	DebuggerEvaluateOnCallFrameParams,
@@ -344,12 +344,9 @@ export class DebuggerDomain extends Domain {
 	 *   - /foo             (POSIX native path)
 	 */
 	private normalizeUrl(url: string): string {
-		if (url.startsWith('file://')) {
+		if (url.startsWith('file:')) {
 			try {
-				const u = new URL(url)
-				let p = u.pathname           // /D:/foo on Windows, /foo on POSIX
-				if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1)  // strip leading /
-				return this.normalizePath(p)
+				return this.normalizePath(fileUrlToPath(url))
 			} catch { /* fall through */ }
 		}
 		return this.normalizePath(url)

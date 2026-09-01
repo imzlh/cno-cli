@@ -14,34 +14,37 @@ export function parseInspectFlags(flags: Record<string, string | boolean>, repl 
 	const raw = hasInspectBrk ? flags['inspect-brk']
 		: hasInspectWait ? flags['inspect-wait']
 			: flags['inspect']
+	const address = parseInspectAddress(raw)
 
 	return {
-		port: parseInspectPort(raw),
-		host: parseInspectHost(raw),
+		port: address.port,
+		host: address.host,
 		breakOnStart: repl ? false : hasInspectBrk,
 		waitForClient: repl ? hasInspectBrk || hasInspectWait : hasInspectWait,
 	}
 }
 
-function parseInspectPort(raw: string | boolean | undefined): number {
-	if (typeof raw !== 'string' || raw === 'true') return 9229
+function parseInspectAddress(raw: string | boolean | undefined): Pick<InspectOptions, 'host' | 'port'> {
+	if (typeof raw !== 'string' || raw === 'true') return { host: '127.0.0.1', port: 9229 }
 	const trimmed = raw.trim()
-	const match = trimmed.match(/(?:^|:)\s*(\d+)$/)
-	if (!match) return 9229
-	return Number(match[1]) || 9229
-}
+	if (!trimmed) return { host: '127.0.0.1', port: 9229 }
 
-function parseInspectHost(raw: string | boolean | undefined): string {
-	if (typeof raw !== 'string' || raw === 'true') return '127.0.0.1'
-	const trimmed = raw.trim()
-	if (!trimmed) return '127.0.0.1'
-	const match = trimmed.match(/^(.*):(\d+)$/)
-	if (match) {
-		const host = match[1]?.trim()
-		return host || '127.0.0.1'
+	const port = (value: string): number => Number(value) || 9229
+	if (/^\d+$/.test(trimmed)) return { host: '127.0.0.1', port: port(trimmed) }
+
+	const bracketed = trimmed.match(/^\[([^\]]+)\](?::\s*(\d+))?$/)
+	if (bracketed) {
+		return { host: bracketed[1]!.trim() || '127.0.0.1', port: bracketed[2] ? port(bracketed[2]) : 9229 }
 	}
-	// No host:port match. A bare all-digits value is a port-only spec, so keep
-	// the default host; anything else is a host-only bind address.
-	if (!trimmed.includes(':') && !/^\d+$/.test(trimmed)) return trimmed
-	return '127.0.0.1'
+
+	const firstColon = trimmed.indexOf(':')
+	const lastColon = trimmed.lastIndexOf(':')
+	if (firstColon === lastColon && lastColon >= 0) {
+		const portText = trimmed.slice(lastColon + 1).trim()
+		if (/^\d+$/.test(portText)) {
+			return { host: trimmed.slice(0, lastColon).trim() || '127.0.0.1', port: port(portText) }
+		}
+	}
+
+	return { host: trimmed, port: 9229 }
 }

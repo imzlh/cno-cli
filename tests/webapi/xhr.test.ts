@@ -1,10 +1,12 @@
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { Buffer } from 'node:buffer';
 import {
+    setCurlInitHook,
     setFetchInterceptHook,
     type FetchInterceptInfo,
     type InterceptResult,
 } from '../../cno/src/utils/network-hooks.ts';
+import { clearReferenceIfCurrent } from '../../cno/src/webapi/fetch/reference.ts';
 import { decodeUtf8, encodeUtf8 } from '../_helpers/bytes.ts';
 
 async function withIntercept(
@@ -24,6 +26,14 @@ function waitForLoadEnd(xhr: XMLHttpRequest): Promise<void> {
         xhr.addEventListener('loadend', () => resolve(), { once: true });
     });
 }
+
+Deno.test('XMLHttpRequest: CURL release only clears the current reference', () => {
+    const oldCurl = {};
+    const newCurl = {};
+
+    strictEqual(clearReferenceIfCurrent(newCurl, oldCurl), newCurl);
+    strictEqual(clearReferenceIfCurrent(newCurl, newCurl), null);
+});
 
 Deno.test({ name: 'XMLHttpRequest: GET text response exposes state headers and body', timeout: 10000 }, async () => {
     await withIntercept(async (info) => {

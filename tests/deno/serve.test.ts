@@ -276,6 +276,29 @@ Deno.test('deno: HttpClient exposes proxy helpers and rejects connections after 
     strictEqual(err!.message, 'HttpClient is closed');
 });
 
+Deno.test('deno: HttpClient uses the shared NO_PROXY matcher', () => {
+    const previousUpper = Deno.env.get('NO_PROXY');
+    const previousLower = Deno.env.get('no_proxy');
+    const client = new Deno.HttpClient({ proxy: { url: 'http://proxy.local:8080' } }) as Deno.HttpClient & {
+        shouldUseProxy(url: URL): boolean;
+    };
+    try {
+        Deno.env.delete('no_proxy');
+        Deno.env.set('NO_PROXY', 'example.test:443; <local>; [::1]:8080');
+
+        strictEqual(client.shouldUseProxy(new URL('https://api.example.test/')), false);
+        strictEqual(client.shouldUseProxy(new URL('http://intranet/')), false);
+        strictEqual(client.shouldUseProxy(new URL('http://[::1]:8080/')), false);
+        strictEqual(client.shouldUseProxy(new URL('http://[::1]:8081/')), true);
+    } finally {
+        client.close();
+        if (previousUpper === undefined) Deno.env.delete('NO_PROXY');
+        else Deno.env.set('NO_PROXY', previousUpper);
+        if (previousLower === undefined) Deno.env.delete('no_proxy');
+        else Deno.env.set('no_proxy', previousLower);
+    }
+});
+
 Deno.test({ name: 'deno: Deno.serve lifecycle exposes addr onListen finished abort and onError', timeout: 10000 }, async () => {
     if (!await canListenTcp()) return;
 
@@ -329,6 +352,47 @@ Deno.test({ name: 'deno: Deno.serve lifecycle exposes addr onListen finished abo
         strictEqual(await done, 'finished');
     } finally {
         try { await server.shutdown(); } catch {}
+    }
+});
+
+Deno.test({ name: 'deno: Deno.serve shutdown drains active requests', timeout: 10000 }, async () => {
+    if (!await canListenTcp()) return;
+
+    const requestStarted = Promise.withResolvers<void>();
+    const releaseRequest = Promise.withResolvers<void>();
+    const server = Deno.serve({ hostname: '127.0.0.1', port: 0 }, async () => {
+        requestStarted.resolve();
+        await releaseRequest.promise;
+        return new Response('graceful-response');
+    });
+    let shutdownPromise: Promise<void> | undefined;
+
+    try {
+        const responsePromise = fetch(`http://127.0.0.1:${server.addr.port}/slow`);
+        void responsePromise.catch(() => {});
+        await withTimeout(requestStarted.promise);
+
+        let shutdownFinished = false;
+        let serverFinished = false;
+        const finishedPromise = server.finished.then(() => { serverFinished = true; });
+        shutdownPromise = server.shutdown().then(() => { shutdownFinished = true; });
+
+        await sleep(25);
+        strictEqual(shutdownFinished, false, 'shutdown must wait for the active request');
+        strictEqual(serverFinished, false, 'finished must wait for the active request');
+
+        releaseRequest.resolve();
+        const response = await withTimeout(responsePromise);
+        strictEqual(response.status, 200);
+        strictEqual(await response.text(), 'graceful-response');
+
+        await withTimeout(shutdownPromise);
+        await withTimeout(finishedPromise);
+        strictEqual(shutdownFinished, true);
+        strictEqual(serverFinished, true);
+    } finally {
+        releaseRequest.resolve();
+        try { await withTimeout(shutdownPromise ?? server.shutdown()); } catch {}
     }
 });
 

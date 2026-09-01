@@ -358,3 +358,27 @@ Deno.test('async_hooks upstream: executionAsyncResource is exposed', () => {
     const inner = resource.runInAsyncScope(() => async_hooks.executionAsyncResource());
     strictEqual(inner, resource);
 });
+
+Deno.test('async_hooks: clearImmediate destroys cancelled state exactly once', async () => {
+    const initialized: number[] = [];
+    const destroyed: number[] = [];
+    let fired = false;
+    const hook = async_hooks.createHook({
+        init(id, type) {
+            if (type === 'Immediate') initialized.push(id);
+        },
+        destroy(id) {
+            if (initialized.includes(id)) destroyed.push(id);
+        },
+    }).enable();
+
+    const handle = globalThis.setImmediate(() => { fired = true; });
+    globalThis.clearImmediate(handle);
+    globalThis.clearImmediate(handle);
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    hook.disable();
+
+    strictEqual(fired, false);
+    strictEqual(initialized.length, 1);
+    deepStrictEqual(destroyed, initialized);
+});

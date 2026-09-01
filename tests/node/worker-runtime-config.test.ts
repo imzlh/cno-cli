@@ -1,36 +1,6 @@
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { Worker } from 'node:worker_threads';
-
-// Regression coverage for RUNTIME CONFIG INHERITANCE across the worker boundary.
-//
-// A worker runs on its own JSRuntime and re-derives its config by calling
-// createConfig, which re-parses os.args. os.args in a worker is the FULL parent
-// argument vector, but cts's parseArgs (cts/src/utils/misc.ts) stops at the first
-// positional token — and for `cno run <entry>` that token is `run`. So the
-// re-parse sees no flags at all and every CLI-supplied setting reverts to a
-// default. The only channel that carries the parent's resolved config across the
-// boundary is the `__cts_runtime_config` key in the worker bootstrap record
-// (published by publishWorkerRuntimeConfig in src/commands/run.ts, read back by
-// workerRuntimeConfig in src/main.ts).
-//
-// node:worker_threads previously did not send that key at all, while the webapi
-// Worker did. Measured consequences on the node path before the fix:
-//   * `--memory-limit=64MB`: parent threw InternalError at 55MB, the worker
-//     allocated 600MB without throwing.
-//   * `--no-oxc`: the parent transformed TS with the Sucrase fallback while the
-//     worker used oxc, so the two threads did not agree on their compiler.
-//
-// These tests assert on the wire record rather than on re-measured behaviour so
-// they stay fast and do not depend on which flags the suite itself was invoked
-// with.
-
-/** Keys publishWorkerRuntimeConfig is responsible for carrying. */
-const CARRIED_KEYS = [
-    'cacheDir', 'lockDir', 'enableHttp', 'enableJsr', 'enableNode', 'enableCache',
-    'cachedOnly', 'enableOxc', 'frozen', 'disableLock', 'ignoreScripts', 'polyfill',
-    'conditions', 'importMap', 'importMapScopes', 'pathAliases', 'baseUrl',
-    'memoryLimit', 'maxStackSize',
-] as const;
+import { WORKER_RUNTIME_CONFIG_KEYS } from '../../src/commands/config-flags.ts';
 
 /**
  * Reads the raw worker bootstrap record from inside a worker. This is the record
@@ -135,7 +105,7 @@ Deno.test({
     // record is JSON-shaped, so undefined values drop out). What must not happen
     // is an unexpected key appearing, which would mean the publisher and this
     // list have drifted apart.
-    const known = new Set<string>(CARRIED_KEYS);
+    const known = new Set<string>(WORKER_RUNTIME_CONFIG_KEYS);
     const unexpected = Object.keys(cfg).filter((k) => !known.has(k));
     deepStrictEqual(unexpected, [], `unexpected keys on the wire: ${unexpected.join(',')}`);
 });

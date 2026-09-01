@@ -272,13 +272,9 @@ Deno.test({ name: 'deno oracle: a caught spawn failure still exits cleanly', tim
     strictEqual(child.success, true);
 });
 
-// DEFECT: clearEnv leaks libuv's required_vars[] on the async path only. deno leaves
-// just the three cmd.exe injects (COMSPEC, PATHEXT, PROMPT); cno's output()/spawn()
-// additionally pass through PATH, USERNAME, USERPROFILE, USERDOMAIN, LOGONSERVER,
-// HOMEDRIVE, HOMEPATH, TEMP, SYSTEMDRIVE, SYSTEMROOT and WINDIR.
-// Root cause: circu.js/deps/libuv/src/win/process.c:50-62 required_vars[], merged by
-// uv_spawn. outputSync() uses CreateProcessW directly and is already correct.
-Deno.test({ name: 'deno oracle: clearEnv clears the async child env as thoroughly as the sync one', ignore: true, timeout: 20000 }, async () => {
+// Regression: clearEnv must prevent libuv from restoring required Windows
+// variables from the parent environment on the asynchronous spawn path.
+Deno.test({ name: 'deno oracle: clearEnv clears the async child env as thoroughly as the sync one', timeout: 20000 }, async () => {
     const names = (bytes: Uint8Array) =>
         new TextDecoder().decode(bytes)
             .split(/\r?\n/)
@@ -294,19 +290,17 @@ Deno.test({ name: 'deno oracle: clearEnv clears the async child env as thoroughl
     strictEqual(JSON.stringify(asyncNames), JSON.stringify(syncNames));
 });
 
-// DEFECT: the no-records path raises a bare Error, so
-// `catch (e) { if (e instanceof Deno.errors.NotFound) }` never matches. deno raises
-// Deno.errors.NotFound for both NXDOMAIN and a name that exists without the record type.
-Deno.test({ name: 'deno oracle: resolveDns raises NotFound when there are no records', ignore: true, timeout: 20000 }, async () => {
+// Both NXDOMAIN and an existing name without the requested record type map to
+// Deno.errors.NotFound. Other resolver failures retain their original errors.
+Deno.test({ name: 'deno oracle: resolveDns raises NotFound when there are no records', timeout: 20000 }, async () => {
     await rejects(() => Deno.resolveDns('nonexistent-cno-oracle-probe.invalid', 'A'), Deno.errors.NotFound);
     // example.com exists but has no CNAME, which is the same no-answer path.
     await rejects(() => Deno.resolveDns('example.com', 'CNAME'), Deno.errors.NotFound);
 });
 
-// DEFECT: wrong-mode handle IO reports BadResource, which means "closed or invalid
-// resource". The handle is valid and only the access mode is wrong, which deno
-// reports as PermissionDenied.
-Deno.test({ name: 'deno oracle: wrong-mode handle IO raises PermissionDenied', ignore: true }, async () => {
+// Regression: wrong-mode handle IO must report PermissionDenied because the
+// handle remains valid and only the requested access mode is unavailable.
+Deno.test('deno oracle: wrong-mode handle IO raises PermissionDenied', async () => {
     await withTempDir('deno-oracle-mode', async (dir) => {
         const file = join(dir, 'mode.txt');
         await Deno.writeTextFile(file, 'x');
@@ -327,34 +321,44 @@ Deno.test({ name: 'deno oracle: wrong-mode handle IO raises PermissionDenied', i
     });
 });
 
-// DEFECT: output() refuses stdout:'inherit' (and 'null') with an eager TypeError, so the
-// command never runs. deno runs it, resolves, and only throws lazily if you touch the
-// non-piped .stdout getter -- so `await cmd.output()` for an exit code while letting the
-// child's output through works in deno and is unusable in cno.
-Deno.test({ name: 'deno oracle: output() runs the child when stdout is inherited', ignore: true, timeout: 20000 }, async () => {
-    const result = await new Deno.Command('cmd', { args: ['/c', 'echo inherited'], stdout: 'inherit' }).output();
-    strictEqual(result.success, true);
-    strictEqual(result.code, 0);
-    strictEqual(JSON.stringify(Object.keys(result).sort()), JSON.stringify(['code', 'signal', 'stderr', 'stdout', 'success']));
-    // stderr was still piped, so it reads normally.
-    strictEqual(result.stderr.length, 0);
-    // The non-piped stream is a throwing getter rather than an empty buffer.
-    throws(() => result.stdout.length, TypeError);
+Deno.test({ name: 'deno oracle: output() runs the child when stdout is inherited or null', timeout: 20000 }, async () => {
+    for (const stdout of ['inherit', 'null'] as const) {
+        const result = await new Deno.Command('cmd', { args: ['/c', 'exit 0'], stdout }).output();
+        strictEqual(result.success, true);
+        strictEqual(result.code, 0);
+        strictEqual(JSON.stringify(Object.keys(result).sort()), JSON.stringify(['code', 'signal', 'stderr', 'stdout', 'success']));
+        // stderr was still piped, so it reads normally.
+        strictEqual(result.stderr.length, 0);
+        // The non-piped stream is a throwing getter rather than an empty buffer.
+        throws(() => result.stdout.length, TypeError);
+    }
 });
 
-// DEFECT: Deno.build is missing the `env` field present in deno 2.9.3.
-Deno.test({ name: 'deno oracle: Deno.build carries the 2.9.3 field set', ignore: true }, () => {
+Deno.test('deno oracle: Deno.build carries the 2.9.3 field set', () => {
     strictEqual(
-        JSON.stringify(Object.keys(Deno.build).sort()),
-        JSON.stringify(['arch', 'env', 'os', 'standalone', 'target', 'vendor']),
+        JSON.stringify(Object.keys(Deno.build)),
+        JSON.stringify(['target', 'arch', 'os', 'vendor', 'env', 'standalone']),
     );
+    strictEqual(Deno.build.env, Deno.build.target.split('-')[3]);
+    strictEqual(
+        Deno.build.target,
+        `${Deno.build.arch}-${Deno.build.vendor}-${Deno.build.os}-${Deno.build.env}`,
+    );
+    strictEqual(
+        JSON.stringify(Object.getOwnPropertyDescriptors(Deno.build), (_key, value) =>
+            typeof value === 'object' && value !== null && 'value' in value
+                ? { writable: value.writable, enumerable: value.enumerable, configurable: value.configurable }
+                : value
+        ),
+        JSON.stringify(Object.fromEntries(Object.keys(Deno.build).map((key) => [
+            key,
+            { writable: false, enumerable: true, configurable: false },
+        ]))),
+    );
+    strictEqual(Object.isFrozen(Deno.build), true);
 });
 
-// DEFECT: Command.output() reports a spawn failure as a rejected promise, but deno
-// 2.9.3 raises it synchronously from the call itself, so
-// `try { cmd.output() } catch {}` (no await) catches in deno and escapes in cno.
-// outputSync() and spawn() already raise synchronously in both.
-Deno.test({ name: 'deno oracle: output() reports spawn failure synchronously', ignore: true, timeout: 20000 }, () => {
+Deno.test({ name: 'deno oracle: output() reports spawn failure synchronously', timeout: 20000 }, () => {
     throws(() => {
         // Deliberately not awaited: the throw must happen during the call.
         void new Deno.Command('definitely-not-a-real-binary-cno-oracle').output();
@@ -365,7 +369,7 @@ Deno.test({ name: 'deno oracle: output() reports spawn failure synchronously', i
 // cno/src/deno/02_fs.ts:368 (`ev === 'rename' ? 'rename' : 'modify'`), so 'create' and
 // 'remove' are never emitted -- a created file reports 'rename' and a deleted one is
 // indistinguishable. The canonical `if (event.kind === 'create')` watcher never fires.
-Deno.test({ name: 'deno oracle: watchFs reports create and remove kinds', ignore: true, timeout: 30000 }, async () => {
+Deno.test({ name: 'deno oracle: watchFs reports create and remove kinds', timeout: 30000 }, async () => {
     await withTempDir('deno-oracle-watch', async (dir) => {
         const collect = async (act: () => Promise<void>) => {
             const watcher = Deno.watchFs(dir);
@@ -389,7 +393,7 @@ Deno.test({ name: 'deno oracle: watchFs reports create and remove kinds', ignore
 
 // DEFECT: FsEvent is missing the `flag` field; deno 2.9.3 exposes
 // ["flag", "kind", "paths"].
-Deno.test({ name: 'deno oracle: FsEvent carries the 2.9.3 field set', ignore: true, timeout: 30000 }, async () => {
+Deno.test({ name: 'deno oracle: FsEvent carries the 2.9.3 field set', timeout: 30000 }, async () => {
     await withTempDir('deno-oracle-watch', async (dir) => {
         const watcher = Deno.watchFs(dir);
         let seen: Deno.FsEvent | undefined;
@@ -408,7 +412,7 @@ Deno.test({ name: 'deno oracle: FsEvent carries the 2.9.3 field set', ignore: tr
 // (`port: opt.port ?? 80` handed straight to bind, which truncates to 16 bits). An
 // out-of-range port silently binds a DIFFERENT port: 70000 -> 4464, -1 -> 65535,
 // 1.5 -> 1. Omitting the port binds 80 where deno picks an ephemeral one.
-Deno.test({ name: 'deno oracle: listen rejects out-of-range ports instead of wrapping them', ignore: true }, () => {
+Deno.test('deno oracle: listen rejects out-of-range ports instead of wrapping them', () => {
     for (const port of [70000, 65536, -1, 4294967296]) {
         throws(() => Deno.listen({ hostname: '127.0.0.1', port }).close(), RangeError, `port ${port} must be rejected`);
     }
@@ -437,19 +441,14 @@ Deno.test({ name: 'deno oracle: Deno.inspect honours its documented options', ig
     ok(!Deno.inspect({ a: { b: { c: { d: 1 } } } }).includes('[Object]'));
 });
 
-// DEFECT: Deno.build.vendor reports "cno" where deno reports "pc", which contradicts
-// build.target (x86_64-pc-windows-msvc) and breaks target-triple parsing.
-Deno.test({ name: 'deno oracle: Deno.build.vendor matches the target triple', ignore: true }, () => {
+Deno.test('deno oracle: Deno.build.vendor matches the target triple', () => {
     strictEqual(Deno.build.vendor, 'pc');
     ok(Deno.build.target.includes(`-${Deno.build.vendor}-`), 'vendor must appear in the target triple');
 });
 
-// DEFECT: resolveDns queries the configured nameserver directly
-// (cno/src/deno/05_net.ts:1113-1198 builds a wire query via dns.query), so it never
-// consults the hosts file and 'localhost' cannot resolve at all -- deno returns one
-// record. Separately, every no-records outcome surfaces as a bare Error whose message
-// blames parsing ("Failed to parse DNS response") rather than Deno.errors.NotFound.
-Deno.test({ name: 'deno oracle: resolveDns resolves hosts-file names like localhost', ignore: true, timeout: 20000 }, async () => {
+// A/AAAA queries without an explicit name server use the system resolver so hosts-file
+// names are resolved consistently with other application networking APIs.
+Deno.test({ name: 'deno oracle: resolveDns resolves hosts-file names like localhost', timeout: 20000 }, async () => {
     const records = await Deno.resolveDns('localhost', 'A');
     ok(Array.isArray(records), 'resolveDns must return an array');
     ok(records.length > 0, 'localhost must resolve to at least one address');

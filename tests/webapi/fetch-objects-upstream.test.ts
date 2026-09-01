@@ -539,3 +539,17 @@ Deno.test('webapi fetch compatibility: Request and Response survive transparent 
     const source = new Proxy(new Request('https://example.com/source'), {});
     strictEqual(new Request(source).url, 'https://example.com/source');
 });
+
+Deno.test('webapi fetch upstream: file URL returns the local file body', async () => {
+    const file = Deno.makeTempFileSync({ prefix: 'cno-fetch-file-', suffix: '.txt' });
+    try {
+        await Deno.writeTextFile(file, 'fetch-file-oracle-ok\n');
+        const response = await fetch(new URL(`file:///${file.replace(/\\/g, '/')}`));
+        strictEqual(response.ok, true);
+        strictEqual(response.status, 200);
+        strictEqual(response.statusText, 'OK');
+        strictEqual(await response.text(), 'fetch-file-oracle-ok\n');
+    } finally {
+        Deno.removeSync(file);
+    }
+});

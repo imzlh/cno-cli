@@ -9,6 +9,7 @@ import { HttpHandler } from '../../cts/src/resolve/protocols/http.ts';
 import { JsrHandler } from '../../cts/src/resolve/protocols/jsr.ts';
 import { JscCache } from '../../cts/src/source/cache.ts';
 import { joinPaths, normalizePath } from '../../cts/src/utils/path.ts';
+import { err, ErrorKind } from '../../cts/src/errors.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
 const engine = import.meta.use('engine');
@@ -18,7 +19,11 @@ const fs = import.meta.use('fs');
 function drive<T>(flow: Flow<T>, handler: (step: Step) => unknown): T {
     let state = flow.next();
     while (!state.done) {
-        state = flow.next(handler(state.value as Step));
+        try {
+            state = flow.next(handler(state.value as Step));
+        } catch (error) {
+            state = flow.throw(error);
+        }
     }
     return state.value;
 }
@@ -271,6 +276,103 @@ Deno.test('cts jsc cache: local freshness and remote sidecar paths are observabl
         cache.setMemory('memory-module', new engine.Module('export const memory = 1;', 'memory-module').dump());
         ok(cache.load('memory-module', false));
         strictEqual(cache.load('memory-module', false), null);
+    });
+});
+
+Deno.test('cts jsr protocol: refreshes invalid cached metadata but preserves cache read errors', () => {
+    const cacheDir = '/tmp/cts-jsr-cache-errors';
+    const source = engine.encodeString('export const value = 1;\n');
+    const metadata = engine.encodeString(JSON.stringify({
+        manifest: { '/mod.ts': { checksum: `sha256-${crypto.hexEncode(crypto.sha256(source))}` } },
+    }));
+    const refreshedRequests: string[] = [];
+    let existsCalls = 0;
+
+    const refreshed = drive(
+        new JsrHandler(createConfig({ cacheDir, silent: true })).resolve('jsr:@scope/pkg@1.0.0/mod.ts', '/entry.ts'),
+        (step) => {
+            if (step.type === StepType.FS_EXISTS) return ++existsCalls === 1;
+            if (step.type === StepType.FS_READ_TEXT) return '{ not json';
+            if (step.type === StepType.NET_FETCH) {
+                refreshedRequests.push(step.url);
+                return step.url.endsWith('_meta.json')
+                    ? { status: 200, headers: [], body: metadata }
+                    : { status: 200, headers: [], body: source };
+            }
+            if (step.type === StepType.FS_ENSURE_DIR || step.type === StepType.FS_WRITE_TEXT || step.type === StepType.FS_WRITE_BYTES) {
+                return undefined;
+            }
+            throw new Error(`unexpected step ${step.type}`);
+        },
+    );
+    strictEqual(refreshed.fileKind, 'source');
+    strictEqual(refreshedRequests.length, 2);
+    ok(refreshedRequests[0]!.endsWith('/1.0.0_meta.json'));
+
+    const readFailure = err(ErrorKind.PermissionError, 'cache read denied');
+    let requestedNetwork = false;
+    throws(
+        () => drive(
+            new JsrHandler(createConfig({ cacheDir, silent: true })).resolve('jsr:@scope/pkg@1.0.0/mod.ts', '/entry.ts'),
+            (step) => {
+                if (step.type === StepType.FS_EXISTS) return true;
+                if (step.type === StepType.FS_READ_TEXT) throw readFailure;
+                if (step.type === StepType.NET_FETCH) requestedNetwork = true;
+                throw new Error(`unexpected step ${step.type}`);
+            },
+        ),
+        (error: unknown) => error === readFailure,
+    );
+    strictEqual(requestedNetwork, false);
+});
+
+Deno.test('cts jsc cache: a disk miss exposes the already-read source snapshot', async () => {
+    await withTempDir('cts-jsc-source-snapshot-reuse', (root) => {
+        const cacheDir = joinPaths(root, 'cache');
+        const localPath = join(root, 'entry.ts').replaceAll('\\', '/');
+        writeFileSync(localPath, 'export const value = 1;\n');
+
+        const cache = new JscCache(cacheDir);
+        const old = new engine.Module('export const value = 1;', localPath);
+        old.resolve();
+        cache.persistLocal(localPath, old, localPath);
+
+        // A changed source forces the disk lookup down its miss path. The
+        // compiler can consume the exact bytes read for the freshness check.
+        writeFileSync(localPath, 'export const value = 2;\n');
+        const nativeReadFile = fs.readFile;
+        const nativeStat = fs.stat;
+        let sourceReads = 0;
+        let sourceStats = 0;
+        Reflect.set(fs, 'readFile', (path: string) => {
+            if (path === localPath) sourceReads++;
+            return nativeReadFile(path);
+        });
+        Reflect.set(fs, 'stat', (path: string) => {
+            if (path === localPath) sourceStats++;
+            return nativeStat(path);
+        });
+        try {
+            strictEqual(cache.load(localPath, false, undefined, localPath), null);
+        } finally {
+            Reflect.set(fs, 'readFile', nativeReadFile);
+            Reflect.set(fs, 'stat', nativeStat);
+        }
+        strictEqual(sourceReads, 1, 'cache miss reads source bytes once');
+        strictEqual(sourceStats, 1, 'cache miss stats source once');
+        const snapshot = cache.takeSourceSnapshot(localPath, localPath);
+        ok(snapshot);
+        strictEqual(engine.decodeString(snapshot.bytes), 'export const value = 2;\n');
+        strictEqual(snapshot.freshness.size, snapshot.bytes.byteLength);
+        strictEqual(cache.takeSourceSnapshot(localPath, localPath), undefined);
+
+        // A cache hit is fully consumed inside JscCache and leaves no stale
+        // source buffer behind; L1 memory hits also avoid a disk read.
+        const fresh = new engine.Module('export const value = 2;', localPath);
+        fresh.resolve();
+        cache.persistLocal(localPath, fresh, localPath);
+        ok(cache.load(localPath, false, undefined, localPath));
+        strictEqual(cache.takeSourceSnapshot(localPath, localPath), undefined);
     });
 });
 

@@ -161,52 +161,72 @@ Deno.test('deno command upstream: outputSync keeps stdout and stderr separate', 
     strictEqual(decodeUtf8(output.stderr).trim(), 'sync-err');
 });
 
-Deno.test('deno command upstream: output rejects non-piped stdio and piped stdin', async () => {
-    await rejects(
-        () => new Deno.Command(Deno.execPath(), {
-            args: ['eval', 'console.log("hidden")'],
-            stdout: 'null',
-        }).output(),
-        /Cannot get 'stdout': 'stdout' is not piped/,
-    );
-    await rejects(
-        () => new Deno.Command(Deno.execPath(), {
-            args: ['eval', 'console.error("hidden")'],
-            stderr: 'inherit',
-        }).output(),
-        /Cannot get 'stderr': 'stderr' is not piped/,
-    );
-    await rejects(
-        () => new Deno.Command(Deno.execPath(), {
-            args: ['eval', ''],
-            stdin: 'piped',
-        }).output(),
-        /Piped stdin is not supported/,
-    );
+Deno.test({ name: 'deno command upstream: output honors non-piped stdio before reporting capture errors', timeout: 10000 }, async () => {
+    const root = Deno.makeTempDirSync({ prefix: 'cno-command-output-stdio-' });
+    try {
+        for (const method of ['output', 'outputSync'] as const) {
+            for (const stdout of ['inherit', 'null'] as const) {
+                const marker = `${root}/${method}-${stdout}.txt`;
+                const command = new Deno.Command(Deno.execPath(), {
+                    args: ['eval', `Deno.writeTextFileSync(${JSON.stringify(marker)}, "ran")`],
+                    stdout,
+                    stderr: 'piped',
+                });
 
-    await rejects(
-        () => new Deno.Command(Deno.execPath(), {
+                const output = method === 'output' ? await command.output() : command.outputSync();
+                throws(() => output.stdout.length, /Cannot get 'stdout': 'stdout' is not piped/);
+                strictEqual(output.stderr.length, 0);
+                strictEqual(Deno.readTextFileSync(marker), 'ran');
+            }
+
+            for (const stderr of ['inherit', 'null'] as const) {
+                const marker = `${root}/${method}-${stderr}-stderr.txt`;
+                const command = new Deno.Command(Deno.execPath(), {
+                    args: ['eval', `Deno.writeTextFileSync(${JSON.stringify(marker)}, "ran")`],
+                    stdout: 'piped',
+                    stderr,
+                });
+
+                const output = method === 'output' ? await command.output() : command.outputSync();
+                strictEqual(output.stdout.length, 0);
+                throws(() => output.stderr.length, /Cannot get 'stderr': 'stderr' is not piped/);
+                strictEqual(Deno.readTextFileSync(marker), 'ran');
+            }
+        }
+
+        throws(
+            () => new Deno.Command(Deno.execPath(), {
+                args: ['eval', ''],
+                stdin: 'piped',
+            }).output(),
+            /Piped stdin is not supported/,
+        );
+        throws(
+            () => new Deno.Command(Deno.execPath(), {
+                args: ['eval', ''],
+                stdin: 'piped',
+            }).outputSync(),
+            /Piped stdin is not supported/,
+        );
+
+        const output = await new Deno.Command(Deno.execPath(), {
             args: ['eval', 'console.log("hidden")'],
             stdout: 'null',
             stderr: 'piped',
-        }).spawn().output(),
-        /Cannot get 'stdout': 'stdout' is not piped/,
-    );
-
-    throws(
-        () => new Deno.Command(Deno.execPath(), {
-            args: ['eval', ''],
-            stdin: 'piped',
-        }).outputSync(),
-        /Piped stdin is not supported/,
-    );
+        }).spawn().output();
+        strictEqual(output.success, true);
+        strictEqual(output.stderr.length, 0);
+        throws(() => output.stdout.length, /Cannot get 'stdout': 'stdout' is not piped/);
+    } finally {
+        Deno.removeSync(root, { recursive: true });
+    }
 });
 
 Deno.test('deno command upstream: invalid stdio variants throw before spawning', async () => {
     for (const key of ['stdin', 'stdout', 'stderr'] as const) {
         const options = { args: ['eval', ''], [key]: 'bad' } as Deno.CommandOptions;
         throws(() => new Deno.Command(Deno.execPath(), options).spawn(), /unknown variant `bad`/);
-        await rejects(() => new Deno.Command(Deno.execPath(), options).output(), /unknown variant `bad`/);
+        throws(() => new Deno.Command(Deno.execPath(), options).output(), /unknown variant `bad`/);
         throws(() => new Deno.Command(Deno.execPath(), options).outputSync(), /unknown variant `bad`/);
     }
 });
@@ -554,4 +574,29 @@ Deno.test({ name: 'deno command upstream: spawn shorthand overloads mirror Comma
     throws(() => {
         Deno.spawnAndWaitSync(Deno.execPath(), ['eval', ''], { stdin: 'piped' });
     }, /Piped stdin is not supported/);
+});
+
+Deno.test({ name: 'deno command upstream: windowsRawArguments preserves command line quoting', timeout: 10000 }, async () => {
+    if (Deno.build.os !== 'windows') return;
+
+    const root = Deno.makeTempDirSync({ prefix: 'cno raw argv ' });
+    const commandPath = `${root}\\cmd copy.exe`;
+    Deno.copyFileSync('C:\\Windows\\System32\\cmd.exe', commandPath);
+    try {
+        for (const method of ['output', 'outputSync'] as const) {
+            const command = new Deno.Command(commandPath, {
+                args: ['/d', '/s', '/c', '"echo ^"raw argument probe^" & echo plain & echo C:\\probe\\tail"'],
+                windowsRawArguments: true,
+                stdout: 'piped',
+                stderr: 'piped',
+            });
+            const result = method === 'output' ? await command.output() : command.outputSync();
+            strictEqual(result.success, true, decodeUtf8(result.stderr));
+            strictEqual(result.code, 0);
+            strictEqual(decodeUtf8(result.stdout), '"raw argument probe" \r\nplain \r\nC:\\probe\\tail\r\n');
+            strictEqual(decodeUtf8(result.stderr), '');
+        }
+    } finally {
+        Deno.removeSync(root, { recursive: true });
+    }
 });

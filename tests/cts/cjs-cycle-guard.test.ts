@@ -68,7 +68,16 @@ function makeLoader(dir: string, onEsm: (aPath: string) => void) {
             onEsm(aPath);
             return { default: 'b-value' } as Record<string, unknown>;
         },
-        resolveExternal(): any { return null; },
+        resolveExternal(request: string, parent: string): any {
+            const base = parent.slice(0, parent.lastIndexOf('/') + 1);
+            const localPath = request.startsWith('./') ? `${base}${request.slice(2)}` : request;
+            return {
+                specPath: localPath,
+                localPath,
+                format: localPath.endsWith('.mjs') ? 'esm' : 'cjs',
+                fileKind: 'source',
+            };
+        },
         prepareSource(code: string) { return code; },
     };
     return { loader: new CjsLoader(deps as any), aPath };
@@ -157,7 +166,16 @@ Deno.test('cts cycle: innermostExecuting names the deepest CJS frame, not the en
                 seen.push(loader.innermostExecuting());
                 return { default: 'x' } as Record<string, unknown>;
             },
-            resolveExternal(): any { return null; },
+            resolveExternal(request: string, parent: string): any {
+                const base = parent.slice(0, parent.lastIndexOf('/') + 1);
+                const localPath = request.startsWith('./') ? `${base}${request.slice(2)}` : request;
+                return {
+                    specPath: localPath,
+                    localPath,
+                    format: localPath.endsWith('.mjs') ? 'esm' : 'cjs',
+                    fileKind: 'source',
+                };
+            },
             prepareSource(code: string) { return code; },
         };
         const loader = new CjsLoader(deps as any);

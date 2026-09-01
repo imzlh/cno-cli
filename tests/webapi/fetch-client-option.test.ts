@@ -71,6 +71,26 @@ function recorder(sink: string[], body: string) {
     };
 }
 
+/** Respond with 407 until the expected proxy credential is sent. */
+function authenticatedProxyRecorder(sink: string[], expected: string) {
+    return (socket: Socket) => {
+        let request = '';
+        const onData = (chunk: Buffer) => {
+            request += chunk.toString('latin1');
+            if (!request.includes('\r\n\r\n')) return;
+            socket.removeListener('data', onData);
+            sink.push(request);
+            if (request.toLowerCase().includes(`proxy-authorization: ${expected}`.toLowerCase())) {
+                socket.end('HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nclient-proxy');
+            } else {
+                socket.end('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="test"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+            }
+        };
+        socket.on('data', onData);
+        socket.on('error', () => socket.destroy());
+    };
+}
+
 interface Fixture { origin: ListeningServer; proxy: ListeningServer; originHits: string[]; proxySeen: string[] }
 
 /** Origin + forward proxy on loopback. Arrival at a real socket is the measurement. */
@@ -107,6 +127,60 @@ Deno.test({ name: 'fetch client: a client proxy is applied, so traffic arrives a
     } finally {
         client.close();
         await stopFixture(fixture);
+    }
+});
+
+Deno.test({ name: 'fetch client: custom proxy credentials replace system proxy credentials', timeout: 60000 }, async () => {
+    const systemRequests: string[] = [];
+    const clientRequests: string[] = [];
+    const clientAuth = Buffer.from('client-user:client-pass').toString('base64');
+    const systemAuth = Buffer.from('system-user:system-pass').toString('base64');
+    const systemProxy = await listen(recorder(systemRequests, 'system-proxy'));
+    if (!systemProxy) return;
+    const clientProxy = await listen(authenticatedProxyRecorder(clientRequests, `Basic ${clientAuth}`));
+    if (!clientProxy) { await closeServer(systemProxy.server); return; }
+
+    const tempDir = await Deno.makeTempDir({ prefix: 'cno-client-proxy-' });
+    const script = `${tempDir}/client-proxy.mjs`;
+    await Deno.writeTextFile(script, [
+        `const client = Deno.createHttpClient({`,
+        `  proxy: {`,
+        `    url: ${JSON.stringify(`http://127.0.0.1:${clientProxy.port}`)},`,
+        `    basicAuth: { username: 'client-user', password: 'client-pass' },`,
+        `  },`,
+        `});`,
+        `try {`,
+        `  const response = await fetch('http://example.invalid/through-client', { client });`,
+        `  if (response.status !== 200 || await response.text() !== 'client-proxy') throw new Error('client proxy was not used');`,
+        `  console.log('REACHED END');`,
+        `} finally { client.close(); }`,
+    ].join('\n'));
+    try {
+        const output = await new Deno.Command(Deno.execPath(), {
+            args: ['--system-proxy', 'run', script],
+            env: {
+                HTTP_PROXY: `http://system-user:system-pass@127.0.0.1:${systemProxy.port}`,
+                http_proxy: `http://system-user:system-pass@127.0.0.1:${systemProxy.port}`,
+                HTTPS_PROXY: '',
+                https_proxy: '',
+                ALL_PROXY: '',
+                all_proxy: '',
+                NO_PROXY: '',
+                no_proxy: '',
+            },
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const stdout = new TextDecoder().decode(output.stdout);
+        ok(stdout.includes('REACHED END'), `child did not finish: ${stdout}`);
+        strictEqual(systemRequests.length, 0, 'a custom HttpClient proxy must replace the system proxy');
+        ok(clientRequests.some(request => request.toLowerCase().includes(`proxy-authorization: basic ${clientAuth}`.toLowerCase())),
+            'the custom proxy must receive its own credentials');
+        ok(clientRequests.every(request => !request.toLowerCase().includes(`proxy-authorization: basic ${systemAuth}`.toLowerCase())),
+            'system proxy credentials must never reach the custom proxy');
+    } finally {
+        await Deno.remove(tempDir, { recursive: true }).catch(() => undefined);
+        await Promise.all([closeServer(systemProxy.server), closeServer(clientProxy.server)]);
     }
 });
 
@@ -209,5 +283,3 @@ Deno.test({ name: 'fetch client: an unusable proxy url is reported, not ignored'
         client.close();
     }
 });
-
-console.log('REACHED END');

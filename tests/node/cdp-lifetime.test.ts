@@ -101,6 +101,7 @@ class FakePipe {
     posted: unknown[] = [];
     onmessage: ((data: unknown) => void) | undefined;
     onmessageerror: ((data: unknown) => void) | undefined;
+    onclose: (() => void) | undefined;
     throwOnPost: Error | null = null;
 
     postMessage(data: unknown): void {
@@ -116,6 +117,26 @@ function newPipe(): FakePipe {
     return new FakePipe();
 }
 
+function fakeWorker(): {
+    worker: CModuleWorker.Worker;
+    stopCount: () => number;
+    terminateCount: () => number;
+} {
+    let stops = 0;
+    let terminations = 0;
+    const pipe = new FakePipe();
+    const value = {
+        messagePipe: pipe,
+        stop: () => { stops++; },
+        terminate: () => { terminations++; },
+    } as unknown as CModuleWorker.Worker;
+    return {
+        worker: value,
+        stopCount: () => stops,
+        terminateCount: () => terminations,
+    };
+}
+
 Deno.test('inspector: completed entries release the debug worker loop hold', () => {
     const inspector = Object.create(Inspector.prototype) as Inspector;
     let unrefs = 0;
@@ -125,6 +146,165 @@ Deno.test('inspector: completed entries release the debug worker loop hold', () 
 
     inspector.allowProcessExit();
     strictEqual(unrefs, 1, 'the debug pipe must not keep a completed program alive');
+});
+
+Deno.test('inspector: stopping rejects a new attach and lifecycle waiters', async () => {
+    const inspector = new Inspector({ port: 0, entryFile: 'entry.ts' });
+    Reflect.set(inspector, 'state', 'stopping');
+
+    await rejects(() => inspector.attach(), /already stopping/);
+    await rejects(() => inspector.waitForConnection(), /Inspector is stopping/);
+    await rejects(() => inspector.waitForDebugger(), /Inspector is stopping/);
+});
+
+Deno.test('inspector: stale worker callbacks cannot stop or reap a newer session', () => {
+    const inspector = new Inspector({ port: 0, entryFile: 'entry.ts' });
+    const oldSession = fakeWorker();
+    const currentSession = fakeWorker();
+    Reflect.set(inspector, 'generation', 2);
+    Reflect.set(inspector, 'state', 'active');
+    Reflect.set(inspector, 'worker', currentSession.worker);
+
+    const handleClosed = Reflect.get(inspector, 'handleWorkerClosed') as (
+        generation: number,
+        worker: CModuleWorker.Worker,
+    ) => void;
+    handleClosed.call(inspector, 1, oldSession.worker);
+
+    const handleFailure = Reflect.get(inspector, 'handleWorkerFailure') as (
+        error: Error,
+        stopWorker: boolean,
+        generation: number,
+        worker: CModuleWorker.Worker,
+    ) => void;
+    handleFailure.call(inspector, new Error('old worker failed'), true, 1, oldSession.worker);
+
+    strictEqual(Reflect.get(inspector, 'worker'), currentSession.worker);
+    strictEqual(Reflect.get(inspector, 'state'), 'active');
+    strictEqual(oldSession.stopCount(), 0);
+    strictEqual(oldSession.terminateCount(), 0);
+    strictEqual(currentSession.stopCount(), 0);
+    strictEqual(currentSession.terminateCount(), 0);
+});
+
+Deno.test('inspector: disconnect makes a pending debugger wait fail immediately', async () => {
+    const inspector = new Inspector({ port: 0, entryFile: 'entry.ts' });
+    Reflect.set(inspector, 'state', 'active');
+    Reflect.set(inspector, 'connected', false);
+    Reflect.set(inspector, 'runtimeReady', false);
+    Reflect.set(inspector, 'everConnected', true);
+    Reflect.set(inspector, 'disconnectError', new Error('DevTools client disconnected'));
+
+    await rejects(() => inspector.waitForDebugger(), /DevTools client disconnected/);
+});
+
+Deno.test('inspector: detach rejects every concurrent connection and debugger waiter', async () => {
+    const inspector = new Inspector({ port: 0, entryFile: 'entry.ts' });
+    const waiters = [
+        inspector.waitForConnection(),
+        inspector.waitForConnection(),
+        inspector.waitForConnection(),
+        inspector.waitForDebugger(),
+        inspector.waitForDebugger(),
+        inspector.waitForDebugger(),
+    ].map(promise => promise.then(
+        () => 'resolved',
+        (error: unknown) => error instanceof Error ? error.message : String(error),
+    ));
+
+    await inspector.detach();
+    const results = await Promise.all(waiters);
+    for (const result of results) {
+        ok(result.includes('Inspector stopped'), `waiter must reject on detach, got ${result}`);
+    }
+
+    strictEqual((Reflect.get(inspector, 'connectedWaiters') as Set<unknown>).size, 0);
+    strictEqual((Reflect.get(inspector, 'runtimeReadyWaiters') as Set<unknown>).size, 0);
+});
+
+Deno.test('inspector: forceStop rejects every concurrent connection and debugger waiter', async () => {
+    const inspector = new Inspector({ port: 0, entryFile: 'entry.ts' });
+    const waiters = [
+        inspector.waitForConnection(),
+        inspector.waitForConnection(),
+        inspector.waitForDebugger(),
+        inspector.waitForDebugger(),
+    ].map(promise => promise.then(
+        () => 'resolved',
+        (error: unknown) => error instanceof Error ? error.message : String(error),
+    ));
+
+    inspector.forceStop();
+    const results = await Promise.all(waiters);
+    for (const result of results) {
+        ok(result.includes('Inspector stopped'), `waiter must reject on forceStop, got ${result}`);
+    }
+
+    strictEqual((Reflect.get(inspector, 'connectedWaiters') as Set<unknown>).size, 0);
+    strictEqual((Reflect.get(inspector, 'runtimeReadyWaiters') as Set<unknown>).size, 0);
+});
+
+Deno.test('inspector: reset rejects pending waiters instead of reporting success', async () => {
+    const inspector = new Inspector({ port: 0, entryFile: 'entry.ts' });
+    const waiters = [
+        inspector.waitForConnection(),
+        inspector.waitForDebugger(),
+    ].map(promise => promise.then(
+        () => 'resolved',
+        (error: unknown) => error instanceof Error ? error.message : String(error),
+    ));
+
+    (Reflect.get(inspector, 'reset') as () => void).call(inspector);
+    const results = await Promise.all(waiters);
+    for (const result of results) {
+        ok(result.includes('Inspector stopped'), `waiter must reject on reset, got ${result}`);
+    }
+
+    strictEqual((Reflect.get(inspector, 'connectedWaiters') as Set<unknown>).size, 0);
+    strictEqual((Reflect.get(inspector, 'runtimeReadyWaiters') as Set<unknown>).size, 0);
+});
+
+Deno.test('inspector: a worker error tears down hooks before the worker is reaped', async () => {
+    const inspector = new Inspector({ port: 0, entryFile: 'entry.ts' });
+    const waiters = [inspector.waitForConnection(), inspector.waitForDebugger()].map(promise => promise.then(
+        () => 'resolved',
+        (error: unknown) => error instanceof Error ? error.message : String(error),
+    ));
+    let stopped = 0;
+    let terminated = 0;
+    let unrefs = 0;
+    let teardowns = 0;
+    const pipe: {
+        onclose?: () => void;
+        onmessage?: (data: unknown) => void;
+        onmessageerror?: (error: unknown) => void;
+        unref(): void;
+    } = {
+        unref: () => { unrefs++; },
+    };
+    const debugWorker = {
+        messagePipe: pipe,
+        stop: () => { stopped++; },
+        terminate: () => { terminated++; },
+    } as unknown as CModuleWorker.Worker;
+    Reflect.set(inspector, 'worker', debugWorker);
+    Reflect.set(inspector, 'hooks', { teardown: () => { teardowns++; } });
+
+    (Reflect.get(inspector, 'handleWorkerFailure') as (error: Error) => void)
+        .call(inspector, new Error('debug worker failed'));
+
+    strictEqual(stopped, 1, 'failure must request a non-blocking worker stop');
+    strictEqual(terminated, 0, 'failure callback must not synchronously join the worker');
+    strictEqual(unrefs, 1, 'the failed worker pipe must not hold the process open');
+    strictEqual(teardowns, 1, 'hooks must be torn down before waiting for worker EOF');
+    for (const result of await Promise.all(waiters)) {
+        ok(result.includes('debug worker failed'), `waiter must receive the worker error, got ${result}`);
+    }
+
+    (Reflect.get(inspector, 'handleWorkerClosed') as (worker: CModuleWorker.Worker) => void)
+        .call(inspector, debugWorker);
+    strictEqual(terminated, 1, 'worker is joined only after its pipe closes');
+    strictEqual(Reflect.get(inspector, 'worker'), null);
 });
 
 Deno.test('pipe-rpc: a pipe error rejects everything in flight', async () => {
@@ -152,6 +332,22 @@ Deno.test('pipe-rpc: a pipe error rejects everything in flight', async () => {
 
     // Idempotent: a second fault on a drained map must not throw.
     pipe.onmessageerror?.('EPIPE again');
+});
+
+Deno.test('pipe-rpc: server forwards pipe lifecycle failures and close', () => {
+    const pipe = newPipe();
+    const errors: unknown[] = [];
+    let closes = 0;
+    new PipeServer(pipe as unknown as CModuleWorker.MessagePipe, {
+        onMessageError: (error) => errors.push(error),
+        onClose: () => { closes++; },
+    });
+
+    pipe.onmessageerror?.('EPIPE');
+    pipe.onclose?.();
+    strictEqual(errors.length, 1);
+    strictEqual(errors[0], 'EPIPE');
+    strictEqual(closes, 1);
 });
 
 Deno.test('pipe-rpc: a failed post does not leak the pending entry', async () => {

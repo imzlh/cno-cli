@@ -10,7 +10,7 @@
  * recognise this worker; it is set by the main-thread Inspector, not here.
  */
 
-import { toPosixPath } from '../../../cts/src/api'
+import { hasSchemeId, resolvePath, toFileUrl } from '../../../cts/src/api'
 import { ConsoleDomain } from '../domains/console'
 import { DebuggerDomain } from '../domains/debugger'
 import { FetchDomain } from '../domains/fetch'
@@ -67,8 +67,8 @@ function isPromiseRejectionEvent(value: Event): value is PromiseRejectionEvent {
 
 function toEntryUrl(entryFile?: string): string {
 	if (!entryFile) return 'about:blank'
-	const normalized = toPosixPath(entryFile).replace(/^\//, '')
-	return normalized[0] == '/' ? `file://${normalized}` : `file:///${normalized}`
+	if (hasSchemeId(entryFile)) return entryFile
+	return toFileUrl(resolvePath(entryFile))
 }
 
 function reportWorkerError(report: WorkerErrorReport): void {

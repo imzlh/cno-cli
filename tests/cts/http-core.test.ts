@@ -1,7 +1,9 @@
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { dnsCache, clearDnsCache } from '../../http/src/dns-cache.ts';
-import { HttpRequestBuilder, HttpResponseParser } from '../../http/src/h1.ts';
+import { HttpRequestBuilder, HttpResponseParser, h1 } from '../../http/src/h1.ts';
 import { ALPN, HttpVersion, alpnToProtocol, defaultAlpnProtocols } from '../../http/src/protocol.ts';
+import type { ProtocolConnection, RawRequest } from '../../http/src/protocol.ts';
+import type { TcpSocket } from '../../http/src/socket.ts';
 import {
     StreamingCompressor,
     createCompressor,
@@ -30,6 +32,74 @@ function concat(...chunks: Uint8Array[]): Uint8Array {
     }
     return out;
 }
+
+async function fakeH1Client(responseText = 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok'):
+    Promise<{ socket: TcpSocket; connection: ProtocolConnection; writes: Uint8Array[] }> {
+    const writes: Uint8Array[] = [];
+    const response = enc(responseText);
+    let responseRead = false;
+    const socket = {
+        write: async (data: Uint8Array) => { writes.push(data.slice()); },
+        read: async () => {
+            if (responseRead) return null;
+            responseRead = true;
+            return response;
+        },
+        close: () => {},
+    } as unknown as TcpSocket;
+    const connection = await h1.client.connect(socket, {
+        hostname: 'example.test', port: 80, secure: false,
+    });
+    return { socket, connection, writes };
+}
+
+Deno.test('http h1: client request drains StreamPoll with chunked framing', async () => {
+    const { connection, writes } = await fakeH1Client();
+    const chunks: Array<Uint8Array | null> = [enc('ab'), enc('cd'), null];
+    const req: RawRequest = {
+        method: 'POST', url: '/upload', headers: [['host', 'example.test']],
+        httpVersion: '1.1', body: async () => chunks.shift() ?? null,
+    };
+
+    const response = await h1.client.request(connection, req);
+    strictEqual(response.status, 200);
+    const wire = dec(concat(...writes));
+    ok(wire.includes('transfer-encoding: chunked\r\n'));
+    ok(wire.endsWith('2\r\nab\r\n2\r\ncd\r\n0\r\n\r\n'));
+});
+
+Deno.test('http h1: ProtocolStream sends request data and validates Content-Length', async () => {
+    const { connection, writes } = await fakeH1Client();
+    const stream = connection.createStream();
+    const req: RawRequest = {
+        method: 'POST', url: '/upload', headers: [
+            ['host', 'example.test'], ['content-length', '4'],
+        ], httpVersion: '1.1', body: async () => null,
+    };
+
+    await stream.writeHead(req);
+    await stream.writeData(enc('ab'));
+    await stream.end(enc('cd'));
+    const response = await stream.readMessage();
+    if ('method' in response) throw new Error('expected an HTTP response');
+    strictEqual(response.status, 200);
+    const wire = dec(concat(...writes));
+    ok(wire.endsWith('ab' + 'cd'));
+    ok(!wire.includes('transfer-encoding: chunked\r\n'));
+});
+
+Deno.test('http h1: a null request body ends at the head', async () => {
+    const { connection, writes } = await fakeH1Client();
+    const stream = connection.createStream();
+    await stream.writeHead({
+        method: 'GET', url: '/', headers: [['host', 'example.test']],
+        httpVersion: '1.1', body: null,
+    });
+    const response = await stream.readMessage();
+    if ('method' in response) throw new Error('expected an HTTP response');
+    strictEqual(response.status, 200);
+    ok(!dec(concat(...writes)).includes('transfer-encoding: chunked\r\n'));
+});
 
 Deno.test('http h1: request builder emits defaults without overriding explicit headers', () => {
     const body = enc('hello');
@@ -229,5 +299,15 @@ Deno.test('http dns-cache: literal addresses resolve without touching cache', as
     clearDnsCache();
     deepStrictEqual(await dnsCache.resolve('127.0.0.1'), [{ ip: '127.0.0.1', family: 4 }]);
     deepStrictEqual(dnsCache.resolveSync('::1'), [{ ip: '::1', family: 6 }]);
+    deepStrictEqual(dnsCache.resolveSync('::ffff:192.0.2.128'), [{ ip: '::ffff:192.0.2.128', family: 6 }]);
+
+    for (const invalid of ['::::', '1::2::3', '1:::2', '192.0.2.1::', '001.2.3.4']) {
+        try {
+            const resolved = dnsCache.resolveSync(invalid);
+            ok(!resolved.some((entry) => entry.ip === invalid), `${invalid} must not be treated as a literal`);
+        } catch {
+            // A resolver rejection is also proof that the value was not accepted as a literal.
+        }
+    }
     strictEqual(dnsCache.getStats().size, 0);
 });

@@ -1,6 +1,7 @@
-import { setCurlInitHook, setRawConnectionHook } from '../cno/src/utils/network-hooks';
+import { setCurlInitHook as setCnoCurlInitHook, setRawConnectionHook } from '../cno/src/utils/network-hooks';
 import { createProxyConnector, type ProxyConfig, type ProxyType } from '../cno/src/utils/proxy';
 import { log } from '../cts/src/api';
+import { setCurlInitHook as setCtsCurlInitHook } from '../cts/src/utils/curl';
 
 const os    = import.meta.use('os');
 const curl  = import.meta.use('curl');
@@ -13,6 +14,12 @@ const REG_KEY = 'Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings
 
 /** Per-scheme proxy configuration. */
 type ProxyConfigPair = { http: ProxyConfig | null; https: ProxyConfig | null };
+type ProxyTarget = { protocol: string };
+
+type EnvProxyConfigs = {
+    configs: ProxyConfigPair;
+    specified: { http: boolean; https: boolean };
+};
 
 const NO_PROXIES: ProxyConfigPair = { http: null, https: null };
 
@@ -64,22 +71,24 @@ function envNoProxy(): string | null {
  * environment names no proxy at all. Never throws: a malformed value degrades to
  * "no env proxy" instead of taking down the whole setup.
  */
-function readEnvConfigs(): ProxyConfigPair | null {
+function readEnvConfigs(): EnvProxyConfigs | null {
     const noProxy = envNoProxy();
     const all = env('all_proxy') ?? env('ALL_PROXY');
     const http = env('http_proxy') ?? env('HTTP_PROXY') ?? all;
-    // An env-named http proxy also covers https targets: over-proxying is the
-    // safe direction for a confidentiality control, under-proxying is not.
-    const https = env('https_proxy') ?? env('HTTPS_PROXY') ?? all ?? http;
-    if (!http && !https) return null;
+    const https = env('https_proxy') ?? env('HTTPS_PROXY') ?? all;
+    const specified = { http: http !== null, https: https !== null };
+    if (!specified.http && !specified.https) return null;
     const parse = (raw: string | null): ProxyConfig | null => {
         if (!raw) return null;
-        // A malformed value degrades to "no env proxy for this scheme" rather
-        // than throwing out of startProxy and leaving no hooks installed.
         try { return { ...parseProxyUrl(raw), noProxy }; } catch { return null; }
     };
-    const parsed = { http: parse(http), https: parse(https) };
-    return parsed.http || parsed.https ? parsed : null;
+    return {
+        configs: {
+            http: parse(http),
+            https: parse(https),
+        },
+        specified,
+    };
 }
 
 function parseRegistryProxies(server: string, noProxy: string | null): ProxyConfigPair {
@@ -104,15 +113,7 @@ function parseRegistryProxies(server: string, noProxy: string | null): ProxyConf
     };
 }
 
-/**
- * Proxy configuration from the Windows registry, or null when the registry names
- * no usable proxy — which includes `ProxyEnable=0`, an absent value (reading a
- * missing value throws `InternalError: Win32 error 0`), and a malformed
- * `ProxyServer`. Returning null rather than clearing shared state is what lets
- * the environment fallback survive; the previous version assigned to `config`
- * and `rawConfigs` directly, so any registry outcome — including a throw —
- * overwrote the environment.
- */
+/** Read registry proxy settings without replacing the environment fallback. */
 function readRegistryConfigs(registry: NonNullable<typeof win32>): ProxyConfigPair | null {
     try {
         if (!registry.readRegistry(registry.HKCU, REG_KEY, 'ProxyEnable')) return null;
@@ -136,23 +137,7 @@ function readRegistryConfigs(registry: NonNullable<typeof win32>): ProxyConfigPa
     }
 }
 
-/**
- * Recompute the effective proxy from both sources.
- *
- * Precedence: **environment variables win over the Windows registry**, per
- * scheme. Measured on this box with curl 8.21.0 and a loopback counting sink:
- * curl ignores the registry entirely (`ProxyEnable=1`,
- * `ProxyServer=127.0.0.1:7897` present, no env → 0 proxy hits, rc=6
- * "couldn't resolve host") and honours only the env vars. npm resolves its
- * `proxy`/`https-proxy` config from the same env names and likewise never reads
- * the registry. So an explicit env var is the more specific, more recent signal;
- * letting a stale machine-wide registry setting override it would be surprising
- * and would also make `NO_PROXY` unenforceable.
- *
- * The merge is per scheme, not all-or-nothing: `HTTPS_PROXY` alone overrides the
- * registry for https while http keeps using the registry proxy. `NO_PROXY` from
- * the environment applies to whichever proxy wins, registry included.
- */
+/** Environment variables override Windows registry settings per scheme. */
 function refreshConfig(registry: NonNullable<typeof win32> | null): void {
     const fromRegistry = registry ? readRegistryConfigs(registry) : null;
     const fromEnv = readEnvConfigs();
@@ -168,22 +153,35 @@ function refreshConfig(registry: NonNullable<typeof win32> | null): void {
         entry && envBypass ? { ...entry, noProxy: envBypass } : entry;
 
     rawConfigs = {
-        http:  fromEnv?.http  ?? withEnvBypass(fromRegistry?.http  ?? null),
-        https: fromEnv?.https ?? withEnvBypass(fromRegistry?.https ?? null),
+        http:  fromEnv?.specified.http  ? fromEnv.configs.http  : withEnvBypass(fromRegistry?.http  ?? null),
+        https: fromEnv?.specified.https ? fromEnv.configs.https : withEnvBypass(fromRegistry?.https ?? null),
     };
     config = rawConfigs.https ?? rawConfigs.http;
 }
 
-function rawProxyFor(url: URL): ProxyConfig | null {
-    return url.protocol === 'https:' || url.protocol === 'wss:' ? rawConfigs.https : rawConfigs.http;
+function rawProxyFor(url: ProxyTarget): ProxyConfig | null {
+    if (url.protocol === 'https:' || url.protocol === 'wss:') return rawConfigs.https;
+    if (url.protocol === 'http:' || url.protocol === 'ws:') return rawConfigs.http;
+    return null;
 }
 
-function applyNetwork(handle: CModuleCURL.CURL): void {
-    if (config) {
-        handle.setProxy(config.url, config.type);
-        if (config.user) handle.setOpt(curl.CURLOPT_PROXYUSERNAME, config.user);
-        if (config.pass) handle.setOpt(curl.CURLOPT_PROXYPASSWORD, config.pass);
-        if (config.noProxy) handle.setOpt(curl.CURLOPT_NOPROXY, config.noProxy);
+function clearCurlProxy(handle: CModuleCURL.CURL): void {
+    handle.setOpt(curl.CURLOPT_PROXY, null);
+    handle.setOpt(curl.CURLOPT_PROXYTYPE, curl.CURLPROXY_HTTP);
+    handle.setOpt(curl.CURLOPT_PROXYUSERNAME, null);
+    handle.setOpt(curl.CURLOPT_PROXYPASSWORD, null);
+    handle.setOpt(curl.CURLOPT_NOPROXY, null);
+}
+
+function applyNetwork(handle: CModuleCURL.CURL, url: ProxyTarget): void {
+    const proxy = rawProxyFor(url);
+    if (proxy) {
+        handle.setProxy(proxy.url, proxy.type);
+        handle.setOpt(curl.CURLOPT_PROXYUSERNAME, proxy.user ?? null);
+        handle.setOpt(curl.CURLOPT_PROXYPASSWORD, proxy.pass ?? null);
+        handle.setOpt(curl.CURLOPT_NOPROXY, proxy.noProxy ?? null);
+    } else {
+        clearCurlProxy(handle);
     }
     if (skipCertVerify) {
         handle.setOpt(curl.CURLOPT_SSL_VERIFYPEER, 0);
@@ -191,20 +189,18 @@ function applyNetwork(handle: CModuleCURL.CURL): void {
     }
 }
 
+function setNetworkCurlHooks(hook: typeof applyNetwork | null): void {
+    setCnoCurlInitHook(hook);
+    setCtsCurlInitHook(hook);
+}
+
 export function startProxy(): void {
-    // Consult the registry AND the environment on every platform. The previous
-    // version branched: on Windows `win32?.HKCU` is always defined, so the
-    // environment path was unreachable dead code on the one platform this tree
-    // ships for. Worse, a registry throw left `rawConfigs` null while libcurl
-    // went on honouring HTTP_PROXY natively — so fetch was proxied and the raw
-    // clients (WebSocket, EventSource) silently went direct.
+    // Registry and environment settings must feed both curl and raw clients.
     const registry = win32?.HKCU !== undefined ? win32 : null;
     refreshConfig(registry);
 
     if (registry && watcher === null) {
-        // Created at most once per process, and never released. A watch failure
-        // must not prevent the hooks below from being installed: an uninstalled
-        // raw-connection hook is exactly the bypass this fixes.
+        // A registry watch failure must not prevent hook installation.
         try {
             watcher = registry.watchRegistry(registry.HKCU, REG_KEY, () => {
                 refreshConfig(registry);
@@ -217,27 +213,22 @@ export function startProxy(): void {
         }
     }
 
-    log.debug('http', () => config ? `successful setup proxy bypass: ${config.url}` : 'proxy not configured')
-    setCurlInitHook(applyNetwork);
+    log.debug('http', () => config ? `successful setup proxy bypass: ${config.url}` : 'proxy not configured');
+    setNetworkCurlHooks(applyNetwork);
     setRawConnectionHook(createProxyConnector(rawProxyFor));
 }
 
 export function disableCertVerify(): void {
     skipCertVerify = true;
-    setCurlInitHook(applyNetwork);
+    setNetworkCurlHooks(applyNetwork);
 }
 
 export function stopNetwork(): void {
-    // Deliberately neither watcher.close() nor watcher = null. Measured on the
-    // 10:12 build: close() blocks inside itself and never returns, and because
-    // QuickJS is reference-counted, dropping the last reference runs the native
-    // RegWatch finalizer synchronously — which blocks the same way. unref() is
-    // the only teardown that returns, so the handle is kept referenced for the
-    // life of the process on purpose. See the RegWatch defect in the report.
+    // RegWatch close/finalize blocks; retain the unreferenced process-lifetime handle.
     watcher?.unref();
     config = null;
     rawConfigs = { ...NO_PROXIES };
-    setCurlInitHook(null);
+    setNetworkCurlHooks(null);
     setRawConnectionHook(null);
 }
 

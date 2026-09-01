@@ -1,45 +1,6 @@
-// Resource-limit enforcement contract: --memory-limit and --max-stack-size.
-//
-// These pin the OBSERVED behaviour of the CLI flags as of 2026-08-01, and
-// mark the divergences from Node v24 that are defects rather than by design.
-//
-// Reference measurements against real Node v24.18.0 with the nearest
-// equivalents (--max-old-space-size=32 / --stack-size=256), all OBSERVED:
-//
-//   context                | cno rc | Node rc | note
-//   -----------------------+--------+---------+-------------------------------
-//   plain, no try          |   1    |  134    | Node aborts; cno throws
-//   plain, try/catch       |   0    |  134    | cno OOM is CATCHABLE
-//   Promise, awaited       |   1    |  134    |
-//   Promise, floating      |   0    |  134    | cno warns only
-//   vm sandbox, no try     |   1    |  134    |
-//   vm sandbox, try/catch  |   0    |  134    |
-//   Worker, file (CLI flag) |  OOM   | no OOM  | FIXED 2026-08-02: cno's limit
-//                          |        |         | now crosses AND covers
-//                          |        |         | typed-array backing stores,
-//                          |        |         | which Node's nearest flag
-//                          |        |         | (--max-old-space-size) does not
-//                          |        |         | bound at all -- cno is stricter
-//                          |        |         | here. 'error' fires, exit 1.
-//   Worker, eval (CLI flag)|   0    |  n/a    | GAP: runEval() drops the
-//                          |        |         | inherited config entirely
-//                          |        |         | (src/main.ts:208-210)
-//   recursion, no try      |   1    |    1    | parity
-//   recursion, try/catch   |   0    |    0    | parity
-//
-// The headline semantic difference: in cno an out-of-memory condition is a
-// catchable JS exception (InternalError('out of memory')), so a try/catch turns
-// it into exit code 0 and the process keeps running. In Node it is an
-// uncatchable fatal abort (SIGABRT -> 134) that a try/catch cannot intercept,
-// even inside a Worker. Both are defensible, but the cno behaviour means user
-// code -- or a library's broad `catch` -- can swallow an OOM entirely.
-//
-// Second-order cno defect, OBSERVED: when memory is exhausted so thoroughly
-// that even the Error object cannot be allocated, QuickJS throws JS_NULL
-// (quickjs.c JS_ThrowError2: "out of memory: throw JS_NULL to avoid
-// recursing"). User code then catches a bare `null`: `e.message` is unreadable
-// and `e instanceof Error` is false. The CLI in turn prints
-// "Uncaught ... Error / null" with no mention of memory at all.
+// Resource-limit enforcement contract: cno OOMs can be catchable JS errors,
+// unlike Node's fatal aborts. Fixtures release allocations before reporting so
+// diagnostics do not become a second OOM or serialize a partial result.
 
 import { ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
@@ -64,42 +25,9 @@ async function runCno(args: string[], cwd?: string, env?: Record<string, string>
     };
 }
 
-// Allocation source. shape 'buf' grows via typed-array backing stores, which
-// reach the limit while there is still room to build an Error object. shape
-// 'heap' grows via many small strings, which exhausts memory so thoroughly
-// that QuickJS cannot allocate the Error and throws JS_NULL instead
-// (quickjs.c JS_ThrowError2: "out of memory: throw JS_NULL to avoid
-// recursing"). CAP bounds the run so a build that does NOT enforce the limit
-// still terminates instead of consuming the machine.
-//
-// CHUNK_MB and the release-in-catch below are LOAD-BEARING. Do not "simplify"
-// them back to small chunks or move the release. Rationale, all OBSERVED
-// 2026-08-06 while diagnosing a false regression:
-//
-// When the loop finally fails, the free heap left under the cap is necessarily
-// in [0, CHUNK) -- the allocation failed precisely because less than one chunk
-// remained. Everything the test does afterwards (build the report string,
-// format it, write it) must fit in that remainder, and QuickJS throws a bare
-// JS_NULL instead of InternalError when it cannot even allocate the Error.
-// So with a small chunk the remainder can be near zero and the test reports
-// nonsense that looks exactly like a runtime regression: empty stdout, a
-// dropped '\n' mid-stream, a lost line, or total silence on both streams.
-//
-// That failure band is <1KB wide and recurs with a period of exactly CHUNK, so
-// ANY unrelated change to the runtime's baseline heap can walk into it. One
-// did: a +70,811-byte baseline growth (7,762,394 -> 7,833,205 bytes at boot,
-// 0.21% of a 32MB cap) from an unrelated Intl change flipped 3-4 of these
-// tests red while the runtime's actual OOM behaviour was byte-for-byte
-// unchanged. Measured: at 32MB the outcome also flipped on the LENGTH of the
-// temp path alone, and was nondeterministic run-to-run at the boundary.
-//
-// Two changes make the margin structural instead of a lottery:
-//   * CHUNK_MB = 4 -- the remainder is in [0, 4MB) rather than [0, 256KB), so
-//     the band is 1/16th as likely to be hit by a future baseline change;
-//   * the catch RELEASES the sink before formatting anything, so reporting
-//     runs with ~24MB free and cannot fail at all.
-// With both, every cell was clean across 12 temp-path lengths, 4 cap values,
-// 7 simulated baseline-growth ballasts and both binaries.
+// `buf` stresses typed-array backing stores; `heap` can leave too little room
+// to create an Error. CAP bounds an unenforced runtime. Keep CHUNK_MB large and
+// clear `sink` before reporting: an OOM leaves less than one chunk free.
 const CHUNK_MB = 4;
 
 function allocSrc(shape: 'buf' | 'heap', capMB: number, useTry: boolean): string {
@@ -143,45 +71,9 @@ const MEM = '32MB';
 // Well above the limit, but small enough that an unenforced build finishes fast.
 const CAP = 120;
 
-// Worker-side allocation source. The same two properties as allocSrc above are
-// load-bearing here, and for a sharper reason: a worker's OOM report has to
-// cross a thread boundary through structured clone, and serialising is itself an
-// allocation. OBSERVED 2026-08-06: with the sink still held and 256KB chunks,
-// `postMessage` at the cap silently ships a TRUNCATED, self-consistent payload
-// -- QuickJS's JS_WriteObject2 never checks dbuf_error, so the length prefix and
-// the checksum are both computed from the already-short buffer and neither
-// detects it. The worker reports success; the parent gets `messageerror: invalid
-// tag` or, worse, a successful decode of garbage (OBSERVED `{"if":false}` -- a
-// low-index predefined atom, i.e. an out-of-range atom index resolving to
-// nonsense). That is silent data corruption across a thread boundary, and it
-// applies to cts's own internal error envelope too, not just user messages.
-//
-// So both of these are deliberate:
-//   * chunks of CHUNK_MB, not 256KB -- the free heap left when the loop finally
-//     fails is necessarily in [0, CHUNK), so a 4MB chunk leaves 16x more room
-//     for the report than 256KB does;
-//   * the catch RELEASES the sink FIRST, before anything that serialises or
-//     allocates -- before postMessage, and before rethrowing, so cts's internal
-//     error envelope is cloned with the heap free rather than pinned at the cap.
-//
-// MEASURED as a 2x2 over 10 caps (20..64MB) x both the current binary
-// (a84343d3) and the previous one (cff5f982), plus 8 baseline-heap ballasts up
-// to 3MB:
-//   256KB, no release -> BROKEN, and in DIFFERENT bands per binary
-//                        (a84343d3 fails 20-40MB, cff5f982 fails 40-64MB), which
-//                        is why a green run at any single cap proves nothing;
-//   256KB + release   -> all green;
-//   CHUNK_MB, no rel. -> all green;
-//   CHUNK_MB + release-> all green.
-// So EITHER change alone closes the measured band. Both are kept: with the chunk
-// raised the release is defence in depth, and it is the property that stays true
-// if a future baseline shift eats into the remainder again. Do not remove either
-// on the grounds that the test still passes without it -- it will, right up to
-// the next few-KB change in the runtime's startup heap.
-//
-// `report` is the statement run inside the catch, AFTER the release; it may use
-// the locals `mb`, `isNull` and `name`. With no `report` the error propagates
-// uncaught, which is what tests 6 and 7 exercise.
+// Workers release `sink` before postMessage because structured-cloning an OOM
+// result allocates. Retaining it can make the fixture report an empty or corrupt
+// payload. `report` runs after the release; without it the error is uncaught.
 function workerAllocSrc(report?: string): string {
     return `
         import { parentPort } from 'node:worker_threads';
@@ -313,25 +205,8 @@ Deno.test('resource-limits: OOM in a vm sandbox is catchable by the host', async
 
 // --- 6. the memory limit IS applied to file-based Worker threads ------------
 //
-// This inverted on 2026-08-02: the parent's --memory-limit now crosses into a
-// worker. src/main.ts:458 forwards __cts_runtime_config into runEntry, and
-// workerRuntimeConfig() (src/main.ts:138-141) reads memoryLimit/maxStackSize
-// back out, so the worker's own JSRuntime is created with the cap.
-//
-// OBSERVED replacing the old "worker sails past the cap" behaviour: the worker
-// raises InternalError('out of memory') well below CAP.
-//
-// Two divergences from Node remain and are asserted below rather than hidden:
-//   * the OOM is CATCHABLE in cno (see test 2) where Node's is a fatal abort;
-//   * the worker's failure reaches the parent as a role-tagged MESSAGE
-//     ({"__cno_role":"error",...}), not as the 'error' event Node emits, so
-//     w.on('error') never fires. A parent that only listens for 'error' sees
-//     nothing.
-//
-// The EVAL worker path is still NOT covered by the limit — src/main.ts:208-210
-// calls runEval() without the config argument that runFile() receives, so an
-// eval worker inherits no cacheDir/lockDir/enableOxc/conditions/memoryLimit at
-// all. That is a baked-src defect; test 6b pins it as a known gap.
+// File and eval Workers must inherit the resolved runtime config and enforce
+// its memory limit.
 
 Deno.test('resource-limits: --memory-limit is enforced inside a file Worker', async () => {
     await withTempDir('rl-worker', async (dir) => {
@@ -356,13 +231,7 @@ Deno.test('resource-limits: --memory-limit is enforced inside a file Worker', as
 });
 
 Deno.test('resource-limits: a worker OOM reaches the parent as error + exit 1', async () => {
-    // MEASURED: 'error' fires and the exit code is 1. The exit code matches Node;
-    // the error SHAPE does not — Node raises Error with code
-    // ERR_WORKER_OUT_OF_MEMORY and message "Worker terminated due to reaching
-    // memory limit: JS heap out of memory", while cno raises InternalError with
-    // message "out of memory" and no .code. That remaining divergence is a
-    // runtime gap, not a test bug; the assertions below pin cno's current shape
-    // for the name and Node's contract for the event set.
+    // cno exposes a catchable InternalError on `error`, then exits 1.
     await withTempDir('rl-worker-err', async (dir) => {
         const wf = join(dir, 'w.js');
         Deno.writeTextFileSync(wf, workerAllocSrc());
@@ -379,36 +248,9 @@ Deno.test('resource-limits: a worker OOM reaches the parent as error + exit 1', 
             `'error' must fire with the OOM; stdout: ${r.stdout}`);
         ok(r.stdout.includes('[EV exit] 1'),
             `a worker killed by OOM must exit 1; stdout: ${r.stdout}`);
-        // No 'message' may appear on this path -- but NOT for the reason this
-        // comment used to give. It claimed "Node fires no 'message' event for an
-        // OOM-killed worker". That is FALSE as a general statement: OBSERVED on
-        // node v24.18.0 (resourceLimits maxOldGenerationSizeMb:32 with real
-        // old-space pressure -- typed-array backing stores live OUTSIDE that cap
-        // and will not trip it), a worker that posts once and THEN dies of OOM
-        // delivers all three events, 3/3 runs:
-        //     [EV message] {"beforeOOM":true}
-        //     [EV error] Error | code=ERR_WORKER_OUT_OF_MEMORY | ...
-        //     [EV exit] 1
-        //     EVENTS: message,error,exit   MESSAGE_FIRED: true
-        // node's silence in the simple case is a side effect of its OOM being an
-        // uncatchable abort that stops the worker before postMessage, not a
-        // contract that 'message' is suppressed.
-        //
-        // The assertion stays because it pins a DIFFERENT and real invariant: on
-        // this path user code never reaches postMessage at all (OBSERVED: the
-        // worker's `parentPort.postMessage({ok:true})` line is unreachable under
-        // the cap), so ANY 'message' the parent sees is a leaked cts-internal
-        // control envelope. cno/src/node/worker_threads/mod.ts:630 routes those
-        // by testing `NODE_WORKER_ERROR in value`; a truncated clone loses that
-        // key and the envelope falls through to emit('message') at :643. So a
-        // 'message' here means an internal envelope reached a user listener --
-        // which must never happen regardless of what node does.
-        //
-        // NOTE the sibling assertion below is the weaker of the two: the node
-        // worker path tags with `__cno_node_worker_error__`, not `__cno_role`,
-        // and corruption destroys the key either way. Keep it as a guard against
-        // the other envelope shape, but it is the `[EV message]` check that
-        // actually catches this defect.
+        // User code cannot reach postMessage under the cap. Any message is an
+        // internal worker-control envelope leaked into the public channel, not a
+        // claim about Node's OOM event ordering.
         ok(!r.stdout.includes('__cno_role'),
             `the internal role-tagged envelope must never reach the user's ` +
             `'message' listener; stdout: ${r.stdout}`);
@@ -419,12 +261,7 @@ Deno.test('resource-limits: a worker OOM reaches the parent as error + exit 1', 
     });
 });
 
-Deno.test('resource-limits: KNOWN GAP - an eval Worker inherits no memory limit', async () => {
-    // src/main.ts:208-210 -- runEval() is called without runFile()'s `config`
-    // argument, so an eval worker gets loadConfigFile(cwd) + flagsToConfig({})
-    // and nothing from the parent. MEASURED: hasCfg=false, and the worker
-    // allocated the full CAP under --memory-limit=32MB. Baked src, so this
-    // needs a rebuild to flip; invert the assertion when it does.
+Deno.test('resource-limits: --memory-limit is enforced inside an eval Worker', async () => {
     await withTempDir('rl-worker-eval', async (dir) => {
         const f = join(dir, 'a.js');
         Deno.writeTextFileSync(f, `
@@ -449,12 +286,14 @@ Deno.test('resource-limits: KNOWN GAP - an eval Worker inherits no memory limit'
             w.on('exit', (c) => console.log('EXIT ' + c));
         `);
         const r = await runCno(['run', `--memory-limit=${MEM}`, f], dir);
-        ok(r.stdout.includes('"hasCfg":false'),
-            `documents the gap: an eval worker sees no inherited config. ` +
+        ok(r.stdout.includes('"hasCfg":true'),
+            `an eval worker must receive the parent's runtime config. ` +
             `stdout: ${r.stdout}`);
-        ok(r.stdout.includes('"ok":true'),
-            `documents the gap: the eval worker allocates past the cap. ` +
+        ok(!r.stdout.includes('"ok":true'),
+            `an eval worker must not allocate ${CAP}MB under ${MEM}; ` +
             `stdout: ${r.stdout}`);
+        ok(!r.stdout.includes(`"mb":${CAP}`),
+            `an eval worker must not reach the ${CAP}MB cap; stdout: ${r.stdout}`);
     });
 });
 
@@ -501,28 +340,9 @@ Deno.test('resource-limits: uncaught stack overflow exits non-zero', async () =>
     });
 });
 
-// --- 8. DEFECT: a stack limit too small to bootstrap exits 0 silently -------
-//
-// Below roughly 312KB the runtime overflows inside its own startup
-// (createRuntime -> findProjectRoot), the user script never runs, and the exit
-// code is 0. The cause is that fatal() -> formatError() itself overflows
-// (String.prototype.replace on the message) before it can reach os.exit(1), so
-// the non-zero status is never applied.
-//
-// OBSERVED on a 32GB Windows box:
-//   64KB..160KB  -> rc=0, script never ran (at 160KB stderr is EMPTY: a
-//                   totally silent false success, 5/5 runs)
-//   192KB..304KB -> rc=1 with a diagnostic
-//   312KB+       -> runs normally
-//
-// This is the worst failure mode found: silent, deterministic, exit code 0,
-// user code never ran — CI would score it a pass.
-//
-// src/commands/run.ts now rejects --max-stack-size below MIN_USABLE_STACK_SIZE
-// so the flag fails loudly instead. This test accepts either the guarded
-// behaviour (non-zero + a message) or a working run, and fails only on the
-// silent-success case. NOTE: the guard lives in baked src/**, so this test
-// stays red until the binary is rebuilt.
+// --- 8. an unusable stack limit must never be a silent success --------------
+// The CLI may reject it before entry evaluation; a limit that runs the script is
+// also valid. What must not recur is a failed startup with exit code 0.
 
 Deno.test('resource-limits: tiny --max-stack-size must never be a silent success', async () => {
     await withTempDir('rl-stack-tiny', async (dir) => {
@@ -555,10 +375,8 @@ Deno.test('resource-limits: a modest --max-stack-size still runs the script', as
     });
 });
 
-// --- 10. CTS_MEMORY_LIMIT env var is enforced, including in Workers ---------
-//
-// The env var reaches a worker (env is inherited) where the CLI flag does not,
-// so this passes today and is the documented workaround for case 6.
+// --- 10. CTS_MEMORY_LIMIT is enforced, including in Workers -----------------
+// This independent configuration source must also propagate to workers.
 
 Deno.test('resource-limits: CTS_MEMORY_LIMIT is enforced in the main thread', async () => {
     await withTempDir('rl-env', async (dir) => {

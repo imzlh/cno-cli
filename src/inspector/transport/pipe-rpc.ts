@@ -24,6 +24,11 @@ export type RequestSink = (method: RpcMethod, params: unknown) => unknown | Prom
 /** An event listener injected by WorkerEndpoint. */
 export type EventSink = (event: WorkerEvent, params: unknown) => void;
 
+export interface PipeLifecycle {
+	onMessageError?: (error: unknown) => void
+	onClose?: () => void
+}
+
 function isWorkerEvent(value: unknown): value is WorkerEvent {
 	return typeof value === 'number' && WorkerEvent[value] !== undefined
 }
@@ -104,11 +109,15 @@ export class PipeServer {
 	/** Set by MainEndpoint; dispatches a worker request to a registered handler. */
 	onRequest: RequestSink | null = null;
 
-	constructor(private pipe: Pipe) {
+	constructor(private pipe: Pipe, lifecycle: PipeLifecycle = {}) {
 		this.pipe.onmessage = (msg: unknown) => this.onMessage(msg);
 		this.pipe.onmessageerror = (err: unknown) => {
 			log.error('pipe-rpc', `main pipe error: ${err}`);
+			try { lifecycle.onMessageError?.(err) } catch {}
 		};
+		this.pipe.onclose = () => {
+			try { lifecycle.onClose?.() } catch {}
+		}
 	}
 
 	/** Push an event to the worker. Fire-and-forget into the uv pipe buffer. */
