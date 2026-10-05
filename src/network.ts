@@ -2,8 +2,8 @@ import { setCurlInitHook as setCnoCurlInitHook, setRawConnectionHook } from '../
 import { createProxyConnector, type ProxyConfig, type ProxyType } from '../cno/src/utils/proxy';
 import { log } from '../cts/src/api';
 import { setCurlInitHook as setCtsCurlInitHook } from '../cts/src/utils/curl';
+import { readEnv } from './env';
 
-const os    = import.meta.use('os');
 const curl  = import.meta.use('curl');
 const win32 = import.meta.use('win32');
 
@@ -28,21 +28,13 @@ let rawConfigs: ProxyConfigPair = { http: null, https: null };
 let watcher: CModuleWin32.RegWatch | null = null;
 let skipCertVerify = false;
 
-function env(k: string): string | null {
-    try {
-        return os.getenv(k) ?? null;
-    } catch {
-        return null;
-    }
-}
-
 function isProxyType(value: string): value is ProxyType {
     return PROXY_PROTOCOL_SET.has(value);
 }
 
 function parseProxyUrl(raw: string, defaultType: ProxyType = 'http'): Omit<ProxyConfig, 'noProxy'> {
     let input = raw.trim();
-    if (!/^(https?|socks[45][ah]?):\/\//i.test(input)) input = `${defaultType}://${input}`;
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) input = `${defaultType}://${input}`;
     const u = new URL(input);
     const proto = u.protocol.slice(0, -1);
     if (!isProxyType(proto)) throw new TypeError(`Unsupported proxy protocol: ${proto}`);
@@ -63,7 +55,7 @@ function parseProxyUrl(raw: string, defaultType: ProxyType = 'http'): Omit<Proxy
  * is a no-op there rather than a double read.
  */
 function envNoProxy(): string | null {
-    return env('no_proxy') ?? env('NO_PROXY');
+    return readEnv('no_proxy') ?? readEnv('NO_PROXY');
 }
 
 /**
@@ -73,9 +65,9 @@ function envNoProxy(): string | null {
  */
 function readEnvConfigs(): EnvProxyConfigs | null {
     const noProxy = envNoProxy();
-    const all = env('all_proxy') ?? env('ALL_PROXY');
-    const http = env('http_proxy') ?? env('HTTP_PROXY') ?? all;
-    const https = env('https_proxy') ?? env('HTTPS_PROXY') ?? all;
+    const all = readEnv('all_proxy') ?? readEnv('ALL_PROXY');
+    const http = readEnv('http_proxy') ?? readEnv('HTTP_PROXY') ?? all;
+    const https = readEnv('https_proxy') ?? readEnv('HTTPS_PROXY') ?? all;
     const specified = { http: http !== null, https: https !== null };
     if (!specified.http && !specified.https) return null;
     const parse = (raw: string | null): ProxyConfig | null => {
@@ -104,7 +96,12 @@ function parseRegistryProxies(server: string, noProxy: string | null): ProxyConf
         const value = entry.slice(separator + 1).trim();
         if (!value) continue;
         const defaultType: ProxyType = name === 'socks' ? 'socks5' : 'http';
-        values.set(name, { ...parseProxyUrl(value, defaultType), noProxy });
+        try {
+            values.set(name, { ...parseProxyUrl(value, defaultType), noProxy });
+        } catch {
+            // Windows permits several proxy entries in one value. Ignore only
+            // the malformed entry so a valid scheme can still be used.
+        }
     }
     const fallback = values.get('socks') ?? null;
     return {

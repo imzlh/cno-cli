@@ -3,9 +3,8 @@
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { parseArgv, unknownFlags } from '../../src/cli.ts';
 import { buildCacheConfig } from '../../src/commands/cache-utils.ts';
-import { decodeWorkerRuntimeConfig } from '../../src/commands/config-flags.ts';
-import { applyMaxOldSpaceSize } from '../../src/commands/flags-config.ts';
-import { flagsToConfig } from '../../src/commands/run.ts';
+import { applyMaxOldSpaceSize, decodeWorkerRuntimeConfig, flagsToConfig, publishWorkerRuntimeConfig, WORKER_RUNTIME_CONFIG_KEYS } from '../../src/config.ts';
+import { effectiveRuntimeFlags, prepareKernel } from '../../src/kernel.ts';
 import type { ConfigOptions } from '../../cts/src/types.ts';
 
 // applyMaxOldSpaceSize defers to CTS_MEMORY_LIMIT, so the tests must control it.
@@ -29,18 +28,65 @@ Deno.test('max-old-space-size: CLI flag becomes a real memory cap', () => {
     });
 });
 
-Deno.test('max-old-space-size: inherited from NODE_OPTIONS via execArgv', () => {
+Deno.test('kernel config: NODE_OPTIONS defaults precede explicit prefix options', () => {
     withoutCtsMemoryLimit(() => {
-        // The usual way CI/containers cap a build. NODE_OPTIONS never reaches
-        // `flags`, only execArgv, so this path needs its own coverage.
-        const eq: Partial<ConfigOptions> = {};
-        applyMaxOldSpaceSize(eq, {}, ['--max-old-space-size=32']);
-        strictEqual(eq.memoryLimit, 32 * MB);
+        const previous = Deno.env.get('NODE_OPTIONS');
+        try {
+            for (const option of ['--max-old-space-size=32', '--max-old-space-size 32']) {
+                Deno.env.set('NODE_OPTIONS', `${option} --conditions=environment`);
+                const inherited = prepareKernel(parseArgv(['run', 'main.ts']));
+                strictEqual(inherited.config.memoryLimit, 32 * MB);
+                deepStrictEqual(inherited.config.conditions, ['environment']);
 
-        const spaced: Partial<ConfigOptions> = {};
-        applyMaxOldSpaceSize(spaced, {}, ['--max-old-space-size', '48']);
-        strictEqual(spaced.memoryLimit, 48 * MB);
+                const cli = parseArgv([
+                    '--max-old-space-size=48', '--conditions=prefix',
+                    'run', '--max-old-space-size=96', '--conditions=ignored', 'main.ts',
+                ]);
+                const explicit = prepareKernel(cli);
+                strictEqual(explicit.config.memoryLimit, 48 * MB);
+                deepStrictEqual(explicit.config.conditions, ['environment', 'prefix']);
+
+                const v8 = prepareKernel(parseArgv(['--v8-flags=--max-old-space-size=24', 'run', 'main.ts']));
+                strictEqual(v8.config.memoryLimit, 24 * MB);
+            }
+        } finally {
+            if (previous === undefined) Deno.env.delete('NODE_OPTIONS');
+            else Deno.env.set('NODE_OPTIONS', previous);
+        }
     });
+});
+
+Deno.test('kernel config: command runtime values override prefix defaults without losing core settings', () => {
+    withoutCtsMemoryLimit(() => {
+        const cli = parseArgv([
+            '--cache-dir=prefix-cache', '--memory-limit=64MB', '--no-http',
+            'run', '--cache-dir=command-cache', '--memory-limit=128MB', 'main.ts',
+        ]);
+        const kernel = prepareKernel(cli, { inheritNodeOptions: false });
+        const config = { ...kernel.config, ...flagsToConfig(effectiveRuntimeFlags(kernel, cli.flags)) };
+        strictEqual(config.cacheDir, 'command-cache');
+        strictEqual(config.memoryLimit, 64 * MB);
+        strictEqual(config.enableHttp, false);
+    });
+});
+
+Deno.test('kernel config: task config defaults respect explicit command values', () => {
+    for (const commandArgs of [[], ['--config=command.json']]) {
+        const cli = parseArgv(['--config=prefix.json', 'task', ...commandArgs, 'build']);
+        const kernel = prepareKernel(cli, { inheritNodeOptions: false });
+        strictEqual(effectiveRuntimeFlags(kernel, cli.flags).config,
+            commandArgs.length ? 'command.json' : 'prefix.json');
+    }
+});
+
+Deno.test('kernel config: explicit false disables Inspector and runtime switches', () => {
+    const cli = parseArgv(['--inspect=false', '--no-http=true', 'run', '--no-http=false', 'main.ts']);
+    const kernel = prepareKernel(cli, { inheritNodeOptions: false });
+    strictEqual(kernel.inspect, null);
+    strictEqual(cli.kernelFlags.inspect, false);
+    strictEqual(cli.kernelFlags['no-http'], true);
+    strictEqual(cli.flags['no-http'], false);
+    strictEqual(flagsToConfig(effectiveRuntimeFlags(kernel, cli.flags)).enableHttp, true);
 });
 
 Deno.test('max-old-space-size: cno-native limits win', () => {
@@ -135,12 +181,23 @@ Deno.test('flagsToConfig: absent flags stay undefined so file config still appli
     });
 });
 
+Deno.test('flagsToConfig: unsafe resource sizes fail before reaching the native runtime', () => {
+    for (const flag of ['memory-limit', 'max-stack-size']) {
+        throws(() => flagsToConfig({ [flag]: '999999999999999999999999TB' }), /safe integer/);
+    }
+});
+
 Deno.test('worker runtime config: decodes only the bootstrap schema', () => {
     const cfg = decodeWorkerRuntimeConfig({
         cacheDir: '/cache',
         enableHttp: false,
         memoryLimit: 64 * MB,
         maxStackSize: 512 * 1024,
+        silent: true,
+        jsxPragma: 'h',
+        jsxFragmentPragma: 'Fragment',
+        requestTimeout: 2500,
+        jsrCacheTTL: 60000,
         conditions: ['node', 'import'],
         importMap: { '@ok': '/map.ts', invalid: false },
         importMapScopes: {
@@ -156,6 +213,11 @@ Deno.test('worker runtime config: decodes only the bootstrap schema', () => {
         enableHttp: false,
         memoryLimit: 64 * MB,
         maxStackSize: 512 * 1024,
+        silent: true,
+        jsxPragma: 'h',
+        jsxFragmentPragma: 'Fragment',
+        requestTimeout: 2500,
+        jsrCacheTTL: 60000,
         conditions: ['node', 'import'],
         importMap: { '@ok': '/map.ts' },
         importMapScopes: { 'file:///scope/': { '@ok': '/scope.ts' } },
@@ -172,6 +234,54 @@ Deno.test('worker runtime config: decodes only the bootstrap schema', () => {
         importMapScopes: [['/scope.ts']],
         pathAliases: [['src/*']],
     }), undefined);
+});
+
+Deno.test('worker runtime config: resource caps require safe bytes while timeouts retain milliseconds', () => {
+    for (const value of [0.5, Number.MAX_SAFE_INTEGER + 1, Infinity, -1]) {
+        strictEqual(decodeWorkerRuntimeConfig({ memoryLimit: value, maxStackSize: value }), undefined);
+    }
+    deepStrictEqual(decodeWorkerRuntimeConfig({ memoryLimit: 0, maxStackSize: 0, requestTimeout: 0.5, jsrCacheTTL: 0 }),
+        { memoryLimit: 0, maxStackSize: 0, requestTimeout: 0.5, jsrCacheTTL: 0 });
+    strictEqual(decodeWorkerRuntimeConfig({ requestTimeout: Infinity, jsrCacheTTL: -1 }), undefined);
+});
+
+Deno.test('worker runtime config: published snapshots detach nested state and preserve all schema keys', () => {
+    const slot = '__cno_worker_runtime_config';
+    const hadPrevious = Object.hasOwn(globalThis, slot);
+    const previous = Reflect.get(globalThis, slot);
+    const config: Partial<ConfigOptions> = {
+        conditions: ['parent'], importMap: { dep: '/parent.ts' },
+        importMapScopes: { '/scope/': { dep: '/scoped.ts' } },
+        pathAliases: { 'app/*': ['src/*'] },
+    };
+    try {
+        publishWorkerRuntimeConfig(config);
+        const published = Reflect.get(globalThis, slot) as Partial<ConfigOptions>;
+        deepStrictEqual(Object.keys(published), [...WORKER_RUNTIME_CONFIG_KEYS]);
+        strictEqual(published.silent, undefined);
+        published.conditions!.push('worker');
+        published.importMap!.dep = '/changed.ts';
+        published.importMapScopes!['/scope/']!.dep = '/changed-scope.ts';
+        published.pathAliases!['app/*']!.push('worker/*');
+        deepStrictEqual(config, {
+            conditions: ['parent'], importMap: { dep: '/parent.ts' },
+            importMapScopes: { '/scope/': { dep: '/scoped.ts' } },
+            pathAliases: { 'app/*': ['src/*'] },
+        });
+    } finally {
+        if (hadPrevious) Reflect.set(globalThis, slot, previous);
+        else Reflect.deleteProperty(globalThis, slot);
+    }
+});
+
+Deno.test('worker runtime config: special alias names remain own properties', () => {
+    const input = JSON.parse('{"importMap":{"__proto__":"/module.ts"},"importMapScopes":{"__proto__":{"__proto__":"/scoped.ts"}},"pathAliases":{"__proto__":["src/*"]}}');
+    const config = decodeWorkerRuntimeConfig(input)!;
+    deepStrictEqual(config, input);
+    for (const value of [config.importMap, config.importMapScopes, config.importMapScopes!.__proto__, config.pathAliases]) {
+        strictEqual(Object.getPrototypeOf(value), Object.prototype);
+        ok(Object.hasOwn(value, '__proto__'));
+    }
 });
 
 Deno.test('cache config: resolution and resource flags are preserved', () => {
@@ -197,41 +307,35 @@ Deno.test('cache config: resolution and resource flags are preserved', () => {
     });
 });
 
-Deno.test('cli: --loader is parsed as a node runtime value flag', () => {
-    // Parsing is correct; the gap is downstream — runNodePreloads in
-    // src/commands/run.ts handles kind 'require' and 'import' but drops
-    // 'loader', so the hook module is never evaluated. OBSERVED: a resolve()
-    // hook passed via --loader never printed. Locking in the parse shape so a
-    // future consumer has a defined input.
+Deno.test('cli: --loader belongs to the kernel option region', () => {
     const cli = parseArgv(['--loader=./hook.mjs', 'main.ts']);
-    strictEqual(cli.flags.loader, './hook.mjs');
+    strictEqual(cli.kernelFlags.loader, './hook.mjs');
+    strictEqual(cli.flags.loader, undefined);
     deepStrictEqual(cli.rawArgs.internalArgs, ['--loader=./hook.mjs']);
     strictEqual(cli.rawArgs.entry, 'main.ts');
 
     const spaced = parseArgv(['--loader', './hook.mjs', 'main.ts']);
-    strictEqual(spaced.flags.loader, './hook.mjs');
+    strictEqual(spaced.kernelFlags.loader, './hook.mjs');
 });
 
 Deno.test('cli: --cwd requires a value and is task-scoped', () => {
-    // Only src/commands/task.ts reads --cwd; on run/eval/test it parses and is
-    // then ignored (OBSERVED: `cno --cwd=/tmp argv.js` reported the original
-    // cwd). It is also absent from --help. Asserting the value-flag contract so
-    // the bare form still errors rather than silently becoming `true`.
     const cli = parseArgv(['--cwd=/tmp', 'main.ts']);
-    strictEqual(cli.flags.cwd, '/tmp');
+    strictEqual(cli.kernelFlags.cwd, '/tmp');
+    deepStrictEqual(unknownFlags(cli), ['--cwd']);
 
-    const spaced = parseArgv(['--cwd', '/tmp', 'main.ts']);
+    const spaced = parseArgv(['task', '--cwd', '/tmp', 'build']);
     strictEqual(spaced.flags.cwd, '/tmp');
-    strictEqual(spaced.rawArgs.entry, 'main.ts');
+    strictEqual(spaced.rawArgs.entry, 'build');
+    deepStrictEqual(unknownFlags(spaced), []);
 });
 
 Deno.test('cli: max-old-space-size accepts both = and space forms', () => {
     const eq = parseArgv(['--max-old-space-size=64', 'main.ts']);
-    strictEqual(eq.flags['max-old-space-size'], '64');
+    strictEqual(eq.kernelFlags['max-old-space-size'], '64');
     ok(eq.rawArgs.internalArgs.includes('--max-old-space-size=64'));
 
     const spaced = parseArgv(['--max-old-space-size', '64', 'main.ts']);
-    strictEqual(spaced.flags['max-old-space-size'], '64');
+    strictEqual(spaced.kernelFlags['max-old-space-size'], '64');
     strictEqual(spaced.rawArgs.entry, 'main.ts');
 });
 
@@ -248,8 +352,7 @@ Deno.test('flag scoping: a flag valid elsewhere is rejected for this command', (
     deepStrictEqual(unknownFlags(parseArgv(['repl', '--out=x.jspack'])), ['--out']);
     deepStrictEqual(unknownFlags(parseArgv(['run', '--out=x', 'main.ts'])), ['--out']);
 
-    // task-only --cwd must not be accepted by test (help.ts calls it
-    // "task only; ignored elsewhere" — so "ignored" should mean "rejected").
+    // Task-only --cwd must not be accepted by test.
     deepStrictEqual(unknownFlags(parseArgv(['test', '--cwd=/tmp'])), ['--cwd']);
     deepStrictEqual(unknownFlags(parseArgv(['cache', '--no-lock', 'main.ts'])), ['--no-lock']);
     deepStrictEqual(unknownFlags(parseArgv(['eval', '--env=.env', '1+1'])), ['--env']);
@@ -258,6 +361,6 @@ Deno.test('flag scoping: a flag valid elsewhere is rejected for this command', (
     // over-reject. These pass today and must keep passing.
     deepStrictEqual(unknownFlags(parseArgv(['test', '--filter=t', '--fail-fast'])), []);
     deepStrictEqual(unknownFlags(parseArgv(['pack', 'main.ts', '--out=o.jspack'])), []);
-    deepStrictEqual(unknownFlags(parseArgv(['task', 'build', '--cwd=/tmp'])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['task', '--cwd=/tmp', 'build'])), []);
     deepStrictEqual(unknownFlags(parseArgv(['cache', '--frozen', '--no-http', 'main.ts'])), []);
 });

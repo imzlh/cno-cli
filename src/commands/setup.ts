@@ -2,6 +2,7 @@ import { fetchAsync } from '../../cno/src/webapi/fetch';
 import { ensureDirectorySync } from '../../cno/src/utils/fs-path';
 import { normalize, dirname, join } from '../../cno/src/utils/path';
 import { log } from '../../cts/src/api';
+import { readEnv } from '../env';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
@@ -19,14 +20,6 @@ type GitHubTreeResponse = {
     truncated?: boolean;
     message?: string;
 };
-
-function env(k: string): string | null {
-    try {
-        return os.getenv(k) ?? null;
-    } catch {
-        return null;
-    }
-}
 
 function isNotFound(value: unknown): boolean {
     if (value === null || typeof value !== 'object') return false;
@@ -74,12 +67,12 @@ function parseGitHubTreeResponse(raw: string): GitHubTreeResponse {
     };
 }
 
-const HOME = os.homeDir || (os.platform === 'win32' ? (env('USERPROFILE') || '') : (env('HOME') || '/root'));
+const HOME = os.homeDir || (os.platform === 'win32' ? (readEnv('USERPROFILE') || '') : (readEnv('HOME') || '/root'));
 
 function resolveCacheDir(flags: Record<string, string | boolean>): string {
     const flag = flags['cache-dir'] || flags['cacheDir'];
     if (typeof flag === 'string' && flag) return flag;
-    const envDir = env('CTS_CACHE_DIR');
+    const envDir = readEnv('CTS_CACHE_DIR');
     if (envDir) return envDir;
     return join(HOME, '.cts');
 }

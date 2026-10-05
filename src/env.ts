@@ -1,18 +1,18 @@
-import { hasSchemeId, resolvePath } from '../../cts/src/api';
+import { hasSchemeId, resolvePath } from '../cts/src/api';
 
 const os = import.meta.use('os');
 const fs = import.meta.use('fs');
 const engine = import.meta.use('engine');
 
-export type EnvWarn = (message: string) => void;
-
-function envValue(name: string): string | undefined {
+/** Read an environment variable without turning an unset value into an exception. */
+export function readEnv(name: string): string | null {
     try {
-        return os.getenv(name) ?? undefined;
+        return os.getenv(name) ?? null;
     } catch {
-        return undefined;
+        return null;
     }
 }
+export type EnvWarn = (message: string) => void;
 
 function resolveEnvFilePath(path: string): string {
     if (hasSchemeId(path) && !path.startsWith('/')) return path;
@@ -21,7 +21,7 @@ function resolveEnvFilePath(path: string): string {
 
 function expand(value: string, vars: Record<string, string>): string {
     return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name: string) =>
-        vars[name] ?? envValue(name) ?? '',
+        vars[name] ?? readEnv(name) ?? '',
     );
 }
 

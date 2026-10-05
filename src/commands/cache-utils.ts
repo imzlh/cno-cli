@@ -1,6 +1,6 @@
 import { joinPaths, stripJsonc } from '../../cts/src/utils';
 import type { ConfigOptions } from '../../cts/src/types';
-import { flagsToConfig } from './config-flags';
+import { flagsToConfig } from '../config';
 
 const fs = import.meta.use('fs');
 const engine = import.meta.use('engine');
@@ -23,9 +23,11 @@ function readJsonObject(path: string): JsonObject | null {
 export function buildCacheConfig(
     fileCfg: Partial<ConfigOptions>,
     flags: Record<string, string | boolean>,
+    kernelConfig: Partial<ConfigOptions> = {},
 ): Partial<ConfigOptions> {
     const cfg: Partial<ConfigOptions> = {
         ...fileCfg,
+        ...kernelConfig,
         ...flagsToConfig(flags),
         disableLock: false,
         persistLock: true,

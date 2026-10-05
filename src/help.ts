@@ -27,7 +27,7 @@ export function showHelp(): void {
 ${C.bold('cno')} v${version} — Deno-compatible TypeScript runtime on circu.js
 
 ${C.bold('USAGE')}
-  ${C.cyan('cno')} [command] [options] [args…]
+  ${C.cyan('cno')} [core options] [command] [options] [entry] [args…]
 
 ${C.bold('COMMANDS')}
   ${C.cyan('run')}    ${C.cyan('<file|task>')} [args…]     Run a TypeScript/JavaScript file or package script
@@ -57,19 +57,25 @@ ${C.bold('COMMON OPTIONS')}
   ${C.cyan('--no-node')}                      Disable Node.js compatibility
   ${C.cyan('--no-oxc')}                       Disable OXC native acceleration
   ${C.cyan('--silent')}, ${C.cyan('-q')}                   Suppress download progress
-  ${C.cyan('--memory-limit')}=${C.dim('<size>')}          e.g. ${C.cyan('256MB')}, ${C.cyan('1GB')}
-  ${C.cyan('--max-stack-size')}=${C.dim('<n>')}           e.g. ${C.cyan('4MB')}
   ${C.cyan('--polyfill')}=${C.dim('<path>')}              Custom polyfill bundle
   ${C.cyan('--npm-mode')}=${C.dim('<normal|soft|hard>')}  Materialize node_modules on ${C.cyan('cno cache')} ${C.dim('(soft: top-level links, hard: full tree, default: normal)')}
   ${C.cyan('--ignore-scripts')}               Skip npm lifecycle scripts on ${C.cyan('cno cache')}
+
+${C.bold('CORE OPTIONS (before the command)')}
+  ${C.cyan('--memory-limit')}=${C.dim('<size>')}          e.g. ${C.cyan('256MB')}, ${C.cyan('1GB')}
+  ${C.cyan('--max-stack-size')}=${C.dim('<size>')}        e.g. ${C.cyan('4MB')}
+  ${C.cyan('--max-old-space-size')}=${C.dim('<MB>')}      Node-compatible memory limit
+  ${C.cyan('--v8-flags')}=${C.dim('<flags>')}             Supports --max-old-space-size
+  ${C.cyan('--require')}, ${C.cyan('--import')}=${C.dim('<module>')}   Node-style preload ${C.dim('(repeatable; also read from NODE_OPTIONS)')}
+  ${C.cyan('--loader')}=${C.dim('<module>')}              Accepted with a warning; loader hooks are not implemented
+  ${C.cyan('--conditions')}=${C.dim('<list>')}, ${C.cyan('-C')} ${C.dim('<list>')}  Extra package.json export conditions
+  ${C.dim(`Example: ${C.cyan('cno --require=./init.cjs run app.ts')}`)}
 
 ${C.bold('RUN OPTIONS')}
   ${C.cyan('--ext')}=${C.dim('<lang>')}                   Language for an extensionless entry or ${C.cyan('-')} ${C.dim('(default: ts)')}
   ${C.cyan('--env')}, ${C.cyan('--env-file')}=${C.dim('<path>')}       Load an env file before the entry ${C.dim('(repeatable)')}
   ${C.cyan('--preload')}=${C.dim('<module>')}             Evaluate a module before the entry ${C.dim('(repeatable)')}
-  ${C.cyan('--require')}, ${C.cyan('--import')}=${C.dim('<module>')}   Node-style preload ${C.dim('(also read from')} ${C.cyan('NODE_OPTIONS')}${C.dim(')')}
   ${C.cyan('--location')}=${C.dim('<url>')}               Value for ${C.cyan('globalThis.location')}
-  ${C.cyan('--conditions')}=${C.dim('<list>')}, ${C.cyan('-C')} ${C.dim('<list>')}  Extra package.json export conditions
   ${C.dim(`Use ${C.cyan('-')} as the entry to read the program from stdin.`)}
 
 ${C.bold('SERVE OPTIONS')}
@@ -88,14 +94,15 @@ ${C.bold('TEST OPTIONS')}
   ${C.dim(`Everything after ${C.cyan('--')} reaches the test files as ${C.cyan('Deno.args')}.`)}
 
 ${C.bold('TASK OPTIONS')}
-  ${C.cyan('--cwd')}=${C.dim('<path>')}                   Directory to run the task in ${C.dim('(task only; ignored elsewhere)')}
+  ${C.cyan('--cwd')}=${C.dim('<path>')}                   Directory to run the task in ${C.dim('(task only)')}
+  ${C.cyan('--config')}=${C.dim('<path>')}                Task configuration file
 
 ${C.bold('PACK OPTIONS')}
   ${C.cyan('--out')}, ${C.cyan('-o')} ${C.dim('<file.jspack>')}        Container output path ${C.dim('(see')} ${C.cyan('cno pack --help')}${C.dim(')')}
 
 ${C.bold('DENO COMPATIBILITY')}
   ${C.cyan('--allow-*')}, ${C.cyan('--deny-*')}, ${C.cyan('-A')}        Accepted and ignored — cno grants everything
-  ${C.cyan('--unstable-*')}, ${C.cyan('--check')}, ${C.cyan('--config')} Accepted and ignored ${C.dim('(cts uses its own config)')}
+  ${C.cyan('--unstable-*')}, ${C.cyan('--check')}           Accepted and ignored
 
 ${C.bold('NETWORK')}
   ${C.cyan('--system-proxy')}                 Use a configured proxy for fetch, WebSocket and EventSource
@@ -103,7 +110,7 @@ ${C.bold('NETWORK')}
   ${C.dim(`                                 ${C.cyan('HTTP_PROXY')}, ${C.cyan('HTTPS_PROXY')}, ${C.cyan('ALL_PROXY')}, ${C.cyan('NO_PROXY')} (lowercase too)`)}
   ${C.cyan('--skip-cert-verify')}             Disable TLS certificate verification
 
-${C.bold('DEBUGGER OPTIONS')}
+${C.bold('DEBUGGER OPTIONS (before the command)')}
   ${C.cyan('--inspect')}${C.dim('[=host:port]')}          Start CDP inspector (default port: 9229)
   ${C.cyan('--inspect-brk')}${C.dim('[=host:port]')}      Start CDP inspector and break on first line
   ${C.cyan('--inspect-wait')}${C.dim('[=host:port]')}     Start CDP inspector and wait for DevTools to connect
@@ -123,7 +130,7 @@ ${C.bold('ENVIRONMENT')}
   ${C.cyan('CTS_MEMORY_LIMIT')}               e.g. ${C.cyan('1GB')}
   ${C.cyan('CTS_MAX_STACK_SIZE')}             e.g. ${C.cyan('4MB')}
   ${C.cyan('CTS_WORKERS')}                    Precompile worker count ${C.dim('(0 = inline)')}
-  ${C.cyan('NODE_OPTIONS')}                   Node preload flags, applied before CLI ones
+  ${C.cyan('NODE_OPTIONS')}                   Core runtime options, applied before CLI ones
   ${C.cyan('NPM_CONFIG_REGISTRY')}, ${C.cyan('NPM_TOKEN')}   npm registry URL and auth token
   ${C.cyan('DEBUG')}                          Debug categories: ${C.cyan('resolver, npm, jsr, lock, cjs, loader, config, stack, http, http.conn, http.fetch, debug, *')}
     `.trim());

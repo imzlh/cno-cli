@@ -13,9 +13,21 @@ $Root        = $PSScriptRoot
 Push-Location $Root
 try {
 
+# Load the installed MSVC toolchain when launched from ordinary PowerShell.
+if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue) -or $env:VSCMD_ARG_TGT_ARCH -ne 'x64') {
+    $VsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+    if (-not (Test-Path -LiteralPath $VsWhere)) { throw 'Visual Studio Installer was not found.' }
+    $VsRoot = & $VsWhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if (-not $VsRoot) { throw 'Install the Visual Studio C++ build tools first.' }
+    & "$VsRoot/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+}
+
 # ── 1. Main project ───────────────────────────────────────────────────────────
-cmake -S . -B $BuildDir -DCMAKE_BUILD_TYPE=Release -DCNO_RELEASE=ON
+cmake -S . -B $BuildDir -DCMAKE_BUILD_TYPE=Release -DCNO_RELEASE=ON `
+    "-DCMAKE_TOOLCHAIN_FILE=$Root/cmake/vcpkg-toolchain.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows
+if ($LASTEXITCODE -ne 0) { throw "CMake configure failed ($LASTEXITCODE)." }
 cmake --build $BuildDir --config Release --parallel
+if ($LASTEXITCODE -ne 0) { throw "CMake build failed ($LASTEXITCODE)." }
 
 # ── 2. ext-oxc (optional) ─────────────────────────────────────────────────────
 # The extension calls QuickJS JS_* APIs. Those live in qjs.dll (circu.js forces
@@ -61,7 +73,9 @@ if (-not $HasCargo) {
         cmake -S ext-oxc -B $OxcBuildDir -DCMAKE_BUILD_TYPE=Release `
           -DCJS_DIR="$Root\circu.js" `
           -DCNO_IMPLIB="$CnoLib"
+        if ($LASTEXITCODE -ne 0) { throw "OXC configure failed ($LASTEXITCODE)." }
         cmake --build $OxcBuildDir --config Release --parallel
+        if ($LASTEXITCODE -ne 0) { throw "OXC build failed ($LASTEXITCODE)." }
         $OxcBuilt = $true
     } catch {
         Write-Warning "ext-oxc build failed: $_"
@@ -73,7 +87,9 @@ if (-not $HasCargo) {
 New-Item -ItemType Directory -Force -Path "$DistDir\ext" | Out-Null
 
 Copy-Item "$BuildDir\stage\cno.exe" "$DistDir\cno.exe" -Force
-Copy-Item "$BuildDir\stage\qjs.dll" "$DistDir\qjs.dll" -Force
+Get-ChildItem -LiteralPath "$BuildDir\stage" -Filter '*.dll' | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $DistDir -Force
+}
 
 if ($OxcBuilt) {
     # oxc.dll lands directly in the build dir (Ninja) or under Release\ (VS).

@@ -493,3 +493,59 @@ Deno.test({ name: 'cache command: scans every provided entry file', timeout: 300
         rmSync(root, { recursive: true, force: true });
     }
 });
+
+Deno.test({ name: 'cache command: releases owned stores on success and every failure path', timeout: 30000 }, async () => {
+    const root = makePosixTempDir('cache-command-cleanup');
+    try {
+        prepareLocalSetupSource(root);
+        writeFileSync(join(root, 'valid.json'), '{"value":1}\n');
+        const harness = join(root, 'cleanup.ts');
+        // A second runtime replaces engine hooks. Isolate the command calls so
+        // their teardown cannot disturb the test runner's runtime.
+        writeFileSync(harness, `
+            import { runCache } from ${JSON.stringify(new URL('../../src/commands/cache.ts', import.meta.url).href)};
+            import { LockStore } from ${JSON.stringify(new URL('../../cts/src/lock.ts', import.meta.url).href)};
+            const stores = Reflect.get(LockStore, 'openStores');
+            if (!(stores instanceof Set)) throw new Error('LockStore registry is unavailable');
+            const before = new Set(stores);
+            const flags = {
+                'cache-dir': ${JSON.stringify(joinPaths(root, 'cache'))},
+                'lock-dir': ${JSON.stringify(root)},
+                'no-oxc': true, 'silent': true, 'ignore-scripts': true,
+            };
+            const cases = [
+                { files: [], error: 'CLI exited with code 1' },
+                { files: ['missing-entry.ts'], error: 'CLI exited with code 1' },
+                { files: [], scan: true, error: 'Precache failed with 1 dependency error(s)' },
+                { files: ['valid.json'], error: '' },
+            ];
+            for (const testCase of cases) {
+                if (testCase.scan) {
+                    Deno.writeTextFileSync('deno.json', JSON.stringify({ imports: { missing: './missing-dependency.ts' } }));
+                }
+                let message = '';
+                try { await runCache(testCase.files, flags); }
+                catch (error) { message = error instanceof Error ? error.message : String(error); }
+                if (testCase.scan) Deno.removeSync('deno.json');
+                if (message !== testCase.error) throw new Error('Unexpected command result: ' + message);
+                if ([...stores].some(store => !before.has(store))) {
+                    throw new Error('Command retained a LockStore after ' + JSON.stringify(testCase.files));
+                }
+            }
+            console.log('CACHE_CLEANUP_OK');
+            // The source runtime has replaced the outer CLI's event hooks.
+            // Stores were checked before exit; do not resume that outer runtime.
+            import.meta.use('os').exit(0);
+        `);
+        const output = await new Deno.Command(Deno.execPath().replace(/ \(deleted\)$/, ''), {
+            args: ['run', harness], cwd: root,
+            env: { NODE_OPTIONS: '', CTS_SILENT: 'true' },
+            stdout: 'piped', stderr: 'piped',
+        }).output();
+        const text = decoder.decode(output.stdout) + decoder.decode(output.stderr);
+        strictEqual(output.code, 0, text);
+        strictEqual(text.includes('CACHE_CLEANUP_OK'), true, text);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});

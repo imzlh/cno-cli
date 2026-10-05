@@ -1,6 +1,6 @@
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { Worker } from 'node:worker_threads';
-import { WORKER_RUNTIME_CONFIG_KEYS } from '../../src/commands/config-flags.ts';
+import { WORKER_RUNTIME_CONFIG_KEYS } from '../../src/config.ts';
 
 /**
  * Reads the raw worker bootstrap record from inside a worker. This is the record

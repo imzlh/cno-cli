@@ -44,7 +44,7 @@ interface Target {
  * handlers a bad executable path or instant crash shows up only as a test timeout.
  */
 function startTarget(): Target {
-    const proc = spawn(CNO, ['run', `--inspect=${HOST}:${PORT}`, TARGET], {
+    const proc = spawn(CNO, [`--inspect=${HOST}:${PORT}`, 'run', TARGET], {
         stdio: ['ignore', 'ignore', 'inherit'],
     });
     let failure: Error | null = null;

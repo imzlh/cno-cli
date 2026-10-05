@@ -12,7 +12,7 @@
  * the baked binary, so the assertions describe the current source.
  */
 
-import { ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { createServer as createTlsServer, type Server } from 'node:tls';
 import type { Socket } from 'node:net';
 import { connectDirectTcp, createClientTlsContext, getRawTlsOptions } from '../../cno/src/utils/http.ts';
@@ -164,6 +164,46 @@ Deno.test({ name: 'raw TLS: direct https honours the rejectUnauthorized opt-out'
         ok(/^HTTP\/1\.1 200/.test(await roundTrip(socket, '127.0.0.1')), 'the opt-out session must carry data');
         socket.close();
     } finally {
+        await closeServer(target.server);
+    }
+});
+
+Deno.test({ name: 'CLI certificate opt-out survives entry completion and timer work', timeout: 15000 }, async () => {
+    const target = await listenTls('127.0.0.1');
+    ok(target, 'TLS fixture must listen on loopback');
+    const tempDir = await Deno.makeTempDir({ prefix: 'cno-tls-lifetime-' });
+    const script = `${tempDir}/tls-child.mjs`;
+    await Deno.writeTextFile(script, `
+        async function request(label) {
+            try {
+                const response = await fetch('https://127.0.0.1:${target.port}/', {
+                    signal: AbortSignal.timeout(2500),
+                });
+                console.log('TLS:' + label + ':' + await response.text());
+            } catch (error) {
+                console.log('TLS:' + label + ':rejected');
+            }
+        }
+        await request('entry');
+        setTimeout(() => request('timer'), 25);
+    `);
+    try {
+        for (const flags of [[], ['--skip-cert-verify']]) {
+            const output = await new Deno.Command(Deno.execPath(), {
+                args: [...flags, 'run', script],
+                env: {
+                    NODE_OPTIONS: '', HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', NO_PROXY: '*',
+                    http_proxy: '', https_proxy: '', all_proxy: '', no_proxy: '*',
+                },
+                stdout: 'piped', stderr: 'piped',
+            }).output();
+            const stdout = new TextDecoder().decode(output.stdout);
+            strictEqual(output.code, 0, stdout + new TextDecoder().decode(output.stderr));
+            const result = flags.length ? 'ok' : 'rejected';
+            deepStrictEqual(stdout.trim().split(/\r?\n/), [`TLS:entry:${result}`, `TLS:timer:${result}`]);
+        }
+    } finally {
+        await Deno.remove(tempDir, { recursive: true }).catch(() => undefined);
         await closeServer(target.server);
     }
 });

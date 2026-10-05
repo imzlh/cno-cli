@@ -1,6 +1,7 @@
 // bin.ts — `cno exec <binary>` entry point
 
 import { uname, LockStore, BinResolver } from '../../cts/src/api';
+import { commandOptionTokensFor, type ParsedCli } from '../cli';
 import { ensureNodePolyfills } from './setup';
 
 const os = import.meta.use('os');
@@ -8,6 +9,8 @@ const console = import.meta.use('console');
 const process = import.meta.use('process');
 const asyncfs = import.meta.use('asyncfs');
 const signals = import.meta.use('signals');
+
+type BinaryInvocation = Pick<ParsedCli, 'kernelArgs' | 'kernelFlags' | 'flags' | 'commandOptions'>;
 
 /** Map a native wait result to the shell exit-code convention. */
 export function childExitCode(info: CModuleProcess.ExitInfo): number {
@@ -24,52 +27,68 @@ async function chmodExecutableQuietly(path: string): Promise<void> {
     }
 }
 
-export async function spawnBinary(binName: string, args: string[], env: Record<string, string>, cwd: string, cacheDir?: string): Promise<number> {
-    const forwardedArgs = args[0] === '--' ? args.slice(1) : args;
-    let resolved = resolveCachedBinary(binName, cwd, cacheDir);
+export async function spawnBinary(
+    binName: string,
+    args: string[],
+    env: Record<string, string>,
+    cwd: string,
+    cacheDir?: string,
+    invocation: BinaryInvocation = { kernelArgs: [], kernelFlags: {}, flags: {}, commandOptions: [] },
+): Promise<number> {
+    const flags = { ...invocation.kernelFlags, ...invocation.flags };
+    const requestedCacheDir = cacheDir ?? (typeof flags['cache-dir'] === 'string' ? flags['cache-dir'] : undefined);
+    const lockDir = typeof flags['lock-dir'] === 'string' ? flags['lock-dir'] : cwd;
+    // --lock-dir controls lock persistence, not the user's working directory
+    // or local .bin lookup. Resolve the executable from the invocation cwd.
+    let resolved = resolveCachedBinary(binName, cwd, requestedCacheDir);
     if (!resolved) {
-        const packageSpec = npmPackageSpecifier(binName, cwd, cacheDir);
+        const packageSpec = npmPackageSpecifier(binName, cwd, requestedCacheDir);
         if (!packageSpec) {
             console.error(`Command '${binName}' could not be resolved.`);
             return 1;
         }
 
         const cacheEnv = { ...os.environ(), ...env };
-        const effectiveCacheDir = cacheDir || cacheEnv.CTS_CACHE_DIR;
+        const effectiveCacheDir = requestedCacheDir || cacheEnv.CTS_CACHE_DIR;
         if (effectiveCacheDir) cacheEnv.CTS_CACHE_DIR = effectiveCacheDir;
         // postinstall scripts need node: builtins from the cache polyfill tree
         await ensureNodePolyfills(effectiveCacheDir);
-        const cacheArgs = [os.exePath, 'cache'];
+        const cacheArgs = [os.exePath, ...invocation.kernelArgs, 'cache'];
         if (effectiveCacheDir) cacheArgs.push(`--cache-dir=${effectiveCacheDir}`);
-        cacheArgs.push(`--lock-dir=${cwd}`, packageSpec);
+        cacheArgs.push(`--lock-dir=${lockDir}`);
+        cacheArgs.push(...commandOptionTokensFor(invocation, 'cache'));
+        cacheArgs.push(packageSpec);
         const cacheCode = await rawExec(cacheArgs, cacheEnv, os.tmpDir);
         if (cacheCode !== 0) return cacheCode;
 
-        resolved = resolveCachedBinary(binName, cwd, cacheDir);
+        resolved = resolveCachedBinary(binName, cwd, requestedCacheDir);
         if (!resolved) {
-            console.error(explainBinary(binName, cwd, cacheDir) ?? `Command '${binName}' could not be resolved.`);
+            console.error(explainBinary(binName, cwd, requestedCacheDir) ?? `Command '${binName}' could not be resolved.`);
             return 1;
         }
     }
 
     const mergedEnv = { ...os.environ(), ...env };
-    const childCacheDir = cacheDir || mergedEnv.CTS_CACHE_DIR;
+    const childCacheDir = requestedCacheDir || mergedEnv.CTS_CACHE_DIR;
     if (childCacheDir) mergedEnv.CTS_CACHE_DIR = childCacheDir;
 
     if (resolved.fallback) {
         // Couldn't parse the wrapper script — fall back to cmd.exe / sh
         if (resolved.binPath.toLowerCase().endsWith('.cmd') || resolved.binPath.toLowerCase().endsWith('.bat') || uname.sysname.includes('Windows')) {
-            return rawExec(['cmd', '/c', resolved.binPath, ...forwardedArgs], mergedEnv, cwd);
+            return rawExec(['cmd', '/c', resolved.binPath, ...args], mergedEnv, cwd);
         }
         // Unix fallback
         await chmodExecutableQuietly(resolved.binPath);
-        return rawExec([resolved.binPath, ...forwardedArgs], mergedEnv, cwd);
+        return rawExec([resolved.binPath, ...args], mergedEnv, cwd);
     }
 
     // Run the JS entry through the same CLI path as user files.
-    const runArgs = [os.exePath, 'run'];
+    const runArgs = [os.exePath, ...invocation.kernelArgs, 'run'];
     if (childCacheDir) runArgs.push(`--cache-dir=${childCacheDir}`);
-    runArgs.push(`--lock-dir=${cwd}`, resolved.entry, ...forwardedArgs);
+    // Defaults come first so an explicitly supplied option retains normal CLI
+    // last-one-wins behavior. Runtime options end before the resolved entry;
+    // everything after the entry belongs to the npm bin.
+    runArgs.push(`--lock-dir=${lockDir}`, ...commandOptionTokensFor(invocation, 'run'), resolved.entry, ...args);
     return rawExec(runArgs, mergedEnv, cwd);
 }
 

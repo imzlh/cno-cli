@@ -1194,7 +1194,7 @@ Deno.test({ name: 'child_process upstream: fork execArgv conditions affect child
         strictEqual(shortFlag.type, 'custom');
         deepStrictEqual(shortFlag.execArgv, ['-C', 'custom']);
 
-        const denoStyle = await run(['run', '-A', '--conditions=custom']);
+        const denoStyle = await run(['--conditions=custom', 'run', '-A']);
         strictEqual(denoStyle.type, 'custom');
         deepStrictEqual(denoStyle.execArgv, ['--conditions=custom']);
     });

@@ -539,7 +539,7 @@ Deno.test({ name: 'cli stage: run preloads modules before imports and dedupes en
             console.log("main started", globalThis.__preload__, globalThis.__import__);
         `);
 
-        const ordered = await runCno(['run', '--preload', './preload.ts', '--import', './import.ts', main], root);
+        const ordered = await runCno(['--import', './import.ts', 'run', '--preload', './preload.ts', main], root);
         strictEqual(ordered.code, 0, ordered.stderr);
         deepStrictEqual(ordered.stdout.trim().split(/\r?\n/), [
             'preload starting',
@@ -565,7 +565,7 @@ Deno.test({ name: 'cli stage: run honors NODE_OPTIONS require before cli require
         const main = join(root, 'main.ts');
         await Deno.writeTextFile(main, 'console.log("main.ts");\n');
 
-        const result = await runCno(['run', '--require', './require3.cjs', main], root, {
+        const result = await runCno(['--require', './require3.cjs', 'run', main], root, {
             NODE_OPTIONS: '--require ./require1.cjs -r ./require2.cjs',
         });
         strictEqual(result.code, 0, result.stderr);
@@ -603,7 +603,7 @@ Deno.test({ name: 'cli stage: rejects malformed quoted NODE_OPTIONS', timeout: 1
         ok(invalidEscape.stderr.includes('invalid value for NODE_OPTIONS (invalid escape)'), invalidEscape.stderr);
         strictEqual(invalidEscape.stdout, '');
 
-        const beforeInspector = await runCno(['run', '--inspect=127.0.0.1:0', main], root, {
+        const beforeInspector = await runCno(['--inspect=127.0.0.1:0', 'run', main], root, {
             NODE_OPTIONS: '--require "broken',
         });
         strictEqual(beforeInspector.code, 1);
@@ -644,7 +644,7 @@ Deno.test({ name: 'cli stage: run supports multiple require preloads with CJS me
             console.log("main_multiple.ts finished");
         `);
 
-        const result = await runCno(['run', '--require', './require_first.js', '--require', './require_second.js', main], root);
+        const result = await runCno(['--require', './require_first.js', '--require', './require_second.js', 'run', main], root);
         strictEqual(result.code, 0, result.stderr);
         const lines = result.stdout.trim().split(/\r?\n/);
         strictEqual(lines[0], 'require_first.js loading', result.stdout);
@@ -2570,7 +2570,7 @@ Deno.test({ name: 'cli stage upstream run: --conditions selects package exports 
         await Deno.writeTextFile(join(pkg, 'bad.js'), 'console.log("bad");\n');
         await Deno.writeTextFile(join(root, 'main.cjs'), 'require("foo");\n');
 
-        const withCond = await runCno(['run', '--conditions', 'some-condition', 'main.cjs'], root);
+        const withCond = await runCno(['--conditions', 'some-condition', 'run', 'main.cjs'], root);
         strictEqual(withCond.code, 0, withCond.stderr);
         strictEqual(withCond.stdout.trim(), 'good');
 

@@ -80,6 +80,39 @@ Deno.test('cts lifecycle: plans node fallback scripts without shelling the whole
     ]);
 });
 
+Deno.test('cts lifecycle: preserves Node runtime flags and script arguments', () => {
+    const script = 'node --require ./init.cjs --conditions=install scripts/install.js --require=script-arg';
+    for (const suffix of ['', ' && node -p "42"']) {
+        const plan = planLifecycleScript(script + suffix, {
+            exePath: '/bin/cno', shell: 'sh', shellArg: '-c',
+        });
+        strictEqual(plan.fallback, false);
+        deepStrictEqual(plan.commands[0]?.argv, [
+            '/bin/cno', '--require', './init.cjs', '--conditions=install',
+            'scripts/install.js', '--require=script-arg',
+        ]);
+        if (suffix) {
+            strictEqual(plan.commands[0]?.op, '&&');
+            deepStrictEqual(plan.commands[1]?.argv, ['/bin/cno', '-p', '42']);
+        }
+    }
+});
+
+Deno.test('cts lifecycle: preserves separators and eval source beginning with a dash', () => {
+    for (const [script, args] of [
+        ['node -- -dash.js --inspect', ['--', '-dash.js', '--inspect']],
+        ["node -e '-1' --inspect", ['-e', '-1', '--inspect']],
+        ["node --eval='-1' --inspect", ['--eval=-1', '--inspect']],
+        ["node -p '-1'", ['-p', '-1']],
+    ] as const) {
+        const plan = planLifecycleScript(script, {
+            exePath: '/bin/cno', shell: 'sh', shellArg: '-c',
+        });
+        strictEqual(plan.fallback, false);
+        deepStrictEqual(plan.commands[0]?.argv, ['/bin/cno', ...args]);
+    }
+});
+
 // es5-ext style: `node -e … || exit 0` must not bare-spawn `exit` (ENOENT→127).
 Deno.test('cts lifecycle: plans node -e || exit 0 with emulatable exit builtin', () => {
     const plan = planLifecycleScript(
@@ -88,7 +121,7 @@ Deno.test('cts lifecycle: plans node -e || exit 0 with emulatable exit builtin',
     );
     strictEqual(plan.fallback, false);
     deepStrictEqual(plan.commands, [
-        { argv: ['/bin/cno', 'eval', "try{require('./_postinstall')}catch(e){}"], op: '||' },
+        { argv: ['/bin/cno', '-e', "try{require('./_postinstall')}catch(e){}"], op: '||' },
         { argv: ['exit', '0'] },
     ]);
     strictEqual(emulateShellBuiltin(['exit', '0']), 0);
@@ -111,7 +144,7 @@ Deno.test('cts lifecycle: plans cd and export without shell fallback', () => {
     strictEqual(expPlan.fallback, false);
     deepStrictEqual(expPlan.commands, [
         { argv: ['export', 'FOO=bar'], op: '&&' },
-        { argv: ['/bin/cno', 'eval', 'console.log(1)'] },
+        { argv: ['/bin/cno', '-e', 'console.log(1)'] },
     ]);
 
     const unsetPlan = planLifecycleScript('export FOO=1 && unset FOO && node x.js', opts);

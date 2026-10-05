@@ -46,7 +46,7 @@ interface Target {
  * a bad executable path surfaces only as the outer test timeout, never as its ENOENT.
  */
 function startTarget(): Target {
-	const proc = spawn(CNO, ['run', `--inspect-wait=${HOST}:${PORT}`, TARGET], {
+	const proc = spawn(CNO, [`--inspect-wait=${HOST}:${PORT}`, 'run', TARGET], {
 		stdio: ['ignore', 'pipe', 'inherit'],
 	})
 	let failure: Error | null = null

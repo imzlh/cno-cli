@@ -47,7 +47,7 @@ interface Target {
  * only as the outer test timeout, with the actual ENOENT/exit code never reported.
  */
 function startTarget(): Target {
-    const proc = spawn(CNO, ['run', `--inspect=${HOST}:${PORT}`, TARGET], {
+    const proc = spawn(CNO, [`--inspect=${HOST}:${PORT}`, 'run', TARGET], {
         stdio: ['ignore', 'ignore', 'inherit'],
     });
     let failure: Error | null = null;

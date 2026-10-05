@@ -1,5 +1,5 @@
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
-import { missingFlagValues, parseArgv, unknownFlags } from '../../src/cli.ts';
+import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
+import { commandOptionTokensFor, missingFlagValues, parseArgv, parseNodeOptions, splitNodeOptions, tokenizeOptions, unknownFlags, unknownKernelFlags, unknownCommandFlags } from '../../src/cli.ts';
 import { parseTestChildArgs } from '../../src/commands/test.ts';
 import {
     basename,
@@ -57,25 +57,27 @@ Deno.test('cli: serve parses listener options and forwards entry arguments', () 
 Deno.test('cli: implicit run keeps pre-entry runtime flags separate', () => {
     const cli = parseArgv(['--reload', 'script.ts', '--script-flag']);
     strictEqual(cli.cmd, null);
-    strictEqual(cli.flags.reload, true);
+    strictEqual(cli.flags.reload, undefined);
+    strictEqual(cli.kernelFlags.reload, true);
     deepStrictEqual(cli.positional, ['script.ts', '--script-flag']);
     strictEqual(cli.rawArgs.action, 'run');
-    deepStrictEqual(cli.rawArgs.internalArgs, []);
-    deepStrictEqual(cli.rawArgs.actionArgs, ['--reload']);
+    deepStrictEqual(cli.rawArgs.internalArgs, ['--reload']);
+    deepStrictEqual(cli.rawArgs.actionArgs, []);
     strictEqual(cli.rawArgs.entry, 'script.ts');
     deepStrictEqual(cli.rawArgs.args, ['--script-flag']);
 });
 
 Deno.test('cli: inspect optional value consumes only port-like tokens', () => {
     const withPort = parseArgv(['--inspect', '9333', 'run', 'main.ts']);
-    strictEqual(withPort.flags.inspect, '9333');
+    strictEqual(withPort.kernelFlags.inspect, '9333');
     deepStrictEqual(withPort.rawArgs.internalArgs, ['--inspect', '9333']);
     strictEqual(withPort.rawArgs.entry, 'main.ts');
 
     const withFile = parseArgv(['--inspect', 'main.ts']);
-    strictEqual(withFile.flags.inspect, true);
+    strictEqual(withFile.kernelFlags.inspect, true);
     strictEqual(withFile.cmd, null);
-    deepStrictEqual(withFile.rawArgs.actionArgs, ['--inspect']);
+    deepStrictEqual(withFile.rawArgs.internalArgs, ['--inspect']);
+    deepStrictEqual(withFile.rawArgs.actionArgs, []);
     strictEqual(withFile.rawArgs.entry, 'main.ts');
 });
 
@@ -93,19 +95,54 @@ Deno.test('cli: implicit run keeps Node preload flags in execArgv', () => {
         '--require', './preload.cjs',
         '--import=file:///loader.mjs',
         '--loader', './old-loader.mjs',
+        '--reload',
     ]);
-    deepStrictEqual(cli.rawArgs.actionArgs, ['--reload']);
+    deepStrictEqual(cli.rawArgs.actionArgs, []);
     strictEqual(cli.rawArgs.entry, 'main.ts');
     deepStrictEqual(cli.rawArgs.args, ['--user']);
 });
 
 Deno.test('cli: missing Node flag values do not swallow the next option', () => {
     const cli = parseArgv(['run', '--require', '--reload', 'main.ts']);
-    strictEqual(cli.flags.require, true);
+    strictEqual(cli.flags.require, undefined);
+    deepStrictEqual(cli.commandOptions[0], { name: 'require', value: true, tokens: ['--require'] });
     strictEqual(cli.flags.reload, true);
-    deepStrictEqual(cli.rawArgs.internalArgs, ['--require']);
-    deepStrictEqual(cli.rawArgs.actionArgs, ['--reload']);
+    deepStrictEqual(cli.rawArgs.internalArgs, []);
+    deepStrictEqual(cli.rawArgs.actionArgs, ['--require', '--reload']);
     strictEqual(cli.rawArgs.entry, 'main.ts');
+});
+
+Deno.test('cli: explicit run keeps command flags out of kernel args', () => {
+    const cli = parseArgv([
+        '--memory-limit=20m',
+        'run',
+        '--require', './preload.cjs',
+        '--reload',
+        'main.ts',
+    ]);
+    deepStrictEqual(cli.rawArgs.internalArgs, ['--memory-limit=20m']);
+    deepStrictEqual(cli.rawArgs.actionArgs, ['--require', './preload.cjs', '--reload']);
+    deepStrictEqual(cli.rawArgs.args, []);
+    deepStrictEqual(cli.kernelArgs, ['--memory-limit=20m']);
+    deepStrictEqual(cli.commandArgs, ['--require', './preload.cjs', '--reload']);
+    deepStrictEqual(cli.scriptArgs, []);
+});
+
+Deno.test('cli: kernel options in the command region are retained but inactive', () => {
+    const cli = parseArgv(['run', '--inspect=9333', '--require', './preload.cjs', 'main.ts', '--inspect=script']);
+    deepStrictEqual(cli.kernelArgs, []);
+    deepStrictEqual(cli.commandArgs, ['--inspect=9333', '--require', './preload.cjs']);
+    deepStrictEqual(cli.scriptArgs, ['--inspect=script']);
+    deepStrictEqual(cli.flags, {});
+    deepStrictEqual(cli.kernelFlags, {});
+    deepStrictEqual(unknownFlags(cli), []);
+});
+
+Deno.test('cli: prefix command flags are not mixed into command args', () => {
+    const cli = parseArgv(['--reload', 'run', '--inspect', 'main.ts']);
+    deepStrictEqual(cli.kernelArgs, ['--reload']);
+    deepStrictEqual(cli.commandArgs, ['--inspect']);
+    deepStrictEqual(cli.rawArgs.actionArgs, ['--inspect']);
 });
 
 Deno.test('cli: value flags consume their value before the entry file', () => {
@@ -127,20 +164,20 @@ Deno.test('cli: value flags consume their value before the entry file', () => {
 
 Deno.test('cli: repeated Node conditions are preserved and -C requires a value', () => {
     const cli = parseArgv([
-        'run',
         '--conditions=development',
         '--conditions', 'custom',
         '-C', 'worker',
         '-C', 'browser',
+        'run',
         'main.ts',
     ]);
-    strictEqual(cli.flags.conditions, 'development,custom');
-    strictEqual(cli.flags.C, 'worker,browser');
+    strictEqual(cli.kernelFlags.conditions, 'development,custom,worker,browser');
+    deepStrictEqual(cli.flags, {});
     deepStrictEqual(missingFlagValues(cli), []);
 
     const missing = parseArgv(['run', '-C', '--no-lock', 'main.ts']);
-    strictEqual(missing.flags.C, true);
-    deepStrictEqual(missingFlagValues(missing), ['C']);
+    strictEqual(missing.commandOptions[0]?.value, true);
+    deepStrictEqual(missingFlagValues(missing), ['conditions']);
 });
 
 Deno.test('cli: pack output flags work before and after the entry', () => {
@@ -237,9 +274,10 @@ Deno.test('cli: option terminator stops cno flag parsing before entry', () => {
 
     const implicit = parseArgv(['--reload', '--', '--dash-entry.ts', 'arg']);
     strictEqual(implicit.cmd, null);
-    strictEqual(implicit.flags.reload, true);
+    strictEqual(implicit.kernelFlags.reload, true);
     deepStrictEqual(implicit.positional, ['--dash-entry.ts', 'arg']);
-    deepStrictEqual(implicit.rawArgs.actionArgs, ['--reload']);
+    deepStrictEqual(implicit.rawArgs.internalArgs, ['--reload']);
+    deepStrictEqual(implicit.rawArgs.actionArgs, []);
     strictEqual(implicit.rawArgs.entry, '--dash-entry.ts');
     deepStrictEqual(implicit.rawArgs.args, ['arg']);
 });
@@ -257,58 +295,66 @@ Deno.test('cli: option terminator is preserved only for test script args', () =>
 });
 
 Deno.test('cli: test child separates runner flags from script args without losing raw tokens', () => {
-    const invocation = parseTestChildArgs([
+    const kernelArgs = ['--conditions=development', '--conditions', 'custom'];
+    const commandArgs = [
         '--filter', 'selected',
         '--env=base.env',
         '--preload', './first.ts',
-        '--conditions=development',
         '--env=override.env',
         '--preload=./second.ts',
-        '--conditions', 'custom',
         '-r',
         '--fail-fast',
-        '--',
-        'fixture',
-        '--filter=user-value',
-    ]);
-    deepStrictEqual(invocation.flags, {
+    ];
+    const scriptArgs = ['fixture', '--', '--filter=user-value', '--inspect', ''];
+    const invocation = parseTestChildArgs(scriptArgs, JSON.stringify({ version: 1, kernelArgs, commandArgs }));
+    deepStrictEqual(invocation.cli.flags, {
         filter: 'selected',
         env: 'override.env',
         preload: './second.ts',
-        conditions: 'development,custom',
         reload: true,
         'fail-fast': true,
     });
-    deepStrictEqual(invocation.flagArgs, [
-        '--filter', 'selected',
-        '--env=base.env',
-        '--preload', './first.ts',
-        '--conditions=development',
-        '--env=override.env',
-        '--preload=./second.ts',
-        '--conditions', 'custom',
-        '-r',
-        '--fail-fast',
-    ]);
-    deepStrictEqual(invocation.scriptArgs, ['fixture', '--filter=user-value']);
+    deepStrictEqual(invocation.cli.kernelFlags, { conditions: 'development,custom' });
+    deepStrictEqual(invocation.cli.kernelArgs, kernelArgs);
+    deepStrictEqual(invocation.cli.commandArgs, commandArgs);
+    deepStrictEqual(invocation.scriptArgs, scriptArgs);
 });
 
 Deno.test('cli: test child preserves command-prefix runtime flags', () => {
     const parent = parseArgv([
         '--conditions=development',
+        '--inspect=127.0.0.1:0',
         'test',
-        '--memory-limit', '64',
+        '--inspect-wait=127.0.0.1:9333',
+        '--filter', 'selected',
         'example.test.ts',
     ]);
-    const invocation = parseTestChildArgs([
-        ...parent.rawArgs.internalArgs,
-        ...parent.rawArgs.actionArgs,
-    ]);
-
-    deepStrictEqual(invocation.flags, {
+    const invocation = parseTestChildArgs([], JSON.stringify({
+        version: 1,
+        kernelArgs: parent.kernelArgs,
+        commandArgs: parent.commandArgs,
+    }));
+    deepStrictEqual(invocation.cli.kernelFlags, {
         conditions: 'development',
-        'memory-limit': '64',
+        inspect: '127.0.0.1:0',
     });
+    deepStrictEqual(invocation.cli.flags, { filter: 'selected' });
+    deepStrictEqual(invocation.cli.kernelArgs, parent.kernelArgs);
+    deepStrictEqual(invocation.cli.commandArgs, parent.commandArgs);
+});
+
+Deno.test('cli: test child rejects malformed protocols and tokens crossing argument regions', () => {
+    for (const serialized of ['broken', 'null', JSON.stringify({ version: 1, kernelArgs: [], commandArgs: [1] })]) {
+        throws(() => parseTestChildArgs([], serialized), /Invalid test child argument protocol/);
+    }
+    for (const regions of [
+        { kernelArgs: ['run'], commandArgs: [] },
+        { kernelArgs: ['--require'], commandArgs: [] },
+        { kernelArgs: [], commandArgs: ['main.ts'] },
+        { kernelArgs: [], commandArgs: ['--'] },
+    ]) {
+        throws(() => parseTestChildArgs([], JSON.stringify({ version: 1, ...regions })), /Invalid test child argument regions/);
+    }
 });
 
 Deno.test('cli: exec keeps command args after option terminator', () => {
@@ -328,6 +374,61 @@ Deno.test('cli: exec forwards flags after the binary name', () => {
     strictEqual(cli.rawArgs.entry, 'opencode');
     deepStrictEqual(cli.rawArgs.args, ['--version']);
     strictEqual(cli.flags['version'], undefined);
+});
+
+Deno.test('cli: prefix runtime options are independent of the subcommand', () => {
+    const before = parseArgv([
+        '--memory-limit=20m', '--no-http', '--conditions=development',
+        'exec', 'tool', '--user-flag',
+    ]);
+    strictEqual(before.cmd, 'exec');
+    deepStrictEqual(unknownFlags(before), []);
+    deepStrictEqual(before.positional, ['tool', '--user-flag']);
+    deepStrictEqual(before.rawArgs.internalArgs, [
+        '--memory-limit=20m', '--no-http', '--conditions=development',
+    ]);
+    deepStrictEqual(before.prefixArgs, [
+        '--memory-limit=20m', '--no-http', '--conditions=development',
+    ]);
+
+    const commandScoped = parseArgv([
+        'exec', '--memory-limit', '20m', '--max-stack-size=1MB',
+        '--require', './preload.mjs', 'tool', '--version',
+    ]);
+    strictEqual(commandScoped.cmd, 'exec');
+    deepStrictEqual(unknownFlags(commandScoped), []);
+    deepStrictEqual(commandScoped.flags, {});
+    deepStrictEqual(commandScoped.kernelFlags, {});
+    deepStrictEqual(commandScoped.positional, ['tool', '--version']);
+});
+
+Deno.test('cli: prefix runtime options are accepted for every subcommand', () => {
+    const commands = [
+        ['run', 'entry.ts'],
+        ['serve', 'entry.ts'],
+        ['eval', '1 + 1'],
+        ['cache', 'entry.ts'],
+        ['pack', 'entry.ts'],
+        ['repl'],
+        ['exec', 'tool'],
+        ['test', 'entry.test.ts'],
+        ['setup'],
+        ['task', 'build'],
+    ];
+    for (const args of commands) {
+        const cli = parseArgv([
+            '--memory-limit=20m', '--max-stack-size=1MB', '--no-http',
+            ...args,
+        ]);
+        deepStrictEqual(unknownFlags(cli), [], args[0]);
+        deepStrictEqual(cli.prefixFlags, ['memory-limit', 'max-stack-size', 'no-http'], args[0]);
+    }
+});
+
+Deno.test('cli: command flags remain command-scoped when placed in the prefix', () => {
+    deepStrictEqual(unknownFlags(parseArgv(['--filter=x', 'test', 'entry.test.ts'])), ['--filter']);
+    deepStrictEqual(unknownFlags(parseArgv(['--out=x.jspack', 'pack', 'entry.ts'])), ['--out']);
+    deepStrictEqual(unknownFlags(parseArgv(['--port=8000', 'run', 'entry.ts'])), ['--port']);
 });
 
 Deno.test('cli: eval aliases collect code as entry', () => {
@@ -377,7 +478,8 @@ Deno.test('cli: option terminator is never consumed as a value-flag value', () =
     deepStrictEqual(out.positional, ['main.ts']);
 
     const require = parseArgv(['run', '--require', '--', 'main.ts']);
-    strictEqual(require.flags.require, true);
+    strictEqual(require.flags.require, undefined);
+    strictEqual(require.commandOptions[0]?.value, true);
     deepStrictEqual(require.positional, ['main.ts']);
 });
 
@@ -430,6 +532,127 @@ Deno.test('cli: value flags with no value are reported, not silently dropped', (
     deepStrictEqual(missingFlagValues(parseArgv(['task', '--eval'])), []);
     // --inspect is legitimately bare.
     deepStrictEqual(missingFlagValues(parseArgv(['run', '--inspect', 'main.ts'])), []);
+});
+
+Deno.test('cli: all runtime commands share the same Inspector ownership', () => {
+    for (const command of ['run', 'serve', 'test', 'task', 'exec', 'eval', 'repl']) {
+        for (const inspect of ['--inspect', '--inspect-brk', '--inspect-wait']) {
+            const cli = parseArgv([inspect + '=9333', command, inspect + '=9444', 'entry.ts']);
+            deepStrictEqual(cli.kernelArgs, [inspect + '=9333'], command);
+            deepStrictEqual(cli.commandArgs, [inspect + '=9444'], command);
+            strictEqual(cli.kernelFlags[inspect.slice(2)], '9333', command);
+            strictEqual(cli.flags[inspect.slice(2)], undefined, command);
+            deepStrictEqual(unknownFlags(cli), [], command);
+        }
+    }
+    const ipv6 = parseArgv(['--inspect', '[::1]:9333', 'run', 'main.ts']);
+    strictEqual(ipv6.kernelFlags.inspect, '[::1]:9333');
+    strictEqual(ipv6.rawArgs.entry, 'main.ts');
+});
+
+Deno.test('cli: regions preserve independent values and option occurrences', () => {
+    const cli = parseArgv([
+        '--cache-dir=kernel-cache', '--require', './first.cjs', '--require=./second.cjs',
+        'run', '--cache-dir', 'command-cache', '--require=ignored.cjs', 'main.ts',
+        '--inspect', '--require', 'script-value', '--',
+    ]);
+    strictEqual(cli.kernelFlags['cache-dir'], 'kernel-cache');
+    strictEqual(cli.flags['cache-dir'], 'command-cache');
+    deepStrictEqual(cli.kernelOptions.filter(option => option.name === 'require').map(option => option.value), ['./first.cjs', './second.cjs']);
+    deepStrictEqual(cli.scriptArgs, ['--inspect', '--require', 'script-value', '--']);
+    strictEqual(cli.flags.require, undefined);
+    strictEqual(cli.kernelArgs, cli.rawArgs.kernelArgs);
+    strictEqual(cli.commandArgs, cli.rawArgs.commandArgs);
+    strictEqual(cli.scriptArgs, cli.rawArgs.scriptArgs);
+});
+
+Deno.test('cli: missing values are validated before a later occurrence can hide them', () => {
+    const cli = parseArgv(['--require', '--require=valid.cjs', 'run', '--cache-dir=', '--cache-dir=valid', 'main.ts']);
+    deepStrictEqual(missingFlagValues(cli), ['require', 'cache-dir']);
+    const split = parseArgv(['--cache-dir', 'run', '--cache-dir=command-cache', 'main.ts']);
+    // A bare word is a value, including a command name. The parser never guesses
+    // that a value is really a command and silently changes ownership.
+    strictEqual(split.kernelFlags['cache-dir'], 'command-cache');
+    strictEqual(split.cmd, null);
+});
+
+Deno.test('cli: unknown flag diagnostics preserve their owning region', () => {
+    const cli = parseArgv(['--filter=prefix', '--constructor', 'run', '--not-real=value', '--__proto__=value', 'entry.ts']);
+    deepStrictEqual(unknownKernelFlags(cli), ['--filter', '--constructor']);
+    deepStrictEqual(unknownCommandFlags(cli), ['--not-real', '--__proto__']);
+    strictEqual(Object.getPrototypeOf(cli.flags), Object.prototype);
+    strictEqual(cli.flags.__proto__, 'value');
+    const invalidShort = parseArgv(['-inspect', 'run', 'entry.ts']);
+    deepStrictEqual(unknownKernelFlags(invalidShort), ['-inspect']);
+    strictEqual(invalidShort.kernelFlags.inspect, undefined);
+});
+
+Deno.test('cli: eval and aliases stop option parsing after source', () => {
+    for (const invocation of [['eval', '42'], ['-e', '42'], ['--eval=42'], ['--print=42']]) {
+        const cli = parseArgv([...invocation, '--inspect', '--require', 'x']);
+        deepStrictEqual(cli.scriptArgs, ['--inspect', '--require', 'x']);
+        deepStrictEqual(cli.kernelArgs, []);
+        deepStrictEqual(cli.commandArgs, []);
+        deepStrictEqual(unknownFlags(cli), []);
+    }
+});
+
+Deno.test('cli: eval aliases consume dash-prefixed source and retain combined flag spelling', () => {
+    for (const flag of ['-e', '-p', '-pe', '-ep']) {
+        const cli = parseArgv([flag, '-1', '--inspect']);
+        strictEqual(cli.cmd, 'eval');
+        strictEqual(cli.rawArgs.entry, '-1');
+        deepStrictEqual(cli.rawArgs.evalToken, { flag, inline: false });
+        deepStrictEqual(cli.scriptArgs, ['--inspect']);
+        deepStrictEqual(cli.kernelArgs, []);
+        deepStrictEqual(cli.commandArgs, []);
+    }
+});
+
+Deno.test('cli: multi-target commands keep their documented separator contract', () => {
+    const test = parseArgv(['--conditions=test', 'test', 'one.test.ts', '--filter=selected', 'two.test.ts', '--', '--inspect', 'value']);
+    deepStrictEqual(test.positional, ['one.test.ts', 'two.test.ts', '--', '--inspect', 'value']);
+    deepStrictEqual(test.commandArgs, ['--filter=selected']);
+    deepStrictEqual(test.scriptArgs, ['--inspect', 'value']);
+    const cache = parseArgv(['cache', 'one.ts', '--no-oxc', 'two.ts']);
+    deepStrictEqual(cache.positional, ['one.ts', 'two.ts']);
+    deepStrictEqual(cache.scriptArgs, []);
+});
+
+Deno.test('cli: shared tokenizer preserves option-shaped values and Node short aliases', () => {
+    deepStrictEqual(tokenizeOptions(['--require=--inspect', '-Cdev', '--inspect=9333']), [
+        { name: 'require', value: '--inspect', tokens: ['--require=--inspect'] },
+        { name: 'conditions', value: 'dev', tokens: ['-Cdev'] },
+        { name: 'inspect', value: '9333', tokens: ['--inspect=9333'] },
+    ]);
+    deepStrictEqual(tokenizeOptions(['-r', './init.cjs', '-C=dev'], { nodeOptions: true }), [
+        { name: 'require', value: './init.cjs', tokens: ['-r', './init.cjs'] },
+        { name: 'conditions', value: 'dev', tokens: ['-C=dev'] },
+    ]);
+    deepStrictEqual(tokenizeOptions(['-r']), [{ name: 'reload', value: true, tokens: ['-r'] }]);
+    deepStrictEqual(splitNodeOptions('--require "./space path.cjs" --conditions=dev'), ['--require', './space path.cjs', '--conditions=dev']);
+    throws(() => splitNodeOptions('--require "unclosed'), /unterminated/);
+});
+
+Deno.test('cli: command forwarding selects registered command options without promoting kernel flags', () => {
+    const cli = parseArgv(['test', '--cache-dir=cache', '--filter=selected', '--inspect=9333', '--require=ignored.cjs', '--reload', 'test.ts']);
+    deepStrictEqual(commandOptionTokensFor(cli, 'run'), ['--cache-dir=cache', '--reload']);
+    deepStrictEqual(commandOptionTokensFor(cli, 'cache'), ['--cache-dir=cache']);
+});
+
+Deno.test('cli: NODE_OPTIONS accepts core options and rejects commands and malformed input', () => {
+    deepStrictEqual(parseNodeOptions('-r "./space path.cjs" -C=dev --no-warnings'), [
+        { name: 'require', value: './space path.cjs', tokens: ['-r', './space path.cjs'] },
+        { name: 'conditions', value: 'dev', tokens: ['-C=dev'] },
+        { name: 'no-warnings', value: true, tokens: ['--no-warnings'] },
+    ]);
+    for (const value of [
+        '--filter=selected', '--cache-dir=cache', '--help', '--eval=42',
+        'main.ts', '-- --require=preload.cjs', '--unknown', '--allow-anything',
+        '--require', '--require=', '--conditions --no-warnings',
+    ]) {
+        throws(() => parseNodeOptions(value), /NODE_OPTIONS/, value);
+    }
 });
 
 Deno.test('cts path: normalizes separators and drive prefixes', () => {
@@ -623,23 +846,15 @@ Deno.test('cli: value flags do not consume option-shaped tokens', () => {
     deepStrictEqual(missingFlagValues(negative), []);
 });
 
-Deno.test('cli: eval aliases do not consume option-shaped tokens', () => {
+Deno.test('cli: eval aliases treat their next token as source without flag reinterpretation', () => {
     const shortAlias = parseArgv(['-e', '--quiet']);
     strictEqual(shortAlias.cmd, 'eval');
-    deepStrictEqual(shortAlias.positional, []);
-    strictEqual(shortAlias.flags.quiet, true);
+    deepStrictEqual(shortAlias.positional, ['--quiet']);
+    deepStrictEqual(shortAlias.flags, {});
 
     const longAlias = parseArgv(['--eval', '--', '-1']);
     strictEqual(longAlias.cmd, 'eval');
-    deepStrictEqual(longAlias.positional, ['-1']);
-
-    const negativeCode = parseArgv(['-e', '-1']);
-    strictEqual(negativeCode.cmd, 'eval');
-    deepStrictEqual(negativeCode.positional, []);
-    deepStrictEqual(unknownFlags(negativeCode), ['-1']);
-
-    const separatedNegativeCode = parseArgv(['-e', '--', '-1']);
-    strictEqual(separatedNegativeCode.cmd, 'eval');
-    deepStrictEqual(separatedNegativeCode.positional, ['-1']);
-    deepStrictEqual(separatedNegativeCode.rawArgs.args, []);
+    strictEqual(longAlias.rawArgs.entry, '--');
+    deepStrictEqual(longAlias.scriptArgs, ['-1']);
+    deepStrictEqual(unknownFlags(longAlias), []);
 });

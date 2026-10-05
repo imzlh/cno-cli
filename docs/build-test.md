@@ -20,6 +20,35 @@ The root build requires:
 Optional extensions may require extra dependencies such as Rust, OpenSSL, or
 nghttp2.
 
+### Windows native dependencies
+
+The root `vcpkg.json` declares the required native libraries and pins the vcpkg
+registry baseline. VS Code's CMake configuration and `build.ps1` both use
+`cmake/vcpkg-toolchain.cmake`. It finds an explicit `VCPKG_ROOT` first, then the
+vcpkg installation bundled with Visual Studio, so moving Visual Studio does
+not require hard-coded drive paths in the project.
+
+Install Visual Studio's C++ build tools, Windows SDK, and vcpkg component.
+Then run `./build.ps1` from PowerShell, or configure/build with VS Code CMake
+Tools. CMake runs `vcpkg install` automatically and installs the manifest's
+dependencies into `vcpkg_installed/`, reusing the vcpkg binary cache when
+compatible. Both Debug and Release libraries are installed. The build stages
+the DLLs required by the selected configuration alongside `cno.exe`.
+
+For a manual Debug configuration, run this from an x64 developer shell:
+
+```powershell
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug `
+  -DCMAKE_TOOLCHAIN_FILE=cmake/vcpkg-toolchain.cmake `
+  -DVCPKG_TARGET_TRIPLET=x64-windows
+cmake --build build --parallel
+```
+
+When switching from a configuration that did not use this toolchain, add
+`--fresh` to the first configure command, or use CMake Tools' **Delete Cache
+and Reconfigure** once. Setting `VCPKG_TARGET_TRIPLET` alone does not enable
+vcpkg or make `find_package()` search its libraries.
+
 ## Type Check
 
 Run the bundled TypeScript surface check:

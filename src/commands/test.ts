@@ -1,8 +1,9 @@
 import { joinPaths, normalizePath, isAbsolute, cwd, toPosixPath, isWindows } from '../../cts/src/api';
-import { parseArgv } from '../cli';
+import { parseArgv, type ParsedCli } from '../cli';
 import { CliExit } from '../command-error';
 import { C } from '../help';
 import { readTestChildResult, type TestChildMessage } from './test-result-pipe';
+import { readEnv } from '../env';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
@@ -17,13 +18,11 @@ const sysError = import.meta.use('error');
 const DEFAULT_CHILD_TIMEOUT_MS = 60_000;
 
 function childTimeoutMs(): number {
-    try {
-        const raw = os.getenv('CNO_TEST_CHILD_TIMEOUT_MS');
-        if (raw !== undefined && raw !== null && raw !== '') {
-            const value = Number(raw);
-            if (Number.isFinite(value) && value >= 0) return Math.floor(value);
-        }
-    } catch { /* environment access can be unavailable in a worker */ }
+    const raw = readEnv('CNO_TEST_CHILD_TIMEOUT_MS');
+    if (raw) {
+        const value = Number(raw);
+        if (Number.isFinite(value) && value >= 0) return Math.floor(value);
+    }
     return DEFAULT_CHILD_TIMEOUT_MS;
 }
 
@@ -200,36 +199,53 @@ function errorText(value: unknown): string | undefined {
     return String(value);
 }
 
+export interface TestInvocation {
+    kernelArgs: string[];
+    commandArgs: string[];
+}
+
 export interface TestChildArgs {
-    /** Parsed view used for test-runner control flags. */
-    flags: Record<string, string | boolean>;
-    /** Original flag tokens, preserving duplicates, order, and spelling. */
-    flagArgs: string[];
+    cli: ParsedCli;
     /** User arguments exposed to the test module through Deno.args. */
     scriptArgs: string[];
 }
 
-function childEnv(flags: Record<string, string | boolean>): Record<string, string> {
+function childEnv(flags: Record<string, string | boolean>, invocation: TestInvocation): Record<string, string> {
     // process.spawn's env replaces rather than merges, so we must carry the
     // full parent environment ourselves alongside the sentinel.
-    const env: Record<string, string> = { ...os.environ(), [TEST_CHILD_ENV]: '1' };
+    const env: Record<string, string> = {
+        ...os.environ(),
+        [TEST_CHILD_ENV]: JSON.stringify({
+            version: 1,
+            kernelArgs: invocation.kernelArgs,
+            commandArgs: invocation.commandArgs,
+        }),
+    };
     const cacheDir = flags['cache-dir'];
     if (typeof cacheDir === 'string') env.CTS_CACHE_DIR = cacheDir;
     return env;
 }
 
-export function parseTestChildFlags(args: string[]): Record<string, string | boolean> {
-    return parseArgv(['test', ...args]).flags;
-}
-
-export function parseTestChildArgs(args: string[]): TestChildArgs {
-    const separator = args.indexOf('--');
-    const flagArgs = separator < 0 ? args.slice() : args.slice(0, separator);
-    return {
-        flags: parseTestChildFlags(flagArgs),
-        flagArgs,
-        scriptArgs: separator < 0 ? [] : args.slice(separator + 1),
-    };
+export function parseTestChildArgs(scriptArgs: string[], serializedInvocation: string): TestChildArgs {
+    let data: unknown;
+    try {
+        data = JSON.parse(serializedInvocation);
+    } catch {
+        throw new Error('Invalid test child argument protocol');
+    }
+    const stringArray = (value: unknown): value is string[] =>
+        Array.isArray(value) && value.every(token => typeof token === 'string');
+    if (!isRecord(data) || data.version !== 1 ||
+        !stringArray(data.kernelArgs) || !stringArray(data.commandArgs)) {
+        throw new Error('Invalid test child argument protocol');
+    }
+    const cli = parseArgv([...data.kernelArgs, 'test', ...data.commandArgs]);
+    if (cli.cmd !== 'test' || cli.positional.length !== 0 ||
+        cli.kernelArgs.length !== data.kernelArgs.length ||
+        cli.commandArgs.length !== data.commandArgs.length) {
+        throw new Error('Invalid test child argument regions');
+    }
+    return { cli, scriptArgs: scriptArgs.slice() };
 }
 
 function parseConcurrency(value: string | boolean | undefined): number | null {
@@ -241,27 +257,18 @@ function parseConcurrency(value: string | boolean | undefined): number | null {
     return parsed;
 }
 
-/** Inspect flags bind one fixed port, so parallel children fight over it. */
-function usesInspector(flags: Record<string, string | boolean>): boolean {
-    for (const key of ['inspect', 'inspect-brk', 'inspect-wait']) {
-        const value = flags[key];
-        if (value !== undefined && value !== false) return true;
-    }
-    return false;
-}
-
 async function runOne(
     file: string,
     flags: Record<string, string | boolean>,
-    flagArgs: string[],
+    invocation: TestInvocation,
     scriptArgs: string[],
 ): Promise<TestResult> {
     const start = performance.now();
     let child: ReturnType<typeof process.spawn>;
     try {
-        child = process.spawn([os.exePath, file, ...flagArgs, '--', ...scriptArgs], {
+        child = process.spawn([os.exePath, file, ...scriptArgs], {
             stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', ipc: true,
-            env: childEnv(flags),
+            env: childEnv(flags, invocation),
         });
     } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -354,7 +361,7 @@ async function runAll(
     files: string[],
     concurrency: number,
     flags: Record<string, string | boolean>,
-    flagArgs: string[],
+    invocation: TestInvocation,
     scriptArgs: string[],
 ): Promise<TestResult[]> {
     const results: TestResult[] = [];
@@ -366,7 +373,7 @@ async function runAll(
         while (queue.length) {
             const file = queue.shift();
             if (file === undefined) continue;
-            const result = await runOne(file, flags, flagArgs, scriptArgs);
+            const result = await runOne(file, flags, invocation, scriptArgs);
             results.push(result);
             if (failFast && !result.passed) {
                 queue.length = 0;
@@ -391,7 +398,8 @@ async function runAll(
 export async function runTest(
     rawPaths: string[],
     flags: Record<string, string | boolean>,
-    flagArgs: string[],
+    invocation: TestInvocation,
+    inspectorEnabled = false,
 ): Promise<void> {
     const separator = rawPaths.indexOf('--');
     const paths = separator < 0 ? rawPaths : rawPaths.slice(0, separator);
@@ -415,13 +423,13 @@ export async function runTest(
     // Each test file is a child process; `--inspect*` is forwarded to all of
     // them, so anything above 1 makes every child but the first die with
     // EADDRINUSE and report a spurious module failure.
-    const serial = flags['fail-fast'] === true || usesInspector(flags);
+    const serial = flags['fail-fast'] === true || inspectorEnabled;
     const concurrency = serial ? 1 : Math.min(files.length, requestedConcurrency);
 
     console.log(`${C.dim('Running')} ${files.length} test file${files.length === 1 ? '' : 's'} (concurrency=${concurrency})`);
     console.log('');
 
-    const results = await runAll(files, concurrency, flags, flagArgs, scriptArgs);
+    const results = await runAll(files, concurrency, flags, invocation, scriptArgs);
 
     let passed = 0, failed = 0;
     const allFailed: Array<{ file: string; tests: FailedTest[] }> = [];

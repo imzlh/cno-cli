@@ -1,127 +1,104 @@
-import { strictEqual, ok } from 'node:assert';
-import { parseInspectFlags } from '../../src/commands/inspect';
-
-// --- 1. bare `--inspect` defaults ------------------------------------------
+import { deepStrictEqual, strictEqual, throws } from 'node:assert';
+import { inspectOptions } from '../../src/inspector/options.ts';
 
 Deno.test('inspector: bare --inspect defaults to 127.0.0.1:9229, no break', () => {
-    const o = parseInspectFlags({ inspect: true });
-    ok(o, 'must parse');
-    strictEqual(o!.host, '127.0.0.1');
-    strictEqual(o!.port, 9229);
-    strictEqual(o!.breakOnStart, false);
-    strictEqual(o!.waitForClient, false);
+    deepStrictEqual(inspectOptions({ inspect: true }), {
+        host: '127.0.0.1', port: 9229, breakOnStart: false, waitForClient: false,
+    });
 });
-
-// --- 2. `--inspect=port` keeps default host --------------------------------
 
 Deno.test('inspector: --inspect=9333 parses custom port, default host', () => {
-    const o = parseInspectFlags({ inspect: '9333' })!;
-    strictEqual(o.host, '127.0.0.1');
-    strictEqual(o.port, 9333);
+    const options = inspectOptions({ inspect: '9333' })!;
+    strictEqual(options.host, '127.0.0.1');
+    strictEqual(options.port, 9333);
 });
-
-// --- 3. `--inspect=host:port` splits correctly -----------------------------
 
 Deno.test('inspector: --inspect=0.0.0.0:9444 splits host and port', () => {
-    const o = parseInspectFlags({ inspect: '0.0.0.0:9444' })!;
-    strictEqual(o.host, '0.0.0.0');
-    strictEqual(o.port, 9444);
+    const options = inspectOptions({ inspect: '0.0.0.0:9444' })!;
+    strictEqual(options.host, '0.0.0.0');
+    strictEqual(options.port, 9444);
 });
 
-// --- 4. `--inspect-brk` sets breakOnStart (non-repl) ----------------------
-
-Deno.test('inspector: --inspect-brk sets breakOnStart=true outside REPL', () => {
-    const o = parseInspectFlags({ 'inspect-brk': true })!;
-    strictEqual(o.breakOnStart, true);
-    strictEqual(o.waitForClient, false);
-    strictEqual(o.port, 9229);
+Deno.test('inspector: --inspect-brk requests an initial breakpoint', () => {
+    deepStrictEqual(inspectOptions({ 'inspect-brk': true }), {
+        host: '127.0.0.1', port: 9229, breakOnStart: true, waitForClient: false,
+    });
 });
 
-// --- 5. `--inspect-brk` in REPL does NOT break on start --------------------
-//
-// Intentional asymmetry: a REPL should connect and let you type; only
-// `--inspect-wait` defers execution. Verify the flag flips breakOnStart off
-// when repl=true.
-
-Deno.test('inspector: --inspect-brk in REPL sets breakOnStart=false', () => {
-    const o = parseInspectFlags({ 'inspect-brk': true }, true)!;
-    strictEqual(o.breakOnStart, false);
-    strictEqual(o.waitForClient, true);
+Deno.test('inspector: --inspect-wait requests a client before execution', () => {
+    deepStrictEqual(inspectOptions({ 'inspect-wait': true }), {
+        host: '127.0.0.1', port: 9229, breakOnStart: false, waitForClient: true,
+    });
 });
 
-// --- 6. `--inspect-wait` sets waitForClient -------------------------------
-
-Deno.test('inspector: --inspect-wait sets waitForClient=true', () => {
-    const o = parseInspectFlags({ 'inspect-wait': true })!;
-    strictEqual(o.waitForClient, true);
-    strictEqual(o.breakOnStart, false);
+Deno.test('inspector: absent or disabled flags return null', () => {
+    strictEqual(inspectOptions({}), null);
+    strictEqual(inspectOptions({ silent: true }), null);
+    strictEqual(inspectOptions({ inspect: false, 'inspect-brk': false, 'inspect-wait': false }), null);
 });
 
-// --- 7. no inspect flags -> null -------------------------------------------
-
-Deno.test('inspector: absent flags return null', () => {
-    strictEqual(parseInspectFlags({}), null);
-    strictEqual(parseInspectFlags({ silent: true }), null);
+Deno.test('inspector: a bare hostname uses the default port', () => {
+    const options = inspectOptions({ inspect: 'localhost' })!;
+    strictEqual(options.host, 'localhost');
+    strictEqual(options.port, 9229);
 });
 
-// --- 8. invalid port falls back to 9229 ------------------------------------
-
-Deno.test('inspector: non-numeric port falls back to 9229', () => {
-    const o = parseInspectFlags({ inspect: 'abc' })!;
-    strictEqual(o.port, 9229);
+Deno.test('inspector: inspect-brk address takes precedence and preserves both modes', () => {
+    deepStrictEqual(inspectOptions({ inspect: true, 'inspect-brk': '9333', 'inspect-wait': '9444' }), {
+        host: '127.0.0.1', port: 9333, breakOnStart: true, waitForClient: true,
+    });
 });
-
-// --- 9. precedence: inspect-brk wins over inspect -------------------------
-
-Deno.test('inspector: inspect-brk takes precedence over inspect', () => {
-    const o = parseInspectFlags({ inspect: true, 'inspect-brk': '9333' })!;
-    strictEqual(o.breakOnStart, true);
-    strictEqual(o.port, 9333);
-});
-
-// --- 10. `--inspect=true` (string) treats as bare -------------------------
 
 Deno.test('inspector: --inspect=true string is treated as bare flag', () => {
-    const o = parseInspectFlags({ inspect: 'true' })!;
-    strictEqual(o.port, 9229);
-    strictEqual(o.host, '127.0.0.1');
+    deepStrictEqual(inspectOptions({ inspect: 'true' }), inspectOptions({ inspect: true }));
 });
 
-Deno.test('inspector: empty host before colon falls back to 127.0.0.1', () => {
-    const o = parseInspectFlags({ inspect: ':9555' })!;
-    strictEqual(o.host, '127.0.0.1');
-    strictEqual(o.port, 9555);
+Deno.test('inspector: empty host before colon defaults to 127.0.0.1', () => {
+    const options = inspectOptions({ inspect: ':9555' })!;
+    strictEqual(options.host, '127.0.0.1');
+    strictEqual(options.port, 9555);
 });
 
-Deno.test('inspector: host is trimmed around host:port syntax', () => {
-    const o = parseInspectFlags({ inspect: ' 0.0.0.0 :9444 ' })!;
-    strictEqual(o.host, '0.0.0.0');
-    strictEqual(o.port, 9444);
+Deno.test('inspector: surrounding address whitespace is trimmed', () => {
+    const options = inspectOptions({ inspect: ' 0.0.0.0:9444 ' })!;
+    strictEqual(options.host, '0.0.0.0');
+    strictEqual(options.port, 9444);
 });
 
-Deno.test('inspector: port 0 falls back to 9229', () => {
-    const o = parseInspectFlags({ inspect: '127.0.0.1:0' })!;
-    strictEqual(o.host, '127.0.0.1');
-    strictEqual(o.port, 9229);
+Deno.test('inspector: port 0 requests an available port', () => {
+    for (const address of ['0', '127.0.0.1:0', '[::1]:0']) {
+        strictEqual(inspectOptions({ inspect: address })!.port, 0, address);
+    }
+});
+
+Deno.test('inspector: malformed addresses and ports are rejected', () => {
+    for (const address of [
+        '', ' ', '65536', '127.0.0.1:65536', 'localhost:', 'localhost:abc',
+        'localhost:-1', 'localhost:1.5', 'host name:9229', '0.0.0.0 :9444',
+        '[::1', '::1]', '[::1]:abc', '[::1]:65536',
+    ]) {
+        throws(() => inspectOptions({ inspect: address }), /Inspector (?:address|port)/, address);
+    }
 });
 
 Deno.test('inspector: inspect-wait takes precedence over inspect', () => {
-    const o = parseInspectFlags({ inspect: '9333', 'inspect-wait': '9444' })!;
-    strictEqual(o.waitForClient, true);
-    strictEqual(o.breakOnStart, false);
-    strictEqual(o.port, 9444);
+    deepStrictEqual(inspectOptions({ inspect: '9333', 'inspect-wait': '9444' }), {
+        host: '127.0.0.1', port: 9444, breakOnStart: false, waitForClient: true,
+    });
 });
 
 Deno.test('inspector: bare IPv6 addresses remain hosts', () => {
     for (const host of ['::1', '2001:db8::1']) {
-        const o = parseInspectFlags({ inspect: host })!;
-        strictEqual(o.host, host);
-        strictEqual(o.port, 9229);
+        const options = inspectOptions({ inspect: host })!;
+        strictEqual(options.host, host);
+        strictEqual(options.port, 9229);
     }
 });
 
-Deno.test('inspector: bracketed IPv6 supports an explicit port', () => {
-    const o = parseInspectFlags({ inspect: '[::1]:9444' })!;
-    strictEqual(o.host, '::1');
-    strictEqual(o.port, 9444);
+Deno.test('inspector: bracketed IPv6 supports default and explicit ports', () => {
+    for (const [address, port] of [['[::1]', 9229], ['[::1]:9444', 9444]] as const) {
+        const options = inspectOptions({ inspect: address })!;
+        strictEqual(options.host, '::1');
+        strictEqual(options.port, port);
+    }
 });

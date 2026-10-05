@@ -1,28 +1,19 @@
-import { createRuntime, loadConfigFile, Transformer, joinPaths, cwd, uname } from '../../../cts/src/api';
+import { loadConfigFile, Transformer, joinPaths, cwd, uname } from '../../../cts/src/api';
 import { installEventReceiver, PRIORITY_FALLBACK, EV } from '../../../cts/src/runtime/event-mux';
 import { version } from '../../version';
 import { CnoRepl } from './runner';
 import { HISTORY_DB_NAME, HISTORY_TEXT_NAME } from './history';
-import { Inspector } from '../../inspector';
-import { installInspectorBridge, uninstallInspectorBridge } from '../../inspector/bridge';
-import { flagsToConfig, publishWorkerRuntimeConfig } from '../config-flags';
-import { parseInspectFlags } from '../inspect';
+import { flagsToConfig } from '../../config';
+import type { Args } from '../../../cno/src/utils/args';
+import { applyLocationFlag, effectiveRuntimeFlags, openKernelRuntime, type KernelContext, type KernelRuntime } from '../../kernel';
+import { readEnv } from '../../env';
 
-const os = import.meta.use('os');
 const fs = import.meta.use('fs');
-
-function getEnv(name: string): string | null {
-    try {
-        return os.getenv(name) ?? null;
-    } catch {
-        return null;
-    }
-}
 
 function homeDir(): string | null {
     try {
         const win = uname.sysname.includes('Windows');
-        const v = getEnv(win ? 'USERPROFILE' : 'HOME');
+        const v = readEnv(win ? 'USERPROFILE' : 'HOME');
         if (!v) return null;
         try {
             return fs.realpath(v);
@@ -32,7 +23,6 @@ function homeDir(): string | null {
         }
     } catch { return null; }
 }
-
 function exists(path: string): boolean {
     try {
         return fs.exists(path);
@@ -41,29 +31,23 @@ function exists(path: string): boolean {
     }
 }
 
-export async function runRepl(flags: Record<string, string | boolean>): Promise<void> {
-    let dbg: Inspector | null = null;
-    let runtime: ReturnType<typeof createRuntime> | null = null;
+export async function runRepl(
+    commandFlags: Record<string, string | boolean>,
+    kernel: KernelContext,
+    rawArgs: Args,
+): Promise<void> {
+    const flags = effectiveRuntimeFlags(kernel, commandFlags);
+    let session: KernelRuntime | undefined;
     let repl: CnoRepl | null = null;
     let removeReplReceiver: (() => void) | null = null;
-    let bridgeInstalled = false;
 
     try {
-        dbg = await startInspector(flags);
+        applyLocationFlag(flags);
         const cwdPath = cwd();
         const cliCfg = flagsToConfig(flags);
         cliCfg.ignoreScripts = true;
-        runtime = createRuntime({ ...loadConfigFile(cwdPath), ...cliCfg }, cwdPath);
-        publishWorkerRuntimeConfig(runtime.config);
-        installInspectorBridge({
-            entryFile: 'repl',
-            addInitHook: (hook) => runtime!.addInitHook(hook),
-            getCurrentInspector: () => dbg,
-            setCurrentInspector: (inspector) => { dbg = inspector; },
-        });
-        bridgeInstalled = true;
-
-        if (dbg?.scriptInitHook) runtime.addInitHook(dbg.scriptInitHook);
+        session = await openKernelRuntime(kernel, 'repl', { ...loadConfigFile(cwdPath), ...kernel.config, ...cliCfg }, cwdPath, { repl: true });
+        await session.initialize(rawArgs);
 
         removeReplReceiver = installEventReceiver(
             'repl',
@@ -92,23 +76,7 @@ export async function runRepl(flags: Record<string, string | boolean>): Promise<
             repl?.cleanup();
         } finally {
             removeReplReceiver?.();
-            try {
-                await dbg?.detach();
-            } finally {
-                if (bridgeInstalled) uninstallInspectorBridge();
-                runtime?.cleanup();
-            }
+            await session?.close();
         }
     }
-}
-
-async function startInspector(flags: Record<string, string | boolean>): Promise<Inspector | null> {
-    const inspect = parseInspectFlags(flags, true);
-    if (!inspect) return null;
-
-    // In REPL mode, --inspect-brk degrades to --inspect-wait:
-    // there is no "first line" to break on in an interactive session.
-    const dbg = new Inspector({ port: inspect.port, host: inspect.host, waitForClient: inspect.waitForClient, entryFile: 'repl' });
-    await dbg.attach();
-    return dbg;
 }

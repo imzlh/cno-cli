@@ -6,6 +6,7 @@ import setArgs, {
     buildNodeArgv0,
     buildNodeExecArgv,
     getArgs,
+    normalizeArgs,
     parseArgs as parseRuntimeArgs,
 } from '../../cno/src/utils/args.ts';
 import {
@@ -80,6 +81,40 @@ Deno.test('cno utils args: builders derive Deno and Node argv from shared state'
     } finally {
         setArgs(original);
     }
+});
+
+Deno.test('cno utils args: normalized names share storage and cannot drift', () => {
+    const original = getArgs();
+    try {
+        const normalized = normalizeArgs({
+            binary: 'cno', internalArgs: ['--inspect'], actionArgs: ['--reload'],
+            action: 'run', entry: '/work/main.ts', args: ['original'],
+        });
+        strictEqual(normalized.kernelArgs, normalized.internalArgs);
+        strictEqual(normalized.commandArgs, normalized.actionArgs);
+        strictEqual(normalized.scriptArgs, normalized.args);
+        normalized.kernelArgs = ['--conditions=development'];
+        normalized.args = ['--inspect', '--require', 'script'];
+        setArgs(normalized);
+        deepStrictEqual(buildNodeExecArgv(), ['--conditions=development']);
+        deepStrictEqual(buildDenoArgs(), ['--inspect', '--require', 'script']);
+        deepStrictEqual(buildNodeArgv(), ['cno', '/work/main.ts', '--inspect', '--require', 'script']);
+        const snapshot = buildDenoArgs();
+        snapshot.push('local-only');
+        deepStrictEqual(buildDenoArgs(), ['--inspect', '--require', 'script']);
+    } finally { setArgs(original); }
+});
+
+Deno.test('cno utils args: fallback honors option terminators and stdin entries', () => {
+    const implicit = parseRuntimeArgs(['--', '--entry.ts', '--user'], 'cno');
+    strictEqual(implicit.entry, '--entry.ts');
+    deepStrictEqual(implicit.kernelArgs, []);
+    deepStrictEqual(implicit.scriptArgs, ['--user']);
+    const explicit = parseRuntimeArgs(['run', '--', '--entry.ts', '--', '--user'], 'cno');
+    strictEqual(explicit.entry, '--entry.ts');
+    deepStrictEqual(explicit.commandArgs, []);
+    deepStrictEqual(explicit.scriptArgs, ['--', '--user']);
+    strictEqual(parseRuntimeArgs(['run', '-', 'user'], 'cno').entry, '-');
 });
 
 Deno.test('cno utils args: Windows drive-relative entries use the drive-aware resolver', () => {

@@ -57,10 +57,10 @@ import {
 } from '../shared/wire'
 import type { MainEndpoint } from '../transport/main-endpoint'
 import type { Serializer } from './remote-object'
+import { readEnv } from '../../env'
 
 const engine = import.meta.use('engine')
 const fs = import.meta.use('fs')
-const os = import.meta.use('os')
 const sourcemap = import.meta.use('sourcemap') as SourceMapLookup
 const debug = import.meta.use('debug')
 const console = import.meta.use('console')
@@ -761,12 +761,7 @@ export class Hooks {
 	}
 
 	private maxPendingBodyBytes(): number {
-		let raw: string | undefined
-		try {
-			raw = os.getenv('CNO_INSPECTOR_PENDING_BODY_MAX_BYTES') ?? undefined
-		} catch {
-			raw = undefined
-		}
+		const raw = readEnv('CNO_INSPECTOR_PENDING_BODY_MAX_BYTES') ?? undefined
 		if (!raw) return maxPendingBodyBytes
 		const parsed = Number(raw)
 		return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : maxPendingBodyBytes

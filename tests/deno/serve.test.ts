@@ -516,7 +516,7 @@ Deno.test({
 
 Deno.test({ name: 'deno: Deno.serve handles text/json/404 routes', timeout: SPAWN_TEST_TIMEOUT_MS }, async () => {
     if (!await canListenTcp()) return;
-    const target = startTarget(['run', '--allow-net', `--inspect=0`, TARGET]);
+    const target = startTarget(['--inspect=0', 'run', '--allow-net', TARGET]);
     try {
         await waitForServer(target);
 

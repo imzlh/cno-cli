@@ -1,4 +1,4 @@
-import { ok, strictEqual } from 'node:assert';
+import { ok, strictEqual, throws } from 'node:assert';
 import * as inspector from 'node:inspector';
 
 // --- 1. inspector.url() returns a string or undefined ----------------------
@@ -9,15 +9,12 @@ Deno.test('inspector: url() returns string or undefined', () => {
     strictEqual(u, undefined);
 });
 
-// --- 3. inspector.waitForDebugger is callable ------------------------------
-
-Deno.test('inspector: waitForDebugger is callable', () => {
-    try {
-        strictEqual(inspector.waitForDebugger(), undefined);
-    } catch (e) {
-        ok(e instanceof Error);
-        ok(/Inspector is not active|not available/i.test(e.message));
-    }
+Deno.test('inspector: waitForDebugger rejects inactive inspector without starting it', () => {
+    throws(() => inspector.waitForDebugger(), {
+        code: 'ERR_INSPECTOR_NOT_ACTIVE',
+        message: 'Inspector is not active',
+    });
+    strictEqual(inspector.url(), undefined);
 });
 
 // --- 4. inspector.console is an object -------------------------------------

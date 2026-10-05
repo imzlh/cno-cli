@@ -57,7 +57,7 @@ interface Session {
 async function attach(inspectPort: number): Promise<Session> {
     const proc: ChildProcess = spawn(
         CNO,
-        ['run', '--allow-all', `--inspect=${HOST}:${inspectPort}`, TARGET],
+        [`--inspect=${HOST}:${inspectPort}`, 'run', '--allow-all', TARGET],
         { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let failure: Error | null = null;

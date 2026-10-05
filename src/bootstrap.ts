@@ -1,4 +1,5 @@
 import { uname, joinPaths, errMsg } from '../cts/src/api';
+import { readEnv } from './env';
 
 const fs = import.meta.use('fs');
 const os = import.meta.use('os');
@@ -23,21 +24,13 @@ function binaryDir(): string {
     }
 }
 
-function getEnv(name: string): string | null {
-    try {
-        return os.getenv(name) ?? null;
-    } catch {
-        return null;
-    }
-}
-
 /**
  * Resolve the directory holding native shared-library extensions
  * (oxc, ext-h2, ext-quic). Returns null if none found — the runtime will
  * fall back to whatever circu.js has statically linked.
  */
 export function resolveExtDir(): string | null {
-    const envPath = getEnv('CTS_EXT_PATH');
+    const envPath = readEnv('CTS_EXT_PATH');
     if (envPath) return envPath;
 
     const dir = binaryDir();

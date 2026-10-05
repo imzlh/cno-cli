@@ -6,11 +6,8 @@
     ],
     "cmake.generator": "Ninja",
     "cmake.buildDirectory": "${workspaceFolder}/build",
-    "cmake.additionalKits": [
-        "${workspaceFolder}/.vscode/cmake-kits.json"
-    ],
     "cmake.configureSettings": {
-        "CMAKE_TOOLCHAIN_FILE": "E:/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_TOOLCHAIN_FILE": "${workspaceFolder}/cmake/vcpkg-toolchain.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows",
         "PNPM_EXE": "C:/Users/Admin/AppData/Local/Microsoft/WinGet/Packages/pnpm.pnpm_Microsoft.Winget.Source_8wekyb3d8bbwe/pnpm.exe"
     },

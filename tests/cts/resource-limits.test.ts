@@ -100,7 +100,7 @@ Deno.test('resource-limits: --memory-limit refuses allocation past the cap', asy
     await withTempDir('rl-enforce', async (dir) => {
         const f = join(dir, 'a.js');
         Deno.writeTextFileSync(f, allocSrc('buf', CAP, true));
-        const r = await runCno(['run', `--memory-limit=${MEM}`, f], dir);
+        const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
         ok(!r.stdout.includes('COMPLETED-NO-OOM'),
             `allocation of ${CAP}MB must be refused under ${MEM}; got: ${r.stdout}`);
         ok(r.stdout.includes('CAUGHT'), `expected a caught OOM, got: ${r.stdout}`);
@@ -113,7 +113,7 @@ Deno.test('resource-limits: OOM is a catchable exception, not a fatal abort', as
     await withTempDir('rl-catch', async (dir) => {
         const f = join(dir, 'a.js');
         Deno.writeTextFileSync(f, allocSrc('buf', CAP, true));
-        const r = await runCno(['run', `--memory-limit=${MEM}`, f], dir);
+        const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
         // The process survives and keeps running user code after the OOM.
         ok(r.stdout.includes('END'),
             `process must survive a caught OOM and reach END; got: ${r.stdout}`);
@@ -135,7 +135,7 @@ Deno.test('resource-limits: uncaught OOM exits non-zero with a stderr diagnostic
     await withTempDir('rl-uncaught', async (dir) => {
         const f = join(dir, 'a.js');
         Deno.writeTextFileSync(f, allocSrc('buf', CAP, false));
-        const r = await runCno(['run', `--memory-limit=${MEM}`, f], dir);
+        const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
         ok(!r.stdout.includes('COMPLETED-NO-OOM'), 'allocation must be refused');
         ok(r.code !== 0, `uncaught OOM must exit non-zero, got ${r.code}`);
         // See the Promise case below: an uncaught OOM may degenerate to a bare
@@ -159,7 +159,7 @@ Deno.test('resource-limits: uncaught OOM in a Promise exits non-zero', async () 
             const mb = await job();
             console.log('COMPLETED-NO-OOM ' + mb);
         `);
-        const r = await runCno(['run', `--memory-limit=${MEM}`, f], dir);
+        const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
         ok(!r.stdout.includes('COMPLETED-NO-OOM'), 'allocation must be refused');
         ok(r.code !== 0, `uncaught OOM in a Promise must exit non-zero, got ${r.code}`);
         // An UNCAUGHT OOM cannot release anything first -- the CLI's error
@@ -194,7 +194,7 @@ Deno.test('resource-limits: OOM in a vm sandbox is catchable by the host', async
             }
             console.log('END');
         `);
-        const r = await runCno(['run', `--memory-limit=${MEM}`, f], dir);
+        const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
         ok(!r.stdout.includes('VM-COMPLETED-NO-OOM'),
             `vm allocation must be refused under ${MEM}; got: ${r.stdout}`);
         ok(r.stdout.includes('HOST-CAUGHT'),
@@ -220,7 +220,7 @@ Deno.test('resource-limits: --memory-limit is enforced inside a file Worker', as
             w.on('error', (e) => console.log('ERR ' + (e && e.message)));
             w.on('exit', (c) => console.log('EXIT ' + c));
         `);
-        const r = await runCno(['run', `--memory-limit=${MEM}`, f], dir);
+        const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
         ok(!r.stdout.includes('"ok":true'),
             `worker must not allocate ${CAP}MB under ${MEM}; stdout: ${r.stdout}`);
         ok(!r.stdout.includes(`"mb":${CAP}`),
@@ -243,7 +243,7 @@ Deno.test('resource-limits: a worker OOM reaches the parent as error + exit 1', 
             w.on('error', (e) => console.log('[EV error] ' + (e && e.name) + ' ' + (e && e.message)));
             w.on('exit', (c) => console.log('[EV exit] ' + c));
         `);
-        const r = await runCno(['run', `--memory-limit=${MEM}`, f], dir);
+        const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
         ok(/\[EV error\] InternalError out of memory/.test(r.stdout),
             `'error' must fire with the OOM; stdout: ${r.stdout}`);
         ok(r.stdout.includes('[EV exit] 1'),
@@ -285,7 +285,7 @@ Deno.test('resource-limits: --memory-limit is enforced inside an eval Worker', a
             w.on('message', (m) => console.log('MSG ' + JSON.stringify(m)));
             w.on('exit', (c) => console.log('EXIT ' + c));
         `);
-        const r = await runCno(['run', `--memory-limit=${MEM}`, f], dir);
+        const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
         ok(r.stdout.includes('"hasCfg":true'),
             `an eval worker must receive the parent's runtime config. ` +
             `stdout: ${r.stdout}`);
@@ -313,7 +313,7 @@ Deno.test('resource-limits: --max-stack-size yields a catchable RangeError', asy
             }
             console.log('END');
         `);
-        const r = await runCno(['run', '--max-stack-size=1MB', f], dir);
+        const r = await runCno(['--max-stack-size=1MB', 'run', f], dir);
         strictEqual(r.code, 0, 'a caught stack overflow leaves exit code 0');
         ok(r.stdout.includes('name=RangeError'), `expected RangeError, got: ${r.stdout}`);
         ok(r.stdout.includes('msg=Maximum call stack size exceeded'),
@@ -332,7 +332,7 @@ Deno.test('resource-limits: uncaught stack overflow exits non-zero', async () =>
             rec(0);
             console.log('NO-OVERFLOW');
         `);
-        const r = await runCno(['run', '--max-stack-size=1MB', f], dir);
+        const r = await runCno(['--max-stack-size=1MB', 'run', f], dir);
         ok(!r.stdout.includes('NO-OVERFLOW'), 'recursion must be stopped');
         ok(r.code !== 0, `uncaught stack overflow must exit non-zero, got ${r.code}`);
         ok(/Maximum call stack size exceeded/.test(r.stderr),
@@ -349,7 +349,7 @@ Deno.test('resource-limits: tiny --max-stack-size must never be a silent success
         const f = join(dir, 'a.js');
         Deno.writeTextFileSync(f, `console.log('SCRIPT-RAN');\n`);
         for (const size of ['64KB', '128KB', '160KB', '256KB']) {
-            const r = await runCno(['run', `--max-stack-size=${size}`, f], dir);
+            const r = await runCno([`--max-stack-size=${size}`, 'run', f], dir);
             if (r.stdout.includes('SCRIPT-RAN')) continue; // survivable; fine
             ok(r.code !== 0,
                 `--max-stack-size=${size}: script never ran, so the exit code must ` +
@@ -369,7 +369,7 @@ Deno.test('resource-limits: a modest --max-stack-size still runs the script', as
     await withTempDir('rl-stack-ok', async (dir) => {
         const f = join(dir, 'a.js');
         Deno.writeTextFileSync(f, `console.log('SCRIPT-RAN');\n`);
-        const r = await runCno(['run', '--max-stack-size=1MB', f], dir);
+        const r = await runCno(['--max-stack-size=1MB', 'run', f], dir);
         strictEqual(r.code, 0, `expected success, stderr: ${r.stderr}`);
         ok(r.stdout.includes('SCRIPT-RAN'), `script must run, got: ${r.stdout}`);
     });

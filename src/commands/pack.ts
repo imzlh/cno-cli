@@ -1,9 +1,10 @@
 import { createRuntime, cwd, loadConfigFile, writePack, basename, extname, dirname, joinPaths, resolvePath, isAbsolute, fmtBytes, summarizePackSizes } from '../../cts/src/api';
 import type { PackManifest } from '../../cts/src/api';
 import { C } from '../help';
-import { entryAndDir } from '../utils';
+import { entryAndDir, sourceExtension } from '../utils';
 import { CliExit } from '../command-error';
 import { buildCacheConfig } from './cache-utils';
+import { effectiveRuntimeFlags, type KernelContext } from '../kernel';
 
 const console = import.meta.use('console');
 const fs = import.meta.use('fs');
@@ -44,7 +45,12 @@ function defaultOutPath(entry: string, dir: string): string {
     return `${dir}/${stem}.jspack`;
 }
 
-export async function runPack(files: string[], flags: Record<string, string | boolean>): Promise<void> {
+export async function runPack(
+    files: string[],
+    commandFlags: Record<string, string | boolean>,
+    kernel?: KernelContext,
+): Promise<void> {
+    const flags = kernel ? effectiveRuntimeFlags(kernel, commandFlags) : commandFlags;
     if (flags['help'] === true || flags['h'] === true) {
         showPackHelp();
         return;
@@ -64,7 +70,7 @@ export async function runPack(files: string[], flags: Record<string, string | bo
     const { entry, dir: entryDir } = entryAndDir(file);
     const projectDir = findProjectDir(entryDir);
     const fileCfg = loadConfigFile(projectDir);
-    const cfg = buildCacheConfig(fileCfg, flags);
+    const cfg = buildCacheConfig(fileCfg, flags, kernel?.config);
     // Packing may populate the shared dependency cache, but only `cno cache`
     // owns persistent lock updates and lifecycle-script execution.
     cfg.persistLock = false;
@@ -86,10 +92,7 @@ export async function runPack(files: string[], flags: Record<string, string | bo
         throw new CliExit(1);
     }
 
-    const explicitExtValue = typeof flags['ext'] === 'string'
-        ? (flags['ext'].startsWith('.') ? flags['ext'].slice(1) : flags['ext'])
-        : undefined;
-    const explicitExt = explicitExtValue || undefined;
+    const explicitExt = sourceExtension(flags.ext);
     // An unknown language silently becomes "no transform" and is recorded in the
     // manifest, so the ABI-mismatch recompile would mis-parse the entry.
     if (explicitExt !== undefined && !PACK_LANGS.has(explicitExt.toLowerCase())) {

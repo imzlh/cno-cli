@@ -1,4 +1,5 @@
 import type { Args } from '../../cno/src/utils/args';
+import type { KernelContext } from '../kernel';
 import { runFile } from './run';
 
 const console = import.meta.use('console');
@@ -103,12 +104,14 @@ export function runServe(
     args: string[],
     flags: Record<string, string | boolean>,
     rawArgs: Args,
+    kernel: KernelContext,
 ): Promise<void> {
     return runFile({
         file,
         args,
         flags,
         rawArgs,
+        kernel,
         onEvaluated: (namespace) => startServe(namespace, flags),
     });
 }

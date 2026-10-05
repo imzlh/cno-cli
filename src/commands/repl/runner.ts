@@ -5,6 +5,7 @@ import { CompletionEngine } from './completion';
 import { HistoryStore } from './history';
 import { openReplInput, openReplOutput } from './file-stdio';
 import type { ReplInputHandle, ReplOutputHandle } from './file-stdio';
+import { readEnv } from '../../env';
 
 const os = import.meta.use('os');
 const streams = import.meta.use('streams');
@@ -46,14 +47,6 @@ type CommandResult =
     | { type: 'submit'; value: string }
     | { type: 'cancel' }
     | { type: 'exit' };
-
-function getenv(env: string): string | null {
-    try {
-        return os.getenv(env) ?? null;
-    } catch {
-        return null;
-    }
-}
 
 // ==================== REPL Core ====================
 
@@ -128,8 +121,8 @@ export class CnoRepl {
             limit: opts.historyLimit,
         });
         this.#config = {
-            ps1: opts.ps1 ?? getenv('REPL_PS1') ?? 'cno > ',
-            ps2: opts.ps2 ?? getenv('REPL_PS2') ?? '  ... ',
+            ps1: opts.ps1 ?? readEnv('REPL_PS1') ?? 'cno > ',
+            ps2: opts.ps2 ?? readEnv('REPL_PS2') ?? '  ... ',
             banner: opts.banner ?? 'cno REPL. enter ".help" for help.\n',
             showTime: false,
             hexMode: false,

@@ -1,7 +1,8 @@
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readTestChildResult } from '../../src/commands/test-result-pipe.ts';
+import { parseTestChildArgs } from '../../src/commands/test.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
 class FakePipe {
@@ -87,25 +88,47 @@ Deno.test({ name: 'test result pipe waits for a large child result write', timeo
     });
 });
 
-Deno.test({ name: 'test runner preserves short runtime flags in its child execArgv', timeout: 15000 }, async () => {
+Deno.test('test child argument protocol rejects malformed regions', () => {
+    for (const data of ['1', '{}', '{', JSON.stringify({ version: 1, kernelArgs: [null], commandArgs: [] })]) {
+        throws(() => parseTestChildArgs([], data), /Invalid test child argument protocol/);
+    }
+    throws(() => parseTestChildArgs([], JSON.stringify({
+        version: 1, kernelArgs: ['run'], commandArgs: [],
+    })), /Invalid test child argument regions/);
+});
+
+Deno.test({ name: 'test runner preserves kernel and command regions in every child', timeout: 15000 }, async () => {
     await withTempDir('test-result-pipe-argv', async (root) => {
-        const file = join(root, 'conditions.test.ts');
-        await Deno.writeTextFile(file, `
+        const files = [join(root, 'first.test.ts'), join(root, 'second.test.ts')];
+        const kernelArgs = ['-C', 'test-condition', '--conditions=second-condition'];
+        const scriptArgs = ['--inspect', '--require', 'script-value', '--', ''];
+        const source = `
             import process from 'node:process';
-            Deno.test('inherits short conditions flag', () => {
-                const index = process.execArgv.indexOf('-C');
-                if (index === -1 || process.execArgv[index + 1] !== 'test-condition') {
+            import { deepStrictEqual } from 'node:assert';
+            Deno.test('selected', () => {
+                if (JSON.stringify(process.execArgv) !== ${JSON.stringify(JSON.stringify(kernelArgs))}) {
                     throw new Error('unexpected execArgv: ' + JSON.stringify(process.execArgv));
                 }
+                deepStrictEqual(Deno.args, ${JSON.stringify(scriptArgs)});
+                deepStrictEqual(process.argv.slice(2), Deno.args);
             });
-        `);
+            Deno.test('excluded', () => { throw new Error('command filter was lost'); });
+        `;
+        for (const file of files) await Deno.writeTextFile(file, source);
 
         const output = await new Deno.Command(Deno.execPath(), {
-            args: ['test', '--concurrency=1', '-C', 'test-condition', file],
+            args: [
+                ...kernelArgs, 'test', '--concurrency=2', '--filter=selected',
+                '--inspect-wait=127.0.0.1:0', '--conditions=ignored',
+                ...files, '--', ...scriptArgs,
+            ],
             stdout: 'piped',
             stderr: 'piped',
+            env: { NODE_OPTIONS: '', CNO_TEST_CHILD_TIMEOUT_MS: '5000' },
         }).output();
         const text = new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr);
         strictEqual(output.code, 0, text);
+        ok(text.includes('concurrency=2'), text);
+        ok(!text.includes('Debugger listening'), text);
     });
 });

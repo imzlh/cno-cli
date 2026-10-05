@@ -6,16 +6,6 @@ import { C } from '../help';
 const os = import.meta.use('os');
 const console = import.meta.use('console');
 
-function forwardedInspectArgs(flags: Record<string, string | boolean>): string[] {
-    for (const key of ['inspect-brk', 'inspect-wait', 'inspect'] as const) {
-        const value = flags[key];
-        if (value === undefined || value === false) continue;
-        if (value === true || value === 'true') return [`--${key}`];
-        return [`--${key}=${value}`];
-    }
-    return [];
-}
-
 function resolveFlagPath(value: string | boolean | undefined, base: string): string | undefined {
     if (typeof value !== 'string' || value.length === 0) return undefined;
     const path = toPosixPath(value);
@@ -35,9 +25,14 @@ function taskLookup(flags: Record<string, string | boolean>): {
     return { invocationCwd, requestedConfigPath, runCwd, startDir };
 }
 
-export async function runTask(args: string[], flags: Record<string, string | boolean> = {}): Promise<void> {
+export async function runTask(
+    args: string[],
+    flags: Record<string, string | boolean> = {},
+    kernelArgs: string[] = [],
+): Promise<void> {
     const { invocationCwd, requestedConfigPath, runCwd, startDir } = taskLookup(flags);
     const evalFlag = flags['eval'];
+    const forwardedArgs = kernelArgs.slice();
 
     // specs/task/eval: `cno task --eval <shell-cmd>` runs ad-hoc shell.
     if (evalFlag !== undefined) {
@@ -54,7 +49,7 @@ export async function runTask(args: string[], flags: Record<string, string | boo
         const lockStore = new LockStore(startDir, true);
         try {
             const result = loadTasks(startDir, lockStore, {
-                forwardedArgs: forwardedInspectArgs(flags),
+                forwardedArgs,
                 configPath: requestedConfigPath,
                 runCwd,
                 initCwd: invocationCwd,
@@ -67,7 +62,7 @@ export async function runTask(args: string[], flags: Record<string, string | boo
             // No tasks config: still run ad-hoc shell (Deno allows task --eval without named tasks).
             let isWin = false;
             try { isWin = /win/i.test(os.uname().sysname); } catch { /* */ }
-            const argv = isWin ? ['cmd.exe', '/c', evalFlag] : taskShellArgv(evalFlag);
+            const argv = isWin ? ['cmd.exe', '/c', evalFlag] : taskShellArgv(evalFlag, forwardedArgs);
             const cwd = runCwd ?? startDir;
             console.log(`Task  ${evalFlag}`);
             const code = await runTaskChild(
@@ -85,7 +80,7 @@ export async function runTask(args: string[], flags: Record<string, string | boo
     const lockStore = new LockStore(startDir, true);
     try {
         const result = loadTasks(startDir, lockStore, {
-            forwardedArgs: forwardedInspectArgs(flags),
+            forwardedArgs,
             configPath: requestedConfigPath,
             runCwd,
             initCwd: invocationCwd,
@@ -119,12 +114,16 @@ export async function runTask(args: string[], flags: Record<string, string | boo
     }
 }
 
-export function taskExists(name: string, flags: Record<string, string | boolean> = {}): boolean {
+export function taskExists(
+    name: string,
+    flags: Record<string, string | boolean> = {},
+    kernelArgs: string[] = [],
+): boolean {
     const { invocationCwd, requestedConfigPath, runCwd, startDir } = taskLookup(flags);
     const lockStore = new LockStore(startDir, true);
     try {
         const result = loadTasks(startDir, lockStore, {
-            forwardedArgs: forwardedInspectArgs(flags),
+            forwardedArgs: kernelArgs.slice(),
             configPath: requestedConfigPath,
             runCwd,
             initCwd: invocationCwd,
@@ -136,12 +135,15 @@ export function taskExists(name: string, flags: Record<string, string | boolean>
     }
 }
 
-export function printTaskList(flags: Record<string, string | boolean> = {}): boolean {
+export function printTaskList(
+    flags: Record<string, string | boolean> = {},
+    kernelArgs: string[] = [],
+): boolean {
     const { invocationCwd, requestedConfigPath, runCwd, startDir } = taskLookup(flags);
     const lockStore = new LockStore(startDir, true);
     try {
         const result = loadTasks(startDir, lockStore, {
-            forwardedArgs: forwardedInspectArgs(flags),
+            forwardedArgs: kernelArgs.slice(),
             configPath: requestedConfigPath,
             runCwd,
             initCwd: invocationCwd,

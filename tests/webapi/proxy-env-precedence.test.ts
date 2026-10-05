@@ -25,7 +25,7 @@
  * through a disk import here. That keeps one coherent graph: the disk
  * `src/network.ts` writes the hook that the disk `EventSource`/`WebSocket` read.
  */
-import { strictEqual, ok } from 'node:assert';
+import { deepStrictEqual, strictEqual, ok } from 'node:assert';
 import { createServer, type Server, type Socket } from 'node:net';
 import { getCurlInitHook as getCnoCurlInitHook, getRawConnectionHook, setRawConnectionHook } from '../../cno/src/utils/network-hooks.ts';
 import { getCurlInitHook as getCtsCurlInitHook } from '../../cts/src/utils/curl.ts';
@@ -217,10 +217,12 @@ function settle(client: { close(): void }, label: string, timeoutMs = 4000): Pro
 Deno.test('env: HTTP_PROXY is honoured on every platform, registry or not', () => {
     try {
         withProxyEnv({ HTTP_PROXY: 'http://127.0.0.1:19001' });
-        const config = getProxyInfo();
-        ok(config, 'HTTP_PROXY must produce a proxy config');
-        strictEqual(new URL(config.url).port, '19001');
-        strictEqual(config.type, 'http');
+        const hook = getCnoCurlInitHook();
+        ok(hook, 'HTTP_PROXY must install the curl hook');
+        const http = recordCurl();
+        hook(http.handle, new URL('http://example.invalid/'));
+        strictEqual(http.proxies[0]?.url, 'http://127.0.0.1:19001/');
+        strictEqual(http.proxies[0]?.type, 'http');
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
@@ -275,7 +277,11 @@ Deno.test('ALL_PROXY is the fallback and a scheme-specific var overrides it', ()
 Deno.test('lowercase env spellings are honoured', () => {
     try {
         withProxyEnv({ http_proxy: 'http://127.0.0.1:19006' });
-        strictEqual(new URL(getProxyInfo()!.url).port, '19006');
+        const hook = getCnoCurlInitHook();
+        ok(hook, 'http_proxy must install the curl hook');
+        const http = recordCurl();
+        hook(http.handle, new URL('http://example.invalid/'));
+        strictEqual(http.proxies[0]?.url, 'http://127.0.0.1:19006/');
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
@@ -402,6 +408,53 @@ Deno.test({ name: 'fetch reaches the env-named proxy (spawned binary)', timeout:
     } finally {
         await Deno.remove(tempDir, { recursive: true }).catch(() => undefined);
         await closeSink(sink);
+    }
+});
+
+Deno.test({ name: 'CLI proxy settings survive entry completion and timer work', timeout: 15000 }, async () => {
+    const proxy = await startSink();
+    const origin = await startSink();
+    const tempDir = await Deno.makeTempDir({ prefix: 'cno-proxy-lifetime-' });
+    const script = `${tempDir}/proxy-child.mjs`;
+    const url = `http://127.0.0.1:${origin.port}`;
+    const code = `
+        function request(label) {
+            return new Promise((resolve, reject) => {
+                const client = new EventSource(${JSON.stringify(url)} + '/' + label);
+                const timer = setTimeout(() => {
+                    client.close(); reject(new Error('proxy request timed out'));
+                }, 2500);
+                client.onerror = () => {
+                    clearTimeout(timer); client.close();
+                    console.log('PROXY:' + label); resolve();
+                };
+            });
+        }
+        await request('entry');
+        setTimeout(() => request('timer').catch(error => {
+            console.error(error); process.exitCode = 1;
+        }), 25);
+    `;
+    await Deno.writeTextFile(script, code);
+    try {
+        for (const command of [['run', script], ['eval', code]]) {
+            const output = await new Deno.Command(Deno.execPath(), {
+                args: ['--system-proxy', ...command],
+                env: { ...childProxyEnv({ http: `http://127.0.0.1:${proxy.port}` }), NODE_OPTIONS: '' },
+                stdout: 'piped', stderr: 'piped',
+            }).output();
+            const stdout = new TextDecoder().decode(output.stdout);
+            strictEqual(output.code, 0, stdout + new TextDecoder().decode(output.stderr));
+            deepStrictEqual(stdout.trim().split(/\r?\n/), ['PROXY:entry', 'PROXY:timer']);
+        }
+        strictEqual(origin.arrivals, 0, 'neither entry nor deferred requests may bypass the configured proxy');
+        deepStrictEqual(proxy.lines, [
+            `GET ${url}/entry HTTP/1.1`, `GET ${url}/timer HTTP/1.1`,
+            `GET ${url}/entry HTTP/1.1`, `GET ${url}/timer HTTP/1.1`,
+        ]);
+    } finally {
+        await Deno.remove(tempDir, { recursive: true }).catch(() => undefined);
+        await Promise.all([closeSink(proxy), closeSink(origin)]);
     }
 });
 

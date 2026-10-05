@@ -23,21 +23,23 @@
  * THE SOFTWARE.
  */
 
-import { createResourceManager, cwd, errMsg, fatal, isAbsolute, isParseWorker, joinPaths, log, runParseWorker, toPosixPath } from '../cts/src/api';
+import { LockStore, cwd, errMsg, fatal, isAbsolute, isParseWorker, joinPaths, log, runParseWorker, toPosixPath } from '../cts/src/api';
 import type { ConfigOptions } from '../cts/src/api';
-
-const processResources = createResourceManager();
+import { EV, installEventReceiver, PRIORITY_FALLBACK } from '../cts/src/runtime/event-mux';
+import { resources as processResources } from '../cts/src/runtime/resources';
 
 import type { Args } from '../cno/src/utils/args';
-import setArgs from '../cno/src/utils/args';
+import setArgs, { normalizeArgs } from '../cno/src/utils/args';
 import { disableRawCertVerify } from '../cno/src/utils/http';
 import { resolveObjectURLBytes } from '../cno/src/webapi/url';
 import { registerExtensions } from './bootstrap';
 import { CliExit, commandErrorInfo } from './command-error';
-import { missingFlagValues, parseArgv, readArgv, unknownFlags } from './cli';
+import { missingFlagValues, parseArgv, readArgv, unknownFlags, type ParsedCli } from './cli';
+import { effectiveRuntimeFlags, prepareKernel, type KernelContext } from './kernel';
 import { spawnBinary } from './commands/bin';
 import { runCache } from './commands/cache';
-import { decodeWorkerRuntimeConfig } from './commands/config-flags';
+import { decodeWorkerRuntimeConfig } from './config';
+import { readEnv } from './env';
 import { runEval } from './commands/eval';
 import { runPack } from './commands/pack';
 import { runRepl } from './commands/repl';
@@ -68,56 +70,19 @@ function looksLikeFileTarget(raw: string): boolean {
     return fs.exists(raw) || fs.exists(joinPaths(cwd(), normalized));
 }
 
-/** Flags whose values runFile reads back out of `actionArgs` (Deno-style run options). */
-const ACTION_TOKEN_FLAGS = ['env', 'env-file', 'preload'] as const;
-/** Flags whose values runFile reads back out of `internalArgs` (node-style preloads). */
-const INTERNAL_TOKEN_FLAGS = ['require', 'import', 'loader', 'conditions', 'max-old-space-size'] as const;
-
-function flagName(token: string): string | undefined {
-    if (token === '-C') return 'conditions';
-    if (!token.startsWith('--')) return undefined;
-    const equals = token.indexOf('=');
-    return token.slice(2, equals < 0 ? undefined : equals);
-}
-
-function selectFlagTokens(tokens: string[], names: readonly string[]): string[] {
-    const selected = new Set<string>(names);
-    const out: string[] = [];
-    for (let i = 0; i < tokens.length; i++) {
-        const token = tokens[i];
-        if (token === undefined) continue;
-        const name = flagName(token);
-        if (name === undefined || !selected.has(name)) continue;
-        out.push(token);
-        if (!token.includes('=')) {
-            const value = tokens[i + 1];
-            if (value !== undefined) {
-                out.push(value);
-                i++;
-            }
-        }
-    }
-    return out;
-}
-
 function makeRunArgs(
     file: string,
     args: string[] = [],
-    flags: Record<string, string | boolean> = {},
-    flagArgs?: string[],
+    invocation: Pick<ParsedCli, 'kernelArgs' | 'commandArgs'> = { kernelArgs: [], commandArgs: [] },
 ): Args {
-    const rawTokens = flagArgs ?? Object.entries(flags).flatMap(([name, value]) => {
-        if (value === true) return [`--${name}`];
-        return typeof value === 'string' ? [`--${name}=${value}`] : [];
-    });
-    return {
+    return normalizeArgs({
         binary: os.args[0],
-        internalArgs: selectFlagTokens(rawTokens, INTERNAL_TOKEN_FLAGS),
+        internalArgs: invocation.kernelArgs,
         action: 'run',
-        actionArgs: selectFlagTokens(rawTokens, ACTION_TOKEN_FLAGS),
+        actionArgs: invocation.commandArgs,
         entry: file,
         args,
-    };
+    });
 }
 
 function isEvalEntry(entry: string): boolean {
@@ -153,235 +118,86 @@ async function runEntry(
     args: string[],
     flags: Record<string, string | boolean>,
     rawArgs: Args,
+    kernel: KernelContext,
     config?: Partial<ConfigOptions>,
 ): Promise<void> {
     if (isEvalEntry(entry)) {
-        return runEval({ code: entry.slice(5), flags });
+        return runEval({
+            code: entry.slice(5),
+            flags,
+            kernel,
+            rawArgs: normalizeArgs({ ...rawArgs, action: 'eval', entry: entry.slice(5) }),
+            config,
+        });
     }
 
     return runFile({
         file: entry, args, flags,
         rawArgs,
+        kernel,
         config,
     });
 }
 
-function listTasks(flags: Record<string, string | boolean>): void {
-    if (!printTaskList(flags)) {
+function listTasks(flags: Record<string, string | boolean>, prefixArgs: string[] = []): void {
+    if (!printTaskList(flags, prefixArgs)) {
         console.log('  \x1b[2mNo tasks defined.\x1b[0m');
     }
 }
 
-let cleanupLocks: (() => void) | null = null;
-let cleanupLocksFast: (() => void) | null = null;
 let cleanupStarted = false;
+let requestedExitCode = 0;
+const REQUEST_EXIT_CODE_SLOT = Symbol.for('cno.runtime.requestExitCode');
 
-function runProcessCleanup(fast = false): void {
+/** Terminal cleanup runs after user exit/unload handlers, never after entry evaluation. */
+function runProcessCleanup(): void {
     if (cleanupStarted) return;
     cleanupStarted = true;
-    try { (fast ? cleanupLocksFast : cleanupLocks)?.(); }
+    stopNetwork();
+    try { LockStore.closeAll(); }
     catch (e) { log.debug('cleanup', () => `lock cleanup failed: ${e}`); }
-    if (fast) return;
-    try { processResources.release(); }
-    catch (e) { log.debug('cleanup', () => `resource cleanup failed: ${e}`); }
+    processResources.release();
 }
 
-/** os.exit() never unwinds JS, so the finally-based cleanup must run first. */
-function exitAfterCleanup(code: number): never {
-    stopNetwork();
-    runProcessCleanup();
+function exitWithCode(code: number): never {
     os.exit(code);
     throw new Error('unreachable');
 }
 
-/* ------------------------------------------------------------------ *
- * Natural-exit status
- * ------------------------------------------------------------------ */
-
-/**
- * First nonzero code requested by the runtime itself (not by user code).
- *
- * Fed by REQUEST_EXIT_CODE_SLOT below, whose only caller today is the cts
- * diagnostics receiver reporting an unhandled job exception / promise rejection
- * with no handler installed. Kept separate from `process.exitCode` so the two
- * can be composed with different precedence rules — see resolveExitCode().
- */
-let requestedExitCode = 0;
-
-/** Read `process.exitCode` defensively; anything exotic reads as undefined. */
 function currentProcessExitCode(): number | undefined {
     try {
-        const proc = Reflect.get(globalThis, 'process');
-        if (!isRecord(proc)) return undefined;
-        const code = Reflect.get(proc, 'exitCode');
+        const code = Reflect.get(globalThis, 'process')?.exitCode;
         return typeof code === 'number' ? code : undefined;
     } catch {
         return undefined;
     }
 }
 
-/** Explicit process.exitCode wins; otherwise use the first runtime request. */
-function resolveExitCode(): number {
-    const explicit = currentProcessExitCode();
-    if (typeof explicit === 'number') return explicit;
-    return requestedExitCode;
+/** Native exit status does not keep the event loop alive or stop pending work. */
+function syncExitCode(): void {
+    const code = currentProcessExitCode() ?? (requestedExitCode || undefined);
+    if (code !== undefined) os.setExitCode(code);
 }
 
-/**
- * Is a teardown dispatch ('beforeExit' or 'exit') currently running?
- *
- * Published by cno/src/node/process/mod.ts on a `Symbol.for()` slot; see the
- * comment there for why arming the poll inside that window spins forever.
- */
-const IN_TEARDOWN_SLOT = Symbol.for('cno.runtime.inTeardown');
-
-function inTeardown(): boolean {
-    try {
-        return (globalThis as unknown as Record<symbol, unknown>)[IN_TEARDOWN_SLOT] === true;
-    } catch {
-        return false;
-    }
-}
-
-/**
- * Hand a nonzero status to the runtime and report whether it stuck.
- *
- * `os.setExitCode()` writes the field TJS_Run resolves its return value from, so
- * once this succeeds the status no longer depends on calling `os.exit()` — which
- * matters because that call is immediate and skips the natural-drain teardown
- * (both 'beforeExit' and 'beforeunload'). Returns false on a core that predates
- * the binding, where the forced exit remains the only way the status is carried.
- *
- * `requestedExitCode` reaches the runtime only here: unlike `process.exitCode` it
- * is not an assignment the process object's setter can intercept.
- */
-function pushRuntimeExitCode(code: number): boolean {
-    const setExitCode = (os as unknown as Record<string, unknown>).setExitCode;
-    if (typeof setExitCode !== 'function') return false;
-    try {
-        (setExitCode as (v?: number) => void)(code);
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-/**
- * Ask for a nonzero status without stopping the loop. First nonzero wins, and an
- * already-set `process.exitCode` is never clobbered.
- */
 function requestExitCode(code: number): void {
-    if (!Number.isInteger(code) || code === 0) return;
-    if (requestedExitCode !== 0) return;             // first nonzero wins
-    const explicit = currentProcessExitCode();
-    if (typeof explicit === 'number' && explicit !== 0) return;  // don't clobber
+    if (!Number.isInteger(code) || code === 0 || requestedExitCode !== 0) return;
     requestedExitCode = code;
-    armExitWhenIdle();
+    syncExitCode();
 }
 
-/**
- * Slot the cts runtime reaches for to report "this run failed" without killing
- * the loop.
- *
- * A Symbol slot rather than an import because the dependency runs the wrong way:
- * cts is a library that must not import the CLI entry, and only the CLI entry
- * owns the exit machinery. Absent slot = no-op, which is what a worker, a test
- * child, and cts-as-a-library all want.
- */
-const REQUEST_EXIT_CODE_SLOT = Symbol.for('cno.runtime.requestExitCode');
+installEventReceiver('cli-lifecycle', (name) => {
+    if (name === EV.BEFORE_EXIT) syncExitCode();
+    if (name === EV.EXIT) runProcessCleanup();
+    return undefined;
+}, PRIORITY_FALLBACK);
 
-let idleExitArmed = false;
-
-/** Consecutive zero handle counts required before treating the loop as idle. */
-const IDLE_CONFIRMATIONS = 3;
-
-/** Apply the latest nonzero exit status after timers and IO drain. */
-function armExitWhenIdle(): void {
-    if (idleExitArmed) return;
-    idleExitArmed = true;
-    const timers = import.meta.use('timers');
-    let idleSeen = 0;
-    const tick = () => {
-        // Confirm idle across several turns to avoid transient zero counts.
-        if (os.refHandleCount() === 0) idleSeen++;
-        else idleSeen = 0;
-        if (idleSeen < IDLE_CONFIRMATIONS) {
-            timers.setTimeout(tick, idleSeen > 0 ? 1 : 5);
-            return;
-        }
-        const code = resolveExitCode();
-        if (code === 0) {
-            // A withdrawn status must drain naturally so beforeunload still fires.
-            idleExitArmed = false;
-            runProcessCleanup();
-            return;
-        }
-        // Prefer natural drain; older cores fall back to a forced exit.
-        if (pushRuntimeExitCode(code)) {
-            idleExitArmed = false;
-            runProcessCleanup();
-            return;
-        }
-        exitAfterCleanup(code);
-    };
-    timers.setTimeout(tick, 0);
-}
-
-/** Arm exit polling lazily after a successful nonzero exitCode assignment. */
-function watchProcessExitCode(): void {
-    try {
-        const proc = Reflect.get(globalThis, 'process');
-        if (!isRecord(proc)) return;
-        const desc = Object.getOwnPropertyDescriptor(proc, 'exitCode');
-        if (!desc || desc.configurable !== true) return;
-        if (typeof desc.get !== 'function' || typeof desc.set !== 'function') return;
-        const { get, set } = desc;
-        Object.defineProperty(proc, 'exitCode', {
-            configurable: true,
-            enumerable: desc.enumerable === true,
-            get,
-            set(this: unknown, value: unknown) {
-                // Throws (non-integer) propagate to the assigning code, as before.
-                Reflect.apply(set, this, [value]);
-                const code = currentProcessExitCode();
-                // Re-arming during teardown would recursively dispatch beforeExit.
-                if (typeof code === 'number' && code !== 0 && !inTeardown()) armExitWhenIdle();
-            },
-        });
-    } catch {
-        // Frozen/exotic process object: leave it alone. The post-dispatch read
-        // in mainEntry still covers everything assigned before the drain.
-    }
-}
-
-async function installProcessCleanup(): Promise<void> {
-    if (!cleanupLocks) {
-        const { LockStore } = await import('../cts/src/api');
-        cleanupLocks = () => LockStore.closeAll();
-        cleanupLocksFast = () => LockStore.closeAllFast();
-    }
-}
-
-async function dispatch(): Promise<void> {
-    const cli = parseArgv(readArgv());
-
-    // Pack owns its command-scoped help so it can document pack-only flags.
-    if (cli.cmd !== 'pack' && (cli.flags.help === true || cli.flags.h === true)) {
-        showHelp();
-        return;
-    }
-    if (cli.flags.version === true || cli.flags.v === true) {
-        showVersion();
-        return;
-    }
-
-    // Validate after help/version and before side effects.
+function validateInvocation(cli: ParsedCli): void {
     const unknown = unknownFlags(cli);
     if (unknown.length > 0) {
         for (const name of unknown) {
             console.error(`error: unexpected argument '${name}' found`);
         }
-        exitAfterCleanup(1);
+        throw new CliExit(1);
     }
 
     // A value flag with no value reaches its consumer as `true` and is then
@@ -391,15 +207,12 @@ async function dispatch(): Promise<void> {
         for (const name of missing) {
             console.error(`error: a value is required for '--${name}' but none was supplied`);
         }
-        exitAfterCleanup(1);
+        throw new CliExit(1);
     }
+}
 
-    // Every command shares the same Deno.args/process.argv source.
-    setArgs(cli.rawArgs);
-
-    // common setup
-    await installProcessCleanup();
-    if (cli.flags['system-proxy']) {
+function applyNetworkFlags(flags: Record<string, string | boolean>): void {
+    if (flags['system-proxy']) {
         try {
             startProxy();
         } catch (e) {
@@ -407,82 +220,93 @@ async function dispatch(): Promise<void> {
         }
     }
     // Fetch and raw TLS maintain separate verification state.
-    if (cli.flags['skip-cert-verify']) {
+    if (flags['skip-cert-verify']) {
         disableCertVerify();
         disableRawCertVerify();
     }
+}
 
-    try {
-        switch (cli.cmd) {
-        case 'help':
-            return showHelp();
-        case 'version':
-            return showVersion();
-        case 'eval': {
-            const code = cli.positional[0];
-            if (!code) {
-                console.error(`Usage: ${C.cyan('cno eval')} ${C.cyan('"<code>"')}`);
-                exitAfterCleanup(1);
-            }
-            return runEval({ code, flags: cli.flags });
+async function dispatch(): Promise<void> {
+    const cli = parseArgv(readArgv());
+
+    // Help/version complete before runtime preparation or other side effects.
+    if (cli.cmd === 'help' || (cli.cmd !== 'pack' && cli.flags.help === true)) return showHelp();
+    if (cli.cmd === 'version' || cli.flags.version === true) return showVersion();
+    if (cli.cmd === 'pack' && cli.flags.help === true) return runPack(cli.positional, cli.flags);
+    validateInvocation(cli);
+
+    // Every command shares the same Deno.args/process.argv source.
+    setArgs(cli.rawArgs);
+    const kernel = prepareKernel(cli);
+    const flags = effectiveRuntimeFlags(kernel, cli.flags);
+    applyNetworkFlags(flags);
+
+    switch (cli.cmd) {
+    case 'eval': {
+        const code = cli.positional[0];
+        if (code === undefined) {
+            console.error(`Usage: ${C.cyan('cno eval')} ${C.cyan('"<code>"')}`);
+            exitWithCode(1);
         }
-        case 'cache':
-            return runCache(cli.positional, cli.flags);
-        case 'pack':
-            return runPack(cli.positional, cli.flags);
-        case 'task':
-            return runTask(cli.positional, cli.flags);
-        case 'exec': {
-            // `rawArgs.entry` defaults to `repl` for commands without an
-            // entry, so validate the actual exec positional explicitly.
-            const [bin, ...args] = cli.positional;
-            if (!bin) {
-                console.error(`Usage: ${C.cyan('cno exec')} ${C.cyan('<command>')} [args…]`);
-                exitAfterCleanup(1);
-            }
-            const cacheDir = typeof cli.flags['cache-dir'] === 'string' ? cli.flags['cache-dir'] : undefined;
-            const code = await spawnBinary(bin, args, {}, os.cwd, cacheDir);
-            if (code !== 0) exitAfterCleanup(code);
-            return;
+        return runEval({ code, flags: cli.flags, kernel, rawArgs: cli.rawArgs });
+    }
+    case 'cache':
+        return runCache(cli.positional, cli.flags, kernel);
+    case 'pack':
+        return runPack(cli.positional, cli.flags, kernel);
+    case 'task':
+        return runTask(cli.positional, flags, cli.kernelArgs);
+    case 'exec': {
+        // `rawArgs.entry` defaults to `repl` for commands without an
+        // entry, so validate the actual exec positional explicitly.
+        const [bin, ...args] = cli.positional;
+        if (!bin) {
+            console.error(`Usage: ${C.cyan('cno exec')} ${C.cyan('<command>')} [args…]`);
+            exitWithCode(1);
         }
-        case 'repl':
-            return runRepl(cli.flags);
-        case 'test':
-            return runTest(
-                cli.positional,
-                cli.flags,
-                [...cli.rawArgs.internalArgs, ...cli.rawArgs.actionArgs],
-            );
-        case 'setup':
-            return runSetup(cli.flags);
-        case 'serve': {
-            const [file, ...args] = cli.positional;
-            if (!file) {
-                console.error(`Usage: ${C.cyan('cno serve')} ${C.cyan('<file>')} [args…]`);
-                exitAfterCleanup(1);
-            }
-            return runServe(file, args, cli.flags, cli.rawArgs);
+        const cacheDir = typeof flags['cache-dir'] === 'string' ? flags['cache-dir'] : undefined;
+        // Only the cno prefix belongs to the child runtime. Anything after
+        // `exec <bin>` is the bin's own argv and must stay untouched.
+        const code = await spawnBinary(bin, args, {}, os.cwd, cacheDir, cli);
+        if (code !== 0) exitWithCode(code);
+        return;
+    }
+    case 'repl':
+        return runRepl(cli.flags, kernel, cli.rawArgs);
+    case 'test':
+        return runTest(
+            cli.positional,
+            flags,
+            { kernelArgs: cli.kernelArgs, commandArgs: cli.commandArgs },
+            kernel.inspect !== null,
+        );
+    case 'setup':
+        return runSetup(flags);
+    case 'serve': {
+        const [file, ...args] = cli.positional;
+        if (!file) {
+            console.error(`Usage: ${C.cyan('cno serve')} ${C.cyan('<file>')} [args…]`);
+            exitWithCode(1);
         }
-        case 'run':
-        case null: {
-            // Bare cno opens the REPL; cno run without a target lists tasks.
-            const [file, ...args] = cli.positional;
-            if (!file) {
-                if (cli.cmd === null) return runRepl(cli.flags);
-                return listTasks(cli.flags);
-            }
-            if (file === 'task') return runTask(args, cli.flags);
-            if (cli.cmd === 'run' && !looksLikeFileTarget(file) && taskExists(file, cli.flags)) {
-                return runTask([file, ...args], cli.flags);
-            }
-            return runEntry(file, args, cli.flags, cli.rawArgs);
+        return runServe(file, args, cli.flags, cli.rawArgs, kernel);
+    }
+    case 'run':
+    case null: {
+        // Bare cno opens the REPL; cno run without a target lists tasks.
+        const [file, ...args] = cli.positional;
+        if (!file) {
+            if (cli.cmd === null) return runRepl(cli.flags, kernel, cli.rawArgs);
+            return listTasks(flags, cli.kernelArgs);
         }
-        default:
-            showHelp();
-            exitAfterCleanup(1);
+        if (file === 'task') return runTask(args, flags, cli.kernelArgs);
+        if (cli.cmd === 'run' && !looksLikeFileTarget(file) && taskExists(file, flags, cli.kernelArgs)) {
+            return runTask([file, ...args], flags, cli.kernelArgs);
         }
-    } finally {
-        stopNetwork();
+        return runEntry(file, args, cli.flags, cli.rawArgs, kernel);
+    }
+    default:
+        showHelp();
+        exitWithCode(1);
     }
 }
 
@@ -496,18 +320,20 @@ function errorDetail(error: unknown): string | undefined {
     return errMsg(error);
 }
 
-// Shared test execution; transports differ only in the result sender.
-async function runTestFileAndReport(
+async function runTestChild(
     file: string,
-    flags: Record<string, string | boolean>,
-    flagArgs: string[],
+    cli: ParsedCli,
     scriptArgs: string[],
-    send: (msg: TestChildMessage) => void | Promise<void>,
 ): Promise<void> {
     let message: TestChildMessage;
     try {
+        validateInvocation(cli);
+        const kernel = prepareKernel(cli);
+        const flags = effectiveRuntimeFlags(kernel, cli.flags);
+        applyNetworkFlags(flags);
         // Deno test modules are not "main"; import.meta.main is false under `deno test`.
-        await runFile({ file, args: scriptArgs, flags, rawArgs: makeRunArgs(file, scriptArgs, flags, flagArgs), asMain: false });
+        const rawArgs = makeRunArgs(file, scriptArgs, cli);
+        await runFile({ file, args: scriptArgs, flags: cli.flags, rawArgs, kernel, asMain: false });
         // Use the module-level startTest / getFailedTests exports directly
         const { startTest, getFailedTests } = await import('../cno/src/deno/index');
         const passed = await startTest(file, true, true, {
@@ -527,16 +353,7 @@ async function runTestFileAndReport(
             failedTests: [],
         };
     }
-    await send(message);
-}
-
-async function testChildEntry(
-    file: string,
-    flags: Record<string, string | boolean>,
-    flagArgs: string[],
-    scriptArgs: string[],
-): Promise<void> {
-    await runTestFileAndReport(file, flags, flagArgs, scriptArgs, writeTestChildResult);
+    await writeTestChildResult(message);
 }
 
 async function workerEntry(): Promise<void> {
@@ -549,15 +366,6 @@ async function workerEntry(): Promise<void> {
         return;
     }
 
-    // Test worker: runTest passes __cts_test in workerData (see runTestFileAndReport).
-    const testEntry = workerData?.__cts_test;
-    if (testEntry) {
-        const pipe = worker.pipe;
-        if (!pipe) throw new Error('test worker pipe was not created');
-        await runTestFileAndReport(String(testEntry), {}, [], [], (msg) => pipe.postMessage(msg));
-        return;
-    }
-
     // Web Worker: new Worker(url) passes __cts_entry in workerData (see cno/src/webapi/worker.ts)
     const entry = workerData?.__cts_entry;
     if (entry) {
@@ -565,7 +373,8 @@ async function workerEntry(): Promise<void> {
         const isNodeWorker = isNodeWorkerData(workerData);
         if (isNodeWorker) worker.pipe?.unref();
         try {
-            await runEntry(file, [], {}, makeRunArgs(file), decodeWorkerRuntimeConfig(workerData?.__cts_runtime_config));
+            const kernel = prepareKernel({ kernelOptions: [], commandOptions: [] }, { inheritNodeOptions: false });
+            await runEntry(file, [], {}, makeRunArgs(file), kernel, decodeWorkerRuntimeConfig(workerData?.__cts_runtime_config));
         } catch (e) {
             if (!isWorkerCloseError(e)) throw e;
         }
@@ -584,48 +393,22 @@ try {
 }
 
 async function mainEntry(): Promise<void> {
-    let deferredExit = false;
-    try {
-        let isTestChild = false;
-        try { isTestChild = !!os.getenv(TEST_CHILD_ENV); } catch { /* not set */ }
-        if (isTestChild) os.unsetenv(TEST_CHILD_ENV); // must not leak to grandchildren
+    const testInvocation = readEnv(TEST_CHILD_ENV);
+    if (testInvocation !== null) os.unsetenv(TEST_CHILD_ENV);
 
-        if (worker.isWorker) await workerEntry();
-        else if (isTestChild) {
-            // Test children open a LockStore too; without this the finally
-            // below is a no-op and the SQLite handle leaks (cts.lock EINVAL).
-            await installProcessCleanup();
-            const invocation = parseTestChildArgs(os.args.slice(2));
-            await testChildEntry(os.args[1], invocation.flags, invocation.flagArgs, invocation.scriptArgs);
-        }
-        else {
-            // Install exit tracking before user code runs.
-            Reflect.set(globalThis, REQUEST_EXIT_CODE_SLOT, requestExitCode);
-            watchProcessExitCode();
-
-            await dispatch();
-
-            // Re-read in case the process accessor could not be wrapped.
-            const code = resolveExitCode();
-            if (code !== 0) {
-                deferredExit = true;
-                armExitWhenIdle();
-            } else if (idleExitArmed) {
-                // The armed watcher owns cleanup while the loop drains.
-                deferredExit = true;
-            }
-        }
-    } finally {
-        // The deferred exit path owns cleanup; running it now would close
-        // locks while pending timers/IO are still executing.
-        if (!deferredExit) runProcessCleanup();
+    if (worker.isWorker) return workerEntry();
+    if (testInvocation !== null) {
+        const invocation = parseTestChildArgs(os.args.slice(2), testInvocation);
+        return runTestChild(os.args[1], invocation.cli, invocation.scriptArgs);
     }
+    Reflect.set(globalThis, REQUEST_EXIT_CODE_SLOT, requestExitCode);
+    await dispatch();
+    syncExitCode();
 }
 
 // start main app
 mainEntry().catch(e => {
-    runProcessCleanup();
-    if (e instanceof CliExit) exitAfterCleanup(e.code);
+    if (e instanceof CliExit) exitWithCode(e.code);
     if (worker.isWorker && isWorkerCloseError(e)) return;
     const { error: cause, context } = commandErrorInfo(e);
     if (worker.isWorker && isNodeWorkerData(worker.workerData)) {
