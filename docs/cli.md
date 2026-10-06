@@ -150,8 +150,10 @@ trigger this cleanup.
 Runtime initialization publishes a schema-filtered configuration snapshot through
 `src/config.ts`. Arrays and nested maps, including conditions, import maps,
 scopes, and path aliases, are copied; changing the runtime configuration does not
-mutate the published snapshot. The schema also carries resource limits, JSX
-settings, request/cache timing, and runtime feature switches.
+mutate the published snapshot. Empty maps are preserved so worker-directory
+settings cannot replace an explicitly empty parent mapping. The schema also
+carries resource limits, JSX settings, request/cache timing, and runtime feature
+switches.
 
 Web and Node workers receive this snapshot and decode another independent copy.
 They prepare an empty core invocation with `inheritNodeOptions: false`, so parent

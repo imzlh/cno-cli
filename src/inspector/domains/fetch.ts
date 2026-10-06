@@ -26,13 +26,6 @@ const nativeCrypto = import.meta.use('crypto');
 interface Pattern {
 	matchUrl: (url: string) => boolean
 	resourceType?: string
-	requestStage: string
-}
-
-interface PendingRequest {
-	requestId: string
-	request: Record<string, unknown>
-	resolve: (result: InterceptResult | null) => void
 }
 
 interface HeaderEntry {
@@ -117,8 +110,7 @@ function indexOfSegment(text: string, segment: string, from: number): number {
 export class FetchDomain extends Domain {
 	private enabled = false
 	private patterns: Pattern[] = []
-	private handleAuthRequests = false
-	private pending = new Map<string, PendingRequest>()
+	private pending = new Set<string>()
 	private bodyCache = new Map<string, Uint8Array>()
 	/** Cap on fulfilled bodies retained for Fetch.getResponseBody. */
 	private static readonly MAX_CACHED_BODIES = 50
@@ -135,7 +127,6 @@ export class FetchDomain extends Domain {
 	private registerHandlers(): void {
 		this.on('Fetch.enable', (p) => {
 			this.enabled = true
-			this.handleAuthRequests = this.bool(p, 'handleAuthRequests')
 			// CDP: omitted `patterns` means intercept everything. An empty list
 			// would make matchesAnyPattern() reject every request instead.
 			const rawPatterns = Array.isArray(p.patterns) ? p.patterns.filter(isRecord) : []
@@ -143,16 +134,11 @@ export class FetchDomain extends Domain {
 			this.patterns = effective.map((pat) => ({
 				matchUrl: compileUrlPattern(typeof pat.urlPattern === 'string' ? pat.urlPattern : '*'),
 				resourceType: typeof pat.resourceType === 'string' ? pat.resourceType : undefined,
-				requestStage: typeof pat.requestStage === 'string' ? pat.requestStage : 'Request',
 			}))
 			return {}
 		})
 		this.on('Fetch.disable', () => {
-			this.enabled = false
-			this.patterns = []
-			for (const pendingReq of this.pending.values()) pendingReq.resolve(null)
-			this.pending.clear()
-			this.bodyCache.clear()
+			this.disable()
 			return {}
 		})
 
@@ -203,10 +189,9 @@ export class FetchDomain extends Domain {
 	}
 
 	private settle(requestId: string, result: InterceptResult): void {
-		const pendingReq = this.pending.get(requestId)
-		if (!pendingReq) return
-		this.pending.delete(requestId)
-		pendingReq.resolve(result)
+		if (this.pending.delete(requestId)) {
+			this.rpc.notify('fetchInterceptResult', { requestId, result })
+		}
 	}
 
 	/**
@@ -215,10 +200,15 @@ export class FetchDomain extends Domain {
 	 * hangs waiting for a continue/fulfill that can no longer arrive.
 	 */
 	setConnected(connected: boolean): void {
-		if (connected) return
+		if (!connected) this.disable()
+	}
+
+	private disable(): void {
 		this.enabled = false
 		this.patterns = []
-		for (const pendingReq of this.pending.values()) pendingReq.resolve(null)
+		for (const requestId of this.pending) {
+			this.rpc.notify('fetchInterceptResult', { requestId, result: null })
+		}
 		this.pending.clear()
 		this.bodyCache.clear()
 	}
@@ -242,13 +232,7 @@ export class FetchDomain extends Domain {
 			frameId: 'cno-frame-1',
 			resourceType: data.resourceType ?? 'Fetch',
 		})
-		this.pending.set(data.requestId, {
-			requestId: data.requestId,
-			request,
-			resolve: (result) => {
-				this.rpc.notify('fetchInterceptResult', { requestId: data.requestId, result })
-			},
-		})
+		this.pending.add(data.requestId)
 	}
 
 	private matchesAnyPattern(url: string, resourceType?: string): boolean {
@@ -268,7 +252,7 @@ export class FetchDomain extends Domain {
 	}
 
 	private encodeBase64(bytes: Uint8Array): string {
-		return nativeCrypto.base64Encode(new Uint8Array(bytes))
+		return nativeCrypto.base64Encode(bytes)
 	}
 
 	private decodeBase64(value: string): Uint8Array {

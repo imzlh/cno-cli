@@ -98,6 +98,7 @@ Deno.test('deno fs upstream: writeFile and writeTextFile consume web streams', a
             },
         });
         await Deno.writeFile(bytesFile, byteStream);
+        strictEqual(byteStream.locked, false);
         strictEqual(await Deno.readTextFile(bytesFile), 'hello stream');
 
         const textFile = join(root, 'stream-text.txt');
@@ -109,7 +110,43 @@ Deno.test('deno fs upstream: writeFile and writeTextFile consume web streams', a
             },
         });
         await Deno.writeTextFile(textFile, textStream);
+        strictEqual(textStream.locked, false);
         strictEqual(Deno.readTextFileSync(textFile), 'alpha-beta');
+    });
+});
+
+Deno.test('deno fs upstream: source errors release the write stream reader', async () => {
+    await withTempDir('deno-upstream-fs', async (root) => {
+        const file = join(root, 'stream-error.txt');
+        const reason = new Error('source failed');
+        const stream = new ReadableStream<Uint8Array>({
+            pull(controller) { controller.error(reason); },
+        });
+        await rejects(() => Deno.writeFile(file, stream), (error) => error === reason);
+        strictEqual(stream.locked, false);
+        await Deno.writeTextFile(file, 'reopened');
+        strictEqual(await Deno.readTextFile(file), 'reopened');
+    });
+});
+
+Deno.test({ name: 'deno fs upstream: abort cancels a pending writeFile stream read', timeout: 10000 }, async () => {
+    await withTempDir('deno-upstream-fs', async (root) => {
+        const file = join(root, 'stream-abort.txt');
+        const controller = new AbortController();
+        const reason = new Error('stop pending source');
+        let canceledWith: unknown;
+        const stream = new ReadableStream<Uint8Array>({
+            pull() {
+                // A zero high-water mark starts pulling only after pipeTo owns the reader.
+                queueMicrotask(() => controller.abort(reason));
+                return new Promise<void>(() => {});
+            },
+            cancel(value) { canceledWith = value; },
+        }, { highWaterMark: 0 });
+        await rejects(() => Deno.writeFile(file, stream, { signal: controller.signal }), (error) => error === reason);
+        strictEqual(canceledWith, reason);
+        strictEqual(stream.locked, false);
+        await Deno.writeTextFile(file, 'reopened');
     });
 });
 

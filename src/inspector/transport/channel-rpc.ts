@@ -20,7 +20,7 @@ import { isRecord } from '../shared/cdp';
 import type { DebugChannelMain, DebugChannelWorker } from '../shared/native';
 import { ChannelRecv, ChannelReq, ExceptionBreakMode, Step, type StepCode } from '../shared/native';
 import { isRpcMethod, type RpcMethod, type RpcParams } from '../shared/rpc-contract';
-import { WorkerEvent } from '../shared/wire';
+import { WorkerEvent, isWorkerEvent } from '../shared/wire';
 
 const timers = import.meta.use('timers');
 
@@ -33,10 +33,6 @@ export type SyncDispatch = (method: string, params: Record<string, unknown>) => 
 interface ReplyPayload { result?: unknown; error?: string }
 
 type ExceptionBreakpointState = RpcParams['setExceptionBreakpoint']['state'];
-
-function isWorkerEvent(value: unknown): value is WorkerEvent {
-	return typeof value === 'number' && WorkerEvent[value] !== undefined
-}
 
 function isExceptionBreakpointState(value: unknown): value is ExceptionBreakpointState {
 	return value === 'none' || value === 'caught' || value === 'uncaught' || value === 'all'
@@ -243,10 +239,6 @@ export class ChannelServer {
 	 * send, freezing the process unkillably.
 	 */
 	emit(event: WorkerEvent, params: unknown): boolean {
-		return this.notifyQuietly(event, params);
-	}
-
-	private notifyQuietly(event: WorkerEvent, params: unknown): boolean {
 		try {
 			return this.dc.notify(event, params) !== false;
 		} catch {

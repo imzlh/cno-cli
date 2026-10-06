@@ -1,4 +1,5 @@
 import { ok, strictEqual } from 'node:assert';
+import { spawnSync } from 'node:child_process';
 import { getEventListeners } from 'node:events';
 import { addAbortSignal, PassThrough, Readable, Writable } from 'node:stream';
 
@@ -97,10 +98,25 @@ Deno.test('stream.addAbortSignal: an already aborted signal still destroys the s
     const reason = new Error('already canceled');
     controller.abort(reason);
     const stream = new Writable({ write(_c, _e, callback) { callback(); } });
+    stream.on('error', () => {});
     addAbortSignal(controller.signal, stream);
     await tick();
     strictEqual(stream.destroyed, true);
     strictEqual(stream.errored?.name, 'AbortError');
     strictEqual(stream.errored?.cause, reason);
     strictEqual(abortListeners(controller.signal), 0);
+});
+
+Deno.test('stream.addAbortSignal: a pre-aborted stream error requires an error listener', () => {
+    const child = spawnSync(process.execPath, ['eval', `
+        import { addAbortSignal, Writable } from 'node:stream';
+        const controller = new AbortController();
+        controller.abort();
+        addAbortSignal(controller.signal, new Writable({
+            write(_chunk, _encoding, callback) { callback(); },
+        }));
+    `], { encoding: 'utf8', timeout: 10000 });
+    strictEqual(child.error, undefined);
+    strictEqual(child.status, 1, `unexpected child result: ${child.stdout}\n${child.stderr}`);
+    ok(child.stderr.includes('The operation was aborted'), child.stderr);
 });

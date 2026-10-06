@@ -1,4 +1,4 @@
-import { ok, rejects, strictEqual, throws } from 'node:assert';
+import { ok, rejects, strictEqual } from 'node:assert';
 
 const ssl = import.meta.use('ssl');
 
@@ -111,7 +111,7 @@ Deno.test({ name: 'deno tls: startTls upgrades and consumes a TCP connection', t
             unsafelyDisableHostnameVerification: true,
             alpnProtocols: ['rocks'],
         });
-        throws(() => tcpConn!.write(new Uint8Array([1])), Deno.errors.BadResource);
+        await rejects(() => tcpConn!.write(new Uint8Array([1])), Deno.errors.BadResource);
 
         serverConn = await withTimeout(accepted);
         const [serverHandshake, clientHandshake] = await withTimeout(Promise.all([

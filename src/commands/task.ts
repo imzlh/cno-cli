@@ -1,4 +1,4 @@
-import { loadTasks, LockStore, joinPaths, normalizePath, isAbsolute, toPosixPath, dirname } from '../../cts/src/api';
+import { loadTasks, LockStore, joinPaths, normalizePath, isAbsolute, isWindows, toPosixPath, dirname } from '../../cts/src/api';
 import { runTaskChild, taskShellArgv, taskShellEnv } from '../../cts/src/task';
 import { CliCommandError, CliExit } from '../command-error';
 import { C } from '../help';
@@ -46,35 +46,6 @@ export async function runTask(
             console.error('error: [TASK] must be specified when using --eval');
             throw new CliExit(1);
         }
-        const lockStore = new LockStore(startDir, true);
-        try {
-            const result = loadTasks(startDir, lockStore, {
-                forwardedArgs,
-                configPath: requestedConfigPath,
-                runCwd,
-                initCwd: invocationCwd,
-            });
-            if (result) {
-                const code = await result.runner.runEval(evalFlag, args);
-                if (code !== 0) throw new CliExit(code);
-                return;
-            }
-            // No tasks config: still run ad-hoc shell (Deno allows task --eval without named tasks).
-            let isWin = false;
-            try { isWin = /win/i.test(os.uname().sysname); } catch { /* */ }
-            const argv = isWin ? ['cmd.exe', '/c', evalFlag] : taskShellArgv(evalFlag, forwardedArgs);
-            const cwd = runCwd ?? startDir;
-            console.log(`Task  ${evalFlag}`);
-            const code = await runTaskChild(
-                argv,
-                { ...os.environ(), ...taskShellEnv({ INIT_CWD: invocationCwd }, cwd) },
-                cwd,
-            );
-            if (code !== 0) throw new CliExit(code);
-        } finally {
-            lockStore.close();
-        }
-        return;
     }
 
     const lockStore = new LockStore(startDir, true);
@@ -85,6 +56,24 @@ export async function runTask(
             runCwd,
             initCwd: invocationCwd,
         });
+        if (evalFlag !== undefined) {
+            if (result) {
+                const code = await result.runner.runEval(evalFlag, args);
+                if (code !== 0) throw new CliExit(code);
+                return;
+            }
+            // No tasks config: still run ad-hoc shell (Deno allows task --eval without named tasks).
+            const argv = isWindows ? ['cmd.exe', '/c', evalFlag] : taskShellArgv(evalFlag, forwardedArgs);
+            const cwd = runCwd ?? startDir;
+            console.log(`Task  ${evalFlag}`);
+            const code = await runTaskChild(
+                argv,
+                { ...os.environ(), ...taskShellEnv({ INIT_CWD: invocationCwd }, cwd) },
+                cwd,
+            );
+            if (code !== 0) throw new CliExit(code);
+            return;
+        }
         if (!result) {
             throw new CliCommandError(new Error(
                 'Cannot find tasks everywhere. Please add some in package.json or deno.json'
@@ -97,15 +86,9 @@ export async function runTask(
             return;
         }
         const [name, ...rest] = args;
-        if (name === undefined) return;
         // Deno-compatible task globs: `foo-*` runs every matching task once.
         const matched = runner.matchNames(name);
-        if (!matched.length) {
-            const code = await runner.run(name, rest);
-            if (code !== 0) throw new CliExit(code);
-            return;
-        }
-        for (const taskName of matched) {
+        for (const taskName of matched.length ? matched : [name]) {
             const code = await runner.run(taskName, rest);
             if (code !== 0) throw new CliExit(code);
         }

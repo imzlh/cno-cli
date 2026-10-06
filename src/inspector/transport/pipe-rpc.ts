@@ -12,9 +12,9 @@
  * so the handler registry can be owned in one place (MainEndpoint).
  */
 
-import { PipeKind, WorkerEvent } from '../shared/wire';
+import { PipeKind, WorkerEvent, isWorkerEvent } from '../shared/wire';
 import { isRpcMethod, type RpcMethod } from '../shared/rpc-contract';
-import { log } from '../../../cts/src/api';
+import { errMsg, log } from '../../../cts/src/api';
 
 type Pipe = CModuleWorker.MessagePipe;
 type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
@@ -27,10 +27,6 @@ export type EventSink = (event: WorkerEvent, params: unknown) => void;
 export interface PipeLifecycle {
 	onMessageError?: (error: unknown) => void
 	onClose?: () => void
-}
-
-function isWorkerEvent(value: unknown): value is WorkerEvent {
-	return typeof value === 'number' && WorkerEvent[value] !== undefined
 }
 
 function emitEventQuietly(sink: EventSink | null, event: WorkerEvent, params: unknown): void {
@@ -60,11 +56,10 @@ export class PipeClient {
 
 	/** Reject every outstanding request; for when the transport can no longer reply. */
 	failAllPending(reason: string): void {
-		if (this.pending.size === 0) return;
 		const outstanding = [...this.pending.values()];
 		this.pending.clear();
 		for (const p of outstanding) {
-			try { p.reject(new Error(reason)); } catch {}
+			p.reject(new Error(reason));
 		}
 	}
 
@@ -96,13 +91,13 @@ export class PipeClient {
 			const error = Reflect.get(msg, 'error');
 			if (typeof error === 'string' && error.length > 0) p.reject(new Error(error));
 			else p.resolve(Reflect.get(msg, 'result'));
-			} else if (kind === PipeKind.Event) {
-				const method = Reflect.get(msg, 'method');
-				if (!isWorkerEvent(method)) return;
-				emitEventQuietly(this.onEvent, method, Reflect.get(msg, 'params'));
-			}
+		} else if (kind === PipeKind.Event) {
+			const method = Reflect.get(msg, 'method');
+			if (!isWorkerEvent(method)) return;
+			emitEventQuietly(this.onEvent, method, Reflect.get(msg, 'params'));
 		}
 	}
+}
 
 /** Main side: RPC server + event emitter. */
 export class PipeServer {
@@ -165,8 +160,4 @@ export class PipeServer {
 			}
 		}
 	}
-}
-
-function errMsg(e: unknown): string {
-	return e instanceof Error ? e.message : String(e);
 }

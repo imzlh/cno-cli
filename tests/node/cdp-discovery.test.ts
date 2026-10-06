@@ -38,6 +38,7 @@ function sleep(ms: number): Promise<void> {
 interface Target {
     proc: ChildProcess;
     readonly failure: Error | null;
+    readonly inspectorUrl: string | undefined;
     stop(): Promise<void>;
 }
 
@@ -46,12 +47,14 @@ interface Target {
  * 'error' and 'exit' handlers a bad executable path or an instant crash surfaces
  * only as the outer test timeout, with the actual ENOENT/exit code never reported.
  */
-function startTarget(): Target {
-    const proc = spawn(CNO, [`--inspect=${HOST}:${PORT}`, 'run', TARGET], {
-        stdio: ['ignore', 'ignore', 'inherit'],
+function startTarget(port = PORT): Target {
+    const proc = spawn(CNO, [`--inspect=${HOST}:${port}`, 'run', TARGET], {
+        stdio: ['ignore', port === 0 ? 'pipe' : 'ignore', 'inherit'],
     });
     let failure: Error | null = null;
     let stopping = false;
+    let stdout = '';
+    proc.stdout?.on('data', (chunk) => { stdout += String(chunk); });
     proc.on('error', (e: Error) => {
         failure ??= new DefinitiveError(`failed to spawn ${CNO}: ${e.message}`);
     });
@@ -65,6 +68,9 @@ function startTarget(): Target {
         proc,
         get failure() {
             return failure;
+        },
+        get inspectorUrl() {
+            return /Debugger listening on (ws:\/\/\S+)/.exec(stdout)?.[1];
         },
         async stop() {
             stopping = true;
@@ -82,13 +88,12 @@ function startTarget(): Target {
  * surfacing it immediately is the whole point, since retrying a 403 until the outer
  * timeout is what hid the real cause.
  */
-async function getJson(path: string, target?: Target) {
-    const deadline = Date.now() + START_BUDGET_MS;
+async function getJson(path: string, target?: Target, port = PORT, deadline = Date.now() + START_BUDGET_MS) {
     let lastTransportError: unknown = null;
     while (Date.now() < deadline) {
         if (target?.failure) throw target.failure;
         try {
-            const res = await fetch(`http://${HOST}:${PORT}${path}`);
+            const res = await fetch(`http://${HOST}:${port}${path}`);
             if (res.ok) return await res.json();
             const body = (await res.text()).slice(0, 200);
             throw new DefinitiveError(
@@ -129,6 +134,28 @@ Deno.test({ name: 'cdp: /json lists a page target with a debugger ws URL', timeo
         ok(typeof entry.webSocketDebuggerUrl === 'string' && entry.webSocketDebuggerUrl.startsWith('ws://'),
             'target must carry a ws debugger URL');
         ok(entry.title !== undefined && entry.id !== undefined, 'target must have title and id');
+    } finally {
+        await target.stop();
+    }
+});
+
+Deno.test({ name: 'cdp: port 0 advertises the bound port in discovery and DevTools URLs', timeout: TEST_TIMEOUT_MS }, async () => {
+    const target = startTarget(0);
+    try {
+        const deadline = Date.now() + START_BUDGET_MS;
+        while (!target.inspectorUrl && Date.now() < deadline) {
+            if (target.failure) throw target.failure;
+            await sleep(20);
+        }
+        const wsUrl = target.inspectorUrl;
+        ok(wsUrl, 'target must announce its inspector URL');
+        const port = Number(new URL(wsUrl).port);
+        ok(port > 0 && port <= 65535, `expected a bound port, got ${port}`);
+        const list: any[] = await getJson('/json', target, port, deadline);
+        strictEqual(list[0]?.webSocketDebuggerUrl, wsUrl);
+        strictEqual(new URL(list[0].devtoolsFrontendUrl).searchParams.get('ws'), wsUrl.slice('ws://'.length));
+        const version: any = await getJson('/json/version', target, port, deadline);
+        strictEqual(version.webSocketDebuggerUrl, wsUrl);
     } finally {
         await target.stop();
     }

@@ -40,6 +40,10 @@ export enum WorkerEvent {
 	NetServe,
 }
 
+export function isWorkerEvent(value: unknown): value is WorkerEvent {
+	return typeof value === 'number' && WorkerEvent[value] !== undefined
+}
+
 /** Sub-type tag carried inside a NetFetch event payload. */
 export enum NetFetchKind {
 	Req = 0,

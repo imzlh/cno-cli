@@ -106,6 +106,30 @@ Deno.test('npm store hit: range resolves from flat store without meta.json', asy
     }
 });
 
+Deno.test('npm store hit: a sole empty dependency name skips installation, including aliases', () => {
+    const root = makePosixTempDir('npm-empty-dependency');
+    try {
+        const cacheDir = joinPaths(root, 'cache');
+        const projectDir = joinPaths(root, 'project');
+        mkdirSync(join(projectDir), { recursive: true });
+        const plainDir = seedPkg(cacheDir, 'empty-name', '1.0.0', { '': '1.0.0' });
+        const aliasDir = seedPkg(cacheDir, 'empty-alias', '1.0.0', { '': 'npm:missing-alias-target@1.0.0' });
+
+        const rt = createRuntime(rtOpts(cacheDir, projectDir), projectDir);
+        try {
+            const parent = joinPaths(projectDir, 'main.ts');
+            strictEqual(rt.resolver.resolve('npm:empty-name@1.0.0', parent).localPath, joinPaths(plainDir, 'index.js'));
+            strictEqual(rt.resolver.resolve('npm:empty-alias@1.0.0', parent).localPath, joinPaths(aliasDir, 'index.js'));
+            ok(!existsSync(join(cacheDir, 'npm', 'missing-alias-target', 'meta.json')));
+            ok(!existsSync(join(cacheDir, 'npm', 'missing-alias-target@1.0.0')));
+        } finally {
+            rt.cleanup();
+        }
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test('npm store hit: multi-version prefers matchLatest among store only', async () => {
     const root = makePosixTempDir('npm-store-multiver');
     try {

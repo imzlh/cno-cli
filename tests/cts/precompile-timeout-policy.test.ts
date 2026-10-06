@@ -1,9 +1,57 @@
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { makePosixTempDir } from '../_helpers/temp.ts';
+import { makePosixTempDir, withTempDir } from '../_helpers/temp.ts';
 import { ParseDriver, parseTaskTimeoutMs } from '../../cts/src/api/index.ts';
 import { tryLoadOxc } from '../../cts/src/oxc.ts';
+
+Deno.test({ name: 'precompile policy: parse worker remains available between tasks', timeout: 10000 }, async () => {
+    await withTempDir('parse-worker-idle', async (root) => {
+        const localPath = join(root, 'entry.ts');
+        writeFileSync(localPath, "import './dependency.ts';\n");
+        const native = import.meta.use('worker');
+        const timers = import.meta.use('timers');
+        const worker = new native.Worker({ __cts_role: 'parse', __cts_enable_oxc: false });
+        const pipe = worker.messagePipe;
+        let deadline: number | undefined;
+        let idle: number | undefined;
+        try {
+            await new Promise<void>((resolve, reject) => {
+                let completed = 0;
+                const sendAfterIdle = () => {
+                    idle = timers.setTimeout(() => {
+                        try { pipe.postMessage({ id: completed + 1, kind: 'scan', localPath }); }
+                        catch (error) { reject(error); }
+                    }, 30);
+                };
+                deadline = timers.setTimeout(() => reject(new Error('Parse worker did not answer within 5 seconds')), 5000);
+                pipe.onclose = () => reject(new Error('Parse worker exited while awaiting work'));
+                pipe.onmessageerror = reject;
+                pipe.onmessage = (value: unknown) => {
+                    try {
+                        ok(value !== null && typeof value === 'object');
+                        if (Reflect.get(value, '__cts_parse_ready') === true) {
+                            sendAfterIdle();
+                            return;
+                        }
+                        strictEqual(Reflect.get(value, 'id'), completed + 1);
+                        strictEqual(Reflect.get(value, 'error'), undefined);
+                        deepStrictEqual(Reflect.get(value, 'deps'), ['./dependency.ts']);
+                        if (++completed === 2) resolve();
+                        else sendAfterIdle();
+                    } catch (error) { reject(error); }
+                };
+            });
+        } finally {
+            if (deadline !== undefined) timers.clearTimeout(deadline);
+            if (idle !== undefined) timers.clearTimeout(idle);
+            pipe.onmessage = undefined;
+            pipe.onmessageerror = undefined;
+            pipe.onclose = undefined;
+            await worker.terminate();
+        }
+    });
+});
 
 Deno.test('precompile policy: workers scan/transform; bytecode compile stays on main', () => {
     strictEqual(parseTaskTimeoutMs('transform'), 60_000);

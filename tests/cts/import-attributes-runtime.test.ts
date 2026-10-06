@@ -122,3 +122,25 @@ Deno.test({ name: 'cts runtime: json import attributes work for static and dynam
         ok(result.stdout.includes('[{"a":"b","c":{"d":10}},{"a":"b","c":{"d":10}},{"a":"b","c":{"d":10}}]'), result.stdout);
     });
 });
+
+Deno.test({ name: 'cts runtime: unsupported attribute errors retain the complete name and value', timeout: 15000 }, async () => {
+    await withTempDir('cts-unsupported-attrs', async (root) => {
+        const entry = join(root, 'main.ts');
+        await Deno.writeTextFile(entry, `
+            for (const name of ["unsupported", "custom, name", ""]) {
+                try {
+                    await import("data:text/javascript,export default 1", { with: { [name]: "value" } });
+                    throw new Error("unsupported attribute was accepted");
+                } catch (error) {
+                    if (error.code !== "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED") throw error;
+                    if (!error.message.includes(JSON.stringify(name))) throw error;
+                    if (!error.message.includes('"value"')) throw error;
+                }
+            }
+            console.log("unsupported-ok");
+        `);
+        const result = await runCno(['run', entry], root);
+        strictEqual(result.code, 0, result.stderr);
+        strictEqual(result.stdout.trim(), 'unsupported-ok');
+    });
+});

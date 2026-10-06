@@ -109,7 +109,7 @@ function stringRecord(value: unknown): Record<string, string> | undefined {
     const result = Object.fromEntries(Object.entries(value).flatMap(([key, entry]): Array<[string, string]> =>
         typeof entry === 'string' ? [[key, entry]] : [],
     ));
-    return Object.keys(result).length > 0 ? result : undefined;
+    return Object.keys(value).length === 0 || Object.keys(result).length > 0 ? result : undefined;
 }
 
 function nestedStringRecord(value: unknown): Record<string, Record<string, string>> | undefined {
@@ -118,7 +118,7 @@ function nestedStringRecord(value: unknown): Record<string, Record<string, strin
         const nested = stringRecord(entry);
         return nested ? [[key, nested]] : [];
     }));
-    return Object.keys(result).length > 0 ? result : undefined;
+    return Object.keys(value).length === 0 || Object.keys(result).length > 0 ? result : undefined;
 }
 
 function stringArrayRecord(value: unknown): Record<string, string[]> | undefined {
@@ -126,7 +126,7 @@ function stringArrayRecord(value: unknown): Record<string, string[]> | undefined
     const result = Object.fromEntries(Object.entries(value).flatMap(([key, entry]): Array<[string, string[]]> =>
         Array.isArray(entry) && entry.every(item => typeof item === 'string') ? [[key, entry.slice()]] : [],
     ));
-    return Object.keys(result).length > 0 ? result : undefined;
+    return Object.keys(value).length === 0 || Object.keys(result).length > 0 ? result : undefined;
 }
 
 export function decodeWorkerRuntimeConfig(value: unknown): Partial<ConfigOptions> | undefined {

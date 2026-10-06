@@ -284,6 +284,16 @@ Deno.test('worker runtime config: special alias names remain own properties', ()
     }
 });
 
+Deno.test('worker runtime config: explicit empty maps survive to override worker project defaults', () => {
+    const empty = { importMap: {}, importMapScopes: {}, pathAliases: {} };
+    deepStrictEqual(decodeWorkerRuntimeConfig(empty), empty);
+    deepStrictEqual(decodeWorkerRuntimeConfig({ importMapScopes: { '/scope/': {} } }),
+        { importMapScopes: { '/scope/': {} } });
+    strictEqual(decodeWorkerRuntimeConfig({
+        importMap: { invalid: false }, importMapScopes: { invalid: false }, pathAliases: { invalid: false },
+    }), undefined);
+});
+
 Deno.test('cache config: resolution and resource flags are preserved', () => {
     withoutCtsMemoryLimit(() => {
         const cfg = buildCacheConfig({}, {

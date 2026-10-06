@@ -1,6 +1,6 @@
 import type { CjsDeps } from '../../cts/src/compile/cjs.ts';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { deepStrictEqual, strictEqual } from 'node:assert';
+import { deepStrictEqual, strictEqual, throws } from 'node:assert';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 import { CjsLoader } from '../../cts/src/compile/cjs.ts';
 
@@ -74,4 +74,33 @@ Deno.test('cts cjs: clearLoadedModules drops cache and cycle bookkeeping', () =>
     strictEqual(state.executing.size, 0, 'cycle state must not retain paths');
     strictEqual(state.esmImporters.size, 0, 'importer state must not retain paths');
     strictEqual(state.mainModule, null, 'main module reference must be released');
+});
+
+Deno.test('cts cjs: failed inline source cleans the original parent and can retry', () => {
+    const deps: CjsDeps = {
+        resolveBuiltin: unused,
+        loadEsmSync: unused,
+        resolveExternal: () => null,
+    };
+    for (const preRegistered of [false, true]) {
+        const loader = new CjsLoader(deps);
+        const parentPath = '/virtual/inline-parent.cjs';
+        const childPath = '/virtual/inline-child.cjs';
+        const parent = loader.loadSourceAndGet('', parentPath);
+        if (preRegistered) loader.preRegister(childPath, parentPath);
+
+        throws(() => loader.loadSourceAndGet(
+            'module.parent = null; throw new Error("inline failure");',
+            childPath,
+            preRegistered ? undefined : parentPath,
+        ), /inline failure/);
+        deepStrictEqual(parent.children, []);
+        strictEqual(loader.cache.has(childPath), false);
+        strictEqual(loader.isExecuting(childPath), false);
+
+        const child = loader.loadSourceAndGet('module.exports = 42;', childPath, parentPath);
+        strictEqual(child.exports, 42);
+        strictEqual(child.loaded, true);
+        deepStrictEqual(parent.children, [child]);
+    }
 });

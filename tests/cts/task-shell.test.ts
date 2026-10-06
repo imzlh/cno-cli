@@ -1482,20 +1482,24 @@ Deno.test({
 // specs/task/eval
 Deno.test({
     name: 'cts task upstream: --eval runs ad-hoc shell and errors without command',
-    ignore: Deno.build.os === 'windows',
     async fn() {
         const root = makePosixTempDir('task-eval');
         try {
-            writeFileSync(join(root, 'deno.json'), JSON.stringify({ tasks: {} }));
-            const okEval = await runCnoTask(['task', '--eval', 'echo hello-eval'], root);
-            strictEqual(okEval.code, 0, okEval.stderr + okEval.stdout);
-            ok(okEval.stdout.includes('hello-eval'), okEval.stdout);
+            for (const configured of [false, true]) {
+                if (configured) writeFileSync(join(root, 'deno.json'), JSON.stringify({ tasks: {} }));
+                const okEval = await runCnoTask(['task', '--eval', 'echo hello-eval'], root);
+                strictEqual(okEval.code, 0, okEval.stderr + okEval.stdout);
+                ok(okEval.stdout.trimEnd().endsWith('hello-eval'), okEval.stdout);
+
+                const failed = await runCnoTask(['task', '--eval', 'exit 7'], root);
+                strictEqual(failed.code, 7, failed.stderr + failed.stdout);
+            }
 
             const noArg = await runCnoTask(['task', '--eval'], root);
             strictEqual(noArg.code, 1, noArg.stderr + noArg.stdout);
             ok(/must be specified when using --eval/i.test(noArg.stderr + noArg.stdout), noArg.stderr + noArg.stdout);
 
-            const pwd = await runCnoTask(['task', '--eval', 'echo $(pwd)'], root);
+            const pwd = await runCnoTask(['task', '--eval', Deno.build.os === 'windows' ? 'cd' : 'echo $(pwd)'], root);
             strictEqual(pwd.code, 0, pwd.stderr + pwd.stdout);
             ok(pwd.stdout.includes(root) || pwd.stdout.trim().length > 0, pwd.stdout);
         } finally {

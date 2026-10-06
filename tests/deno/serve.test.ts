@@ -355,6 +355,33 @@ Deno.test({ name: 'deno: Deno.serve lifecycle exposes addr onListen finished abo
     }
 });
 
+Deno.test({ name: 'deno: Deno.serve recovers from response validation with fresh response state', timeout: 5000 }, async () => {
+    if (!await canListenTcp()) return;
+
+    const errors: unknown[] = [];
+    const server = Deno.serve({
+        hostname: '127.0.0.1',
+        port: 0,
+        onError(error) {
+            errors.push(error);
+            return new Response('recovered', { status: 418 });
+        },
+    }, () => new Response('unreachable', {
+        headers: { 'content-length': '11', 'transfer-encoding': 'chunked' },
+    }));
+    try {
+        const response = await fetch(`http://127.0.0.1:${server.addr.port}/invalid-response`, {
+            signal: AbortSignal.timeout(2000),
+        });
+        strictEqual(response.status, 418);
+        strictEqual(await response.text(), 'recovered');
+        strictEqual(errors.length, 1);
+        strictEqual((errors[0] as Error).message, 'Transfer-Encoding and Content-Length cannot coexist');
+    } finally {
+        await server.shutdown();
+    }
+});
+
 Deno.test({ name: 'deno: Deno.serve shutdown drains active requests', timeout: 10000 }, async () => {
     if (!await canListenTcp()) return;
 

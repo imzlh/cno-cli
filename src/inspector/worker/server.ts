@@ -36,9 +36,7 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 	const targetId = 'ws/' + nativeCrypto.randomUUID()
 	const wsPath = `/${targetId}`
 	const hostname = opts.host || '127.0.0.1'
-	const host = `${hostname}:${port}`
 	const token = opts.token ?? nativeCrypto.randomUUID()
-	const wsUrl = `ws://${host}${wsPath}?token=${encodeURIComponent(token)}`
 
 	async function respondJson(res: HttpResponse, value: unknown): Promise<void> {
 		const body = JSON.stringify(value)
@@ -141,33 +139,6 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 		}
 	}
 
-	// The `ws=` value must carry the token: it is the only thing DevTools uses to
-	// build the socket URL, and the upgrade is token-gated. Without it every
-	// "inspect" click from chrome://inspect gets a 403. A literal `?` inside a
-	// query value is legal (RFC 3986 query = *( pchar / "/" / "?" )) and
-	// URLSearchParams.get('ws') returns it intact, so keep the URL readable
-	// rather than percent-encoding the whole thing. `ws` stays last so the
-	// nested query cannot swallow a following parameter.
-	const wsRef = `${host}${wsPath}?token=${encodeURIComponent(token)}`
-
-	const listEntry = {
-		description: 'cno',
-		devtoolsFrontendUrl: `devtools://devtools/bundled/js_app.html?experiments=true&v8only=true&ws=${wsRef}`,
-		id: targetId,
-		title: 'cno',
-		type: 'node',
-		url: entryUrl,
-		webSocketDebuggerUrl: wsUrl,
-	}
-	const versionInfo = {
-		Browser: 'cno/1.0',
-		'Protocol-Version': '1.3',
-		'User-Agent': 'cno',
-		'V8-Version': '14.9.207.27',	// Chrome 149
-		'WebKit-Version': '0.0',
-		webSocketDebuggerUrl: wsUrl,
-	}
-
 	const server = new Server(async (req: HttpRequest, res: HttpResponse): Promise<void> => {
 		const path = req.url.split('?')[0]
 		const headers = Object.fromEntries(req.headers.map(([n, v]): [string, string] => [n.toLowerCase(), v]));
@@ -224,6 +195,32 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 	}, { port, hostname })
 
 	server.listen()
+	const address = server.address()
+	if (!address || !('port' in address)) {
+		server.close()
+		throw new Error('Inspector server did not bind a TCP address')
+	}
+	const host = `${hostname.includes(':') ? `[${hostname}]` : hostname}:${address.port}`
+	// Keep ws last so its token query remains part of the DevTools websocket URL.
+	const wsRef = `${host}${wsPath}?token=${encodeURIComponent(token)}`
+	const wsUrl = `ws://${wsRef}`
+	const listEntry = {
+		description: 'cno',
+		devtoolsFrontendUrl: `devtools://devtools/bundled/js_app.html?experiments=true&v8only=true&ws=${wsRef}`,
+		id: targetId,
+		title: 'cno',
+		type: 'node',
+		url: entryUrl,
+		webSocketDebuggerUrl: wsUrl,
+	}
+	const versionInfo = {
+		Browser: 'cno/1.0',
+		'Protocol-Version': '1.3',
+		'User-Agent': 'cno',
+		'V8-Version': '14.9.207.27',	// Chrome 149
+		'WebKit-Version': '0.0',
+		webSocketDebuggerUrl: wsUrl,
+	}
 	void server.acceptLoop()
 	return Promise.resolve({ wsUrl, close: () => server.close() })
 }

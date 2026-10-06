@@ -21,16 +21,6 @@ import type { DebugChannelWorker, StepCode } from '../shared/native';
 import type { WorkerEvent } from '../shared/wire';
 type Pipe = CModuleWorker.MessagePipe;
 
-function emitWorkerEventQuietly(
-	sink: ((event: WorkerEvent, params: unknown) => void) | null,
-	event: WorkerEvent,
-	params: unknown
-): void {
-	try {
-		sink?.(event, params);
-	} catch {}
-}
-
 export class WorkerEndpoint {
 	private pipe: PipeClient;
 	private channel: ChannelClient;
@@ -42,8 +32,11 @@ export class WorkerEndpoint {
 	constructor(pipe: Pipe, dc: DebugChannelWorker) {
 		this.pipe = new PipeClient(pipe);
 		this.channel = new ChannelClient(dc);
-		this.pipe.onEvent = (event, params) => emitWorkerEventQuietly(this.onEvent, event, params);
-		this.channel.onEvent = (event, params) => emitWorkerEventQuietly(this.onEvent, event, params);
+		// Each transport contains listener errors at its receive boundary.
+		this.pipe.onEvent = this.channel.onEvent = (event, params) => {
+			const sink = this.onEvent;
+			sink?.(event, params);
+		};
 	}
 
 	/** Invoke a main-thread handler (inspect) or apply a control op. */

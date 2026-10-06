@@ -22,10 +22,13 @@ Deno.test('deno stdio: facade classes and stream getters match upstream shape', 
     for (const [name, value, constructorName] of entries) {
         strictEqual(value.constructor.name, constructorName, name);
         deepStrictEqual(Object.keys(value), [], name);
-        const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(value), 'rid');
-        strictEqual(typeof descriptor?.get, 'function', name);
-        strictEqual(descriptor?.set, undefined, name);
-        strictEqual(descriptor?.enumerable, false, name);
+        for (const property of ['rid', name === 'stdin' ? 'readable' : 'writable']) {
+            const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(value), property);
+            strictEqual(typeof descriptor?.get, 'function', `${name}.${property}`);
+            strictEqual(descriptor?.get?.name, `get ${property}`, `${name}.${property}`);
+            strictEqual(descriptor?.set, undefined, `${name}.${property}`);
+            strictEqual(descriptor?.enumerable, false, `${name}.${property}`);
+        }
         strictEqual(Reflect.set(value, 'rid', 99), false, name);
     }
     strictEqual(Deno.stdin.readable, Deno.stdin.readable);
