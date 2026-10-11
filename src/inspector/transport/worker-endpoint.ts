@@ -1,16 +1,5 @@
-/**
- * inspector/transport/worker-endpoint.ts — the worker's single RPC facade.
- *
- * Replaces the old WorkerRPC. It composes the two transports and routes every
- * call purely from the shared contract:
- *
- *   control            → channel (applyControl), valid in any run state.
- *   inspect/lifecycle  → channel while PAUSED, pipe while RUNNING.
- *
- * Because identity and transport both come from `rpc-contract.ts`, a method can
- * never again be sent over the wrong transport — the historical breakpoint bug
- * (control ops silently falling through to the pipe) is structurally impossible.
- */
+// Control operations use the channel. Inspect operations switch with pause
+// state; lifecycle RPC always uses the pipe.
 
 import { PipeClient } from './pipe-rpc';
 import { ChannelClient } from './channel-rpc';
@@ -30,13 +19,20 @@ export class WorkerEndpoint {
 	onEvent: ((event: WorkerEvent, params: unknown) => void) | null = null;
 
 	constructor(pipe: Pipe, dc: DebugChannelWorker) {
-		this.pipe = new PipeClient(pipe);
 		this.channel = new ChannelClient(dc);
+		this.pipe = new PipeClient(pipe, (reason) => {
+			this.channel.dispose(reason);
+			this.onEvent = null;
+		});
 		// Each transport contains listener errors at its receive boundary.
 		this.pipe.onEvent = this.channel.onEvent = (event, params) => {
 			const sink = this.onEvent;
 			sink?.(event, params);
 		};
+	}
+
+	dispose(): void {
+		this.pipe.dispose();
 	}
 
 	/** Invoke a main-thread handler (inspect) or apply a control op. */
@@ -54,13 +50,7 @@ export class WorkerEndpoint {
 		return this.paused ? this.channel.send(method, params) : this.pipe.call(method, params);
 	}
 
-	/**
-	 * Fire-and-forget call. Use this instead of `void call(...)` whenever nobody
-	 * awaits the result: a rejected orphan promise reaches the worker's
-	 * `unhandledrejection` listener, which reports it to the main thread as a worker
-	 * crash. A dying pipe would otherwise manufacture a phantom crash report for
-	 * every in-flight notify.
-	 */
+	// Notifications must not turn transport failures into worker crash reports.
 	notify<M extends RpcMethod>(method: M, params: RpcParams[M]): void {
 		try {
 			void this.call(method, params).catch((e: unknown) => {

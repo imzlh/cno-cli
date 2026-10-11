@@ -146,3 +146,32 @@ Deno.test('deno cron: rejects once the active cron job limit is reached', async 
         await Promise.allSettled(jobs);
     }
 });
+
+Deno.test('deno cron: failed scheduling releases the job name and abort listener', async () => {
+    const controller = new AbortController();
+    let listeners = 0;
+    const add = controller.signal.addEventListener.bind(controller.signal);
+    const remove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.addEventListener = (...args: Parameters<AbortSignal['addEventListener']>) => {
+        if (args[0] === 'abort') listeners++;
+        add(...args);
+    };
+    controller.signal.removeEventListener = (...args: Parameters<AbortSignal['removeEventListener']>) => {
+        if (args[0] === 'abort') listeners--;
+        remove(...args);
+    };
+
+    try {
+        throws(
+            () => Deno.cron('impossible-date', '0 0 31 2 *', { signal: controller.signal }, () => {}),
+            /unable to find next run/,
+        );
+        strictEqual(listeners, 0);
+        const job = Deno.cron('impossible-date', '* * * * *', { signal: controller.signal }, () => {});
+        controller.abort();
+        await job;
+        strictEqual(listeners, 0);
+    } finally {
+        controller.abort();
+    }
+});

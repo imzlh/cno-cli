@@ -1,10 +1,35 @@
-import { strictEqual, ok } from 'node:assert';
+import { strictEqual, ok, throws } from 'node:assert';
+import { getEventListeners } from 'node:events';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 const WATCH_DIR = path.join(os.tmpdir(), `cno-fswatch-${process.pid}`);
+
+Deno.test('fs.watch: invalid paths do not retain abort listeners', () => {
+    const controller = new AbortController();
+    throws(() => fs.watch(null as never, { signal: controller.signal }), TypeError);
+    strictEqual(getEventListeners(controller.signal, 'abort').length, 0);
+});
+
+Deno.test('fs.watch: a throwing close listener is invoked once', async () => {
+    await fsp.mkdir(WATCH_DIR, { recursive: true });
+    try {
+        const watcher = fs.watch(WATCH_DIR);
+        const failure = new Error('close listener failed');
+        let calls = 0;
+        watcher.on('close', () => {
+            calls++;
+            throw failure;
+        });
+        throws(() => watcher.close(), error => error === failure);
+        strictEqual(calls, 1);
+        watcher.close();
+    } finally {
+        await fsp.rm(WATCH_DIR, { recursive: true, force: true });
+    }
+});
 
 // --- 1. fs.watch returns an FSWatcher ---------------------------------------
 

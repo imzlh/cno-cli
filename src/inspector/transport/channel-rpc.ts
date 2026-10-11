@@ -1,19 +1,5 @@
-/**
- * inspector/transport/channel-rpc.ts — the native DebugChannel transport.
- *
- * Used while the program is PAUSED: inside the QuickJS onBreak trace handler the
- * main thread is frozen and its uv loop cannot be pumped, so inspect
- * requests/replies and the resume signal travel over the channel's lock-free
- * rings + semaphores instead.
- *
- *   ChannelClient (worker) — control ops (always), inspect ops (while paused),
- *                            resume/interrupt, and the reply poll loop.
- *   ChannelServer (main)   — the blocking service loop run from inside onBreak.
- *
- * Control-class operations are applied in C at the next safepoint, so they work
- * whether the program is RUNNING or PAUSED — the worker drives them straight
- * over the channel regardless of run state.
- */
+// Paused execution cannot pump the main event loop. Inspect RPC uses the
+// native channel; control operations also use it while execution is running.
 
 import { log } from '../../../cts/src/api';
 import { isRecord } from '../shared/cdp';
@@ -71,6 +57,7 @@ export class ChannelClient {
 	private pending = new Map<number, Pending>();
 	private active = false;
 	private pollTimer: number | null = null;
+	private closed: Error | null = null;
 
 	/** Main-thread -> worker events delivered over the pause channel. */
 	onEvent: ((event: WorkerEvent, params: unknown) => void) | null = null;
@@ -79,8 +66,24 @@ export class ChannelClient {
 		this.pollTimer = timers.setTimeout(this.poll, 0);
 	}
 
+	dispose(reason = 'debug channel closed'): void {
+		if (this.closed) return;
+		this.closed = new Error(reason);
+		if (this.pollTimer !== null) timers.clearTimeout(this.pollTimer);
+		this.pollTimer = null;
+		this.onEvent = null;
+		this.failAllPending(this.closed);
+		this.dc.stop();
+	}
+
+	private failAllPending(error: Error): void {
+		for (const pending of this.pending.values()) pending.reject(error);
+		this.pending.clear();
+	}
+
 	/** Control-class op: applied in C at a safepoint; valid RUNNING or PAUSED. */
 	applyControl(method: RpcMethod, params: unknown): void {
+		if (this.closed) throw this.closed;
 		const record = isRecord(params) ? params : null
 		switch (method) {
 			case 'addBreakpoint': {
@@ -118,14 +121,13 @@ export class ChannelClient {
 				this.dc.interrupt();
 				break;
 			default:
-				// Non-control method routed here by mistake — impossible given the
-				// contract, but keep it loud in debug builds.
 				log.debug('debug', () => `channel.control: ignoring non-control method ${method}`);
 		}
 	}
 
 	/** Inspect-class op while PAUSED: send + correlate over the channel. */
 	send(method: RpcMethod, params: unknown): Promise<unknown> {
+		if (this.closed) return Promise.reject(this.closed);
 		const id = this.nextId++;
 		return new Promise<unknown>((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
@@ -143,8 +145,8 @@ export class ChannelClient {
 	}
 
 	private drainInbox(): void {
-		for (;;) {
-			const m = this.recvQuietly();
+		while (!this.closed) {
+			const m = this.dc.recv();
 			if (!m) break;
 			if (m.kind === ChannelRecv.Reply) {
 				const p = this.pending.get(m.id);
@@ -162,51 +164,37 @@ export class ChannelClient {
 		}
 	}
 
-	private recvQuietly(): ReturnType<DebugChannelWorker['recv']> | null {
-		try {
-			return this.dc.recv();
-		} catch {
-			return null;
-		}
-	}
-
-	private waitRecvQuietly(waitMs: number): void {
-		try {
-			this.dc.waitRecv(waitMs);
-		} catch {}
-	}
-
 	private drainInboxQuietly(): void {
 		try {
 			this.drainInbox();
-		} catch {}
+		} catch {
+			this.dispose();
+		}
 	}
 
-	/**
-	 * Drain replies on a short timer so the worker's uv loop (WS server) keeps
-	 * breathing between drains. waitRecv sleeps up to 1ms when idle to avoid a
-	 * hot spin without adding latency.
-	 */
+	// Yield between drains so the WebSocket server can process requests.
 	private poll = (): void => {
-		const waitMs = this.active ? 1 : 20;
-		this.waitRecvQuietly(waitMs);
+		if (this.closed) return;
+		try {
+			this.dc.waitRecv(this.active ? 1 : 20);
+		} catch {
+			this.dispose();
+			return;
+		}
 		this.drainInboxQuietly();
-		this.pollTimer = timers.setTimeout(this.poll, 0);
+		if (!this.closed) this.pollTimer = timers.setTimeout(this.poll, 0);
 	};
 
 	/** Toggle the paused poll loop; driven by WorkerEndpoint.setPaused. */
 	setActive(v: boolean): void {
-		if (this.active === v) return;
+		if (this.closed || this.active === v) return;
 		this.active = v;
 		log.debug('debug', () => `channel.setActive: ${v} pending=${this.pending.size}`);
-			if (!v) {
-				// Drain final replies, then fail anything outstanding so no CDP command
-				// hangs across the resume boundary.
-				this.drainInboxQuietly();
-				for (const [, p] of this.pending) p.reject(new Error('Execution resumed'));
-				this.pending.clear();
-			}
+		if (!v) {
+			this.drainInboxQuietly();
+			this.failAllPending(new Error('Execution resumed'));
 		}
+	}
 
 	/** Request a pause at the next safepoint (works while RUNNING). */
 	interrupt(): void {
@@ -230,14 +218,7 @@ export class ChannelClient {
 export class ChannelServer {
 	constructor(private dc: DebugChannelMain) {}
 
-	/**
-	 * Push an event to the worker while the main thread is paused in onBreak.
-	 * Returns false when the message was DROPPED — the C ring is 64 slots
-	 * (RING_CAP, mod_debug.c:102) and `ring_push` returns false when full
-	 * (mod_debug.c:151). A dropped Paused event must not be ignored: the caller
-	 * would then block in `service()` waiting for a resume the worker will never
-	 * send, freezing the process unkillably.
-	 */
+	// A dropped Paused event must not enter service(): no resume can arrive.
 	emit(event: WorkerEvent, params: unknown): boolean {
 		try {
 			return this.dc.notify(event, params) !== false;
@@ -252,12 +233,7 @@ export class ChannelServer {
 		} catch {}
 	}
 
-	/**
-	 * Synchronous service loop, run from inside onBreak while the main thread is
-	 * frozen. Blocks on the channel's main semaphore (no busy spin); control
-	 * messages (breakpoints/step) are applied in C by waitRequest and never
-	 * surface here. Returns the requested step code when the worker resumes.
-	 */
+	// waitRequest applies control operations in C while waiting for inspect/resume.
 	service(dispatchSync: SyncDispatch): StepCode {
 		while (true) {
 			let req: ReturnType<DebugChannelMain['waitRequest']>;
@@ -284,11 +260,8 @@ export class ChannelServer {
 			} else {
 				try { resp = { result: dispatchSync(method, params) }; }
 				catch (e) { resp = { error: e instanceof Error ? e.message : String(e) }; }
-				}
-				if (typeof id === 'number') {
-					this.replyQuietly(id, resp);
-				}
 			}
-		return Step.None;
+			if (typeof id === 'number') this.replyQuietly(id, resp);
+		}
 	}
 }

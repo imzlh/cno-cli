@@ -1,6 +1,32 @@
-import { strictEqual } from 'node:assert';
+import { rejects, strictEqual } from 'node:assert';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+
+Deno.test({ name: 'fetch: abort interrupts a pending upload read and releases its reader', timeout: 5000 }, async () => {
+    const controller = new AbortController();
+    const reason = new Error('upload canceled');
+    const reading = Promise.withResolvers<void>();
+    let cancelReason: unknown;
+    const body = new ReadableStream<Uint8Array>({
+        pull() {
+            reading.resolve();
+            return new Promise<void>(() => {});
+        },
+        cancel(value) {
+            cancelReason = value;
+            return new Promise<void>(() => {});
+        },
+    });
+    const pending = fetch('http://127.0.0.1:1/', {
+        method: 'POST', body, duplex: 'half', signal: controller.signal,
+    });
+    const rejected = rejects(pending, error => error === reason);
+    await reading.promise;
+    controller.abort(reason);
+    await rejected;
+    strictEqual(cancelReason, reason);
+    strictEqual(body.locked, false);
+});
 
 Deno.test({ name: 'fetch: streamed POST bodies stay in memory and use POST semantics', timeout: 10000 }, async () => {
     const server = createServer((req, res) => {

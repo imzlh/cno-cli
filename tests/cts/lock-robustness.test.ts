@@ -26,6 +26,24 @@ function populate(store: LockStore, root: string): void {
     store.addBin('alpha-cli', joinPaths(root, 'cache', 'alpha', 'cli.js'), 'alpha@1.0.0');
 }
 
+Deno.test('cts lock: fast close discards pending state before the database is opened', () => {
+    const root = makePosixTempDir('lock-unopened-close');
+    try {
+        for (const disabled of [false, true]) {
+            const store = new LockStore(root, false, disabled);
+            populate(store, root);
+            ok(store.dirtyCount > 0);
+            store.closeFast();
+            strictEqual(store.dirtyCount, 0);
+            strictEqual(existsSync(join(root, DB)), false);
+            store.close();
+            strictEqual(existsSync(join(root, DB)), false);
+        }
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test('cts lock determinism: identical input produces byte-identical lock', () => {
     const a = makePosixTempDir('lock-det-a');
     const b = makePosixTempDir('lock-det-b');

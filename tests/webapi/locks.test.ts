@@ -92,6 +92,48 @@ function isHeld(name: string): Promise<boolean> {
     return navigator.locks.request(name, { ifAvailable: true }, (lock) => lock === null) as Promise<boolean>;
 }
 
+for (const failure of ['getter', 'call'] as const) {
+    Deno.test(`webapi: locks release after a throwing then ${failure}`, async () => {
+        const name = `test-lock-then-${failure}`;
+        const reason = new Error('invalid thenable');
+        const thenable = failure === 'getter'
+            ? Object.defineProperty({}, 'then', { get() { throw reason; } })
+            : { then() { throw reason; } };
+        await rejects(navigator.locks.request(name, () => thenable), error => error === reason);
+        strictEqual(await isHeld(name), false);
+    });
+}
+
+Deno.test('webapi: callable thenables keep their lock until they settle', async () => {
+    const name = 'test-lock-callable-thenable';
+    const gate = Promise.withResolvers<string>();
+    const thenable = Object.assign(() => {}, { then: gate.promise.then.bind(gate.promise) });
+    const holder = navigator.locks.request(name, () => thenable);
+    try {
+        strictEqual(await isHeld(name), true);
+    } finally {
+        gate.resolve('done');
+        strictEqual(await holder, 'done');
+    }
+    strictEqual(await isHeld(name), false);
+});
+
+Deno.test('webapi: releasing one shared holder keeps the others registered', async () => {
+    const name = 'test-lock-shared-lifetime';
+    const gate = Promise.withResolvers<void>();
+    const holder = navigator.locks.request(name, { mode: 'shared' }, () => gate.promise);
+    try {
+        await navigator.locks.request(name, { mode: 'shared' }, () => {});
+        strictEqual(await isHeld(name), true, 'an exclusive request must still be blocked');
+        const state = await navigator.locks.query();
+        strictEqual(state.held.some(lock => lock.name === name && lock.mode === 'shared'), true);
+    } finally {
+        gate.resolve();
+        await holder;
+    }
+    strictEqual(await isHeld(name), false);
+});
+
 /** Counts unhandled rejections WITHOUT cancelling them. */
 async function countLeaks(body: () => Promise<void>): Promise<number> {
     let leaks = 0;

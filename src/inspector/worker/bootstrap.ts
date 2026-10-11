@@ -1,15 +1,3 @@
-/**
- * worker/bootstrap.ts — composition root that runs inside the debug worker.
- *
- * Wiring only, no logic: acquire the debug channel + message pipe, build the
- * WorkerEndpoint, instantiate every CDP domain on a shared dispatcher, point
- * the endpoint's event stream at the router, then start the DevTools server and
- * announce its URL back to the main thread via the `ready` lifecycle RPC.
- *
- * The `__cno_debug_worker: true` flag in workerData is what the runtime uses to
- * recognise this worker; it is set by the main-thread Inspector, not here.
- */
-
 import { hasSchemeId, resolvePath, toFileUrl } from '../../../cts/src/api'
 import { ConsoleDomain } from '../domains/console'
 import { DebuggerDomain } from '../domains/debugger'
@@ -19,6 +7,7 @@ import { ProtocolDomain } from '../domains/protocol'
 import { RuntimeDomain } from '../domains/runtime'
 import { TargetDomain } from '../domains/target'
 import { native, type DebugChannelWorker } from '../shared/native'
+import { PipeKind, type PipeMsg } from '../shared/wire'
 import { WorkerEndpoint } from '../transport/worker-endpoint'
 import { CdpChannel, handleDevToolsConnection } from './connection'
 import { CDPDispatcher } from './dispatcher'
@@ -73,11 +62,10 @@ function toEntryUrl(entryFile?: string): string {
 
 function reportWorkerError(report: WorkerErrorReport): void {
 	try {
-		const workerData = getDebugWorkerData()
-		const dc: DebugChannelWorker = native.getDebugChannel(workerData.channelHandle)
-		if (!worker.pipe) return
-		const endpoint = new WorkerEndpoint(worker.pipe, dc)
-		void endpoint.call('workerError', report)
+		// Id 0 needs no reply tracking and also works before endpoint construction.
+		worker.pipe?.postMessage({
+			kind: PipeKind.RpcReq, id: 0, method: 'workerError', params: report,
+		} satisfies PipeMsg)
 	} catch {
 		// Ignore secondary reporting failures; preserving the original error matters more.
 	}
@@ -107,13 +95,13 @@ globalThis.addEventListener?.('unhandledrejection', (event) => {
 export function bootstrapDebugWorker(): void {
 	const { pipe } = worker
 	const workerData = getDebugWorkerData()
+	if (!pipe) throw new Error('debug worker: worker pipe not available')
 
 	const dc: DebugChannelWorker = native.getDebugChannel(workerData.channelHandle)
 	const entryUrl = toEntryUrl(workerData.entryFile)
 
-	if (!pipe) throw new Error('debug worker: worker pipe not available')
-
 	const endpoint = new WorkerEndpoint(pipe, dc)
+	globalThis.addEventListener('exit', () => endpoint.dispose(), { once: true })
 	const dispatcher = new CDPDispatcher()
 	const channel = new CdpChannel()
 	const emit = channel.emit
@@ -155,9 +143,10 @@ export function bootstrapDebugWorker(): void {
 			}),
 	}).then((handle) => {
 		const { wsUrl } = handle
-		globalThis.addEventListener?.('exit', () => handle.close?.(), { once: true })
-		void endpoint.call('ready', { wsUrl })
+		globalThis.addEventListener('exit', () => handle.close(), { once: true })
+		endpoint.notify('ready', { wsUrl })
 	}).catch((error) => {
+		endpoint.dispose()
 		const err = error instanceof Error ? error : new Error(String(error))
 		reportWorkerError({
 			message: err.message,

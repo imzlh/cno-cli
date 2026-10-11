@@ -1,16 +1,4 @@
-/**
- * inspector/transport/pipe-rpc.ts — the async uv MessagePipe transport.
- *
- * Used while the program is RUNNING: the main thread is pumping its event loop,
- * so inspect/eval RPC and all main→worker events flow over the pipe.
- *
- *   PipeClient  (worker) — sends RPC requests, receives replies + events.
- *   PipeServer  (main)   — answers RPC requests, emits events.
- *
- * Neither side knows anything about method semantics; routing decisions live in
- * the endpoints. The server delegates request handling to an injected callback
- * so the handler registry can be owned in one place (MainEndpoint).
- */
+// Async RPC while the main thread's event loop is running.
 
 import { PipeKind, WorkerEvent, isWorkerEvent } from '../shared/wire';
 import { isRpcMethod, type RpcMethod } from '../shared/rpc-contract';
@@ -39,40 +27,46 @@ function emitEventQuietly(sink: EventSink | null, event: WorkerEvent, params: un
 export class PipeClient {
 	private nextId = 1;
 	private pending = new Map<number, Pending>();
+	private closed: Error | null = null;
 
 	/** Main-thread → worker events (Debugger.paused, console, scriptParsed, …). */
 	onEvent: EventSink | null = null;
 
-	constructor(private pipe: Pipe) {
+	constructor(private pipe: Pipe, private onClose?: (reason: string) => void) {
 		this.pipe.onmessage = (msg: unknown) => this.onMessage(msg);
 		this.pipe.onmessageerror = (err: unknown) => {
 			log.error('pipe-rpc', `worker pipe error: ${err}`);
-			// A pipe fault means no reply can ever arrive. Mirror
-			// ChannelClient.setActive(false): fail everything outstanding so no CDP
-			// command hangs forever and DevTools sees an error instead of a spinner.
-			this.failAllPending(`inspector pipe error: ${errMsg(err)}`);
+			this.dispose(`inspector pipe error: ${errMsg(err)}`);
 		};
+		this.pipe.onclose = () => this.dispose('inspector pipe closed');
+	}
+
+	dispose(reason = 'inspector pipe closed'): void {
+		if (this.closed) return;
+		this.closed = new Error(reason);
+		this.pipe.onmessage = undefined;
+		this.pipe.onmessageerror = undefined;
+		this.pipe.onclose = undefined;
+		this.onEvent = null;
+		this.failAllPending(reason);
+		this.onClose?.(reason);
 	}
 
 	/** Reject every outstanding request; for when the transport can no longer reply. */
 	failAllPending(reason: string): void {
-		const outstanding = [...this.pending.values()];
+		const error = new Error(reason);
+		for (const pending of this.pending.values()) pending.reject(error);
 		this.pending.clear();
-		for (const p of outstanding) {
-			p.reject(new Error(reason));
-		}
 	}
 
 	call(method: RpcMethod, params: unknown): Promise<unknown> {
+		if (this.closed) return Promise.reject(this.closed);
 		const id = this.nextId++;
 		return new Promise<unknown>((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
 			try {
 				this.pipe.postMessage({ kind: PipeKind.RpcReq, id, method, params });
 			} catch (e) {
-				// postMessage throws on a non-cloneable param or a dead pipe. The
-				// promise rejects here, so the map entry must go with it or it is
-				// leaked for the life of the worker.
 				this.pending.delete(id);
 				reject(e instanceof Error ? e : new Error(String(e)));
 			}
@@ -125,8 +119,7 @@ export class PipeServer {
 		const id = Reflect.get(msg, 'id');
 		const method = Reflect.get(msg, 'method');
 		if (typeof id !== 'number') return;
-		// Never drop a request that carries an id: the caller holds a pending
-		// promise keyed on it and would otherwise wait forever.
+		// Requests with an id must receive a reply, including invalid methods.
 		if (typeof method !== 'string' || !isRpcMethod(method)) {
 			this.reply({ kind: PipeKind.RpcRes, id, error: `unknown rpc method: ${String(method)}` });
 			return;
@@ -135,8 +128,7 @@ export class PipeServer {
 		try {
 			if (!this.onRequest) throw new Error('no request handler registered');
 			const result = await this.onRequest(method, params);
-			// A non-cloneable result throws here, not in the handler; fall through to
-			// the catch so the worker still gets *a* reply for this id.
+			// Non-cloneable results still need an error reply.
 			this.reply({ kind: PipeKind.RpcRes, id, result }, () => {
 				this.reply({ kind: PipeKind.RpcRes, id, error: `rpc result for ${method} is not transferable` });
 			});
@@ -145,11 +137,7 @@ export class PipeServer {
 		}
 	}
 
-	/**
-	 * postMessage that cannot reject. `onMessage` is async and nothing awaits it,
-	 * so a throw here would surface as an unhandled rejection on the main thread
-	 * rather than as an RPC error.
-	 */
+	// Receive callbacks are not awaited; contain postMessage failures here.
 	private reply(payload: Record<string, unknown>, onFail?: () => void): void {
 		try {
 			this.pipe.postMessage(payload);

@@ -1,21 +1,9 @@
-/**
- * inspector/transport/main-endpoint.ts — the main thread's single RPC facade.
- *
- * Replaces the old MainRpc. Owns the handler registry (shared by both the async
- * pipe path while RUNNING and the synchronous channel path while PAUSED), emits
- * events to the worker, and exposes the blocking pause service loop.
- *
- * A method registered once here is reachable over whichever transport the
- * worker chooses, so 'evaluate' (say) works identically running or paused.
- */
-
 import { PipeServer, type PipeLifecycle } from './pipe-rpc';
 import { ChannelServer } from './channel-rpc';
 import { isRpcMethod, type RpcMethod, type RpcParams } from '../shared/rpc-contract';
 import { isRecord } from '../shared/cdp';
 import type { DebugChannelMain, StepCode } from '../shared/native';
 import { WorkerEvent } from '../shared/wire';
-import { log } from '../../../cts/src/api';
 
 type Pipe = CModuleWorker.MessagePipe;
 
@@ -54,12 +42,7 @@ export class MainEndpoint {
 		}
 	}
 
-	/** Push an event to the worker. Paused must use the synchronous channel. */
-	/**
-	 * Emit a worker-bound event. Returns false only for a DROPPED `Paused`, which
-	 * the caller must handle rather than blocking for a resume that cannot come.
-	 * Other events go over the pipe and are reported as delivered.
-	 */
+	/** False means Paused was dropped; the caller must not wait for a resume. */
 	emit(event: WorkerEvent, params: unknown): boolean {
 		if (event === WorkerEvent.Paused) {
 			return this.channelServer.emit(event, params);

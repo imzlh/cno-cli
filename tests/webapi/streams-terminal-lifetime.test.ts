@@ -12,6 +12,58 @@ async function collect(): Promise<void> {
     engine.gc.run();
 }
 
+for (const Stream of [CompressionStream, DecompressionStream]) {
+    for (const terminal of ['close', 'abort', 'cancel', 'write error', 'finish error'] as const) {
+        Deno.test({ name: `${Stream.name}: ${terminal} releases the native codec`, timeout: 5000 }, async () => {
+            const zlib = import.meta.use('zlib');
+            const compress = Stream === CompressionStream;
+            const factoryName = compress ? 'createGzip' : 'createGunzip';
+            const factory = zlib[factoryName];
+            const reason = new TypeError('codec stopped');
+            let handleRef: WeakRef<object>;
+            Reflect.set(zlib, factoryName, () => {
+                const handle = factory();
+                handleRef = new WeakRef(handle);
+                if (terminal === 'write error' || terminal === 'finish error') {
+                    const method = terminal === 'finish error' ? 'finish' : compress ? 'deflate' : 'inflate';
+                    Reflect.set(handle, method, () => { throw reason; });
+                }
+                return handle;
+            });
+            try {
+                const stream = new Stream('gzip');
+                const writer = stream.writable.getWriter();
+                void writer.closed.catch(() => {});
+                if (terminal === 'close') {
+                    const input = new TextEncoder().encode('codec lifetime');
+                    await writer.write(compress ? input : new Uint8Array(zlib.gzip(input)));
+                    await writer.close();
+                    await new Response(stream.readable).arrayBuffer();
+                } else if (terminal === 'cancel') {
+                    await stream.readable.cancel(reason);
+                    await rejects(writer.write(new Uint8Array()), error => error === reason);
+                } else if (terminal === 'abort') {
+                    await writer.abort(reason);
+                    await rejects(new Response(stream.readable).arrayBuffer(), error => error === reason);
+                } else {
+                    const consumed = new Response(stream.readable).arrayBuffer();
+                    const readRejected = rejects(consumed, error => error === reason);
+                    await rejects(terminal === 'write error'
+                        ? writer.write(new Uint8Array([1]))
+                        : writer.close(), error => error === reason);
+                    await readRejected;
+                }
+                writer.releaseLock();
+                await collect();
+                strictEqual(handleRef!.deref(), undefined, 'retaining the stream must not retain a terminal codec');
+                strictEqual(stream.writable.locked, false);
+            } finally {
+                Reflect.set(zlib, factoryName, factory);
+            }
+        });
+    }
+}
+
 for (const terminal of ['close', 'error', 'cancel'] as const) {
     Deno.test({ name: `ReadableStream: ${terminal} releases source and backpressure callbacks`, timeout: 5000 }, async () => {
         async function terminate() {
