@@ -109,24 +109,34 @@ No-argument `cno cache` seeds from `deno.json` imports and
 > if you just want to build it one-step, just try `build.sh` for posix-compatible shells and `build.ps1` for windows.
 > Don't forget to install dependencies before building.
 
-Install JavaScript dependencies first:
+Initialize the nested submodules and install JavaScript dependencies with the
+pnpm version declared in `package.json`:
 
 ```sh
-pnpm install
+git submodule update --init --recursive
+pnpm install --frozen-lockfile
+pnpm --dir cno install --frozen-lockfile
+pnpm --dir cts install --frozen-lockfile
 ```
 
-You are also supposed to install TypeScript dependencies for subprojects:
+The root, `cno`, and `cts` are separate pnpm projects with their own lockfiles.
+All three installs are required because the CLI bundles source from the
+subprojects. Run these commands from the repository root on any platform.
+
+Check that the JavaScript bundle builds:
 
 ```sh
-sh -c "cd cno && pnpm install"
-sh -c "cd cts && pnpm install"
+pnpm run bundle
 ```
 
-Type-check the TypeScript bundle surface (optional):
+Type-check the TypeScript bundle surface:
 
 ```sh
 pnpm run type-check
 ```
+
+The first type check downloads and verifies the pinned Deno declarations;
+subsequent runs reuse them from `node_modules/.cache/cno-types/`.
 
 Configure and build the native binary:
 

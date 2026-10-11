@@ -1,0 +1,107 @@
+name: Build and test
+
+on:
+  workflow_call:
+    inputs:
+      native-matrix:
+        description: Native runner builds; releases build Linux in the dedicated matrix.
+        type: string
+        default: >-
+          [{"target":"linux-x86_64","runner":"ubuntu-24.04"},
+           {"target":"linux-arm64","runner":"ubuntu-24.04-arm"},
+           {"target":"macos-arm64","runner":"macos-15"},
+           {"target":"windows-x64","runner":"windows-2022"}]
+
+permissions:
+  contents: read
+
+jobs:
+  javascript:
+    name: Type check and bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-js
+      - run: pnpm run type-check
+      - run: pnpm run bundle
+
+  native:
+    name: ${{ matrix.target }}
+    needs: javascript
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.native-matrix) }}
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: ./.github/actions/setup-js
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config \
+            libcurl4-openssl-dev libltdl-dev libffi-dev libsqlite3-dev \
+            libssl-dev zlib1g-dev libexpat1-dev libbrotli-dev
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake ninja pkgconf libffi sqlite openssl@3 zlib expat curl brotli
+          prefixes="$(brew --prefix)"
+          for formula in libffi sqlite openssl@3 zlib expat curl brotli; do
+            prefixes="$prefixes;$(brew --prefix "$formula")"
+          done
+          printf 'CNO_CMAKE_PREFIX_PATH=%s\n' "$prefixes" >> "$GITHUB_ENV"
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+
+      - uses: lukka/run-vcpkg@v11
+        if: runner.os == 'Windows'
+        with:
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: '1460b31b08c42cc2e9ac2c79f45ec8707e2675e2'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build cno and OXC
+        run: node scripts/ci/build.mjs
+
+      - name: Smoke test staged runtime
+        env:
+          CTS_CACHE_DIR: ${{ runner.temp }}/cno-smoke-cache
+        run: node scripts/ci/smoke.mjs build/stage
+
+      - name: Package
+        if: runner.os != 'Windows'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p artifacts
+          tar -czf "artifacts/cno-$TARGET.tar.gz" -C build/stage --exclude='.dlls.stamp' .
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Compress-Archive -Path build/stage/cno.exe, build/stage/*.dll, build/stage/ext -DestinationPath artifacts/cno-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cno-${{ matrix.target }}
+          path: artifacts/*
+          if-no-files-found: error

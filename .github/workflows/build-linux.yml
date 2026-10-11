@@ -1,0 +1,58 @@
+name: Linux release builds
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.target }} (${{ matrix.libc }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {libc: glibc, target: x86_64, platform: linux/amd64, image: 'debian:bookworm-slim', runner: ubuntu-24.04}
+          - {libc: glibc, target: i386, platform: linux/386, image: 'debian:bookworm-slim', runner: ubuntu-24.04}
+          - {libc: glibc, target: arm64, platform: linux/arm64, image: 'debian:bookworm-slim', runner: ubuntu-24.04-arm}
+          - {libc: glibc, target: armv7, platform: linux/arm/v7, image: 'debian:bookworm-slim', runner: ubuntu-24.04-arm}
+          # The official Debian index omits armel. Its architecture-specific
+          # image is still available; ARMv5 soft-float libraries run on ARMv6.
+          - {libc: glibc, target: armv6, platform: linux/arm/v5, image: 'arm32v5/debian:bookworm-slim', runner: ubuntu-24.04-arm}
+          - {libc: musl, target: x86_64, platform: linux/amd64, image: 'alpine:3.21', runner: ubuntu-24.04}
+          - {libc: musl, target: i386, platform: linux/386, image: 'alpine:3.21', runner: ubuntu-24.04}
+          - {libc: musl, target: arm64, platform: linux/arm64, image: 'alpine:3.21', runner: ubuntu-24.04-arm}
+          - {libc: musl, target: armv7, platform: linux/arm/v7, image: 'alpine:3.21', runner: ubuntu-24.04-arm}
+          - {libc: musl, target: armv6, platform: linux/arm/v6, image: 'alpine:3.21', runner: ubuntu-24.04-arm}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-js
+      - name: Check and bundle JavaScript on the host
+        run: |
+          pnpm run type-check
+          pnpm run bundle
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm,arm64,386
+      - name: Build and test inside the target platform
+        env:
+          LIBC: ${{ matrix.libc }}
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm --platform "$PLATFORM" \
+            -v "$GITHUB_WORKSPACE:/work" -w /work \
+            -v "$RUNNER_TEMP/cno-smoke-cache:/cache" \
+            -e CTS_CACHE_DIR=/cache -e CMAKE_BUILD_PARALLEL_LEVEL=4 \
+            "$IMAGE" sh scripts/ci/build-linux.sh "$LIBC" "$TARGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cno-linux-${{ matrix.libc }}-${{ matrix.target }}
+          path: artifacts/*.tar.gz
+          if-no-files-found: error

@@ -1,0 +1,20 @@
+name: Install JavaScript dependencies
+description: Install all three projects using their committed lockfiles.
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+        cache: pnpm
+        cache-dependency-path: |
+          pnpm-lock.yaml
+          cno/pnpm-lock.yaml
+          cts/pnpm-lock.yaml
+    - name: Install root and subproject dependencies
+      shell: bash
+      run: |
+        pnpm install --frozen-lockfile
+        pnpm --dir cno install --frozen-lockfile
+        pnpm --dir cts install --frozen-lockfile

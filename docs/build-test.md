@@ -7,7 +7,10 @@ This document covers the common development commands for this checkout.
 Install JavaScript dependencies from the repository root:
 
 ```sh
-pnpm install
+git submodule update --init --recursive
+pnpm install --frozen-lockfile
+pnpm --dir cno install --frozen-lockfile
+pnpm --dir cts install --frozen-lockfile
 ```
 
 The root build requires:
@@ -19,6 +22,66 @@ The root build requires:
 
 Optional extensions may require extra dependencies such as Rust, OpenSSL, or
 nghttp2.
+
+## GitHub Actions
+
+`CI` runs on branch pushes, pull requests, and manual **Run workflow** requests.
+The default CI covers Linux x64/ARM64, macOS ARM64, and Windows x64 with OXC.
+Enable **all-linux-targets** when starting CI manually to also run the complete
+Linux release matrix. `Release` runs when a stable version tag such as `v2.0.0`
+is pushed. It reuses `build.yml` for macOS/Windows, `build-linux.yml` for Linux
+containers, and `build-cross-linux.yml` for Linux cross builds. Every build
+checks and bundles JavaScript, tests the staged runtime, and uploads its archive.
+Release publishes all 17 archives and `SHA256SUMS.txt` only after every build
+and test succeeds. No extra repository secrets are required; publication uses
+the job's `GITHUB_TOKEN` with `contents: write`.
+
+| Archive | Targets | Build environment |
+| --- | --- | --- |
+| `cno-linux-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Debian 12 (bookworm); glibc |
+| `cno-linux-musl-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Alpine 3.21; static musl |
+| `cno-linux-musl-<arch>.tar.gz` | mips, mipsel, mips64, riscv64, armv5 | Cross toolchains, vcpkg, and QEMU; static musl |
+| `cno-macos-arm64.tar.gz` | arm64 | `macos-15`; Homebrew libraries |
+| `cno-windows-x64.zip` | x64 | `windows-2022`; vcpkg runtime DLLs included |
+
+The glibc release archives target Debian 12 or compatible distributions and
+require their system libraries. Default CI's Linux artifacts use Ubuntu 24.04
+instead; release builds preserve the Debian baseline. macOS packages depend
+on Homebrew's libffi, sqlite, openssl@3, zlib, expat, curl, and brotli. Install
+these dependencies before running an archive on a different machine.
+
+Linux release packages use the bundled Sucrase transformer. Static musl does
+not support loading shared extensions. macOS/Windows releases include OXC,
+and their smoke tests verify both OXC and Sucrase. WebAssembly is disabled on
+MIPS targets whose endianness or ABI is unsupported by the bundled WAMR; the
+CLI still starts without the optional native module.
+
+The host generates the JavaScript bundle before entering Linux containers or
+cross builds, so target images need no Node.js/pnpm installation. ARMv6 glibc
+uses the existing `arm32v5/debian` image with ARMv6 compiler flags. Targets
+without Alpine images use real cross toolchains. Big-endian targets must run
+the target bytecode compiler through QEMU; host bytecode is not interchangeable.
+
+JavaScript installation uses `packageManager` in `package.json` and the three
+committed `pnpm-lock.yaml` files. Keep these lockfiles with dependency changes.
+The Windows vcpkg checkout in `build.yml` must match `builtin-baseline` in
+`vcpkg.json`. Submodule source fixes must be committed and pushed in their own
+repositories before pushing the main repository's updated gitlinks; otherwise
+GitHub cannot check out those commits.
+
+To reproduce the CI build after installing its platform dependencies and Rust,
+run from a developer shell (an x64 MSVC shell on Windows):
+
+```sh
+node scripts/ci/build.mjs build-ci
+node scripts/ci/smoke.mjs build-ci/stage
+```
+
+On macOS, supply the Homebrew prefixes through `CNO_CMAKE_PREFIX_PATH` as in
+the workflow. The smoke script creates a private cache, installs Node
+polyfills from this checkout, checks the native OXC transform and the Sucrase
+fallback, and runs the CLI flag regression tests. Missing artifacts, native
+load failures, nonzero exits, and timeouts fail the job.
 
 ### Windows native dependencies
 
@@ -89,6 +152,10 @@ The root `CMakeLists.txt`:
 3. runs `pnpm run bundle` or `pnpm run bundle:min`
 4. converts the JS bundle into bytecode data
 5. links the final staged `cno` binary
+
+`CNO_PREBUILT_BUNDLE=/absolute/path/to/cno-cli.js` skips the Node/pnpm step
+when the host has already built the bundle. Bytecode generation still uses
+the compiler selected by `CJSC_PATH` or the native build.
 
 The bundle script is:
 

@@ -5,7 +5,7 @@
   "main": "src/main.ts",
   "type": "module",
   "scripts": {
-    "type-check": "tsc --noEmit",
+    "type-check": "node scripts/prepare-types.mjs && tsc --noEmit",
     "bundle": "node scripts/bundle.mjs release",
     "bundle:min": "node scripts/bundle.mjs min",
     "configure": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCNO_RELEASE=ON",

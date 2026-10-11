@@ -8,6 +8,7 @@ option(CNO_EMBED_EXT_H2   "Statically embed HTTP/2 extension"      OFF)
 option(CNO_EMBED_EXT_QUIC "Statically embed QUIC extension"        OFF)
 set(CJSC_PATH      "" CACHE FILEPATH "Pre-built host cjsc executable")
 set(CNO_EXT_DIR    "" CACHE PATH     "Pre-built native extensions dir (.so/.dll)")
+set(CNO_PREBUILT_BUNDLE "" CACHE FILEPATH "Host-generated JavaScript bundle; skips the Node/pnpm bundling step")
 
 # ── Static extensions ─────────────────────────────────────────────────────────
 set(_EXT_SRCS "")
@@ -121,9 +122,11 @@ if(TARGET cjsc AND NOT CMAKE_CROSSCOMPILING AND NOT CJSC_PATH)
 endif()
 
 # ── JS toolchain ──────────────────────────────────────────────────────────────
-find_program(PNPM_EXE NAMES pnpm pnpm.cmd)
-if(NOT PNPM_EXE)
-    message(FATAL_ERROR "pnpm not found — install pnpm first.")
+if(NOT CNO_PREBUILT_BUNDLE)
+    find_program(PNPM_EXE NAMES pnpm pnpm.cmd)
+    if(NOT PNPM_EXE)
+        message(FATAL_ERROR "pnpm not found — install pnpm first.")
+    endif()
 endif()
 
 if(CJSC_PATH)
@@ -196,6 +199,14 @@ endif()
 # add_custom_target(cno-pnpm-install DEPENDS "${_NM_STAMP}")
 
 # esbuild bundle
+if(CNO_PREBUILT_BUNDLE)
+    get_filename_component(_CLI_BUNDLE "${CNO_PREBUILT_BUNDLE}" ABSOLUTE
+        BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(NOT EXISTS "${_CLI_BUNDLE}")
+        message(FATAL_ERROR "CNO_PREBUILT_BUNDLE does not exist: ${_CLI_BUNDLE}")
+    endif()
+    message(STATUS "[cno] using host-generated JavaScript bundle: ${_CLI_BUNDLE}")
+else()
 set(_BUNDLE_SCRIPT "bundle")
 set(_CLI_BUNDLE    "${CMAKE_CURRENT_SOURCE_DIR}/dist/cno-cli.js")
 if(CNO_BUNDLE_MINIFY)
@@ -222,6 +233,7 @@ add_custom_command(
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "bundle → ${_CLI_BUNDLE}"
     VERBATIM)
+endif()
 add_custom_target(cno-cli-bundle DEPENDS "${_CLI_BUNDLE}")
 
 # cjsc → C source (bytecode as const uint8_t cjs_blob[])

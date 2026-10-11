@@ -3,174 +3,29 @@ name: CI
 on:
   push:
     branches: ['**']
-    tags-ignore: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
+  workflow_dispatch:
+    inputs:
+      all-linux-targets:
+        description: Also build and test every Linux release architecture
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-linux-x64:
-    name: Test - Linux x86_64
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+  build:
+    uses: ./.github/workflows/build.yml
 
-      - name: Install system deps
-        run: |
-          sudo apt update
-          sudo apt install -y cmake ninja-build \
-            libcurl4-openssl-dev libltdl-dev libffi-dev \
-            libsqlite3-dev libssl-dev zlib1g-dev libexpat1-dev \
-            libiconv-hook-dev
+  linux:
+    if: inputs.all-linux-targets == true
+    uses: ./.github/workflows/build-linux.yml
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-
-      - uses: pnpm/action-setup@v4
-
-      - name: Install JavaScript dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --parallel
-
-      - name: Build ext-oxc
-        run: |
-          cmake -S ext-oxc -B ext-oxc/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCJS_DIR="$PWD/circu.js"
-          cmake --build ext-oxc/build --parallel
-
-      - name: Type check and smoke test
-        run: |
-          pnpm run type-check
-          build/stage/cno test tests/cts/cli-flag-consumers.test.ts
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cno-linux-x64-test
-          path: |
-            build/stage/cno
-            ext-oxc/build/oxc.so
-
-  build-mac-arm64:
-    name: Test - macOS ARM64
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install system deps
-        run: brew install cmake ninja libffi sqlite3 openssl zlib expat curl
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: latest
-
-      - name: Install JavaScript dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES=arm64
-          cmake --build build --parallel
-
-      - name: Build ext-oxc
-        run: |
-          cmake -S ext-oxc -B ext-oxc/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCJS_DIR="$PWD/circu.js"
-          cmake --build ext-oxc/build --parallel
-
-      - name: Type check and smoke test
-        run: |
-          pnpm run type-check
-          build/stage/cno test tests/cts/cli-flag-consumers.test.ts
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cno-mac-arm64-test
-          path: |
-            build/stage/cno
-            ext-oxc/build/oxc.dylib
-
-  build-windows-x64:
-    name: Test - Windows x86_64
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: '0b88aacde46a853151730fbe7d0b7ee45f4b6864'
-
-      - name: Install deps via vcpkg
-        run: |
-          vcpkg install sqlite3:x64-windows openssl:x64-windows zlib:x64-windows `
-            expat:x64-windows curl:x64-windows libffi:x64-windows libiconv:x64-windows
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: latest
-
-      - name: Install JavaScript dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        shell: cmd
-        run: |
-          cmake -S . -B build -G "Visual Studio 18 2026" -A x64 ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake
-          cmake --build build --config Release --parallel
-
-      - name: Build ext-oxc
-        shell: pwsh
-        run: |
-          $CnoLib = "build\circu.js\deps\quickjs\qjs.lib"
-          cmake -S ext-oxc -B ext-oxc\build -G "Visual Studio 18 2026" -A x64 `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCJS_DIR="$PWD\circu.js" `
-            -DCNO_IMPLIB="$PWD\$CnoLib"
-          cmake --build ext-oxc\build --config Release --parallel
-
-      - name: Type check and smoke test
-        shell: pwsh
-        run: |
-          pnpm run type-check
-          build\stage\cno.exe test tests/cts/cli-flag-consumers.test.ts
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cno-windows-x64-test
-          path: |
-            build\stage\
-            ext-oxc\build\Release\oxc.dll
+  linux-cross:
+    if: inputs.all-linux-targets == true
+    uses: ./.github/workflows/build-cross-linux.yml

@@ -46,12 +46,13 @@
         "skipLibCheck": true,
         "allowJs": true
     },
+    "files": [
+        "./node_modules/.cache/cno-types/lib.deno.d.ts"
+    ],
     "include": [
         "src/**/*.ts",
-        "cno/lib.deno.d.ts",
         "./circu.js/types/**/*.d.ts",
-        "./cno/src/type/**/*.d.ts",
-        "./cno/types/**/*.d.ts"
+        "./cno/src/type/**/*.d.ts"
     ],
     "exclude": ["node_modules", "dist", "build", "build_release"]
 }
