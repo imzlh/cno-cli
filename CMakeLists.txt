@@ -123,7 +123,12 @@ endif()
 
 # ── JS toolchain ──────────────────────────────────────────────────────────────
 if(NOT CNO_PREBUILT_BUNDLE)
-    find_program(PNPM_EXE NAMES pnpm pnpm.cmd)
+    if(PNPM_EXE AND NOT EXISTS "${PNPM_EXE}")
+        message(STATUS "[cno] pnpm path no longer exists; searching PATH again: ${PNPM_EXE}")
+        unset(PNPM_EXE CACHE)
+        unset(PNPM_EXE)
+    endif()
+    find_program(PNPM_EXE NAMES pnpm.cmd pnpm)
     if(NOT PNPM_EXE)
         message(FATAL_ERROR "pnpm not found — install pnpm first.")
     endif()

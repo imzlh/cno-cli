@@ -6,10 +6,13 @@
     ],
     "cmake.generator": "Ninja",
     "cmake.buildDirectory": "${workspaceFolder}/build",
-    "cmake.configureSettings": {
-        "CMAKE_TOOLCHAIN_FILE": "${workspaceFolder}/cmake/vcpkg-toolchain.cmake",
-        "VCPKG_TARGET_TRIPLET": "x64-windows",
-        "PNPM_EXE": "C:/Users/Admin/AppData/Local/Microsoft/WinGet/Packages/pnpm.pnpm_Microsoft.Winget.Source_8wekyb3d8bbwe/pnpm.exe"
+    "cmake.windows": {
+        "cmakePath": "${workspaceFolder}/scripts/cmake-utf8.cmd",
+        "outputLogEncoding": "utf-8",
+        "configureSettings": {
+            "CMAKE_TOOLCHAIN_FILE": "${workspaceFolder}/cmake/vcpkg-toolchain.cmake",
+            "VCPKG_TARGET_TRIPLET": "x64-windows"
+        }
     },
     "cmake.configureArgs": [
         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"

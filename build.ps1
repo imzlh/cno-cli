@@ -1,7 +1,9 @@
-# Build cno + ext-oxc and collect everything into dist\exe\
+﻿# Build cno + ext-oxc and collect everything into dist\exe\
 # ext-oxc is OPTIONAL: it needs a Rust toolchain. If cargo is missing the
 # ext-oxc step is skipped with a notice and the build still succeeds.
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
 
 $BuildDir    = "build"
 $OxcBuildDir = "ext-oxc\build"

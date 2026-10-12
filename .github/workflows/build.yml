@@ -72,8 +72,10 @@ jobs:
       - uses: lukka/run-vcpkg@v11
         if: runner.os == 'Windows'
         with:
+          # vcpkg 2026.07.29 pairs schema 2 with a compatible tool executable.
           # Keep this in sync with vcpkg.json's builtin-baseline.
-          vcpkgGitCommitId: '1460b31b08c42cc2e9ac2c79f45ec8707e2675e2'
+          vcpkgGitCommitId: '9e593bb18ea69cc5095e012465dcd675a822ed0d'
+          vcpkgJsonGlob: 'vcpkg.json'
 
       - uses: dtolnay/rust-toolchain@stable
 

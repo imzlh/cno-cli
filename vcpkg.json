@@ -1,7 +1,7 @@
 {
     "name": "cno-cli",
     "version-string": "2.0.0",
-    "builtin-baseline": "1460b31b08c42cc2e9ac2c79f45ec8707e2675e2",
+    "builtin-baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d",
     "dependencies": [
         "curl",
         "expat",

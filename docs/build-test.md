@@ -98,11 +98,24 @@ dependencies into `vcpkg_installed/`, reusing the vcpkg binary cache when
 compatible. Both Debug and Release libraries are installed. The build stages
 the DLLs required by the selected configuration alongside `cno.exe`.
 
+In CMake Tools, select the automatically detected Visual Studio x64 kit. The
+Windows workspace settings use `scripts/cmake-utf8.cmd` to enable UTF-8 before
+starting CMake; it locates CMake on `PATH` or through Visual Studio Installer.
+This keeps localized MSVC diagnostics and Ninja's `/showIncludes` dependency
+tracking readable even when the editor starts the tools without a console.
+Keep the checkout path free of spaces when using this CMake Tools setup:
+the extension invokes `.cmd` wrappers through a shell without preserving
+quotes around their paths and arguments.
+After updating from a configuration whose compiler output contained `????`,
+run **Delete Cache and Reconfigure** once to refresh the cached include prefix.
+`build.ps1` also sets UTF-8 output. pnpm is found on `PATH`; an obsolete cached
+pnpm path is discarded automatically during configuration.
+
 For a manual Debug configuration, run this from an x64 developer shell:
 
 ```powershell
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug `
-  -DCMAKE_TOOLCHAIN_FILE=cmake/vcpkg-toolchain.cmake `
+  "-DCMAKE_TOOLCHAIN_FILE=cmake/vcpkg-toolchain.cmake" `
   -DVCPKG_TARGET_TRIPLET=x64-windows
 cmake --build build --parallel
 ```
