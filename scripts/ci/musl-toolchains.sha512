@@ -1,4 +1,6 @@
-# Published at https://musl.cc/SHA512SUMS; archive URLs checked 2026-10-11.
+# Published at https://musl.cc/SHA512SUMS.
+# Identical mirror: https://github.com/tsl0922/musl-toolchains/releases/download/2021-11-23/SHA512SUMS
+# All five pinned checksums matched both sources on 2026-10-15.
 2104a0edb08e2e9696ef8cb8c284705e987031904ede6ed49e8303f942b35886aa656c7dbd52f8a3a67abd0a2ce2eb3fa82eb8414f09dda2ae1df300edfb62db  armv5l-linux-musleabi-cross.tgz
 c1b04aaad4b0d24826d087acf93b5ac28b9f87633fd8554b52625f5b9916073d10b16be3fa2eaa9782e35ad9e850921269cb3b78f49cfbe4d2deed3d1a3291c6  mips-linux-musl-cross.tgz
 d0275cade2a6162659a610a41e0be4450b893a8f75a4f67a00cfe358c1e9657b86c4e08d002bffe3aca7404a01b42755ebb1ea29b916208c99f5b1fafebaeb60  mipsel-linux-musl-cross.tgz

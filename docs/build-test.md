@@ -26,14 +26,18 @@ nghttp2.
 ## GitHub Actions
 
 `CI` runs on branch pushes, pull requests, and manual **Run workflow** requests.
-The default CI covers Linux x64/ARM64, macOS ARM64, and Windows x64 with OXC.
+The default CI covers Linux x64/ARM64, macOS x64/ARM64, and Windows x64/ARM64
+with OXC.
 Enable **all-linux-targets** when starting CI manually to also run the complete
 Linux release matrix. `Release` runs when a stable version tag such as `v2.0.0`
 is pushed. It reuses `build.yml` for macOS/Windows, `build-linux.yml` for Linux
-containers, and `build-cross-linux.yml` for Linux cross builds. Every build
-checks and bundles JavaScript, tests the staged runtime, and uploads its archive.
-Release publishes all 17 archives and `SHA256SUMS.txt` only after every build
-and test succeeds. No extra repository secrets are required; publication uses
+containers, and `build-cross-linux.yml` for Linux cross builds. CI checks types,
+bundles JavaScript, tests the staged runtime, and uploads its archive. Release
+passes `run-tests: false` to all three workflows: it only bundles, compiles,
+packages, and publishes. Type checks and runtime tests stay in CI; checks that
+musl artifacts are fully static remain part of packaging.
+Release publishes all 19 archives and `SHA256SUMS.txt` after every build
+succeeds. No extra repository secrets are required; publication uses
 the job's `GITHUB_TOKEN` with `contents: write`.
 
 | Archive | Targets | Build environment |
@@ -42,7 +46,9 @@ the job's `GITHUB_TOKEN` with `contents: write`.
 | `cno-linux-musl-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Alpine 3.21; static musl |
 | `cno-linux-musl-<arch>.tar.gz` | mips, mipsel, mips64, riscv64, armv5 | Cross toolchains, vcpkg, and QEMU; static musl |
 | `cno-macos-arm64.tar.gz` | arm64 | `macos-15`; Homebrew libraries |
+| `cno-macos-x86_64.tar.gz` | x86_64 | `macos-15-intel`; Homebrew libraries |
 | `cno-windows-x64.zip` | x64 | `windows-2022`; vcpkg runtime DLLs included |
+| `cno-windows-arm64.zip` | arm64 | `windows-11-arm`; vcpkg runtime DLLs included |
 
 The glibc release archives target Debian 12 or compatible distributions and
 require their system libraries. Default CI's Linux artifacts use Ubuntu 24.04
@@ -52,8 +58,10 @@ these dependencies before running an archive on a different machine.
 
 Linux release packages use the bundled Sucrase transformer. Static musl does
 not support loading shared extensions. macOS/Windows releases include OXC,
-and their smoke tests verify both OXC and Sucrase. WebAssembly is disabled on
-MIPS targets whose endianness or ABI is unsupported by the bundled WAMR; the
+and CI smoke tests verify both OXC and Sucrase. OXC is inside each native
+archive's `ext/` directory (`oxc.dll`, `oxc.dylib`, or `oxc.so` in Linux CI).
+WebAssembly is disabled on MIPS targets whose endianness or ABI is unsupported
+by the bundled WAMR; the
 CLI still starts without the optional native module.
 
 The host generates the JavaScript bundle before entering Linux containers or
@@ -61,6 +69,10 @@ cross builds, so target images need no Node.js/pnpm installation. ARMv6 glibc
 uses the existing `arm32v5/debian` image with ARMv6 compiler flags. Targets
 without Alpine images use real cross toolchains. Big-endian targets must run
 the target bytecode compiler through QEMU; host bytecode is not interchangeable.
+Cross toolchain downloads use the fixed `tsl0922/musl-toolchains` GitHub release
+`2021-11-23`, with musl.cc as a fallback. Both sources serve the same archives,
+verified against `scripts/ci/musl-toolchains.sha512`. Downloads have bounded
+timeouts, and cached archives are verified before reuse.
 
 JavaScript installation uses `packageManager` in `package.json` and the three
 committed `pnpm-lock.yaml` files. Keep these lockfiles with dependency changes.

@@ -2,6 +2,11 @@ name: Linux release builds
 
 on:
   workflow_call:
+    inputs:
+      run-tests:
+        description: Run type checks and staged runtime smoke tests.
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -32,25 +37,27 @@ jobs:
         with:
           submodules: recursive
       - uses: ./.github/actions/setup-js
-      - name: Check and bundle JavaScript on the host
-        run: |
-          pnpm run type-check
-          pnpm run bundle
+      - name: Check JavaScript on the host
+        if: inputs.run-tests
+        run: pnpm run type-check
+      - name: Bundle JavaScript on the host
+        run: pnpm run bundle
       - uses: docker/setup-qemu-action@v3
         with:
           platforms: arm,arm64,386
-      - name: Build and test inside the target platform
+      - name: Build inside the target platform
         env:
           LIBC: ${{ matrix.libc }}
           TARGET: ${{ matrix.target }}
           PLATFORM: ${{ matrix.platform }}
           IMAGE: ${{ matrix.image }}
+          RUN_TESTS: ${{ inputs.run-tests }}
         run: |
           docker run --rm --platform "$PLATFORM" \
             -v "$GITHUB_WORKSPACE:/work" -w /work \
             -v "$RUNNER_TEMP/cno-smoke-cache:/cache" \
             -e CTS_CACHE_DIR=/cache -e CMAKE_BUILD_PARALLEL_LEVEL=4 \
-            "$IMAGE" sh scripts/ci/build-linux.sh "$LIBC" "$TARGET"
+            "$IMAGE" sh scripts/ci/build-linux.sh "$LIBC" "$TARGET" "$RUN_TESTS"
       - uses: actions/upload-artifact@v4
         with:
           name: cno-linux-${{ matrix.libc }}-${{ matrix.target }}

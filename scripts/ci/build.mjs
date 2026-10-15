@@ -8,6 +8,11 @@ const buildDir = resolve(root, process.argv[2] ?? 'build');
 const oxcDir = resolve(buildDir, 'oxc');
 const windows = process.platform === 'win32';
 const macos = process.platform === 'darwin';
+const architecture = process.arch;
+
+if ((windows || macos) && architecture !== 'x64' && architecture !== 'arm64') {
+    throw new Error(`Unsupported native architecture: ${process.platform}/${architecture}`);
+}
 
 function cmake(...args) {
     console.log('cmake', ...args);
@@ -20,10 +25,14 @@ const configure = ['-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release'];
 const native = ['-DCNO_RELEASE=ON'];
 if (windows) {
     native.push(`-DCMAKE_TOOLCHAIN_FILE=${root}/cmake/vcpkg-toolchain.cmake`,
-        '-DVCPKG_TARGET_TRIPLET=x64-windows');
+        `-DVCPKG_TARGET_TRIPLET=${architecture}-windows`);
+    if (architecture === 'arm64') {
+        // WAMR's autodetection does not recognize Windows' uppercase ARM64.
+        native.push('-DWAMR_BUILD_TARGET=AARCH64');
+    }
 }
 if (macos) {
-    configure.push('-DCMAKE_OSX_ARCHITECTURES=arm64');
+    configure.push(`-DCMAKE_OSX_ARCHITECTURES=${architecture === 'x64' ? 'x86_64' : architecture}`);
     if (process.env.CNO_CMAKE_PREFIX_PATH) {
         configure.push(`-DCMAKE_PREFIX_PATH=${process.env.CNO_CMAKE_PREFIX_PATH}`);
     }

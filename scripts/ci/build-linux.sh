@@ -1,8 +1,13 @@
 #!/bin/sh
 set -eu
 
-libc=${1:?Usage: build-linux.sh glibc\|musl target}
+libc=${1:?Usage: build-linux.sh glibc\|musl target [true\|false]}
 target=${2:?Missing target architecture}
+run_tests=${3:-true}
+case "$run_tests" in
+    true|false) ;;
+    *) printf 'Invalid run-tests value: %s (expected true or false)\n' "$run_tests" >&2; exit 1 ;;
+esac
 case "$libc" in
     glibc)
         export DEBIAN_FRONTEND=noninteractive
@@ -71,6 +76,8 @@ if [ "$libc" = musl ]; then
         exit 1
     fi
 fi
-sh scripts/ci/smoke-core.sh build-linux/stage
+if [ "$run_tests" = true ]; then
+    sh scripts/ci/smoke-core.sh build-linux/stage
+fi
 mkdir -p artifacts
 tar -czf "artifacts/$archive.tar.gz" --exclude='.dlls.stamp' -C build-linux/stage .

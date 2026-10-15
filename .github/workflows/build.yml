@@ -3,21 +3,27 @@ name: Build and test
 on:
   workflow_call:
     inputs:
+      run-tests:
+        description: Run type checks and staged runtime smoke tests.
+        type: boolean
+        default: true
       native-matrix:
         description: Native runner builds; releases build Linux in the dedicated matrix.
         type: string
         default: >-
           [{"target":"linux-x86_64","runner":"ubuntu-24.04"},
            {"target":"linux-arm64","runner":"ubuntu-24.04-arm"},
+           {"target":"macos-x86_64","runner":"macos-15-intel"},
            {"target":"macos-arm64","runner":"macos-15"},
-           {"target":"windows-x64","runner":"windows-2022"}]
+           {"target":"windows-x64","runner":"windows-2022"},
+           {"target":"windows-arm64","runner":"windows-11-arm"}]
 
 permissions:
   contents: read
 
 jobs:
   javascript:
-    name: Type check and bundle
+    name: JavaScript bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -25,7 +31,8 @@ jobs:
         with:
           submodules: recursive
       - uses: ./.github/actions/setup-js
-      - run: pnpm run type-check
+      - if: inputs.run-tests
+        run: pnpm run type-check
       - run: pnpm run bundle
 
   native:
@@ -67,7 +74,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
         with:
-          arch: x64
+          arch: ${{ matrix.target == 'windows-arm64' && 'arm64' || 'x64' }}
 
       - uses: lukka/run-vcpkg@v11
         if: runner.os == 'Windows'
@@ -83,6 +90,7 @@ jobs:
         run: node scripts/ci/build.mjs
 
       - name: Smoke test staged runtime
+        if: inputs.run-tests
         env:
           CTS_CACHE_DIR: ${{ runner.temp }}/cno-smoke-cache
         run: node scripts/ci/smoke.mjs build/stage
@@ -98,9 +106,11 @@ jobs:
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
-          Compress-Archive -Path build/stage/cno.exe, build/stage/*.dll, build/stage/ext -DestinationPath artifacts/cno-windows-x64.zip
+          Compress-Archive -Path build/stage/cno.exe, build/stage/*.dll, build/stage/ext -DestinationPath "artifacts/cno-$env:TARGET.zip"
 
       - uses: actions/upload-artifact@v4
         with:

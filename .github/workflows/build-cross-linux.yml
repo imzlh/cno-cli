@@ -2,6 +2,11 @@ name: Linux cross release builds
 
 on:
   workflow_call:
+    inputs:
+      run-tests:
+        description: Run target smoke tests after building
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -20,10 +25,11 @@ jobs:
         with:
           submodules: recursive
       - uses: ./.github/actions/setup-js
-      - name: Check and bundle JavaScript on the host
-        run: |
-          pnpm run type-check
-          pnpm run bundle
+      - name: Check JavaScript types
+        if: inputs.run-tests
+        run: pnpm run type-check
+      - name: Bundle JavaScript on the host
+        run: pnpm run bundle
       - name: Install build tools and target emulators
         run: |
           sudo apt-get update
@@ -31,9 +37,15 @@ jobs:
             build-essential cmake ninja-build pkg-config curl ca-certificates \
             zip unzip tar xz-utils autoconf automake libtool perl bison flex \
             qemu-user
-      - name: Cross-compile static runtime and run target smoke checks
+      - name: Cache verified cross toolchain downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cno-toolchains/*-cross.tgz
+          key: musl-cross-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('scripts/ci/musl-toolchains.sha512') }}
+      - name: Cross-compile and package static runtime
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: '4'
+          CNO_RUN_TESTS: ${{ inputs.run-tests }}
         run: bash scripts/ci/build-cross-linux.sh '${{ matrix.target }}'
       - uses: actions/upload-artifact@v4
         with:

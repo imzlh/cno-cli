@@ -4,6 +4,11 @@ set -euo pipefail
 target=${1:?usage: build-cross-linux.sh mips|mipsel|mips64|riscv64|armv5}
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$root"
+run_tests=${CNO_RUN_TESTS:-true}
+case "$run_tests" in
+    true|false) ;;
+    *) printf 'CNO_RUN_TESTS must be true or false.\n' >&2; exit 2 ;;
+esac
 case "$target" in
     mips) triple=mips-linux-musl; processor=mips; emulator=qemu-mips; wasm=OFF; wamr=MIPS; big_endian=1 ;;
     mipsel) triple=mipsel-linux-musl; processor=mips; emulator=qemu-mipsel; wasm=ON; wamr=MIPS; big_endian=0 ;;
@@ -24,10 +29,8 @@ build="$root/build-cross-$target"
 downloads="${RUNNER_TEMP:-$root/.tmp-cross}/cno-toolchains"
 archive="$triple-cross.tgz"
 mkdir -p "$build/bin" "$downloads"
-curl --fail --location --retry 3 "https://musl.cc/$archive" -o "$downloads/$archive"
+bash "$root/scripts/ci/download-musl-toolchain.sh" "$archive" "$downloads"
 checksum=$(awk -v archive="$archive" '$2 == archive { print $1 }' "$root/scripts/ci/musl-toolchains.sha512")
-[[ ${#checksum} -eq 128 ]]
-printf '%s  %s\n' "$checksum" "$downloads/$archive" | sha512sum --check --strict
 tar -xzf "$downloads/$archive" -C "$downloads"
 
 export CNO_CROSS_ROOT="$downloads/$triple-cross"
@@ -100,22 +103,24 @@ if grep -q INTERP "$build/program-headers.txt" || grep -q NEEDED "$build/dynamic
     printf 'Expected a fully static musl executable; found dynamic dependencies.\n' >&2
     exit 1
 fi
-export CTS_CACHE_DIR="$build/smoke-cache"
-export CTS_EXT_PATH="$build/stage/ext"
-export NO_COLOR=1
-[[ -f "$root/cno/src/node/fs/index.ts" ]]
-smoke() {
-    local name=$1 pattern=$2
-    shift 2
-    timeout --kill-after=10s 180s "$emulator" -L "$CNO_CROSS_SYSROOT" "$binary" "$@" \
-        | tee "$build/smoke-$name.log"
-    grep -Eq "$pattern" "$build/smoke-$name.log"
-}
-smoke version '^cno [0-9]+\.[0-9]+\.[0-9]+' --version
-smoke setup 'Node polyfills ready at:' setup
-smoke eval '^CNO_CI_EVAL_OK$' eval --ext=js \
-    'if (await Promise.resolve(6 * 7) !== 42) throw new Error("evaluation failed"); console.log("CNO_CI_EVAL_OK");'
-smoke typescript '^CNO_CI_TYPESCRIPT_OK$' run --no-oxc --disable-cache scripts/ci/fixtures/typescript.ts
+if [[ $run_tests == true ]]; then
+    export CTS_CACHE_DIR="$build/smoke-cache"
+    export CTS_EXT_PATH="$build/stage/ext"
+    export NO_COLOR=1
+    [[ -f "$root/cno/src/node/fs/index.ts" ]]
+    smoke() {
+        local name=$1 pattern=$2
+        shift 2
+        timeout --kill-after=10s 180s "$emulator" -L "$CNO_CROSS_SYSROOT" "$binary" "$@" \
+            | tee "$build/smoke-$name.log"
+        grep -Eq "$pattern" "$build/smoke-$name.log"
+    }
+    smoke version '^cno [0-9]+\.[0-9]+\.[0-9]+' --version
+    smoke setup 'Node polyfills ready at:' setup
+    smoke eval '^CNO_CI_EVAL_OK$' eval --ext=js \
+        'if (await Promise.resolve(6 * 7) !== 42) throw new Error("evaluation failed"); console.log("CNO_CI_EVAL_OK");'
+    smoke typescript '^CNO_CI_TYPESCRIPT_OK$' run --no-oxc --disable-cache scripts/ci/fixtures/typescript.ts
+fi
 
 mkdir -p "$root/artifacts"
 cat > "$build/stage/BUILD-INFO.txt" <<EOF
@@ -125,6 +130,7 @@ WebAssembly: $wasm
 OXC: not included (Sucrase fallback)
 Dynamic native library loading is unavailable in this static musl build.
 Toolchain: https://musl.cc/$archive
+Toolchain mirror: https://github.com/tsl0922/musl-toolchains/releases/download/2021-11-23/$archive
 Toolchain SHA512: $checksum
 vcpkg revision: $vcpkg_revision
 EOF

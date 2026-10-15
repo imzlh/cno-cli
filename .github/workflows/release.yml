@@ -15,15 +15,22 @@ jobs:
   build:
     uses: ./.github/workflows/build.yml
     with:
+      run-tests: false
       native-matrix: >-
-        [{"target":"macos-arm64","runner":"macos-15"},
-         {"target":"windows-x64","runner":"windows-2022"}]
+        [{"target":"macos-x86_64","runner":"macos-15-intel"},
+         {"target":"macos-arm64","runner":"macos-15"},
+         {"target":"windows-x64","runner":"windows-2022"},
+         {"target":"windows-arm64","runner":"windows-11-arm"}]
 
   linux:
     uses: ./.github/workflows/build-linux.yml
+    with:
+      run-tests: false
 
   linux-cross:
     uses: ./.github/workflows/build-cross-linux.yml
+    with:
+      run-tests: false
 
   release:
     name: Publish release
