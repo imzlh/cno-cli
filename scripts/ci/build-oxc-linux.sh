@@ -75,10 +75,15 @@ prepare_rust() {
         esac
         oxc_rustflags="$oxc_rustflags -Ctarget-feature=$target_features -Clink-self-contained=no"
     fi
-    unset CARGO_ENCODED_RUSTFLAGS
-    RUSTFLAGS="$oxc_rustflags" cargo "+$toolchain" rustc "$@" \
-        --manifest-path "$root/ext-oxc/Cargo.toml" --locked --release --lib \
-        --target "$rust_target" --target-dir "$output/cargo" -- --print native-static-libs
+    (
+        # Cargo discovers .cargo/config.toml from cwd, not --manifest-path.
+        # Keep the library-only sourcemap patch active even when invoked elsewhere.
+        cd "$root"
+        unset CARGO_ENCODED_RUSTFLAGS
+        RUSTFLAGS="$oxc_rustflags" cargo "+$toolchain" rustc "$@" \
+            --manifest-path "$root/ext-oxc/Cargo.toml" --locked --release --lib \
+            --target "$rust_target" --target-dir "$output/cargo" -- --print native-static-libs
+    )
     cp "$output/cargo/$rust_target/release/libcjs_oxc_core.a" "$output/libcjs_oxc_core.a"
     printf '%s\n' "$rust_target" > "$output/rust-target.txt"
     printf '%s\n' "$toolchain" > "$output/rust-toolchain.txt"

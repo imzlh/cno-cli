@@ -7,6 +7,17 @@ ignored `Cargo.lock` before invoking Cargo with `--locked`. When updating OXC,
 update the submodule and this lockfile together. The locked OXC 0.138 dependency
 graph requires Rust 1.95.
 
+`vendor/oxc_sourcemap` is the published 8.1.2 crate, with only `cdylib` removed
+from its library types. Its source and BSD license are unchanged. CNO uses its
+Rust library for source maps and does not use the extra N-API shared library.
+The upstream crate archive's SHA256 is
+`b415102a94b483bbd76d13e850fe87961197e5795c79a8523ebec5d82025f94f`.
+The root `.cargo/config.toml` selects this local patch for all CI builds. This
+prevents an unnecessary target shared-library link on the host without dropping
+source-map support or installing a second target sysroot there. When upgrading,
+replace the vendored crate and update the lockfile together; preserve this one
+manifest adjustment until upstream makes its shared output optional.
+
 Linux builds compile the pure-Rust archive on the CI host, then link the C
 glue with the target's compiler. Alpine's 32-bit containers do not need a
 native Rust host compiler:

@@ -50,6 +50,19 @@ jobs:
       - name: Bundle JavaScript on the host
         run: pnpm run bundle:min
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache OXC Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            build-oxc-rust/cargo
+          # Static and dynamic musl use the same PIC Rust archive. Cargo still
+          # checks source fingerprints after a partial-key cache restore.
+          key: rust-linux-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.libc == 'glibc' && 'glibc' || 'musl' }}-${{ hashFiles('.cargo/config.toml', 'scripts/ci/oxc/**', 'scripts/ci/build-oxc-linux.sh', 'ext-oxc/Cargo.toml', 'ext-oxc/src/**/*.rs') }}
+          restore-keys: |
+            rust-linux-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.libc == 'glibc' && 'glibc' || 'musl' }}-
       - name: Compile OXC Rust archive on the host
         env:
           LIBC: ${{ matrix.libc == 'glibc' && 'glibc' || 'musl' }}

@@ -24,8 +24,14 @@ function cmake(...args) {
 const configure = ['-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release'];
 const native = ['-DCNO_RELEASE=ON', '-DCNO_BUNDLE_MINIFY=ON'];
 if (windows) {
+    // CI only ships Release; the normal Windows triplets also compile every
+    // dependency's Debug configuration. Keep those for developer builds.
+    const triplet = `${architecture}-windows-release`;
     native.push(`-DCMAKE_TOOLCHAIN_FILE=${root}/cmake/vcpkg-toolchain.cmake`,
-        `-DVCPKG_TARGET_TRIPLET=${architecture}-windows`);
+        `-DVCPKG_OVERLAY_TRIPLETS=${root}/cmake/triplets`,
+        `-DVCPKG_TARGET_TRIPLET=${triplet}`,
+        `-DVCPKG_HOST_TRIPLET=${triplet}`,
+        `-DVCPKG_INSTALLED_DIR=${buildDir}/vcpkg_installed`);
     if (architecture === 'arm64') {
         // WAMR's autodetection does not recognize Windows' uppercase ARM64.
         native.push('-DWAMR_BUILD_TARGET=AARCH64');

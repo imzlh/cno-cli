@@ -78,6 +78,30 @@ jobs:
         with:
           arch: ${{ matrix.target == 'windows-arm64' && 'arm64' || 'x64' }}
 
+      - name: Configure Windows dependency cache
+        if: runner.os == 'Windows'
+        id: windows-deps
+        shell: pwsh
+        run: |
+          $cacheDirectory = Join-Path $env:RUNNER_TEMP 'cno-vcpkg-binaries'
+          New-Item -ItemType Directory -Force $cacheDirectory | Out-Null
+          "VCPKG_BINARY_SOURCES=clear;files,$cacheDirectory,readwrite" >> $env:GITHUB_ENV
+          $sdk = $env:WindowsSDKVersion -replace '[\\/]+$', ''
+          "toolchain=$env:VCToolsVersion-$sdk" >> $env:GITHUB_OUTPUT
+
+      - name: Restore Windows native dependencies
+        if: runner.os == 'Windows'
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          # Cache compiled packages, not the vcpkg checkout or CMake state.
+          # vcpkg verifies each restored package's ABI before installing it.
+          path: ${{ runner.temp }}/cno-vcpkg-binaries
+          key: vcpkg-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ steps.windows-deps.outputs.toolchain }}-${{ hashFiles('vcpkg.json', 'cmake/vcpkg-toolchain.cmake', 'cmake/triplets/*windows*.cmake') }}
+          restore-keys: |
+            vcpkg-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ steps.windows-deps.outputs.toolchain }}-
+            vcpkg-v1-${{ matrix.runner }}-${{ matrix.target }}-
+
       - uses: lukka/run-vcpkg@v11
         if: runner.os == 'Windows'
         with:
@@ -87,9 +111,33 @@ jobs:
           vcpkgJsonGlob: 'vcpkg.json'
 
       - uses: dtolnay/rust-toolchain@stable
+        id: rust
+
+      - name: Cache OXC Rust dependencies
+        uses: actions/cache@v4
+        with:
+          # Corrosion uses --target-dir below this directory, not ext-oxc/target.
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            build/oxc-ci/cargo
+          key: rust-native-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ steps.rust.outputs.cachekey }}-${{ steps.windows-deps.outputs.toolchain }}-${{ hashFiles('.cargo/config.toml', 'scripts/ci/oxc/Cargo.lock', 'scripts/ci/oxc/CMakeLists.txt', 'scripts/ci/oxc/vendor/**', 'ext-oxc/Cargo.toml', 'ext-oxc/src/**/*.rs', 'scripts/ci/build.mjs') }}
+          restore-keys: |
+            rust-native-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ steps.rust.outputs.cachekey }}-${{ steps.windows-deps.outputs.toolchain }}-
 
       - name: Build cno and OXC
+        id: native-build
         run: node scripts/ci/build.mjs
+
+      - name: Save Windows native dependencies
+        if: always() && !cancelled() && runner.os == 'Windows' && steps.vcpkg-cache.outputs.cache-hit != 'true' && steps.vcpkg-cache.outputs.cache-primary-key != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/cno-vcpkg-binaries
+          # Preserve completed packages if a later compiler/OXC step fails.
+          # A partial save must not occupy the immutable complete cache key.
+          key: ${{ steps.native-build.outcome == 'success' && steps.vcpkg-cache.outputs.cache-primary-key || format('{0}-partial-{1}-{2}', steps.vcpkg-cache.outputs.cache-primary-key, github.run_id, github.run_attempt) }}
 
       - name: Smoke test staged runtime
         if: inputs.run-tests

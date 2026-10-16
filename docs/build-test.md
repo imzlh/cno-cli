@@ -101,7 +101,24 @@ timeouts, and cached archives are verified before reuse.
 JavaScript installation uses `packageManager` in `package.json` and the three
 committed `pnpm-lock.yaml` files. Keep these lockfiles with dependency changes.
 The Windows vcpkg checkout in `build.yml` must match `builtin-baseline` in
-`vcpkg.json`. Submodule source fixes must be committed and pushed in their own
+`vcpkg.json`. Windows CI uses the `x64-windows-release` or
+`arm64-windows-release` overlay triplet and installs into
+`build/vcpkg_installed/`, avoiding unused Debug builds and keeping developer
+dependencies separate. The seven manifest libraries are all required by the
+runtime; removing them would disable functionality or fail configuration.
+Compiled vcpkg packages use an explicit file binary cache persisted by Actions,
+keyed by runner, architecture, MSVC/SDK version, manifest and triplets. Compatible
+packages remain reusable after manifest changes because vcpkg checks their ABI.
+If a later native or OXC build fails, completed Windows dependency packages
+are still saved under a partial key for the next run to reuse.
+Native jobs also cache Cargo downloads and Corrosion's actual
+`build/oxc-ci/cargo/` output, keyed by target, toolchain and OXC build inputs.
+Linux container jobs cache their host Rust output; musl cross jobs cache Rust
+output and vcpkg binary packages. Static and dynamic musl share the PIC Rust
+cache, while native dependency caches retain separate linkage keys.
+CMake build trees and installed dependency snapshots are not cached.
+
+Submodule source fixes must be committed and pushed in their own
 repositories before pushing the main repository's updated gitlinks; otherwise
 GitHub cannot check out those commits.
 

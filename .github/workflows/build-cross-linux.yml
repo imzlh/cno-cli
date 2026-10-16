@@ -44,8 +44,29 @@ jobs:
         with:
           path: ${{ runner.temp }}/cno-toolchains/*-cross.tgz
           key: musl-cross-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('scripts/ci/musl-toolchains.sha512') }}
+      - name: Cache cross-compiled native dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cno-vcpkg-binaries
+          key: vcpkg-cross-v1-${{ matrix.target }}-${{ matrix.linkage }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*musl*.cmake', 'cmake/toolchains/musl-cross.cmake', 'scripts/ci/musl-toolchains.sha512') }}
+          restore-keys: |
+            vcpkg-cross-v1-${{ matrix.target }}-${{ matrix.linkage }}-
+      - name: Cache OXC Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            build-cross-${{ matrix.target }}/oxc/rust/cargo
+          key: rust-cross-v1-${{ matrix.target }}-${{ hashFiles('.cargo/config.toml', 'scripts/ci/oxc/**', 'scripts/ci/build-oxc-linux.sh', 'ext-oxc/Cargo.toml', 'ext-oxc/src/**/*.rs') }}
+          restore-keys: |
+            rust-cross-v1-${{ matrix.target }}-
+      - name: Create native dependency cache directory
+        run: mkdir -p "$RUNNER_TEMP/cno-vcpkg-binaries"
       - name: Cross-compile and package runtime and OXC
         env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}/cno-vcpkg-binaries,readwrite
           CMAKE_BUILD_PARALLEL_LEVEL: '4'
           CNO_RUN_TESTS: ${{ inputs.run-tests }}
           CNO_STATIC_LINK: ${{ matrix.linkage == 'static' && 'true' || 'false' }}

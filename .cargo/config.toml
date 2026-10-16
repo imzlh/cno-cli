@@ -1,0 +1,4 @@
+# The upstream sourcemap manifest also emits an unused cdylib, which would
+# require a target linker/sysroot during the host's Rust archive build.
+[patch.crates-io]
+oxc_sourcemap = { path = "scripts/ci/oxc/vendor/oxc_sourcemap" }
