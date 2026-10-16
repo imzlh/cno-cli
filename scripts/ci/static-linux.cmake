@@ -22,7 +22,7 @@ function(_cno_link_static_dependency_closure)
     # CMake Find modules do not consistently propagate Libs.private. Repeat the
     # complete pkg-config closure in a group so archive ordering is unambiguous.
     target_link_libraries(libcjs PRIVATE
-        "-Wl,--start-group" ${_link_items} "-Wl,--end-group")
+        "-Wl,--push-state,-Bstatic,--start-group" ${_link_items} "-Wl,--end-group,--pop-state")
 endfunction()
 
 cmake_language(DEFER CALL _cno_link_static_dependency_closure)

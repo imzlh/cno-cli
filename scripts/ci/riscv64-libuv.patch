@@ -1,0 +1,11 @@
+diff --git a/src/uv-common.c b/src/uv-common.c
+--- a/src/uv-common.c
++++ b/src/uv-common.c
+@@ -914,6 +914,6 @@ static void uv__cpu_relax(void) {
+ #elif (defined(__ppc__) || defined(__ppc64__)) && defined(__APPLE__)
+   __asm volatile ("" : : : "memory");
+ #elif defined(__riscv) && __riscv_xlen == 64
+-  __asm__ volatile(".insn 0x0100000f" ::: "memory");  /* FENCE */
++  __asm__ volatile(".word 0x0100000f" ::: "memory");  /* FENCE */
+ #endif
+ }

@@ -35,8 +35,8 @@ containers, and `build-cross-linux.yml` for Linux cross builds. CI checks types,
 bundles JavaScript, tests the staged runtime, and uploads its archive. Release
 passes `run-tests: false` to all three workflows: it only bundles, compiles,
 packages, and publishes. Type checks and runtime tests stay in CI; checks that
-musl artifacts are fully static remain part of packaging.
-Release publishes all 19 archives and `SHA256SUMS.txt` after every build
+musl linkage matches the selected variant remain part of packaging.
+Release verifies and publishes all 29 archives and `SHA256SUMS.txt` after every build
 succeeds. No extra repository secrets are required; publication uses
 the job's `GITHUB_TOKEN` with `contents: write`.
 
@@ -45,6 +45,8 @@ the job's `GITHUB_TOKEN` with `contents: write`.
 | `cno-linux-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Debian 12 (bookworm); glibc |
 | `cno-linux-musl-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Alpine 3.21; static musl |
 | `cno-linux-musl-<arch>.tar.gz` | mips, mipsel, mips64, riscv64, armv5 | Cross toolchains, vcpkg, and QEMU; static musl |
+| `cno-linux-musl-dynamic-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Alpine 3.21; dynamic musl |
+| `cno-linux-musl-dynamic-<arch>.tar.gz` | mips, mipsel, mips64, riscv64, armv5 | Cross toolchains, vcpkg, and QEMU; dynamic musl |
 | `cno-macos-arm64.tar.gz` | arm64 | `macos-15`; Homebrew libraries |
 | `cno-macos-x86_64.tar.gz` | x86_64 | `macos-15-intel`; Homebrew libraries |
 | `cno-windows-x64.zip` | x64 | `windows-2022`; vcpkg runtime DLLs included |
@@ -56,13 +58,35 @@ instead; release builds preserve the Debian baseline. macOS packages depend
 on Homebrew's libffi, sqlite, openssl@3, zlib, expat, curl, and brotli. Install
 these dependencies before running an archive on a different machine.
 
-Linux release packages use the bundled Sucrase transformer. Static musl does
-not support loading shared extensions. macOS/Windows releases include OXC,
-and CI smoke tests verify both OXC and Sucrase. OXC is inside each native
-archive's `ext/` directory (`oxc.dll`, `oxc.dylib`, or `oxc.so` in Linux CI).
+Every CI/release archive includes OXC in `ext/` (`oxc.dll`, `oxc.dylib`, or
+`oxc.so`). Dynamic runtimes use it for transformation, and CI verifies both
+native OXC and the `--no-oxc` Sucrase fallback. Static musl cannot load shared
+extensions: its runtime uses Sucrase, while the included `ext/oxc.so` is a
+companion for the matching dynamic musl runtime. Keeping OXC separate avoids
+increasing the core executable's size.
+
+Both musl variants statically link third-party native dependencies and compiler
+runtimes. Packaging rejects unexpected shared dependencies; the dynamic
+variant requires only the target musl loader/libc. Choose the matching CPU,
+endianness and floating-point ABI for Alpine/OpenWrt; mipsel requires MIPS32r2
+with the o32 hard-float ABI. Static and dynamic builds use separate CMake and
+vcpkg installation directories, and independent workflow jobs.
+
+Linux OXC uses Rust 1.95.0, explicit Rust target triples, and the lockfile under
+`scripts/ci/oxc/`. The host builds the Rust archive; the target container or
+cross compiler links the C module. This supports 32-bit Alpine without needing
+a Rust host toolchain inside its container. MIPS/MIPSel/MIPS64 have no prebuilt
+Rust standard library and use pinned `nightly-2026-10-15` with `rust-src` and
+`build-std`. These cross builds must pass QEMU smoke tests in full-matrix CI;
+Rust target availability alone does not establish compatibility with the old
+musl.cc sysroot. Build failures are not converted into missing extensions.
 WebAssembly is disabled on MIPS targets whose endianness or ABI is unsupported
 by the bundled WAMR; the
 CLI still starts without the optional native module.
+
+All CI builds minify the JavaScript bundle and strip embedded bytecode debug
+data. Native size optimization, section garbage collection, and supported LTO
+remain enabled. Linux packages record their build details in `BUILD-INFO.txt`.
 
 The host generates the JavaScript bundle before entering Linux containers or
 cross builds, so target images need no Node.js/pnpm installation. ARMv6 glibc
@@ -215,6 +239,20 @@ build/stage/cno setup
 ```
 
 Broader changes usually need a rebuild.
+
+Outside a checkout, `cno setup` fetches Node polyfills at the exact cno submodule
+commit embedded when the CLI was bundled. It refreshes an installed cache when
+that bundled revision changes. To deliberately install another immutable
+revision (including when running inside a checkout), use:
+
+```sh
+cno setup --polyfill-revision=<full-40-character-commit-sha>
+```
+
+Branch names are rejected. Source archives without Git metadata must set
+`CNO_POLYFILL_REVISION` to the original full cno commit SHA before bundling.
+The offline setup regression tests run with
+`node --test tests/cts/setup-polyfill.test.mjs`.
 
 ## Test Runner
 

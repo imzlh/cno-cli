@@ -40,11 +40,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: cno-*
           merge-multiple: true
+      - name: Verify complete release archive set
+        run: sh scripts/ci/verify-release-artifacts.sh artifacts
       - name: Generate checksums
         working-directory: artifacts
         run: sha256sum ./*.tar.gz ./*.zip > SHA256SUMS.txt

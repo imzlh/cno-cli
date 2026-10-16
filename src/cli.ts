@@ -78,6 +78,7 @@ define(['eval'], { value: 'optional', commands: ['task', 'eval'] });
 define(['print'], { commands: ['eval'] });
 define(['npm-mode'], { value: 'required', commands: ['cache'] });
 define(['ignore-scripts'], { commands: ['cache'] });
+define(['polyfill-revision'], { value: 'required', commands: ['setup'] });
 define([
     'allow-all', 'allow-net', 'allow-read', 'allow-write', 'allow-env', 'allow-run', 'allow-ffi', 'allow-sys', 'allow-import',
     'deny-net', 'deny-read', 'deny-write', 'deny-env', 'deny-run', 'deny-ffi', 'deny-sys', 'deny-import', 'no-prompt',

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const buildDir = resolve(root, process.argv[2] ?? 'build');
-const oxcDir = resolve(buildDir, 'oxc');
+const oxcDir = resolve(buildDir, 'oxc-ci');
 const windows = process.platform === 'win32';
 const macos = process.platform === 'darwin';
 const architecture = process.arch;
@@ -22,7 +22,7 @@ function cmake(...args) {
 }
 
 const configure = ['-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release'];
-const native = ['-DCNO_RELEASE=ON'];
+const native = ['-DCNO_RELEASE=ON', '-DCNO_BUNDLE_MINIFY=ON'];
 if (windows) {
     native.push(`-DCMAKE_TOOLCHAIN_FILE=${root}/cmake/vcpkg-toolchain.cmake`,
         `-DVCPKG_TARGET_TRIPLET=${architecture}-windows`);
@@ -45,7 +45,7 @@ const extension = [`-DCJS_DIR=${root}/circu.js`];
 if (windows) {
     extension.push(`-DCNO_IMPLIB=${buildDir}/circu.js/deps/quickjs/qjs.lib`);
 }
-cmake('-S', `${root}/ext-oxc`, '-B', oxcDir, ...configure, ...extension);
+cmake('-S', `${root}/scripts/ci/oxc`, '-B', oxcDir, ...configure, ...extension);
 cmake('--build', oxcDir, '--config', 'Release');
 
 const stage = resolve(buildDir, 'stage/ext');

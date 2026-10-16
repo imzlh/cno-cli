@@ -9,6 +9,13 @@ case "$run_tests" in
     true|false) ;;
     *) printf 'CNO_RUN_TESTS must be true or false.\n' >&2; exit 2 ;;
 esac
+# CNO_STATIC_LINK=false builds a dynamic musl binary for musl-based systems
+# (Alpine, OpenWrt) instead of the fully static default.
+static_link=${CNO_STATIC_LINK:-true}
+case "$static_link" in
+    true|false) ;;
+    *) printf 'CNO_STATIC_LINK must be true or false.\n' >&2; exit 2 ;;
+esac
 case "$target" in
     mips) triple=mips-linux-musl; processor=mips; emulator=qemu-mips; wasm=OFF; wamr=MIPS; big_endian=1 ;;
     mipsel) triple=mipsel-linux-musl; processor=mips; emulator=qemu-mipsel; wasm=ON; wamr=MIPS; big_endian=0 ;;
@@ -25,10 +32,18 @@ for program in cmake ninja git curl tar sha512sum node timeout "$emulator"; do
     command -v "$program" >/dev/null
 done
 
-build="$root/build-cross-$target"
+state="$root/build-cross-$target"
+if [[ $static_link == true ]]; then
+    linkage=static
+    build="$state/static"
+else
+    linkage=dynamic
+    build="$state/dynamic"
+fi
+vcpkg_installed="$state/vcpkg_installed-$linkage"
 downloads="${RUNNER_TEMP:-$root/.tmp-cross}/cno-toolchains"
 archive="$triple-cross.tgz"
-mkdir -p "$build/bin" "$downloads"
+mkdir -p "$build/bin" "$downloads" "$state"
 bash "$root/scripts/ci/download-musl-toolchain.sh" "$archive" "$downloads"
 checksum=$(awk -v archive="$archive" '$2 == archive { print $1 }' "$root/scripts/ci/musl-toolchains.sha512")
 tar -xzf "$downloads/$archive" -C "$downloads"
@@ -42,6 +57,7 @@ CNO_CROSS_SYSROOT=$("$triple-gcc" -print-sysroot)
 [[ -d "$CNO_CROSS_SYSROOT" && "$CNO_CROSS_SYSROOT" != / ]]
 [[ $("$triple-gcc" -dumpmachine) == "$triple" ]]
 "$triple-gcc" --version
+export CNO_STATIC_LINK="$static_link"
 if [[ $target == mipsel ]]; then
     # WAMR's MIPS native-call assembly requires the o32 hard-float ABI.
     printf '%s\n' \
@@ -49,10 +65,23 @@ if [[ $target == mipsel ]]; then
         '#error WAMR requires the MIPS o32 hard-float toolchain' \
         '#endif' | "$triple-gcc" -x c -E - >/dev/null
 fi
+if [[ $target == riscv64 ]]; then
+    # The pinned libuv source uses a numeric .insn form rejected by the old
+    # binutils bundled with musl.cc. Emit the identical instruction with .word.
+    # Accept an already applied patch, but fail visibly if upstream diverges.
+    libuv_root="$root/circu.js/deps/libuv"
+    libuv_patch="$root/scripts/ci/riscv64-libuv.patch"
+    if git -C "$libuv_root" apply --check "$libuv_patch" 2>/dev/null; then
+        git -C "$libuv_root" apply "$libuv_patch"
+    elif ! git -C "$libuv_root" apply --reverse --check "$libuv_patch" 2>/dev/null; then
+        printf 'The RISC-V libuv compatibility patch does not match this checkout.\n' >&2
+        exit 1
+    fi
+fi
 
 # Use the same vcpkg revision as the manifest, including its port versions.
 vcpkg_revision=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))["builtin-baseline"])' "$root/vcpkg.json")
-vcpkg_root="$build/vcpkg"
+vcpkg_root="$state/vcpkg"
 if [[ ! -d "$vcpkg_root/.git" ]]; then
     git init "$vcpkg_root"
     git -C "$vcpkg_root" remote add origin https://github.com/microsoft/vcpkg.git
@@ -69,14 +98,15 @@ printf '#!/usr/bin/env bash\nexec %q -L %q %q "$@"\n' \
 chmod +x "$wrapper"
 cmake -S "$root" -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCNO_RELEASE=ON -DBUILD_SHARED_LIBS=OFF \
+    -DCNO_STATIC_LINK="$static_link" \
     -DCMAKE_TOOLCHAIN_FILE="$vcpkg_root/scripts/buildsystems/vcpkg.cmake" \
     -DVCPKG_TARGET_TRIPLET="$target-linux-musl" \
     -DVCPKG_HOST_TRIPLET=x64-linux \
     -DVCPKG_OVERLAY_TRIPLETS="$root/cmake/triplets" \
     -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$root/cmake/toolchains/musl-cross.cmake" \
-    -DVCPKG_INSTALLED_DIR="$build/vcpkg_installed" \
+    -DVCPKG_INSTALLED_DIR="$vcpkg_installed" \
     -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$build/bin" \
-    -DCNO_PREBUILT_BUNDLE="$root/dist/cno-cli.js" -DCJSC_PATH="$wrapper" \
+    -DCNO_PREBUILT_BUNDLE="$root/dist/cno-cli.min.js" -DCJSC_PATH="$wrapper" \
     -DBUILD_WITH_WASM="$wasm" -DWAMR_BUILD_TARGET="$wamr"
 cmake --build "$build" --target cjsc qjsc --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
 
@@ -99,10 +129,9 @@ binary="$build/stage/cno"
 "$triple-readelf" -h "$binary"
 "$triple-readelf" -l "$binary" > "$build/program-headers.txt"
 "$triple-readelf" -d "$binary" > "$build/dynamic-section.txt"
-if grep -q INTERP "$build/program-headers.txt" || grep -q NEEDED "$build/dynamic-section.txt"; then
-    printf 'Expected a fully static musl executable; found dynamic dependencies.\n' >&2
-    exit 1
-fi
+sh "$root/scripts/ci/verify-musl.sh" "$linkage" "$binary" "$triple-readelf"
+
+sh "$root/scripts/ci/build-oxc-linux.sh" musl "$target" "$build/stage" "$state/oxc"
 if [[ $run_tests == true ]]; then
     export CTS_CACHE_DIR="$build/smoke-cache"
     export CTS_EXT_PATH="$build/stage/ext"
@@ -112,7 +141,7 @@ if [[ $run_tests == true ]]; then
         local name=$1 pattern=$2
         shift 2
         timeout --kill-after=10s 180s "$emulator" -L "$CNO_CROSS_SYSROOT" "$binary" "$@" \
-            | tee "$build/smoke-$name.log"
+            2>&1 | tee "$build/smoke-$name.log"
         grep -Eq "$pattern" "$build/smoke-$name.log"
     }
     smoke version '^cno [0-9]+\.[0-9]+\.[0-9]+' --version
@@ -120,18 +149,46 @@ if [[ $run_tests == true ]]; then
     smoke eval '^CNO_CI_EVAL_OK$' eval --ext=js \
         'if (await Promise.resolve(6 * 7) !== 42) throw new Error("evaluation failed"); console.log("CNO_CI_EVAL_OK");'
     smoke typescript '^CNO_CI_TYPESCRIPT_OK$' run --no-oxc --disable-cache scripts/ci/fixtures/typescript.ts
+    if [[ $static_link == false ]]; then
+        smoke oxc '^CNO_CI_OXC_OK$' run scripts/ci/fixtures/oxc.mjs
+        DEBUG=transformer smoke typescript-oxc '^CNO_CI_TYPESCRIPT_OK$' \
+            run --disable-cache scripts/ci/fixtures/typescript.ts
+        grep -Eq 'oxc( bytes)?: .*[/\\]fixtures[/\\]typescript\.ts' "$build/smoke-typescript-oxc.log"
+    fi
 fi
 
 mkdir -p "$root/artifacts"
+if [[ $static_link == true ]]; then
+    archive_name="cno-linux-musl-$target"
+    linkage_desc='static musl, including third-party native dependencies'
+    dynamic_note='Dynamic native library loading is unavailable in this static musl build; the OXC companion requires a dynamic musl runtime.'
+else
+    archive_name="cno-linux-musl-dynamic-$target"
+    linkage_desc='dynamic musl; third-party native dependencies are static'
+    dynamic_note='Targets musl-based systems (Alpine, OpenWrt) and can load shared native modules.'
+fi
 cat > "$build/stage/BUILD-INFO.txt" <<EOF
-Target: linux-musl-$target
-Linkage: static musl, including third-party native dependencies
+Target: ${archive_name#cno-}
+Linkage: $linkage_desc
 WebAssembly: $wasm
-OXC: not included (Sucrase fallback)
-Dynamic native library loading is unavailable in this static musl build.
+OXC: ext/oxc.so (native musl companion)
+$dynamic_note
+cno bytes: $(wc -c < "$binary")
+OXC bytes: $(wc -c < "$build/stage/ext/oxc.so")
 Toolchain: https://musl.cc/$archive
 Toolchain mirror: https://github.com/tsl0922/musl-toolchains/releases/download/2021-11-23/$archive
 Toolchain SHA512: $checksum
 vcpkg revision: $vcpkg_revision
 EOF
-tar -czf "$root/artifacts/cno-linux-musl-$target.tar.gz" -C "$build/stage" cno BUILD-INFO.txt
+case "$target" in
+    mips)
+        printf '%s\n' 'OXC CPU/ABI: MIPS32r2, big-endian o32 hard-float.' >> "$build/stage/BUILD-INFO.txt"
+        ;;
+    mipsel)
+        printf '%s\n' 'CPU/ABI: MIPS32r2, little-endian o32 hard-float (runtime and OXC).' >> "$build/stage/BUILD-INFO.txt"
+        ;;
+    mips64)
+        printf '%s\n' 'OXC CPU/ABI: MIPS64r2, big-endian n64 hard-float. WebAssembly is unsupported on this target.' >> "$build/stage/BUILD-INFO.txt"
+        ;;
+esac
+tar -czf "$root/artifacts/$archive_name.tar.gz" -C "$build/stage" cno ext BUILD-INFO.txt

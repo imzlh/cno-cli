@@ -3,6 +3,7 @@ import { ensureDirectorySync } from '../../cno/src/utils/fs-path';
 import { normalize, dirname, join } from '../../cno/src/utils/path';
 import { log } from '../../cts/src/api';
 import { readEnv } from '../env';
+import { bundledPolyfillRevision, requirePolyfillRevision } from '../polyfill-version';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
@@ -10,9 +11,6 @@ const console = import.meta.use('console');
 const fs     = import.meta.use('fs');
 const engine = import.meta.use('engine');
 const sysError = import.meta.use('error');
-
-const GITHUB_BASE = 'https://raw.githubusercontent.com/imzlh/cno/master/src/node';
-const GITHUB_TREE = 'https://api.github.com/repos/imzlh/cno/git/trees/master?recursive=1';
 
 type GitHubTreeNode = { path: string; type: string };
 type GitHubTreeResponse = {
@@ -390,9 +388,11 @@ async function batchRun<T>(items: T[], fn: (item: T) => Promise<void>, concurren
 
 // ── Remote: fetch .ts files from GitHub → dstBase ───────────────────────────
 
-async function installRemote(dstBase: string): Promise<void> {
+async function installRemote(dstBase: string, revision: string): Promise<void> {
+    const githubBase = `https://raw.githubusercontent.com/imzlh/cno/${revision}/src/node`;
+    const githubTree = `https://api.github.com/repos/imzlh/cno/git/trees/${revision}?recursive=1`;
     log.debug('oxc', () => 'Fetching file list from GitHub...');
-    const treeResp = await fetchAsync(GITHUB_TREE);
+    const treeResp = await fetchAsync(githubTree);
     if (!treeResp.ok) throw new Error(`GitHub API error: ${treeResp.status}`);
     const treeJson = engine.decodeString(await treeResp.arrayBuffer());
     const tree = parseGitHubTreeResponse(treeJson);
@@ -412,7 +412,7 @@ async function installRemote(dstBase: string): Promise<void> {
         const dst = join(dstBase, rel);
         try {
             log.debug('oxc', () => `  GET   ${rel}`);
-            const response = await fetchAsync(GITHUB_BASE + '/' + rel);
+            const response = await fetchAsync(githubBase + '/' + rel);
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
@@ -450,13 +450,24 @@ function clearNodePolyfillMarker(cacheDir: string): void {
     unlinkIfPresent(nodePolyfillMarker(cacheDir));
 }
 
-function writeNodePolyfillMarker(cacheDir: string): void {
-    commitFileTransaction(nodePolyfillMarker(cacheDir), engine.encodeString('ready\n'));
+function writeNodePolyfillMarker(cacheDir: string, revision: string | null): void {
+    const metadata = {
+        version: 1,
+        source: revision === null ? 'local' : 'github',
+        revision,
+        bundledRevision: bundledPolyfillRevision,
+    };
+    commitFileTransaction(nodePolyfillMarker(cacheDir), engine.encodeString(JSON.stringify(metadata) + '\n'));
 }
 
 function nodePolyfillsPresent(cacheDir: string): boolean {
     try {
-        return fs.stat(nodePolyfillMarker(cacheDir)).isFile
+        const metadata: unknown = JSON.parse(engine.decodeString(fs.readFile(nodePolyfillMarker(cacheDir))));
+        return isRecord(metadata)
+            && metadata.version === 1
+            && metadata.bundledRevision === bundledPolyfillRevision
+            && (metadata.source === 'local' || (metadata.source === 'github'
+                && typeof metadata.revision === 'string' && /^[0-9a-f]{40}$/.test(metadata.revision)))
             && fs.stat(join(cacheDir, 'node', 'fs', 'index.ts')).isFile;
     } catch {
         return false;
@@ -467,14 +478,16 @@ function nodePolyfillsPresent(cacheDir: string): boolean {
 
 export async function runSetup(flags: Record<string, string | boolean>): Promise<void> {
     const cacheDir = resolveCacheDir(flags);
+    // An explicit revision selects remote installation even inside a checkout.
+    const requestedRevision = flags['polyfill-revision'];
+    const localSrc = requestedRevision === undefined ? findLocalNodeSource(os.cwd) : null;
+    const revision = localSrc ? null : requirePolyfillRevision(requestedRevision ?? bundledPolyfillRevision);
     await withSetupLock(cacheDir, async () => {
         // Clear a prior success marker before any mutation. If this pass throws
         // or the process dies mid-copy, ensureNodePolyfills() will retry.
         clearNodePolyfillMarker(cacheDir);
         const dstBase  = join(cacheDir, 'node');
         ensureDirectorySync(dstBase, 0o755);
-
-        const localSrc = findLocalNodeSource(os.cwd);
 
         if (localSrc) {
             log.debug('setup', () => `Installing from local source: ${localSrc}`);
@@ -488,21 +501,21 @@ export async function runSetup(flags: Record<string, string | boolean>): Promise
                 log.debug('setup', () => 'Local @cnojs/http package not found beside node source');
             }
         } else {
-            log.debug('setup', () => 'Local source not found, fetching from GitHub (imzlh/cno)...');
-            await installRemote(dstBase);
+            console.log(`Installing Node polyfills from imzlh/cno@${revision}`);
+            await installRemote(dstBase, revision!);
         }
 
-        writeNodePolyfillMarker(cacheDir);
+        writeNodePolyfillMarker(cacheDir, revision);
         console.log(`Node polyfills ready at: ${dstBase}`);
     });
 }
 
-/** Install node polyfills only when missing (cache/exec lifecycle needs them). */
+/** Install missing polyfills and refresh caches created for a different build. */
 export async function ensureNodePolyfills(cacheDir?: string): Promise<void> {
     const flags: Record<string, string | boolean> = {};
     if (cacheDir) flags['cache-dir'] = cacheDir;
     const dir = resolveCacheDir(flags);
     if (nodePolyfillsPresent(dir)) return;
-    log.debug('setup', () => `node polyfills missing under ${dir}; running setup`);
+    log.debug('setup', () => `node polyfills missing or outdated under ${dir}; running setup`);
     await runSetup(flags);
 }

@@ -38,7 +38,7 @@ ${C.bold('COMMANDS')}
   ${C.cyan('cache')}  ${C.cyan('<file>')}                  Pre-download deps and write lock
   ${C.cyan('pack')}   ${C.cyan('<file>')} [-o ${C.dim('<out.jspack>')}]     Pack an entry and its deps into a portable ${C.cyan('.jspack')} container
   ${C.cyan('repl')}                           Start an interactive TypeScript REPL
-  ${C.cyan('setup')}                          Install NodeJS modules. Please run in cno repo dir
+  ${C.cyan('setup')}                          Install Node polyfills from the checkout or this CLI's pinned revision
   ${C.cyan('test')}   [paths…]                Run test files matching ${C.cyan('[._]test.[jt]sx?')}
 
   ${C.dim(`If the first argument is a file path, ${C.cyan('cno run')} is implied.`)}
@@ -99,6 +99,9 @@ ${C.bold('TASK OPTIONS')}
 
 ${C.bold('PACK OPTIONS')}
   ${C.cyan('--out')}, ${C.cyan('-o')} ${C.dim('<file.jspack>')}        Container output path ${C.dim('(see')} ${C.cyan('cno pack --help')}${C.dim(')')}
+
+${C.bold('SETUP OPTIONS')}
+  ${C.cyan('--polyfill-revision')}=${C.dim('<commit>')}   Fetch imzlh/cno at a full 40-character Git SHA (overrides local source)
 
 ${C.bold('DENO COMPATIBILITY')}
   ${C.cyan('--allow-*')}, ${C.cyan('--deny-*')}, ${C.cyan('-A')}        Accepted and ignored — cno grants everything

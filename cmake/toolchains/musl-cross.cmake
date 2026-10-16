@@ -22,8 +22,37 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
-# Every release dependency, including libc, is linked into the executable.
-set(CMAKE_EXE_LINKER_FLAGS_INIT "-static")
+# The musl.cc mipsel compiler defaults to MIPS I, which lacks the ldc1
+# instructions in WAMR's native-call shim. Keep one CPU baseline for all
+# languages, including C++ dependencies built by vcpkg.
+if("$ENV{CNO_CROSS_TRIPLE}" STREQUAL "mipsel-linux-musl")
+    set(CMAKE_C_FLAGS_INIT "-march=mips32r2")
+    set(CMAKE_CXX_FLAGS_INIT "-march=mips32r2")
+    set(CMAKE_ASM_FLAGS_INIT "-march=mips32r2")
+endif()
+
+# vcpkg configures ports in separate CMake processes, so it needs the exported
+# environment default as well as the top-level -D option. Compiler checks must
+# retain the same setting when they load this toolchain in try_compile.
+if(NOT DEFINED CNO_STATIC_LINK)
+    if(DEFINED ENV{CNO_STATIC_LINK} AND NOT "$ENV{CNO_STATIC_LINK}" STREQUAL "")
+        set(CNO_STATIC_LINK "$ENV{CNO_STATIC_LINK}" CACHE BOOL "Link the musl C runtime statically")
+    else()
+        set(CNO_STATIC_LINK ON CACHE BOOL "Link the musl C runtime statically")
+    endif()
+endif()
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES CNO_STATIC_LINK)
+list(REMOVE_DUPLICATES CMAKE_TRY_COMPILE_PLATFORM_VARIABLES)
+
+if(CNO_STATIC_LINK)
+    set(CMAKE_EXE_LINKER_FLAGS_INIT "-static")
+else()
+    # Only musl may remain dynamic: runtime compiler libraries are not present
+    # on every Alpine/OpenWrt installation.
+    set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++")
+endif()
 # QuickJS and libuv use atomics that need compiler runtime support on 32-bit CPUs.
-set(CMAKE_C_STANDARD_LIBRARIES "-latomic" CACHE STRING "Compiler atomic runtime")
-set(CMAKE_CXX_STANDARD_LIBRARIES "-latomic" CACHE STRING "Compiler atomic runtime")
+# Restore the incoming linker state so this also works for fully static links.
+set(_cno_atomic "-Wl,--push-state,-Bstatic -latomic -Wl,--pop-state")
+set(CMAKE_C_STANDARD_LIBRARIES "${_cno_atomic}" CACHE STRING "Compiler atomic runtime")
+set(CMAKE_CXX_STANDARD_LIBRARIES "${_cno_atomic}" CACHE STRING "Compiler atomic runtime")

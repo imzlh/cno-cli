@@ -33,7 +33,9 @@ jobs:
       - uses: ./.github/actions/setup-js
       - if: inputs.run-tests
         run: pnpm run type-check
-      - run: pnpm run bundle
+      - if: inputs.run-tests
+        run: node --test tests/cts/setup-polyfill.test.mjs
+      - run: pnpm run bundle:min
 
   native:
     name: ${{ matrix.target }}

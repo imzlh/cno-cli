@@ -13,13 +13,14 @@ permissions:
 
 jobs:
   cross:
-    name: Linux ${{ matrix.target }} (musl cross)
+    name: Linux ${{ matrix.target }} (musl ${{ matrix.linkage }} cross)
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         target: [mips, mipsel, mips64, riscv64, armv5]
+        linkage: [static, dynamic]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,7 +30,8 @@ jobs:
         if: inputs.run-tests
         run: pnpm run type-check
       - name: Bundle JavaScript on the host
-        run: pnpm run bundle
+        run: pnpm run bundle:min
+      - uses: dtolnay/rust-toolchain@stable
       - name: Install build tools and target emulators
         run: |
           sudo apt-get update
@@ -42,13 +44,14 @@ jobs:
         with:
           path: ${{ runner.temp }}/cno-toolchains/*-cross.tgz
           key: musl-cross-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('scripts/ci/musl-toolchains.sha512') }}
-      - name: Cross-compile and package static runtime
+      - name: Cross-compile and package runtime and OXC
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: '4'
           CNO_RUN_TESTS: ${{ inputs.run-tests }}
+          CNO_STATIC_LINK: ${{ matrix.linkage == 'static' && 'true' || 'false' }}
         run: bash scripts/ci/build-cross-linux.sh '${{ matrix.target }}'
       - uses: actions/upload-artifact@v4
         with:
-          name: cno-linux-musl-${{ matrix.target }}
-          path: artifacts/cno-linux-musl-${{ matrix.target }}.tar.gz
+          name: cno-linux-musl-${{ matrix.linkage }}-${{ matrix.target }}
+          path: artifacts/*.tar.gz
           if-no-files-found: error

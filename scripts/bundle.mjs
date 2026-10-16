@@ -22,14 +22,31 @@
  * be fed to cjsc for self-attach into a release cno binary.
  */
 import { build } from 'esbuild';
-import { argv, exit } from 'node:process';
-import { mkdirSync } from 'node:fs';
+import { argv, env, exit } from 'node:process';
+import { existsSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const mode = argv[2] || 'release';
+
+// The Node compatibility sources must match the cno checkout bundled below.
+// Archive builds can supply the original commit explicitly when Git is absent.
+let polyfillRevision = env.CNO_POLYFILL_REVISION;
+if (polyfillRevision === undefined) {
+    const cnoDir = resolve(__dirname, '../cno');
+    if (!existsSync(resolve(cnoDir, '.git'))) {
+        throw new Error('Cannot identify the cno revision: initialize the cno submodule or set CNO_POLYFILL_REVISION to its full commit SHA');
+    }
+    polyfillRevision = execFileSync('git', ['-C', cnoDir, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf8' }).trim();
+}
+if (!/^[0-9a-f]{40}$/i.test(polyfillRevision)) {
+    throw new Error('CNO_POLYFILL_REVISION must be a full 40-character Git commit SHA');
+}
+polyfillRevision = polyfillRevision.toLowerCase();
+const REVISION_DEFINES = { '__CNO_POLYFILL_REVISION__': JSON.stringify(polyfillRevision) };
 
 const SYMBOL_DEFINES = {
     'import.meta.use':      '__cno_use__',
@@ -74,5 +91,6 @@ switch (mode) {
 }
 
 mkdirSync(dirname(opts.outfile), { recursive: true });
-await build({ ...common, ...opts });
+await build({ ...common, ...opts, define: { ...REVISION_DEFINES, ...opts.define } });
 console.log(`bundle [${mode}] → ${opts.outfile}`);
+console.log(`Node polyfill revision: ${polyfillRevision}`);
