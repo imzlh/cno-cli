@@ -60,7 +60,7 @@ serve target containers without Node.js; native runners use `smoke.mjs`.
 | Archive | Targets | Build environment |
 | --- | --- | --- |
 | `cno-linux-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Debian 12 (bookworm); glibc |
-| `cno-linux-glibc-minimal-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Debian 12 (bookworm); glibc, external shared libraries in `lib/` |
+| `cno-linux-minimal-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Debian 12 (bookworm); glibc, external shared libraries in `lib/` |
 | `cno-linux-musl-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Alpine 3.21; static musl |
 | `cno-linux-musl-<arch>.tar.gz` | mips, mipsel, mips64, riscv64, armv5 | Cross toolchains, vcpkg, and QEMU; static musl |
 | `cno-linux-musl-dynamic-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Alpine 3.21; dynamic musl, external shared libraries in `lib/` |

@@ -47,7 +47,7 @@ case "$libc" in
         oxc_libc=glibc
         linkage='dynamic glibc and system native libraries (Debian 12 baseline)'
         if [ "$libc" = glibc-minimal ]; then
-            archive="cno-linux-glibc-minimal-$target"
+            archive="cno-linux-minimal-$target"
             linkage='dynamic glibc; external shared libraries bundled in lib/ (Debian 12 baseline)'
         fi
         ;;

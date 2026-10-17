@@ -29,7 +29,7 @@ check_archive() {
 
 for target in x86_64 i386 arm64 armv7 armv6; do
     check_archive "cno-linux-$target.tar.gz" cno ext/oxc.so
-    check_archive "cno-linux-glibc-minimal-$target.tar.gz" cno ext/oxc.so true
+    check_archive "cno-linux-minimal-$target.tar.gz" cno ext/oxc.so true
 done
 for target in x86_64 i386 arm64 armv7 armv6 mips mipsel mips64 riscv64 armv5; do
     check_archive "cno-linux-musl-$target.tar.gz" cno ext/oxc.so
