@@ -27,6 +27,13 @@ jobs:
           # The official Debian index omits armel. Its architecture-specific
           # image is still available; ARMv5 soft-float libraries run on ARMv6.
           - {libc: glibc, target: armv6, platform: linux/arm/v5, image: 'arm32v5/debian:bookworm-slim', runner: ubuntu-24.04-arm}
+          # Smaller executable with replaceable shared dependencies in lib/.
+          # Keep the same glibc baseline and CPU ABI as the standard archives.
+          - {libc: glibc-minimal, target: x86_64, platform: linux/amd64, image: 'debian:bookworm-slim', runner: ubuntu-24.04}
+          - {libc: glibc-minimal, target: i386, platform: linux/386, image: 'debian:bookworm-slim', runner: ubuntu-24.04}
+          - {libc: glibc-minimal, target: arm64, platform: linux/arm64, image: 'debian:bookworm-slim', runner: ubuntu-24.04-arm}
+          - {libc: glibc-minimal, target: armv7, platform: linux/arm/v7, image: 'debian:bookworm-slim', runner: ubuntu-24.04-arm}
+          - {libc: glibc-minimal, target: armv6, platform: linux/arm/v5, image: 'arm32v5/debian:bookworm-slim', runner: ubuntu-24.04-arm}
           - {libc: musl, target: x86_64, platform: linux/amd64, image: 'alpine:3.21', runner: ubuntu-24.04}
           - {libc: musl, target: i386, platform: linux/386, image: 'alpine:3.21', runner: ubuntu-24.04}
           - {libc: musl, target: arm64, platform: linux/arm64, image: 'alpine:3.21', runner: ubuntu-24.04-arm}
@@ -47,6 +54,9 @@ jobs:
       - name: Check JavaScript on the host
         if: inputs.run-tests
         run: pnpm run type-check
+      - name: Check Linux dependency staging
+        if: inputs.run-tests
+        run: node --test tests/ci/*.test.mjs
       - name: Bundle JavaScript on the host
         run: pnpm run bundle:min
       - uses: dtolnay/rust-toolchain@stable
@@ -58,14 +68,14 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             build-oxc-rust/cargo
-          # Static and dynamic musl use the same PIC Rust archive. Cargo still
+          # Variants of each libc share their PIC Rust archive. Cargo still
           # checks source fingerprints after a partial-key cache restore.
-          key: rust-linux-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.libc == 'glibc' && 'glibc' || 'musl' }}-${{ hashFiles('.cargo/config.toml', 'scripts/ci/oxc/**', 'scripts/ci/build-oxc-linux.sh', 'ext-oxc/Cargo.toml', 'ext-oxc/src/**/*.rs') }}
+          key: rust-linux-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ startsWith(matrix.libc, 'glibc') && 'glibc' || 'musl' }}-${{ hashFiles('.cargo/config.toml', 'scripts/ci/oxc/**', 'scripts/ci/build-oxc-linux.sh', 'ext-oxc/Cargo.toml', 'ext-oxc/src/**/*.rs') }}
           restore-keys: |
-            rust-linux-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ matrix.libc == 'glibc' && 'glibc' || 'musl' }}-
+            rust-linux-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ startsWith(matrix.libc, 'glibc') && 'glibc' || 'musl' }}-
       - name: Compile OXC Rust archive on the host
         env:
-          LIBC: ${{ matrix.libc == 'glibc' && 'glibc' || 'musl' }}
+          LIBC: ${{ startsWith(matrix.libc, 'glibc') && 'glibc' || 'musl' }}
           TARGET: ${{ matrix.target }}
         run: sh scripts/ci/build-oxc-linux.sh --prepare "$LIBC" "$TARGET" build-oxc-rust
       - uses: docker/setup-qemu-action@v3

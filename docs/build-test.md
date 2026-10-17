@@ -35,27 +35,31 @@ containers, and `build-cross-linux.yml` for Linux cross builds. CI checks types,
 bundles JavaScript, tests the staged runtime, and uploads its archive. Release
 passes `run-tests: false` to all three workflows: it only bundles, compiles,
 packages, and publishes. Type checks and runtime tests stay in CI; checks that
-musl linkage matches the selected variant remain part of packaging.
-Release verifies and publishes all 29 archives and `SHA256SUMS.txt` after every build
+Linux linkage and shared dependency bundles match the selected variant remain
+part of packaging.
+Release verifies and publishes all 34 archives and `SHA256SUMS.txt` after every build
 succeeds. No extra repository secrets are required; publication uses
 the job's `GITHUB_TOKEN` with `contents: write`.
 
 | Archive | Targets | Build environment |
 | --- | --- | --- |
 | `cno-linux-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Debian 12 (bookworm); glibc |
+| `cno-linux-glibc-minimal-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Debian 12 (bookworm); glibc, external shared libraries in `lib/` |
 | `cno-linux-musl-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Alpine 3.21; static musl |
 | `cno-linux-musl-<arch>.tar.gz` | mips, mipsel, mips64, riscv64, armv5 | Cross toolchains, vcpkg, and QEMU; static musl |
-| `cno-linux-musl-dynamic-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Alpine 3.21; dynamic musl |
-| `cno-linux-musl-dynamic-<arch>.tar.gz` | mips, mipsel, mips64, riscv64, armv5 | Cross toolchains, vcpkg, and QEMU; dynamic musl |
+| `cno-linux-musl-dynamic-<arch>.tar.gz` | x86_64, i386, arm64, armv7, armv6 | Alpine 3.21; dynamic musl, external shared libraries in `lib/` |
+| `cno-linux-musl-dynamic-<arch>.tar.gz` | mips, mipsel, mips64, riscv64, armv5 | Cross toolchains, vcpkg, and QEMU; dynamic musl, external shared libraries in `lib/` |
 | `cno-macos-arm64.tar.gz` | arm64 | `macos-15`; Homebrew libraries |
 | `cno-macos-x86_64.tar.gz` | x86_64 | `macos-15-intel`; Homebrew libraries |
 | `cno-windows-x64.zip` | x64 | `windows-2022`; vcpkg runtime DLLs included |
 | `cno-windows-arm64.zip` | arm64 | `windows-11-arm`; vcpkg runtime DLLs included |
 
-The glibc release archives target Debian 12 or compatible distributions and
-require their system libraries. Default CI's Linux artifacts use Ubuntu 24.04
-instead; release builds preserve the Debian baseline. macOS packages depend
-on Homebrew's libffi, sqlite, openssl@3, zlib, expat, curl, and brotli. Install
+The glibc release archives target Debian 12 or compatible distributions. Standard
+`cno-linux-<arch>` archives require their system libraries; `glibc-minimal`
+archives bundle external shared dependencies as described below. Default CI's
+Linux artifacts use Ubuntu 24.04 instead; release builds preserve the Debian
+baseline. macOS packages depend on Homebrew's libffi, sqlite, openssl@3, zlib,
+expat, curl, and brotli. Install
 these dependencies before running an archive on a different machine.
 
 Every CI/release archive includes OXC in `ext/` (`oxc.dll`, `oxc.dylib`, or
@@ -65,12 +69,26 @@ extensions: its runtime uses Sucrase, while the included `ext/oxc.so` is a
 companion for the matching dynamic musl runtime. Keeping OXC separate avoids
 increasing the core executable's size.
 
-Both musl variants statically link third-party native dependencies and compiler
-runtimes. Packaging rejects unexpected shared dependencies; the dynamic
-variant requires only the target musl loader/libc. Choose the matching CPU,
-endianness and floating-point ABI for Alpine/OpenWrt; mipsel requires MIPS32r2
-with the o32 hard-float ABI. Static and dynamic builds use separate CMake and
-vcpkg installation directories, and independent workflow jobs.
+Static musl archives statically link native dependencies and compiler runtimes.
+The `musl-dynamic` and `glibc-minimal` variants dynamically link external
+libraries such as curl, OpenSSL, SQLite, libffi, expat and zlib, and ship those
+libraries and their transitive dependencies under `lib/`. The bundled sources
+under `circu.js/deps` remain statically linked into the runtime. The target OS
+supplies libc and the dynamic loader; neither is included in the archive.
+`lib/DEPENDENCIES.txt` lists the bundled SONAMEs and required system libc.
+Packaging checks that the shared dependency bundle is complete.
+
+Executable-relative RPATH entries make the runtime and OXC find the archive's
+`lib/` directory after extraction or relocation. You can remove individual
+libraries from `lib/`, or remove the directory entirely, when the target system
+provides compatible libraries with the same SONAME and ABI. Missing bundled
+libraries then resolve through the system loader's normal search paths. Install
+all required replacement dependencies before removing the bundled copies.
+
+Choose the matching CPU, endianness and floating-point ABI for Alpine/OpenWrt;
+mipsel requires MIPS32r2 with the o32 hard-float ABI. Static and dynamic builds
+use separate CMake and vcpkg installation directories, and independent workflow
+jobs.
 
 Linux OXC uses Rust 1.95.0, explicit Rust target triples, and the lockfile under
 `scripts/ci/oxc/`. The host builds the Rust archive; the target container or
@@ -98,6 +116,13 @@ Cross toolchain downloads use the fixed `tsl0922/musl-toolchains` GitHub release
 verified against `scripts/ci/musl-toolchains.sha512`. Downloads have bounded
 timeouts, and cached archives are verified before reuse.
 
+Dynamic cross builds prepare a private QEMU runtime root from GCC's `libc.so`
+and the built bytecode compiler's ELF interpreter path, then stage its shared
+compiler runtime dependencies into that root. This avoids relying on
+missing or non-relocatable loader links in the toolchain archive. All target
+bytecode compilers and smoke tests use that runtime root; the compiler sysroot
+and the release executable's interpreter remain unchanged.
+
 JavaScript installation uses `packageManager` in `package.json` and the three
 committed `pnpm-lock.yaml` files. Keep these lockfiles with dependency changes.
 The Windows vcpkg checkout in `build.yml` must match `builtin-baseline` in
@@ -115,7 +140,8 @@ Native jobs also cache Cargo downloads and Corrosion's actual
 `build/oxc-ci/cargo/` output, keyed by target, toolchain and OXC build inputs.
 Linux container jobs cache their host Rust output; musl cross jobs cache Rust
 output and vcpkg binary packages. Static and dynamic musl share the PIC Rust
-cache, while native dependency caches retain separate linkage keys.
+cache, as do standard and minimal glibc, while native dependency caches retain
+separate linkage keys.
 CMake build trees and installed dependency snapshots are not cached.
 
 Submodule source fixes must be committed and pushed in their own

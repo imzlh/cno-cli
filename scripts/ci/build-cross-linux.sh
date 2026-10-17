@@ -92,10 +92,21 @@ git -C "$vcpkg_root" checkout --detach FETCH_HEAD
 
 # QuickJS bytecode stores multibyte values in the target's native byte order.
 # Run target cjsc with QEMU on every cross target, including big-endian MIPS.
+qemu_sysroot="$CNO_CROSS_SYSROOT"
+if [[ $static_link == false ]]; then
+    qemu_sysroot="$build/qemu-sysroot"
+fi
 wrapper="$build/run-cjsc"
 printf '#!/usr/bin/env bash\nexec %q -L %q %q "$@"\n' \
-    "$(command -v "$emulator")" "$CNO_CROSS_SYSROOT" "$build/bin/cjsc" > "$wrapper"
+    "$(command -v "$emulator")" "$qemu_sysroot" "$build/bin/cjsc" > "$wrapper"
 chmod +x "$wrapper"
+shared_options=()
+if [[ $static_link == false ]]; then
+    shared_options+=("-DCMAKE_PROJECT_cjs_INCLUDE=$root/scripts/ci/shared-linux.cmake")
+    export CNO_OXC_SHARED_RUNTIME=true
+else
+    export CNO_OXC_SHARED_RUNTIME=false
+fi
 cmake -S "$root" -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCNO_RELEASE=ON -DBUILD_SHARED_LIBS=OFF \
     -DCNO_STATIC_LINK="$static_link" \
@@ -107,8 +118,18 @@ cmake -S "$root" -B "$build" -G Ninja \
     -DVCPKG_INSTALLED_DIR="$vcpkg_installed" \
     -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="$build/bin" \
     -DCNO_PREBUILT_BUNDLE="$root/dist/cno-cli.min.js" -DCJSC_PATH="$wrapper" \
-    -DBUILD_WITH_WASM="$wasm" -DWAMR_BUILD_TARGET="$wamr"
+    -DBUILD_WITH_WASM="$wasm" -DWAMR_BUILD_TARGET="$wamr" "${shared_options[@]}"
 cmake --build "$build" --target cjsc qjsc --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
+
+if [[ $static_link == false ]]; then
+    sh "$root/scripts/ci/prepare-qemu-sysroot.sh" "$build/bin/qjsc" \
+        "$("$triple-gcc" -print-file-name=libc.so)" "$qemu_sysroot" "$triple-readelf"
+    # qjsc/cjsc may now use shared libatomic and libgcc. Populate the runtime
+    # root before any target bytecode compiler is executed through QEMU.
+    bash "$root/scripts/ci/stage-linux-deps.sh" musl "$qemu_sysroot/lib" \
+        "$triple-readelf" "$triple-gcc" "$vcpkg_installed/$target-linux-musl/lib" \
+        "$build/bin/qjsc" "$build/bin/cjsc"
+fi
 
 if [[ $big_endian == 1 ]]; then
     # These generated QuickJS builtins are also bytecode. Rebuild them before
@@ -116,7 +137,7 @@ if [[ $big_endian == 1 ]]; then
     (
         cd "$root/circu.js/deps/quickjs"
         for builtin in builtin-array-fromasync builtin-iterator-zip builtin-iterator-zip-keyed; do
-            "$emulator" -L "$CNO_CROSS_SYSROOT" "$build/bin/qjsc" \
+            "$emulator" -L "$qemu_sysroot" "$build/bin/qjsc" \
                 -C -ss -o "$builtin.h" "$builtin.js"
         done
     )
@@ -132,6 +153,12 @@ binary="$build/stage/cno"
 sh "$root/scripts/ci/verify-musl.sh" "$linkage" "$binary" "$triple-readelf"
 
 sh "$root/scripts/ci/build-oxc-linux.sh" musl "$target" "$build/stage" "$state/oxc"
+if [[ $static_link == false ]]; then
+    bash "$root/scripts/ci/stage-linux-deps.sh" musl "$build/stage/lib" \
+        "$triple-readelf" "$triple-gcc" "$vcpkg_installed/$target-linux-musl/lib" \
+        "$binary" "$build/stage/ext/oxc.so"
+    sh "$root/scripts/ci/verify-shared-linux.sh" musl "$build/stage" "$triple-readelf"
+fi
 if [[ $run_tests == true ]]; then
     export CTS_CACHE_DIR="$build/smoke-cache"
     export CTS_EXT_PATH="$build/stage/ext"
@@ -140,7 +167,7 @@ if [[ $run_tests == true ]]; then
     smoke() {
         local name=$1 pattern=$2
         shift 2
-        timeout --kill-after=10s 180s "$emulator" -L "$CNO_CROSS_SYSROOT" "$binary" "$@" \
+        timeout --kill-after=10s 180s "$emulator" -L "$qemu_sysroot" "$binary" "$@" \
             2>&1 | tee "$build/smoke-$name.log"
         grep -Eq "$pattern" "$build/smoke-$name.log"
     }
@@ -164,8 +191,8 @@ if [[ $static_link == true ]]; then
     dynamic_note='Dynamic native library loading is unavailable in this static musl build; the OXC companion requires a dynamic musl runtime.'
 else
     archive_name="cno-linux-musl-dynamic-$target"
-    linkage_desc='dynamic musl; third-party native dependencies are static'
-    dynamic_note='Targets musl-based systems (Alpine, OpenWrt) and can load shared native modules.'
+    linkage_desc='dynamic musl; external shared libraries bundled in lib/'
+    dynamic_note='Targets compatible musl systems and can load native modules. See lib/DEPENDENCIES.txt; remove lib/ to use compatible system packages. The system supplies musl and its loader.'
 fi
 cat > "$build/stage/BUILD-INFO.txt" <<EOF
 Target: ${archive_name#cno-}
@@ -191,4 +218,4 @@ case "$target" in
         printf '%s\n' 'OXC CPU/ABI: MIPS64r2, big-endian n64 hard-float. WebAssembly is unsupported on this target.' >> "$build/stage/BUILD-INFO.txt"
         ;;
 esac
-tar -czf "$root/artifacts/$archive_name.tar.gz" -C "$build/stage" cno ext BUILD-INFO.txt
+tar -czf "$root/artifacts/$archive_name.tar.gz" --exclude='.dlls.stamp' -C "$build/stage" .

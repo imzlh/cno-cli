@@ -14,6 +14,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 set(CJS_OXC_RUST_ARCHIVE "" CACHE FILEPATH "Prebuilt Linux Rust staticlib (skips Cargo/Corrosion)")
+option(CJS_OXC_SHARED_RUNTIME "Link compiler runtimes dynamically for Linux shared dependency bundles" OFF)
 
 # GCC and Rust triples are not interchangeable: for example GCC's
 # riscv64-linux-musl maps to Rust's riscv64gc-unknown-linux-musl. The Linux CI
@@ -119,9 +120,17 @@ elseif(WIN32)
 else() # Linux / other ELF
   target_link_options(cjs_ext_oxc PRIVATE -Wl,--allow-shlib-undefined,--gc-sections,-s)
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # Keep compiler runtime dependencies in the module and hide Rust archive
-    # symbols from its dynamic symbol table. The C module entry stays exported.
-    target_link_options(cjs_ext_oxc PRIVATE -static-libgcc -Wl,--exclude-libs,ALL)
+    # Keep Rust symbols private; the native module entry stays exported.
+    target_link_options(cjs_ext_oxc PRIVATE -Wl,--exclude-libs,ALL,--disable-new-dtags)
+    if(CJS_OXC_SHARED_RUNTIME)
+      target_link_options(cjs_ext_oxc PRIVATE -shared-libgcc)
+    else()
+      target_link_options(cjs_ext_oxc PRIVATE -static-libgcc)
+    endif()
+    set_target_properties(cjs_ext_oxc PROPERTIES
+      BUILD_WITH_INSTALL_RPATH ON
+      INSTALL_RPATH "$ORIGIN/../lib"
+      INSTALL_RPATH_USE_LINK_PATH OFF)
   endif()
   # Reminder: build cno itself with -rdynamic (ENABLE_EXPORTS) so JS_* are
   # visible to dlopen'd plugins.

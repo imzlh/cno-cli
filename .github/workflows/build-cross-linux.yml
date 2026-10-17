@@ -29,6 +29,9 @@ jobs:
       - name: Check JavaScript types
         if: inputs.run-tests
         run: pnpm run type-check
+      - name: Check Linux dependency staging and QEMU runtime preparation
+        if: inputs.run-tests
+        run: node --test tests/ci/*.test.mjs
       - name: Bundle JavaScript on the host
         run: pnpm run bundle:min
       - uses: dtolnay/rust-toolchain@stable

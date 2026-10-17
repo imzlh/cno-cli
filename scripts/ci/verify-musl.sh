@@ -23,14 +23,14 @@ else
         exit 1
     fi
     needed=$(printf '%s\n' "$dynamic" | sed -n 's/.*(NEEDED).*\[\([^]]*\)\].*/\1/p')
-    if [ -z "$needed" ]; then
+    if ! printf '%s\n' "$needed" | grep -Eq '^libc(\.musl-[^/]+\.so\.1|\.so)$'; then
         printf 'Missing musl shared dependency: %s\n' "$binary" >&2
         exit 1
     fi
     for library in $needed; do
         case "$library" in
-            libc.so|libc.musl-*.so.1) ;;
-            *) printf 'Unexpected shared dependency in %s: %s\n' "$binary" "$library" >&2; exit 1 ;;
+            libc.so.6|ld-linux*.so.*)
+                printf 'Unexpected glibc dependency in %s: %s\n' "$binary" "$library" >&2; exit 1 ;;
         esac
     done
 fi

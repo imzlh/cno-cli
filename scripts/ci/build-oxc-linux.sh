@@ -136,6 +136,7 @@ set -- -S "$root/scripts/ci/oxc" -B "$build/native" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Linux \
     -DCMAKE_C_COMPILER="$cc" -DCMAKE_AR="$ar" \
     -DCJS_DIR="$root/circu.js" -DCJS_OXC_RUST_ARCHIVE="$archive" \
+    -DCJS_OXC_SHARED_RUNTIME="${CNO_OXC_SHARED_RUNTIME:-false}" \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 if [ -n "${CNO_CROSS_SYSROOT:-}" ]; then
     set -- "$@" -DCMAKE_SYSROOT="$CNO_CROSS_SYSROOT"

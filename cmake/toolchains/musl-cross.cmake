@@ -36,9 +36,9 @@ endif()
 # retain the same setting when they load this toolchain in try_compile.
 if(NOT DEFINED CNO_STATIC_LINK)
     if(DEFINED ENV{CNO_STATIC_LINK} AND NOT "$ENV{CNO_STATIC_LINK}" STREQUAL "")
-        set(CNO_STATIC_LINK "$ENV{CNO_STATIC_LINK}" CACHE BOOL "Link the musl C runtime statically")
+        set(CNO_STATIC_LINK "$ENV{CNO_STATIC_LINK}" CACHE BOOL "Link musl and external dependencies statically")
     else()
-        set(CNO_STATIC_LINK ON CACHE BOOL "Link the musl C runtime statically")
+        set(CNO_STATIC_LINK ON CACHE BOOL "Link musl and external dependencies statically")
     endif()
 endif()
 list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES CNO_STATIC_LINK)
@@ -46,13 +46,17 @@ list(REMOVE_DUPLICATES CMAKE_TRY_COMPILE_PLATFORM_VARIABLES)
 
 if(CNO_STATIC_LINK)
     set(CMAKE_EXE_LINKER_FLAGS_INIT "-static")
+    set(_cno_atomic "-Wl,--push-state,-Bstatic -latomic -Wl,--pop-state")
 else()
-    # Only musl may remain dynamic: runtime compiler libraries are not present
-    # on every Alpine/OpenWrt installation.
-    set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libgcc -static-libstdc++")
+    # External dependencies, including compiler runtimes, stay shared. This
+    # does not change BUILD_SHARED_LIBS: the in-tree runtime remains static.
+    set(CMAKE_EXE_LINKER_FLAGS_INIT "-shared-libgcc")
+    set(CMAKE_SHARED_LINKER_FLAGS_INIT "-shared-libgcc")
+    set(CMAKE_MODULE_LINKER_FLAGS_INIT "-shared-libgcc")
+    # Require the .so explicitly instead of silently falling back to libatomic.a.
+    set(_cno_atomic "-Wl,--push-state,-Bdynamic -l:libatomic.so -Wl,--pop-state")
 endif()
 # QuickJS and libuv use atomics that need compiler runtime support on 32-bit CPUs.
 # Restore the incoming linker state so this also works for fully static links.
-set(_cno_atomic "-Wl,--push-state,-Bstatic -latomic -Wl,--pop-state")
 set(CMAKE_C_STANDARD_LIBRARIES "${_cno_atomic}" CACHE STRING "Compiler atomic runtime")
 set(CMAKE_CXX_STANDARD_LIBRARIES "${_cno_atomic}" CACHE STRING "Compiler atomic runtime")
