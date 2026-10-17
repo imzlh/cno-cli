@@ -67,14 +67,14 @@ run('JavaScript evaluation', ['eval', '--ext=js',
 const nativeTransform = /oxc(?: bytes)?: [^\r\n]*[/\\]fixtures[/\\]typescript\.ts/;
 if (coreOnly) {
     const coreOutput = run('TypeScript without native OXC',
-        ['run', '--disable-cache', 'scripts/ci/fixtures/typescript.ts'],
+        ['run', '--disable-cache', 'tests/ci/fixtures/typescript.ts'],
         /^CNO_CI_TYPESCRIPT_OK\r?$/m, 60_000, { DEBUG: 'transformer' });
     if (nativeTransform.test(coreOutput)) {
         throw new Error('Core-only TypeScript unexpectedly used the native transformer');
     }
 } else {
-    run('load and call native OXC', ['run', 'scripts/ci/fixtures/oxc.mjs'], /^CNO_CI_OXC_OK\r?$/m);
-    const oxcOutput = run('TypeScript with OXC', ['run', '--disable-cache', 'scripts/ci/fixtures/typescript.ts'],
+    run('load and call native OXC', ['run', 'tests/ci/fixtures/oxc.mjs'], /^CNO_CI_OXC_OK\r?$/m);
+    const oxcOutput = run('TypeScript with OXC', ['run', '--disable-cache', 'tests/ci/fixtures/typescript.ts'],
         /^CNO_CI_TYPESCRIPT_OK\r?$/m, 60_000, { DEBUG: 'transformer' });
     if (!nativeTransform.test(oxcOutput)) {
         throw new Error('TypeScript with OXC: the runtime did not use the native transformer');
@@ -82,7 +82,7 @@ if (coreOnly) {
 }
 // Disable caches in both runs so fallback must transform the TypeScript again.
 const fallbackOutput = run('TypeScript with Sucrase fallback',
-    ['run', '--no-oxc', '--disable-cache', 'scripts/ci/fixtures/typescript.ts'],
+    ['run', '--no-oxc', '--disable-cache', 'tests/ci/fixtures/typescript.ts'],
     /^CNO_CI_TYPESCRIPT_OK\r?$/m, 60_000, { DEBUG: 'transformer' });
 if (nativeTransform.test(fallbackOutput)) {
     throw new Error('TypeScript with Sucrase fallback: --no-oxc still used the native transformer');

@@ -2,7 +2,7 @@
 
 The upstream `ext-oxc` submodule supplies the Rust implementation and C glue.
 This directory owns the release CMake configuration and Cargo lockfile. Both
-CMake and `build-oxc-linux.sh --prepare` copy this lock into the submodule's
+CMake and `build-linux.sh --prepare` copy this lock into the submodule's
 ignored `Cargo.lock` before invoking Cargo with `--locked`. When updating OXC,
 update the submodule and this lockfile together. The locked OXC 0.138 dependency
 graph requires Rust 1.95.
@@ -23,10 +23,10 @@ glue with the target's compiler. Alpine's 32-bit containers do not need a
 native Rust host compiler:
 
 ```sh
-sh scripts/ci/build-oxc-linux.sh --prepare musl armv7 build-oxc-rust
+sh scripts/ci/oxc/build-linux.sh --prepare musl armv7 build-oxc-rust
 # Inside the target container, with the checkout and archive mounted:
 CNO_OXC_RUST_ARCHIVE="$PWD/build-oxc-rust/libcjs_oxc_core.a" \
-  sh scripts/ci/build-oxc-linux.sh musl armv7 build-linux/stage
+  sh scripts/ci/oxc/build-linux.sh musl armv7 build-linux/stage
 ```
 
 The helper maps glibc/musl x86_64, i386, ARM64, ARMv7 and ARMv6, plus musl

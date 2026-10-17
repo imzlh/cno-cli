@@ -27,14 +27,9 @@ jobs:
     with:
       run-tests: false
 
-  linux-cross:
-    uses: ./.github/workflows/build-cross-linux.yml
-    with:
-      run-tests: false
-
   release:
     name: Publish release
-    needs: [build, linux, linux-cross]
+    needs: [build, linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

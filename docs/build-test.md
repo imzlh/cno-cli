@@ -30,16 +30,32 @@ The default CI covers Linux x64/ARM64, macOS x64/ARM64, and Windows x64/ARM64
 with OXC.
 Enable **all-linux-targets** when starting CI manually to also run the complete
 Linux release matrix. `Release` runs when a stable version tag such as `v2.0.0`
-is pushed. It reuses `build.yml` for macOS/Windows, `build-linux.yml` for Linux
-containers, and `build-cross-linux.yml` for Linux cross builds. CI checks types,
+is pushed. It reuses `build.yml` for macOS/Windows and `build-linux.yml` for
+both Linux container and cross builds. CI checks types,
 bundles JavaScript, tests the staged runtime, and uploads its archive. Release
-passes `run-tests: false` to all three workflows: it only bundles, compiles,
+passes `run-tests: false` to both build workflows: it only bundles, compiles,
 packages, and publishes. Type checks and runtime tests stay in CI; checks that
 Linux linkage and shared dependency bundles match the selected variant remain
 part of packaging.
 Release verifies and publishes all 34 archives and `SHA256SUMS.txt` after every build
 succeeds. No extra repository secrets are required; publication uses
 the job's `GITHUB_TOKEN` with `contents: write`.
+
+CI files are grouped by responsibility:
+
+| Location | Purpose |
+| --- | --- |
+| `.github/workflows/ci.yml`, `release.yml` | Triggers and orchestration |
+| `.github/workflows/build.yml`, `build-linux.yml` | Native runners and Linux release jobs |
+| `scripts/ci/build.mjs`, `smoke.mjs` | Native build and runtime checks |
+| `scripts/ci/linux/` | Container/cross builds, dependency staging, linkage and QEMU helpers |
+| `scripts/ci/oxc/` | OXC build, Cargo lockfile and the required sourcemap patch |
+| `scripts/ci/verify-release-artifacts.sh` | Complete release archive inventory |
+| `cmake/ci/` | Static/shared Linux dependency settings |
+| `tests/ci/` | CI helper regression tests and runtime fixtures |
+
+The Linux `verify.sh` checks both static and shared releases. Shell smoke tests
+serve target containers without Node.js; native runners use `smoke.mjs`.
 
 | Archive | Targets | Build environment |
 | --- | --- | --- |
@@ -113,7 +129,7 @@ without Alpine images use real cross toolchains. Big-endian targets must run
 the target bytecode compiler through QEMU; host bytecode is not interchangeable.
 Cross toolchain downloads use the fixed `tsl0922/musl-toolchains` GitHub release
 `2021-11-23`, with musl.cc as a fallback. Both sources serve the same archives,
-verified against `scripts/ci/musl-toolchains.sha512`. Downloads have bounded
+verified against `scripts/ci/linux/musl-toolchains.sha512`. Downloads have bounded
 timeouts, and cached archives are verified before reuse.
 
 Dynamic cross builds prepare a private QEMU runtime root from GCC's `libc.so`

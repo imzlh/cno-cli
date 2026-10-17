@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-archive=${1:?usage: download-musl-toolchain.sh archive destination-directory}
-downloads=${2:?usage: download-musl-toolchain.sh archive destination-directory}
+archive=${1:?usage: download-toolchain.sh archive destination-directory}
+downloads=${2:?usage: download-toolchain.sh archive destination-directory}
 manifest="$(dirname "${BASH_SOURCE[0]}")/musl-toolchains.sha512"
 checksum=$(awk -v archive="$archive" '$2 == archive { print $1 }' "$manifest")
 if [[ ! $checksum =~ ^[[:xdigit:]]{128}$ ]]; then

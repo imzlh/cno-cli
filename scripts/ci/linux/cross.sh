@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-target=${1:?usage: build-cross-linux.sh mips|mipsel|mips64|riscv64|armv5}
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+target=${1:?usage: cross.sh mips|mipsel|mips64|riscv64|armv5}
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 cd "$root"
 run_tests=${CNO_RUN_TESTS:-true}
 case "$run_tests" in
@@ -44,8 +44,8 @@ vcpkg_installed="$state/vcpkg_installed-$linkage"
 downloads="${RUNNER_TEMP:-$root/.tmp-cross}/cno-toolchains"
 archive="$triple-cross.tgz"
 mkdir -p "$build/bin" "$downloads" "$state"
-bash "$root/scripts/ci/download-musl-toolchain.sh" "$archive" "$downloads"
-checksum=$(awk -v archive="$archive" '$2 == archive { print $1 }' "$root/scripts/ci/musl-toolchains.sha512")
+bash "$root/scripts/ci/linux/download-toolchain.sh" "$archive" "$downloads"
+checksum=$(awk -v archive="$archive" '$2 == archive { print $1 }' "$root/scripts/ci/linux/musl-toolchains.sha512")
 tar -xzf "$downloads/$archive" -C "$downloads"
 
 export CNO_CROSS_ROOT="$downloads/$triple-cross"
@@ -70,7 +70,7 @@ if [[ $target == riscv64 ]]; then
     # binutils bundled with musl.cc. Emit the identical instruction with .word.
     # Accept an already applied patch, but fail visibly if upstream diverges.
     libuv_root="$root/circu.js/deps/libuv"
-    libuv_patch="$root/scripts/ci/riscv64-libuv.patch"
+    libuv_patch="$root/scripts/ci/linux/riscv64-libuv.patch"
     if git -C "$libuv_root" apply --check "$libuv_patch" 2>/dev/null; then
         git -C "$libuv_root" apply "$libuv_patch"
     elif ! git -C "$libuv_root" apply --reverse --check "$libuv_patch" 2>/dev/null; then
@@ -105,7 +105,7 @@ printf '#!/usr/bin/env bash\nexec %q -L %q %q "$@"\n' \
 chmod +x "$wrapper"
 shared_options=()
 if [[ $static_link == false ]]; then
-    shared_options+=("-DCMAKE_PROJECT_cjs_INCLUDE=$root/scripts/ci/shared-linux.cmake")
+    shared_options+=("-DCMAKE_PROJECT_cjs_INCLUDE=$root/cmake/ci/shared-linux.cmake")
     export CNO_OXC_SHARED_RUNTIME=true
 else
     export CNO_OXC_SHARED_RUNTIME=false
@@ -125,11 +125,11 @@ cmake -S "$root" -B "$build" -G Ninja \
 cmake --build "$build" --target cjsc qjsc --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
 
 if [[ $static_link == false ]]; then
-    sh "$root/scripts/ci/prepare-qemu-sysroot.sh" "$build/bin/qjsc" \
+    sh "$root/scripts/ci/linux/prepare-qemu.sh" "$build/bin/qjsc" \
         "$("$triple-gcc" -print-file-name=libc.so)" "$qemu_sysroot" "$triple-readelf"
     # qjsc/cjsc may now use shared libatomic and libgcc. Populate the runtime
     # root before any target bytecode compiler is executed through QEMU.
-    bash "$root/scripts/ci/stage-linux-deps.sh" musl "$qemu_sysroot/lib" \
+    bash "$root/scripts/ci/linux/stage-deps.sh" musl "$qemu_sysroot/lib" \
         "$triple-readelf" "$triple-gcc" "$vcpkg_installed/$target-linux-musl/lib" \
         "$build/bin/qjsc" "$build/bin/cjsc"
 fi
@@ -153,14 +153,16 @@ binary="$build/stage/cno"
 "$triple-readelf" -h "$binary"
 "$triple-readelf" -l "$binary" > "$build/program-headers.txt"
 "$triple-readelf" -d "$binary" > "$build/dynamic-section.txt"
-sh "$root/scripts/ci/verify-musl.sh" "$linkage" "$binary" "$triple-readelf"
+if [[ $static_link == true ]]; then
+    sh "$root/scripts/ci/linux/verify.sh" static "$build/stage" "$triple-readelf"
+fi
 
-sh "$root/scripts/ci/build-oxc-linux.sh" musl "$target" "$build/stage" "$state/oxc"
+sh "$root/scripts/ci/oxc/build-linux.sh" musl "$target" "$build/stage" "$state/oxc"
 if [[ $static_link == false ]]; then
-    bash "$root/scripts/ci/stage-linux-deps.sh" musl "$build/stage/lib" \
+    bash "$root/scripts/ci/linux/stage-deps.sh" musl "$build/stage/lib" \
         "$triple-readelf" "$triple-gcc" "$vcpkg_installed/$target-linux-musl/lib" \
         "$binary" "$build/stage/ext/oxc.so"
-    sh "$root/scripts/ci/verify-shared-linux.sh" musl "$build/stage" "$triple-readelf"
+    sh "$root/scripts/ci/linux/verify.sh" musl "$build/stage" "$triple-readelf"
 fi
 if [[ $run_tests == true ]]; then
     export CTS_CACHE_DIR="$build/smoke-cache"
@@ -178,11 +180,11 @@ if [[ $run_tests == true ]]; then
     smoke setup 'Node polyfills ready at:' setup
     smoke eval '^CNO_CI_EVAL_OK$' eval --ext=js \
         'if (await Promise.resolve(6 * 7) !== 42) throw new Error("evaluation failed"); console.log("CNO_CI_EVAL_OK");'
-    smoke typescript '^CNO_CI_TYPESCRIPT_OK$' run --no-oxc --disable-cache scripts/ci/fixtures/typescript.ts
+    smoke typescript '^CNO_CI_TYPESCRIPT_OK$' run --no-oxc --disable-cache tests/ci/fixtures/typescript.ts
     if [[ $static_link == false ]]; then
-        smoke oxc '^CNO_CI_OXC_OK$' run scripts/ci/fixtures/oxc.mjs
+        smoke oxc '^CNO_CI_OXC_OK$' run tests/ci/fixtures/oxc.mjs
         DEBUG=transformer smoke typescript-oxc '^CNO_CI_TYPESCRIPT_OK$' \
-            run --disable-cache scripts/ci/fixtures/typescript.ts
+            run --disable-cache tests/ci/fixtures/typescript.ts
         grep -Eq 'oxc( bytes)?: .*[/\\]fixtures[/\\]typescript\.ts' "$build/smoke-typescript-oxc.log"
     fi
 fi

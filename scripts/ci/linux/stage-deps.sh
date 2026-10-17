@@ -5,7 +5,7 @@ export LC_ALL=C
 # Read ELF metadata without executing target binaries or consulting host ldd.
 # GCC resolves compiler runtimes/multiarch paths; SEARCH_DIR supplies vcpkg or
 # native package libraries. The same helper can populate QEMU's private /lib.
-libc=${1:?Usage: stage-linux-deps.sh glibc|musl destination readelf cc search-dir binary...}
+libc=${1:?Usage: stage-deps.sh glibc|musl destination readelf cc search-dir binary...}
 destination=${2:?Missing destination}
 readelf=${3:?Missing target readelf}
 cc=${4:?Missing target compiler}

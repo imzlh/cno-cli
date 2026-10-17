@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-repository=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-case "${1:?Usage: smoke-core.sh stage-directory}" in
+repository=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
+case "${1:?Usage: smoke.sh stage-directory}" in
     /*) stage=$1 ;;
     *) stage="$repository/$1" ;;
 esac
@@ -11,7 +11,7 @@ with_oxc=false
 case "${2:-}" in
     '') ;;
     --with-oxc) with_oxc=true; test -f "$stage/ext/oxc.so" ;;
-    *) printf 'Usage: smoke-core.sh stage-directory [--with-oxc]\n' >&2; exit 2 ;;
+    *) printf 'Usage: smoke.sh stage-directory [--with-oxc]\n' >&2; exit 2 ;;
 esac
 test -x "$binary"
 test -f "$repository/cno/src/node/fs/index.ts"
@@ -48,16 +48,16 @@ run_check 'install local polyfills' 'Node polyfills ready at:' setup
 run_check 'JavaScript evaluation' CNO_CI_EVAL_OK eval --ext=js \
     'if (await Promise.resolve(6 * 7) !== 42) throw new Error("evaluation failed"); console.log("CNO_CI_EVAL_OK");'
 if [ "$with_oxc" = true ]; then
-    run_check 'load and call native OXC' CNO_CI_OXC_OK run scripts/ci/fixtures/oxc.mjs
+    run_check 'load and call native OXC' CNO_CI_OXC_OK run tests/ci/fixtures/oxc.mjs
 fi
 DEBUG=transformer run_check 'TypeScript automatic transformer' CNO_CI_TYPESCRIPT_OK run --disable-cache \
-    scripts/ci/fixtures/typescript.ts
+    tests/ci/fixtures/typescript.ts
 if [ "$with_oxc" = true ] && ! grep -Eq 'oxc( bytes)?: .*fixtures/typescript\.ts' "$log"; then
     printf 'The TypeScript fixture did not use native OXC\n' >&2
     exit 1
 fi
 DEBUG=transformer run_check 'TypeScript with explicit fallback' CNO_CI_TYPESCRIPT_OK run --no-oxc --disable-cache \
-    scripts/ci/fixtures/typescript.ts
+    tests/ci/fixtures/typescript.ts
 if grep -Eq 'oxc( bytes)?: .*fixtures/typescript\.ts' "$log"; then
     printf 'The --no-oxc fixture unexpectedly used native OXC\n' >&2
     exit 1

@@ -6,8 +6,8 @@ set -eu
 # which rustup does not publish a native musl-hosted compiler.
 usage() {
     printf '%s\n' \
-        'Usage: build-oxc-linux.sh --prepare glibc|musl target output-dir' \
-        '       build-oxc-linux.sh glibc|musl target stage-dir [build-dir]' >&2
+        'Usage: oxc/build-linux.sh --prepare glibc|musl target output-dir' \
+        '       oxc/build-linux.sh glibc|musl target stage-dir [build-dir]' >&2
     exit 2
 }
 
@@ -20,7 +20,7 @@ fi
 if [ "$prepare_only" = true ] && [ "$#" -ne 3 ]; then usage; fi
 libc=$1
 target=$2
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 
 # These are Rust target names, never the output of GCC -dumpmachine. In
 # particular ARMv6 glibc uses Debian armel's soft-float ABI, while Alpine armhf

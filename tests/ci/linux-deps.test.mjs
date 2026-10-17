@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const helper = join(repository, 'scripts/ci/stage-linux-deps.sh');
-const verify = join(repository, 'scripts/ci/verify-shared-linux.sh');
+const helper = join(repository, 'scripts/ci/linux/stage-deps.sh');
+const verify = join(repository, 'scripts/ci/linux/verify.sh');
 const shellPath = path => path.replaceAll('\\', '/');
 const shell = process.env.CNO_TEST_SH || 'sh';
 const bash = process.env.CNO_TEST_BASH || 'bash';
@@ -31,14 +31,14 @@ function fixture(t) {
     const cc = join(directory, 'cc');
     // ELF metadata fixtures travel with the copied file, just like real ELF
     // dynamic sections. No execution of foreign target binaries is needed.
-    writeFileSync(readelf, '#!/bin/sh\ncase "$1" in\n-hW) grep -E "^(Class|Data|Machine):" "$2" ;;\n-dW) grep "^Dynamic:" "$2" || : ;;\n-lW) grep "^Header:" "$2" ;;\n*) exit 2 ;;\nesac\n', { mode: 0o755 });
+    writeFileSync(readelf, '#!/bin/sh\ncase "$1" in\n-hW) grep -E "^(Class|Data|Machine):" "$2" ;;\n-dW) grep "^Dynamic:" "$2" || : ;;\n-lW) grep "^Header:" "$2" || : ;;\n*) exit 2 ;;\nesac\n', { mode: 0o755 });
     writeFileSync(cc, '#!/bin/sh\nprintf "%s/%s\\n" "${0%/*}/compiler libraries" "${1#-print-file-name=}"\n', { mode: 0o755 });
     function elf(path, needed, { machine = 'MIPS R3000', rpath, interpreter } = {}) {
         writeFileSync(path, [
             'Class: ELF32', 'Data: 2\'s complement, big endian', `Machine: ${machine}`,
             ...needed.map(name => `Dynamic: (NEEDED) Shared library: [${name}]`),
             ...(rpath ? [`Dynamic: (RPATH) Library rpath: [${rpath}]`] : []),
-            ...(interpreter ? [`Header: [Requesting program interpreter: ${interpreter}]`] : []),
+            ...(interpreter ? ['Header: INTERP', `Header: [Requesting program interpreter: ${interpreter}]`] : []),
         ].join('\n') + '\n');
         return path;
     }
@@ -131,6 +131,25 @@ test('release checks reject static external libraries and nonrelocatable search 
     assert.notEqual(check().status, 0);
 });
 
+test('unified linkage checks preserve static and libc requirements', t => {
+    const f = fixture(t);
+    const check = mode => run(shell, [verify, mode, f.stage, f.readelf]);
+    // Static verification needs neither an extension nor a shared library bundle.
+    rmSync(f.module);
+    f.elf(f.binary, []);
+    assert.equal(check('static').status, 0);
+    f.elf(f.binary, ['libc.so']);
+    assert.notEqual(check('static').status, 0);
+    f.elf(f.binary, [], { interpreter: '/lib/ld-musl-mips.so.1' });
+    assert.notEqual(check('static').status, 0);
+    assert.match(check('musl').stderr, /Missing musl shared dependency/);
+    f.elf(f.binary, ['libc.so', 'libc.so.6'], { interpreter: '/lib/ld-musl-mips.so.1' });
+    assert.match(check('musl').stderr, /Unexpected glibc dependency/);
+    f.elf(f.binary, ['libc.so.6'], { interpreter: '/lib/ld-linux.so.2' });
+    assert.match(check('musl').stderr, /Expected a dynamic musl interpreter/);
+    assert.notEqual(check('unknown').status, 0);
+});
+
 test('real ELF dependency bundle runs after relocation and falls back when lib/ is removed', {
     skip: process.platform !== 'linux' && 'Requires a Linux compiler and loader',
 }, t => {
@@ -155,7 +174,7 @@ test('real ELF dependency bundle runs after relocation and falls back when lib/ 
         const result = run(command, args, options);
         assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
     }
-    ok('cmake', ['-S', source, '-B', build, `-DCMAKE_PROJECT_cjs_INCLUDE=${join(repository, 'scripts/ci/shared-linux.cmake')}`]);
+    ok('cmake', ['-S', source, '-B', build, `-DCMAKE_PROJECT_cjs_INCLUDE=${join(repository, 'cmake/ci/shared-linux.cmake')}`]);
     ok('cmake', ['--build', build]);
     renameSync(join(build, 'cno'), join(stage, 'cno'));
     ok(bash, [helper, 'glibc', join(stage, 'lib'), 'readelf', 'cc', build, join(stage, 'cno')]);

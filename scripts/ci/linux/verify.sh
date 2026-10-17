@@ -2,18 +2,45 @@
 set -eu
 export LC_ALL=C
 
-libc=${1:?Usage: verify-shared-linux.sh glibc|musl stage [readelf]}
+libc=${1:?Usage: verify.sh static|glibc|musl stage [readelf]}
 stage=${2:?Missing stage directory}
 readelf=${3:-readelf}
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 case "$libc" in
-    musl) sh "$root/scripts/ci/verify-musl.sh" dynamic "$stage/cno" "$readelf" ;;
+    static|glibc|musl) ;;
+    *) printf 'Unsupported linkage: %s\n' "$libc" >&2; exit 2 ;;
+esac
+binary="$stage/cno"
+headers=$("$readelf" -lW "$binary")
+dynamic=$("$readelf" -dW "$binary")
+needed=$(printf '%s\n' "$dynamic" | sed -n 's/.*(NEEDED).*\[\([^]]*\)\].*/\1/p')
+case "$libc" in
+    static)
+        if printf '%s\n' "$headers" | grep -q INTERP \
+            || printf '%s\n' "$dynamic" | grep -q NEEDED; then
+            printf 'Expected a fully static musl executable: %s\n' "$binary" >&2
+            exit 1
+        fi
+        printf '[package] Verified static musl linkage: %s\n' "$binary"
+        exit 0
+        ;;
+    musl)
+        if ! printf '%s\n' "$headers" | grep -Eq 'Requesting program interpreter: /lib/ld-musl-[^/ ]+\.so\.1\]'; then
+            printf 'Expected a dynamic musl interpreter: %s\n' "$binary" >&2
+            exit 1
+        fi
+        if ! printf '%s\n' "$needed" | grep -Eq '^libc(\.musl-[^/]+\.so\.1|\.so)$'; then
+            printf 'Missing musl shared dependency: %s\n' "$binary" >&2
+            exit 1
+        fi
+        if printf '%s\n' "$needed" | grep -Eq '^(libc\.so\.6|ld-linux.*\.so\..*)$'; then
+            printf 'Unexpected glibc dependency in %s\n' "$binary" >&2
+            exit 1
+        fi
+        ;;
     glibc)
-        headers=$("$readelf" -lW "$stage/cno")
         printf '%s\n' "$headers" | grep -Eq 'Requesting program interpreter: /[^ ]*/ld-linux[^/ ]*\.so\.[0-9]+\]' \
             || { printf 'Expected a dynamic glibc interpreter\n' >&2; exit 1; }
         ;;
-    *) printf 'Unsupported libc: %s\n' "$libc" >&2; exit 2 ;;
 esac
 
 for path in cno ext/oxc.so; do
@@ -26,8 +53,6 @@ for path in cno ext/oxc.so; do
     fi
 done
 
-dynamic=$("$readelf" -dW "$stage/cno")
-needed=$(printf '%s\n' "$dynamic" | sed -n 's/.*(NEEDED).*\[\([^]]*\)\].*/\1/p')
 # Fail the release if any mandatory external dependency silently falls back
 # to an archive. Iconv is part of both libc implementations on these targets.
 for library in curl ssl crypto sqlite3 ffi expat z; do

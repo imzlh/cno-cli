@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-libc=${1:?Usage: build-linux.sh glibc\|glibc-minimal\|musl\|musl-dynamic target [true\|false]}
+libc=${1:?Usage: build.sh glibc\|glibc-minimal\|musl\|musl-dynamic target [true\|false]}
 target=${2:?Missing target architecture}
 run_tests=${3:-true}
 case "$run_tests" in
@@ -22,7 +22,7 @@ case "$target" in
         ;;
     *) printf 'Unsupported architecture: %s\n' "$target" >&2; exit 2 ;;
 esac
-repository=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+repository=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 cd "$repository"
 build="$repository/build-linux-$libc-$target"
 
@@ -77,22 +77,21 @@ if [ "$target" = armv6 ] && [ "$oxc_libc" = glibc ]; then
 fi
 case "$libc" in
     musl)
-        set -- "$@" "-DCMAKE_PROJECT_cjs_INCLUDE=$repository/scripts/ci/static-linux.cmake"
+        set -- "$@" "-DCMAKE_PROJECT_cjs_INCLUDE=$repository/cmake/ci/static-linux.cmake"
         set -- "$@" -DCMAKE_EXE_LINKER_FLAGS=-static
         linkage='fully static musl, including third-party native libraries'
         ;;
     musl-dynamic|glibc-minimal)
-        set -- "$@" "-DCMAKE_PROJECT_cjs_INCLUDE=$repository/scripts/ci/shared-linux.cmake"
+        set -- "$@" "-DCMAKE_PROJECT_cjs_INCLUDE=$repository/cmake/ci/shared-linux.cmake"
         ;;
 esac
 cmake "$@"
 cmake --build "$build" --target cno --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
 strip "$build/stage/cno"
 file "$build/stage/cno"
-case "$libc" in
-    musl) sh scripts/ci/verify-musl.sh static "$build/stage/cno" ;;
-    musl-dynamic) sh scripts/ci/verify-musl.sh dynamic "$build/stage/cno" ;;
-esac
+if [ "$libc" = musl ]; then
+    sh scripts/ci/linux/verify.sh static "$build/stage"
+fi
 
 # Rust runs on the host; only the C glue and final .so link run in the target
 # container. This also supports 32-bit Alpine without a native Rust toolchain.
@@ -110,12 +109,12 @@ case "$libc" in
         dependency_note='The executable includes its native dependencies and needs no system loader.'
         ;;
 esac
-sh scripts/ci/build-oxc-linux.sh "$oxc_libc" "$target" "$build/stage" "$build/oxc"
+sh scripts/ci/oxc/build-linux.sh "$oxc_libc" "$target" "$build/stage" "$build/oxc"
 case "$libc" in
     musl-dynamic|glibc-minimal)
-        bash scripts/ci/stage-linux-deps.sh "$oxc_libc" "$build/stage/lib" readelf cc /usr/lib \
+        bash scripts/ci/linux/stage-deps.sh "$oxc_libc" "$build/stage/lib" readelf cc /usr/lib \
             "$build/stage/cno" "$build/stage/ext/oxc.so"
-        sh scripts/ci/verify-shared-linux.sh "$oxc_libc" "$build/stage"
+        sh scripts/ci/linux/verify.sh "$oxc_libc" "$build/stage"
         ;;
 esac
 if [ "$libc" = musl ]; then
@@ -125,9 +124,9 @@ else
 fi
 if [ "$run_tests" = true ]; then
     if [ "$libc" = musl ]; then
-        sh scripts/ci/smoke-core.sh "$build/stage"
+        sh scripts/ci/linux/smoke.sh "$build/stage"
     else
-        sh scripts/ci/smoke-core.sh "$build/stage" --with-oxc
+        sh scripts/ci/linux/smoke.sh "$build/stage" --with-oxc
     fi
 fi
 cat > "$build/stage/BUILD-INFO.txt" <<EOF

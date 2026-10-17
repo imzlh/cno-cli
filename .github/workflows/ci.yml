@@ -25,7 +25,3 @@ jobs:
   linux:
     if: inputs.all-linux-targets == true
     uses: ./.github/workflows/build-linux.yml
-
-  linux-cross:
-    if: inputs.all-linux-targets == true
-    uses: ./.github/workflows/build-cross-linux.yml

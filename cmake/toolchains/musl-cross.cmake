@@ -2,7 +2,7 @@ set(CMAKE_SYSTEM_NAME Linux)
 
 foreach(_var IN ITEMS CNO_CROSS_ROOT CNO_CROSS_TRIPLE CNO_CROSS_PROCESSOR CNO_CROSS_SYSROOT)
     if(NOT DEFINED ENV{${_var}} OR "$ENV{${_var}}" STREQUAL "")
-        message(FATAL_ERROR "${_var} is required; use scripts/ci/build-cross-linux.sh")
+        message(FATAL_ERROR "${_var} is required; use scripts/ci/linux/cross.sh")
     endif()
 endforeach()
 

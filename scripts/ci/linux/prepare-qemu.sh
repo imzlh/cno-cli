@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-binary=${1:?Usage: prepare-qemu-sysroot.sh binary libc.so destination [readelf]}
+binary=${1:?Usage: prepare-qemu.sh binary libc.so destination [readelf]}
 libc=${2:?Missing target libc.so}
 destination=${3:?Missing QEMU sysroot directory}
 readelf=${4:-readelf}

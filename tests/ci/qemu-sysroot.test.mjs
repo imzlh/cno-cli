@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const helper = join(repository, 'scripts/ci/prepare-qemu-sysroot.sh');
+const helper = join(repository, 'scripts/ci/linux/prepare-qemu.sh');
 const shellPath = path => path.replaceAll('\\', '/');
 
 function fixture(t, interpreter = '/lib/ld-musl-mips.so.1') {

@@ -70,14 +70,14 @@ jobs:
             build-oxc-rust/cargo
           # Variants of each libc share their PIC Rust archive. Cargo still
           # checks source fingerprints after a partial-key cache restore.
-          key: rust-linux-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ startsWith(matrix.libc, 'glibc') && 'glibc' || 'musl' }}-${{ hashFiles('.cargo/config.toml', 'scripts/ci/oxc/**', 'scripts/ci/build-oxc-linux.sh', 'ext-oxc/Cargo.toml', 'ext-oxc/src/**/*.rs') }}
+          key: rust-linux-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ startsWith(matrix.libc, 'glibc') && 'glibc' || 'musl' }}-${{ hashFiles('.cargo/config.toml', 'scripts/ci/oxc/**', 'scripts/ci/oxc/build-linux.sh', 'ext-oxc/Cargo.toml', 'ext-oxc/src/**/*.rs') }}
           restore-keys: |
             rust-linux-v1-${{ matrix.runner }}-${{ matrix.target }}-${{ startsWith(matrix.libc, 'glibc') && 'glibc' || 'musl' }}-
       - name: Compile OXC Rust archive on the host
         env:
           LIBC: ${{ startsWith(matrix.libc, 'glibc') && 'glibc' || 'musl' }}
           TARGET: ${{ matrix.target }}
-        run: sh scripts/ci/build-oxc-linux.sh --prepare "$LIBC" "$TARGET" build-oxc-rust
+        run: sh scripts/ci/oxc/build-linux.sh --prepare "$LIBC" "$TARGET" build-oxc-rust
       - uses: docker/setup-qemu-action@v3
         with:
           platforms: arm,arm64,386
@@ -94,9 +94,88 @@ jobs:
             -v "$RUNNER_TEMP/cno-smoke-cache:/cache" \
             -e CTS_CACHE_DIR=/cache -e CMAKE_BUILD_PARALLEL_LEVEL=4 \
             -e CNO_OXC_RUST_ARCHIVE=/work/build-oxc-rust/libcjs_oxc_core.a \
-            "$IMAGE" sh scripts/ci/build-linux.sh "$LIBC" "$TARGET" "$RUN_TESTS"
+            "$IMAGE" sh scripts/ci/linux/build.sh "$LIBC" "$TARGET" "$RUN_TESTS"
       - uses: actions/upload-artifact@v4
         with:
           name: cno-linux-${{ matrix.libc }}-${{ matrix.target }}
+          path: artifacts/*.tar.gz
+          if-no-files-found: error
+
+  cross:
+    name: Linux ${{ matrix.target }} (musl ${{ matrix.linkage }} cross)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [mips, mipsel, mips64, riscv64, armv5]
+        linkage: [static, dynamic]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/setup-js
+      - name: Check JavaScript types
+        if: inputs.run-tests
+        run: pnpm run type-check
+      - name: Check Linux dependency staging and QEMU runtime preparation
+        if: inputs.run-tests
+        run: node --test tests/ci/*.test.mjs
+      - name: Bundle JavaScript on the host
+        run: pnpm run bundle:min
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build tools and target emulators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config curl ca-certificates \
+            zip unzip tar xz-utils autoconf automake libtool perl bison flex \
+            qemu-user
+      - name: Cache verified cross toolchain downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cno-toolchains/*-cross.tgz
+          key: musl-cross-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('scripts/ci/linux/musl-toolchains.sha512') }}
+      - name: Cache cross-compiled native dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cno-vcpkg-binaries
+          key: vcpkg-cross-v1-${{ matrix.target }}-${{ matrix.linkage }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*musl*.cmake', 'cmake/toolchains/musl-cross.cmake', 'scripts/ci/linux/musl-toolchains.sha512') }}
+          restore-keys: |
+            vcpkg-cross-v1-${{ matrix.target }}-${{ matrix.linkage }}-
+      - name: Cache OXC Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            build-cross-${{ matrix.target }}/oxc/rust/cargo
+          key: rust-cross-v1-${{ matrix.target }}-${{ hashFiles('.cargo/config.toml', 'scripts/ci/oxc/**', 'scripts/ci/oxc/build-linux.sh', 'ext-oxc/Cargo.toml', 'ext-oxc/src/**/*.rs') }}
+          restore-keys: |
+            rust-cross-v1-${{ matrix.target }}-
+      - name: Create native dependency cache directory
+        run: mkdir -p "$RUNNER_TEMP/cno-vcpkg-binaries"
+      - name: Cross-compile and package runtime and OXC
+        env:
+          VCPKG_BINARY_SOURCES: clear;files,${{ runner.temp }}/cno-vcpkg-binaries,readwrite
+          CMAKE_BUILD_PARALLEL_LEVEL: '4'
+          CNO_RUN_TESTS: ${{ inputs.run-tests }}
+          CNO_STATIC_LINK: ${{ matrix.linkage == 'static' && 'true' || 'false' }}
+        run: bash scripts/ci/linux/cross.sh '${{ matrix.target }}'
+      - name: Upload cross build failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-linux-musl-${{ matrix.linkage }}-${{ matrix.target }}
+          path: |
+            build-cross-${{ matrix.target }}/vcpkg/buildtrees/**/*.log
+            build-cross-${{ matrix.target }}/**/CMakeConfigureLog.yaml
+            build-cross-${{ matrix.target }}/**/vcpkg-manifest-install.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cno-linux-musl-${{ matrix.linkage }}-${{ matrix.target }}
           path: artifacts/*.tar.gz
           if-no-files-found: error
