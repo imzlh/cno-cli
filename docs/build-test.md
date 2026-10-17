@@ -86,6 +86,13 @@ companion for the matching dynamic musl runtime. Keeping OXC separate avoids
 increasing the core executable's size.
 
 Static musl archives statically link native dependencies and compiler runtimes.
+Only standard releases retain native Brotli support. `glibc-minimal`, `musl`
+and `musl-dynamic` disable it, including libcurl's Brotli decoder. Container
+builds use a private libcurl built without Brotli; cross builds use vcpkg's
+curl without its optional `brotli` feature. HTTPS, gzip/deflate and the other
+configured compression libraries remain available. Shared dependency staging
+rejects any transitive Brotli library in these variants.
+
 The `musl-dynamic` and `glibc-minimal` variants dynamically link external
 libraries such as curl, OpenSSL, SQLite, libffi, expat and zlib, and ship those
 libraries and their transitive dependencies under `lib/`. The bundled sources

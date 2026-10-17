@@ -4,6 +4,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(ExternalProject)
 
 option(CNO_BUNDLE_MINIFY  "Minify the JS bundle"                   OFF)
+option(CNO_WITH_BROTLI    "Enable native Brotli compression"      ON)
 option(CNO_EMBED_EXT_H2   "Statically embed HTTP/2 extension"      OFF)
 option(CNO_EMBED_EXT_QUIC "Statically embed QUIC extension"        OFF)
 set(CJSC_PATH      "" CACHE FILEPATH "Pre-built host cjsc executable")
@@ -116,6 +117,14 @@ set(CJS_BLOB_C "${_BLOB_C}" CACHE INTERNAL
 # ── circu.js ──────────────────────────────────────────────────────────────────
 set(CJS_USE_SYMBOL_INTERNAL ON CACHE BOOL "" FORCE)
 set(ENABLE_ASAN OFF CACHE BOOL "" FORCE)
+if(NOT CNO_WITH_BROTLI)
+    # circu.js discovers Brotli automatically. Normal empty variables suppress
+    # its find_* calls, even when a previous configure cached system libraries.
+    # Do not overwrite that cache: switching the option back on can reuse it.
+    set(BROTLI_INCLUDE_DIR "")
+    set(BROTLIENC_LIBRARY "")
+    set(BROTLIDEC_LIBRARY "")
+endif()
 add_subdirectory(circu.js)
 if(TARGET cjsc AND NOT CMAKE_CROSSCOMPILING AND NOT CJSC_PATH)
     set_target_properties(cjsc PROPERTIES EXCLUDE_FROM_ALL FALSE)

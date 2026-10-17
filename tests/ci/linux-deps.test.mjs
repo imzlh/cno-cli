@@ -48,8 +48,8 @@ function fixture(t) {
     elf(join(libs, 'libssl.so.3'), ['libcrypto.so.3']);
     elf(join(libs, 'libcrypto.so.3'), ['libssl.so.3', 'libc.so']);
     elf(join(runtime, 'libgcc_s.so.1'), ['libc.so']);
-    const stageDeps = (libc = 'musl', inputs = [binary, module]) => run(bash,
-        [helper, libc, destination, readelf, cc, libs, ...inputs]);
+    const stageDeps = (libc = 'musl', inputs = [binary, module], options = {}) => run(bash,
+        [helper, libc, destination, readelf, cc, libs, ...inputs], options);
     return { directory, stage, libs, runtime, destination, binary, module, readelf, cc, elf, stageDeps };
 }
 
@@ -84,6 +84,23 @@ test('copies SONAME symlinks as standalone files', t => {
     assert.equal(lstatSync(join(f.destination, 'libcurl.so.4')).isSymbolicLink(), false);
     rmSync(real);
     assert.equal(existsSync(join(f.destination, 'libcurl.so.4')), true);
+});
+
+test('disabled Brotli rejects a transitive curl dependency instead of omitting a required library', t => {
+    const f = fixture(t);
+    f.elf(join(f.libs, 'libcurl.so.4'), ['libbrotlidec.so.1', 'libc.so']);
+    f.elf(join(f.libs, 'libbrotlidec.so.1'), ['libc.so']);
+    const disabled = f.stageDeps('musl', [f.binary], {
+        env: { ...process.env, CNO_WITH_BROTLI: 'false' },
+    });
+    assert.notEqual(disabled.status, 0);
+    assert.match(disabled.stderr, /Brotli is disabled.*libbrotlidec\.so\.1/);
+    assert.equal(existsSync(join(f.destination, 'libbrotlidec.so.1')), false);
+    const enabled = f.stageDeps('musl', [f.binary], {
+        env: { ...process.env, CNO_WITH_BROTLI: 'true' },
+    });
+    assert.equal(enabled.status, 0, enabled.stderr);
+    assert.equal(existsSync(join(f.destination, 'libbrotlidec.so.1')), true);
 });
 
 test('keeps glibc components paired with the system loader', t => {

@@ -44,6 +44,9 @@ for ((index=0; index<${#queue[@]}; index++)); do
         # SONAMEs are filenames, never paths; reject unexpected linker inputs.
         [[ "$soname" != */* && "$soname" != .* && "$soname" != *[!a-zA-Z0-9_.+-]* ]] \
             || fail "Invalid dependency name in $binary: $soname"
+        if [[ ${CNO_WITH_BROTLI:-true} == false && "$soname" == libbrotli*.so* ]]; then
+            fail "Brotli is disabled but $binary requires $soname; rebuild that dependency without Brotli"
+        fi
         [[ -z ${seen[$soname]:-} ]] || continue
         seen[$soname]=1
         case "$libc/$soname" in

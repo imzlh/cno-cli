@@ -58,6 +58,7 @@ CNO_CROSS_SYSROOT=$("$triple-gcc" -print-sysroot)
 [[ $("$triple-gcc" -dumpmachine) == "$triple" ]]
 "$triple-gcc" --version
 export CNO_STATIC_LINK="$static_link"
+export CNO_WITH_BROTLI=false
 if [[ $target == mipsel ]]; then
     # WAMR's MIPS native-call assembly requires the o32 hard-float ABI.
     printf '%s\n' \
@@ -112,7 +113,7 @@ else
 fi
 cmake -S "$root" -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCNO_RELEASE=ON -DBUILD_SHARED_LIBS=OFF \
-    -DCNO_STATIC_LINK="$static_link" \
+    -DCNO_STATIC_LINK="$static_link" -DCNO_WITH_BROTLI=OFF \
     -DCMAKE_TOOLCHAIN_FILE="$vcpkg_root/scripts/buildsystems/vcpkg.cmake" \
     -DVCPKG_TARGET_TRIPLET="$target-linux-musl" \
     -DVCPKG_HOST_TRIPLET=x64-linux \
@@ -202,6 +203,7 @@ fi
 cat > "$build/stage/BUILD-INFO.txt" <<EOF
 Target: ${archive_name#cno-}
 Linkage: $linkage_desc
+Brotli: false
 WebAssembly: $wasm
 OXC: ext/oxc.so (native musl companion)
 $dynamic_note
