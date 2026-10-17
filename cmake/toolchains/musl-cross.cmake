@@ -53,8 +53,11 @@ else()
     set(CMAKE_EXE_LINKER_FLAGS_INIT "-shared-libgcc")
     set(CMAKE_SHARED_LINKER_FLAGS_INIT "-shared-libgcc")
     set(CMAKE_MODULE_LINKER_FLAGS_INIT "-shared-libgcc")
-    # Require the .so explicitly instead of silently falling back to libatomic.a.
-    set(_cno_atomic "-Wl,--push-state,-Bdynamic -l:libatomic.so -Wl,--pop-state")
+    # vcpkg-make strips a trailing .so from each C_STANDARD_LIBRARIES item.
+    # Keep the exact library name inside one linker argument, where it cannot
+    # become -l:libatomic. This still requires shared libatomic, without an
+    # implicit fallback to its static archive.
+    set(_cno_atomic "-Wl,--push-state,-Bdynamic,-l:libatomic.so,--pop-state")
 endif()
 # QuickJS and libuv use atomics that need compiler runtime support on 32-bit CPUs.
 # Restore the incoming linker state so this also works for fully static links.

@@ -88,6 +88,9 @@ if [[ ! -d "$vcpkg_root/.git" ]]; then
 fi
 git -C "$vcpkg_root" fetch --depth 1 origin "$vcpkg_revision"
 git -C "$vcpkg_root" checkout --detach FETCH_HEAD
+if [[ $run_tests == true ]]; then
+    cmake "-DVCPKG_ROOT=$vcpkg_root" -P "$root/tests/ci/cross-link-flags.cmake"
+fi
 "$vcpkg_root/bootstrap-vcpkg.sh" -disableMetrics
 
 # QuickJS bytecode stores multibyte values in the target's native byte order.
