@@ -39,6 +39,7 @@ export class Serializer {
 	groupOf(objectId: string): string | undefined { return this.store.groupOf(objectId); }
 	release(objectId: string): void { this.store.release(objectId); }
 	releaseGroup(group: string): void { this.store.releaseGroup(group); }
+	memoryUsage(): { objectCount: number; objectGroupCount: number } { return this.store.memoryUsage(); }
 
 	// ── serialization ────────────────────────────────────────────
 	serialize(value: unknown, group = 'default', opts: { preview?: boolean } = {}): RemoteObject {

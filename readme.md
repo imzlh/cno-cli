@@ -9,6 +9,14 @@ This checkout is a monorepo-style development tree. The runtime that users run
 is the final `cno` binary; the subdirectories are the layers that are bundled or
 linked into it.
 
+> [!IMPORTANT]
+> On October 9, 2026, Deno [announced](https://deno.com/blog/cloudflare) that
+> Deno is dying and will stop entire development after 1 year. I am reconsidering
+> the roadmap of this project, and -- really need your help!
+>
+> The worst case is, release this project after several bug-fixes, and die,
+> following the footprint as deno.
+
 ## Repository Layout
 
 | Path | Role |

@@ -81,6 +81,8 @@ export interface RpcParams {
 	releaseObjectGroup: { objectGroup?: string; groupName?: string }
 	globalLexicalScopeNames: Record<string, never>
 	getHeapUsage: Record<string, never>
+	getMemoryUsage: Record<string, never>
+	collectGarbage: Record<string, never>
 	addBinding: { name: string }
 	removeBinding: { name: string }
 	fetchInterceptResult: { requestId: string; result: InterceptResult | null }
@@ -121,6 +123,8 @@ export const RPC_TRANSPORT: Record<RpcMethod, RpcTransport> = {
 	releaseObjectGroup: 'inspect',
 	globalLexicalScopeNames: 'inspect',
 	getHeapUsage: 'inspect',
+	getMemoryUsage: 'inspect',
+	collectGarbage: 'inspect',
 	addBinding: 'inspect',
 	removeBinding: 'inspect',
 	fetchInterceptResult: 'inspect',

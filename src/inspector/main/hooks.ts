@@ -113,6 +113,26 @@ export class Hooks {
 
 	constructor(private readonly endpoint: MainEndpoint, private readonly serializer: Serializer) {}
 
+	memoryUsage() {
+		let completedFetchBodyBytes = 0
+		let completedServeBodyBytes = 0
+		for (const { data } of this.completedFetchBodies.values()) completedFetchBodyBytes += data.byteLength
+		for (const { data } of this.completedServeBodies.values()) completedServeBodyBytes += data.byteLength
+		return {
+			pendingIntercepts: this.pendingIntercepts.size,
+			fetchBodyBufferCount: this.fetchBodyBuffers.size,
+			fetchBodyBufferBytes: this.fetchBodyBufferBytes,
+			serveBodyBufferCount: this.serveBodyBuffers.size,
+			serveBodyBufferBytes: this.serveBodyBufferBytes,
+			completedFetchBodyCount: this.completedFetchBodies.size,
+			completedFetchBodyBytes,
+			completedServeBodyCount: this.completedServeBodies.size,
+			completedServeBodyBytes,
+			liveFetchStreamCount: this.liveStreamedFetchRequests.size,
+			liveServeStreamCount: this.liveStreamedServeRequests.size,
+		}
+	}
+
 	installAll(): void {
 		this.installScript()
 		this.installNetwork()

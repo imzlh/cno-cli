@@ -5,11 +5,12 @@
  * to Node/V8 debugging and avoid browser/page identity.
  */
 
-import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher';
+import { CDPError, CdpErrorCode, type CDPDispatcher, type EmitEvent } from '../worker/dispatcher';
+import type { WorkerEndpoint } from '../transport/worker-endpoint';
 import { Domain } from './base';
 
 export class ProtocolDomain extends Domain {
-	constructor(dispatcher: CDPDispatcher, event: EmitEvent) {
+	constructor(dispatcher: CDPDispatcher, event: EmitEvent, private readonly rpc: WorkerEndpoint) {
 		super(dispatcher, event)
 		this.registerHandlers()
 	}
@@ -18,7 +19,7 @@ export class ProtocolDomain extends Domain {
 		this.on('Schema.getDomains', () => ({
 			domains: [
 				'Runtime', 'Debugger', 'Console', 'Network', 'Fetch',
-				'Target', 'Schema', 'Log', 'Profiler', 'HeapProfiler',
+				'Target', 'Schema', 'Log', 'Profiler', 'HeapProfiler', 'CNO',
 			].map((name) => ({ name, version: '1.3' })),
 		}))
 
@@ -39,10 +40,13 @@ export class ProtocolDomain extends Domain {
 
 		this.noop('HeapProfiler.enable')
 		this.noop('HeapProfiler.disable')
-		this.noop('HeapProfiler.collectGarbage')
-		this.noop('HeapProfiler.startTrackingHeapObjects')
-		this.noop('HeapProfiler.stopTrackingHeapObjects')
-		this.noop('HeapProfiler.takeHeapSnapshot')
+		this.on('HeapProfiler.collectGarbage', () => this.rpc.call('collectGarbage', {}))
+		for (const method of ['startTrackingHeapObjects', 'stopTrackingHeapObjects', 'takeHeapSnapshot']) {
+			this.on(`HeapProfiler.${method}`, () => {
+				throw new CDPError(CdpErrorCode.ServerError, `HeapProfiler.${method} is not supported by QuickJS; use CNO.getMemoryUsage for memory counters`)
+			})
+		}
+		this.on('CNO.getMemoryUsage', () => this.rpc.call('getMemoryUsage', {}))
 	}
 
 	private noop(method: string): void {

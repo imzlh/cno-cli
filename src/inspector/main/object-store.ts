@@ -43,6 +43,10 @@ export class ObjectStore {
 		return this.store.get(objectId)?.group;
 	}
 
+	memoryUsage(): { objectCount: number; objectGroupCount: number } {
+		return { objectCount: this.store.size, objectGroupCount: this.groups.size };
+	}
+
 	release(objectId: string): void {
 		const e = this.store.get(objectId);
 		if (!e) return;

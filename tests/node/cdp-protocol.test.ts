@@ -62,7 +62,7 @@ Deno.test('cdp: unknown methods use protocol method-not-found code', async () =>
 
 Deno.test('cdp: protocol support domain answers common DevTools probes', async () => {
     const dispatcher = new CDPDispatcher();
-    new ProtocolDomain(dispatcher, () => {});
+    new ProtocolDomain(dispatcher, () => {}, { call: () => ({}) } as unknown as WorkerEndpoint);
 
     const schema = await dispatcher.dispatch('Schema.getDomains', {}) as { domains: Array<{ name: string }> };
     ok(schema.domains.some((domain) => domain.name === 'Runtime'));

@@ -76,3 +76,58 @@ Root `pnpm run type-check` also passed. The initial audit's seven existing ALS
 asynchronous-propagation failures were independently reproduced with the
 original `async_hooks` source; that separate compatibility issue was not
 included in the passing claims.
+
+## Streaming proxy follow-up (2026-10-19)
+
+The HTTP/1 streaming proxy path had another reproducible lifetime bug:
+`Deno.serve` only canceled a response reader when a body write failed. If the
+upstream sent a first SSE chunk and then became idle, the adapter waited in
+`reader.read()` after the downstream client had disconnected. The upstream
+fetch and its connection-pool slot stayed alive. Eight such requests filled the
+per-host fetch pool; later requests timed out waiting for a slot.
+
+The response adapter now subscribes to terminal transport close and cancels its
+reader immediately. Header-write failure also cancels the response body, and a
+HEAD response discards its unused body. An incoming Request now carries a
+transport-linked AbortSignal, allowing `fetch(upstream, { signal: request.signal })`
+to cancel before the upstream has returned response headers. HTTP/2 response
+streams expose the same removable close subscription.
+
+The staged binary was rebuilt from the current TypeScript sources. Five new
+cases in `tests/deno/serve-stream-cleanup.test.ts` pass; the original staged
+binary failed all four cases that were tested before the patch. The related
+serve, HTTP lifecycle, fetch, and terminal-stream tests pass (eight files in
+total). The TLS HTTP/2 round-trip is skipped because this build does not embed
+the HTTP/2 extension. `pnpm run type-check` passes.
+
+A separate Node upstream/client drove the Hono diagnostic fixture:
+
+| Workload | Result |
+| --- | --- |
+| 20 idle-upstream cancellations, four concurrent direct proxy requests | 20 canceled, zero failed; upstream active requests returned to zero in 971 ms. |
+| 20 idle-upstream cancellations through Hono `stream.pipe` | 20 canceled, zero failed; upstream active requests returned to zero in 1,180 ms. |
+| 20 subsequent completed 1 MiB direct responses | 20 completed, zero failed, proving fetch-pool reuse after cancellation. |
+| 12 slow 1 MiB `stream.pipe` responses, four concurrent requests | 12 completed, zero failed; VM after GC was 7.46 MB versus 7.33 MB before the workload. |
+| Four cancellations before headers, with a 2,000 ms upstream header delay | Four canceled; all four upstream requests were observed and released. |
+
+A 60-second CDP sample with GC every two seconds settled at 6.99 MiB of VM
+memory, 10,476 objects and one native handle. The sample is saved under the
+ignored build directory as `build/stream-proxy-postfix-memory.jsonl`. The
+reproduction instructions are in `scripts/diagnostics/README.md`.
+
+### Compressed-response limitation
+
+Automatic libcurl decompression can still produce a large memory burst when
+receiving is paused. A 32 MiB repeated-character gzip response occupied only
+32,636 bytes on the wire, but an idle public fetch retained about 17 MB beyond
+its baseline despite a 256 KiB stream high-water mark. Canceling the body
+returned VM memory to its baseline. This is separate from the retained idle
+upstream fixed above.
+
+The [libcurl pause documentation](https://curl.se/libcurl/c/curl_easy_pause.html)
+explains that libcurl continues decompressing the current downloaded chunk and
+caches its expanded data when reception is paused. Returning
+`CURL_WRITEFUNC_PAUSE` would move those bytes into libcurl's buffer and would not
+by itself solve process-memory growth. Compare the workload with an explicit
+`Accept-Encoding: identity` upstream header to identify this contribution.
+No native decompression change is included in this follow-up.

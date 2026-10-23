@@ -124,7 +124,9 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
         const dispatcher = new CDPDispatcher();
         const channel = new CdpChannel();
         const h: Harness = { port, handle: null as unknown as ServerHandle, connections: 0, detached: [], dispatcher };
-        new ProtocolDomain(dispatcher, (method, params) => channel.emit(method, params));
+        new ProtocolDomain(dispatcher, (method, params) => channel.emit(method, params), {
+            call: () => ({}),
+        } as unknown as WorkerEndpoint);
 
         const stub = (name: string) => ({
             setConnected: (connected: boolean) => { if (!connected) h.detached.push(name); },

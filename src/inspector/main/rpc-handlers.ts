@@ -128,9 +128,21 @@ export function registerRpcHandlers(endpoint: MainEndpoint, deps: RpcHandlerDeps
 		getHeapUsage: () => {
 			const m: CModuleOS.MemoryUsage = os.memoryUsage()
 			return {
-				usedSize: m.used ?? m['vm.used'],
-				totalSize: m.limit ?? m['os.total'],
+				usedSize: m['vm.used'],
+				totalSize: Math.max(m['vm.used'], m.used),
 			}
+		},
+		getMemoryUsage: () => ({
+			runtime: 'QuickJS',
+			scope: 'main',
+			timestamp: Date.now(),
+			memory: os.memoryUsage(),
+			referencedHandleCount: os.refHandleCount(),
+			inspector: { ...serializer.memoryUsage(), ...hooks.memoryUsage() },
+		}),
+		collectGarbage: () => {
+			engine.gc.run()
+			return {}
 		},
 
 		addBinding: (q) => {

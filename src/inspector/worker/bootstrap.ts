@@ -112,7 +112,7 @@ export function bootstrapDebugWorker(): void {
 	const networkDomain = new NetworkDomain(dispatcher, emit, endpoint)
 	const fetchDomain = new FetchDomain(dispatcher, emit, endpoint)
 	const targetDomain = new TargetDomain(dispatcher, emit)
-	new ProtocolDomain(dispatcher, emit)
+	new ProtocolDomain(dispatcher, emit, endpoint)
 	targetDomain.setEntryUrl(entryUrl)
 
 	endpoint.onEvent = createEventRouter({
