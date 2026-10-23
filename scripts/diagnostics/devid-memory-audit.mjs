@@ -103,7 +103,8 @@ try {
                 await waitFor(() => producer.stats.active === 0 && errorActive === 0, `${name}: upstream connections retained`);
                 assert.equal(invalidRangeRequests, 0, 'proxy must forward the requested byte range');
                 assert.equal(invalidEncodingRequests, 0, 'video proxy must request identity encoding');
-                record({ type: 'workload', limitMB, name, ...result, upstreamActive: producer.stats.active + errorActive });
+                const memory = await json(`${proxyUrl}/__memory?gc=1`);
+                record({ type: 'workload', limitMB, name, ...result, upstreamActive: producer.stats.active + errorActive, vmUsed: memory['vm.used'], objectCount: memory['object.count'] });
             };
             await run('warmup', { url: proxy() }, 'completed', 20 * 1048576);
             const baseline = await json(`${proxyUrl}/__memory?gc=1`);
@@ -135,7 +136,7 @@ try {
                 const vmDelta = memory['vm.used'] - baseline['vm.used'];
                 record({ type: 'memory', limitMB, label: `round-${round}`, memory, vmDelta, objectDelta: memory['object.count'] - baseline['object.count'] });
                 assert.equal(memory.limit, limitMB * 1048576);
-                assert.ok(vmDelta < 2 * 1048576, `retained VM growth exceeds 2 MiB: ${vmDelta}\n${log}`);
+                assert.ok(vmDelta < 65536, `retained VM growth exceeds 64 KiB: ${vmDelta}\n${log}`);
             }
         } finally {
             child.kill();

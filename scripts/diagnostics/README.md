@@ -90,3 +90,14 @@ node --test scripts/diagnostics/streaming-load.test.mjs
 ```
 
 测试验证完整响应、慢读、第一块后断开、响应头前断开、压缩响应、空闲响应超时和非法上游参数。停止常驻服务可使用 Ctrl+C。
+
+## devid 实际路由回归
+
+相邻目录的 `devid/tests/proxy-memory-fixture.ts` 使用真实代理路由，省去来源发现和 FFmpeg。先完成 cno 构建并准备依赖缓存，再运行：
+
+```powershell
+node scripts/diagnostics/devid-memory-audit.mjs --devid ../devid --binary build/stage/cno.exe --cache build/audit-devid-20261023-cache --rounds 4 --output build/devid-memory-audit.jsonl
+.\build\stage\cno.exe test tests/node/native-stream-read-oom.test.ts tests/webapi/abort-signal-lifetime.test.ts tests/webapi/finalization-registry-lifetime.test.ts
+```
+
+压测在 32/64 MiB 限制下覆盖完整读取、慢读、响应头前断开、空闲流断开、分片转发、错误响应、Range 和 HEAD。每批等待上游活动连接回到零，再执行 GC 并记录 VM 内存和对象数；每轮残留增长超过 64 KiB 即失败。低内存读取测试在 TS 子进程中制造八次 OOM，同时检查回调错误、缓冲区释放、读取对象回收和退出诊断。

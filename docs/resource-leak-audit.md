@@ -131,3 +131,63 @@ caches its expanded data when reception is paused. Returning
 by itself solve process-memory growth. Compare the workload with an explicit
 `Accept-Encoding: identity` upstream header to identify this contribution.
 No native decompression change is included in this follow-up.
+
+## devid follow-up (2026-10-23)
+
+The actual devid proxy exposed two native allocation bugs and one application
+cleanup bug. `TJS_NewUint8Array` did not consume its backing store when the
+ArrayBuffer allocation failed; a streaming read then delivered the exception
+sentinel as data and kept its read pin active. The helper now owns the allocation
+on every path, and a failed read reports its OOM error and stops reading. FFI,
+socket, module-dump and N-API buffer paths use the corresponding ownership rule.
+The TS regression runs eight forced read failures under both 32 and 64 MiB:
+retained allocation growth dropped from about 524 KiB to 160 bytes, and the
+unclosed TCP wrapper becomes collectible after the final failure.
+
+QuickJS also retained FinalizationRegistry unregister tokens strongly. Since
+AbortSignal registers itself as its token, completed proxy requests retained
+their dependent signals. A minimal Request/signal loop added 1,700 objects per
+100 iterations, while ordinary fetch and repeated KV open/close remained stable.
+Tokens now use native weak references. Unregister detaches every selected record
+before releasing held values, and weak-reference reset invalidates wrappers
+before another record can free them. All 29 existing AbortSignal and registry
+lifetime cases pass. Four batches of 100 devid `fetch2` calls now keep the same
+10,347 objects and 7,418,305 VM bytes after the first batch.
+
+The devid HEAD route now cancels its unused upstream body before returning its
+representation headers. Hono otherwise discards that body without canceling its
+producer. Its new TS regression preserves status 206, Content-Range and
+Content-Length while verifying exactly one cancellation.
+
+The rebuilt Windows Debug binary ran four rounds at each memory limit through
+the real devid routes, with a separate Node upstream and client. The 800 upstream
+requests comprised 272 completed responses, 432 intentional cancellations and
+96 intentionally rejected error responses. Slow reads preserved every byte;
+Range and HEAD behaved as expected. Active upstream requests returned to zero
+after every workload.
+
+| Limit | GC VM after rounds 1, 2, 3 and 4 | Objects after each round | Final RSS |
+| --- | ---: | ---: | ---: |
+| 32 MiB | 12,637,339 bytes | 16,787 | 45,715,456 bytes |
+| 64 MiB | 10,223,824 bytes | 13,688 | 43,892,736 bytes |
+
+Each final sample was 24,520 VM bytes and 64 objects below its warm-up baseline.
+The diagnostic now fails when a round exceeds 64 KiB of retained VM growth;
+the previous 2 MiB threshold allowed the signal leak to pass. Per-workload GC
+samples identify the operation responsible for any future growth. Results are
+saved in the ignored `build/devid-memory-audit-final-20261023.jsonl`.
+
+The devid cache probe also stayed at 6,946,568 VM bytes after the first expiry
+batch at both limits. Application regressions pass (32 cases); root type-check,
+the TS read-OOM regression, FFI, serve cleanup, AbortSignal/registry lifetime,
+HTTP socket lifetime and inspector tests pass.
+The existing N-API fixture initially failed to link on Windows because its
+import definition omitted three symbols already used by the fixture. Adding
+those exports lets all seven process.dlopen cases pass; no new C test is added.
+
+The application tests use
+`--no-check`: a separate `deno check` could not download its existing jsdelivr
+jsencrypt dependency because the remote connection was reset. The CDP wire
+suite passes but prints an `Invalid event object` message during teardown.
+These measurements cover the listed local workloads, not every video provider
+or uncooperative compressed upstream.
