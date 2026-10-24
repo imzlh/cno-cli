@@ -12,9 +12,8 @@ const fs = import.meta.use('fs');
 const timers = import.meta.use('timers');
 const sysError = import.meta.use('error');
 
-// A test module that exits before opening its result pipe (or inherits fd 3 into
-// a daemon) must not leave `cno test` waiting forever. Keep this configurable
-// for slow CI machines while retaining a finite default for accidental hangs.
+// A child that exits before its result pipe opens (or leaks fd 3 into a daemon)
+// must not hang `cno test` forever.
 const DEFAULT_CHILD_TIMEOUT_MS = 60_000;
 
 function childTimeoutMs(): number {
@@ -26,8 +25,8 @@ function childTimeoutMs(): number {
     return DEFAULT_CHILD_TIMEOUT_MS;
 }
 
-// Env sentinel selecting testChildEntry() in src/main.ts (unset on entry,
-// so it never leaks into a grandchild the test file spawns itself).
+// Env sentinel selecting testChildEntry() in src/main.ts; it is unset before
+// entry so a grandchild spawned by the test file never inherits it.
 export const TEST_CHILD_ENV = '__CNO_TEST_CHILD';
 
 // Matches: foo.test.ts, foo_test.ts, foo.test.js, foo_test.js (and .tsx/.jsx)
@@ -186,8 +185,8 @@ function parseFailedTests(value: unknown): FailedTest[] {
         if (!isRecord(t)) return { name: String(t) };
         return {
             name: typeof t.name === 'string' ? t.name : String(t),
-            // Objects that lost their prototype over the JSON result frame stringify to
-            // "[object Object]" — pull message/stack out instead.
+            // JSON revive leaves a bare object; render its message/stack instead
+            // of "[object Object]".
             error: t.error ? failureText(t.error) : undefined,
         };
     });
@@ -211,8 +210,7 @@ export interface TestChildArgs {
 }
 
 function childEnv(flags: Record<string, string | boolean>, invocation: TestInvocation): Record<string, string> {
-    // process.spawn's env replaces rather than merges, so we must carry the
-    // full parent environment ourselves alongside the sentinel.
+    // spawn's env replaces rather than merges; carry the full parent env.
     const env: Record<string, string> = {
         ...os.environ(),
         [TEST_CHILD_ENV]: JSON.stringify({
@@ -318,9 +316,8 @@ async function runOne(
             await settleChild(child, waitPromise);
             throw new Error(`test worker timed out after ${timeout}ms without reporting a result`);
         }
-        // A child can exit before libuv dispatches already-buffered result
-        // bytes. Give the reader one short turn before treating that exit as a
-        // missing report, while retaining the outer timeout for hung children.
+        // A child can exit before already-buffered result bytes are dispatched;
+        // give the reader a short grace turn before calling the report missing.
         if (outcome.kind === 'exit' || outcome.kind === 'wait-error') {
             let graceTimer: number | undefined;
             const grace = await Promise.race([
@@ -386,8 +383,7 @@ async function runAll(
         workers.push(worker());
     }
     await Promise.all(workers);
-    // Workers finish in timing order, but reports should follow discovery
-    // order so repeated runs and CI annotations remain stable.
+    // Workers finish in timing order; sort by discovery order for stable output.
     const order = new Map(files.map((file, index) => [file, index]));
     results.sort((a, b) => (order.get(a.file) ?? 0) - (order.get(b.file) ?? 0));
     return results;
@@ -420,9 +416,8 @@ export async function runTest(
         console.error(`error: --concurrency must be a positive integer, got ${String(flags['concurrency'])}`);
         throw new CliExit(1);
     }
-    // Each test file is a child process; `--inspect*` is forwarded to all of
-    // them, so anything above 1 makes every child but the first die with
-    // EADDRINUSE and report a spurious module failure.
+    // Each file is a child and `--inspect*` is forwarded to all of them, so
+    // concurrency > 1 would make every child but the first hit EADDRINUSE.
     const serial = flags['fail-fast'] === true || inspectorEnabled;
     const concurrency = serial ? 1 : Math.min(files.length, requestedConcurrency);
 
@@ -451,8 +446,7 @@ export async function runTest(
         if (failures.length) allFailed.push({ file: rel, tests: failures });
     }
 
-    // Aggregate "Failed tests:" on the main thread — matches Deno's output
-    // style and avoids interleaved worker-side prints.
+    // Aggregate failures on the main thread to match Deno's output style.
     if (allFailed.length) {
         console.log('');
         console.log(C.red('Failed tests:'));

@@ -65,7 +65,7 @@ function parseGitHubTreeResponse(raw: string): GitHubTreeResponse {
     };
 }
 
-const HOME = os.homeDir || (os.platform === 'win32' ? (readEnv('USERPROFILE') || '') : (readEnv('HOME') || '/root'));
+const HOME = os.homeDir || ((os.platform === 'windows' || os.platform === 'win32') ? (readEnv('USERPROFILE') || '') : (readEnv('HOME') || '/root'));
 
 function resolveCacheDir(flags: Record<string, string | boolean>): string {
     const flag = flags['cache-dir'] || flags['cacheDir'];
@@ -318,7 +318,7 @@ function findLocalNodeSource(start: string): string | null {
 }
 
 /**
- * Locate workspace `http/` next to cno polyfills.
+ * Locate a workspace `http/` next to the cno polyfills.
  * node source: <root>/cno/src/node or <root>/src/node → http at <root>/http or sibling.
  */
 function findLocalHttpPackage(nodeSrc: string): { dir: string; version: string } | null {
@@ -339,9 +339,9 @@ function findLocalHttpPackage(nodeSrc: string): { dir: string; version: string }
                 };
             }
         } catch (error) {
-            // Candidate paths above deliberately include a few layouts that
-            // may not exist. Once a package file is present, though, a read or
-            // parse failure must not make setup claim a complete local install.
+            // Candidate paths include layouts that may not exist. But once a package
+            // file is present, a read or parse failure must not make setup claim a
+            // complete local install.
             if (isNotFound(error)) continue;
             throw new Error(`Cannot read local @cnojs/http package at ${dir}: ${error}`);
         }
@@ -349,10 +349,7 @@ function findLocalHttpPackage(nodeSrc: string): { dir: string; version: string }
     return null;
 }
 
-/**
- * Polyfills import `@cnojs/http/*` via the npm store. Local `cno setup` only
- * refreshed node/ before — keep the store package in lockstep with workspace http.
- */
+/** Keep the npm store package in lockstep with workspace http. */
 function installLocalHttpToStore(httpSrc: string, version: string, cacheDir: string): void {
     const dstBase = join(cacheDir, 'npm', `@cnojs/http@${version}`);
     ensureDirectorySync(dstBase, 0o755);

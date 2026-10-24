@@ -53,8 +53,7 @@ export async function runEval(opts: EvalOpts): Promise<void> {
         Reflect.set(globalThis, '__mainScript', entryUrl(evalPath));
         const code = flags.print === true ? printableCode(opts.code, format) : opts.code;
         const mod = runtime.loadSourceEntry(code, evalPath, { main: true }, { lang: ext, format });
-        // See ModuleCompiler.evalTracked: `cno eval` code that require()s its own
-        // <eval> path would otherwise abort the process.
+        // evalTracked: a self-require() of <eval> aborts the process otherwise.
         await runtime.compiler.evalTracked(mod);
         runtime.flushLock();
     } catch (e) {

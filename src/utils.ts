@@ -14,13 +14,7 @@ export function sourceExtension(value: string | boolean | undefined): string | u
     return (value.startsWith('.') ? value.slice(1) : value) || undefined;
 }
 
-/**
- * Resolve a user-supplied file target into an absolute entry path and its
- * parent directory (for config-file lookup).
- *
- * Handles Windows drive-letter paths (D:/x.js), URL protocols (https://...),
- * relative paths, and absolute POSIX paths.
- */
+/** Resolve a user-supplied target into an absolute entry path and its parent directory. */
 export function entryAndDir(raw: string): { entry: string; dir: string } {
     const hasProto = hasUrlScheme(raw);
     const entry = hasProto ? raw : resolvePath(raw);

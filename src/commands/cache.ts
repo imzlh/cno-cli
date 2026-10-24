@@ -40,8 +40,7 @@ export async function runCache(
                 throw new CliExit(1);
             }
         }
-        // Explicit local entries seed package deps, including dev tools; their
-        // graph supplies import-map aliases. No-arg cache includes both sources.
+        // Local entries seed package deps (incl. dev tools) for import-map aliases.
         if (files.length === 0 || hasProjectEntry) {
             entries.push(...collectSpecifiers(projectDir, { denoImports: files.length === 0 }));
         }

@@ -71,8 +71,8 @@ export async function runPack(
     const projectDir = findProjectDir(entryDir);
     const fileCfg = loadConfigFile(projectDir);
     const cfg = buildCacheConfig(fileCfg, flags, kernel?.config);
-    // Packing may populate the shared dependency cache, but only `cno cache`
-    // owns persistent lock updates and lifecycle-script execution.
+    // Precache may populate the shared cache, but lock persistence and
+    // lifecycle scripts belong to `cno cache` alone.
     cfg.persistLock = false;
     cfg.ignoreScripts = true;
 
@@ -93,8 +93,8 @@ export async function runPack(
     }
 
     const explicitExt = sourceExtension(flags.ext);
-    // An unknown language silently becomes "no transform" and is recorded in the
-    // manifest, so the ABI-mismatch recompile would mis-parse the entry.
+    // An unknown language silently degrades to "no transform" and the ABI
+    // recompile would then mis-parse the entry.
     if (explicitExt !== undefined && !PACK_LANGS.has(explicitExt.toLowerCase())) {
         console.error(`${C.warn('⚠')} Pack failed: --ext must be one of ${[...PACK_LANGS].join(', ')}`);
         throw new CliExit(1);

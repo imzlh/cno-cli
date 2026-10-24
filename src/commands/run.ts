@@ -134,8 +134,7 @@ export async function runFile(opts: RunOpts): Promise<void> {
     let { entry, dir } = isStdin
         ? { entry: `${os.cwd}/$deno$stdin.${sourceLang}`, dir: os.cwd }
         : entryAndDir(opts.file);
-    // Symlinked bins (node_modules/.bin → store) need realpath so relative
-    // requires resolve inside the package, not under .bin/.
+    // Realpath symlinked bins so relative requires resolve inside the package.
     if (!isStdin) {
         try {
             if (fs.exists(entry)) {
@@ -207,9 +206,8 @@ export async function runFile(opts: RunOpts): Promise<void> {
                 : await runtime.loadModule(runEntry, {}, entryLang);
         }
         const evalStarted = Date.now();
-        // evalTracked, not mod.eval(): brackets the entry's evaluation so a
-        // self-require() throws ERR_REQUIRE_CYCLE_MODULE instead of aborting the
-        // process. See ModuleCompiler.evalTracked.
+        // evalTracked brackets evaluation so a self-require() throws
+        // ERR_REQUIRE_CYCLE_MODULE instead of aborting the process.
         await runtime.compiler.evalTracked(mod);
         if (isPack) log.debug('pack', () => `eval=${Date.now() - evalStarted}ms`);
         // Native EV_LOAD covers the C bootstrap rather than the user entry.

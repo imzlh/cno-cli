@@ -1,7 +1,8 @@
 import { setCurlInitHook as setCnoCurlInitHook, setRawConnectionHook } from '../cno/src/utils/network-hooks';
-import { createProxyConnector, type ProxyConfig, type ProxyType } from '../cno/src/utils/proxy';
-import { log } from '../cts/src/api';
+import { type ProxyConfig, type ProxyType } from '../cno/src/utils/proxy';
+import { log } from '../cts/src/utils/log';
 import { setCurlInitHook as setCtsCurlInitHook } from '../cts/src/utils/curl';
+import { errMsg } from '../cts/src/utils/misc';
 import { readEnv } from './env';
 
 const curl  = import.meta.use('curl');
@@ -191,7 +192,16 @@ function setNetworkCurlHooks(hook: typeof applyNetwork | null): void {
     setCtsCurlInitHook(hook);
 }
 
-export function startProxy(): void {
+/** `--skip-cert-verify`: installs the TLS-only hook on the common startup path. */
+export function configureTlsHooks(flags: Record<string, string | boolean>): void {
+    if (!flags['skip-cert-verify']) return;
+    skipCertVerify = true;
+    setNetworkCurlHooks(applyNetwork);
+}
+
+export async function startProxy(): Promise<void> {
+    // The proxy connector pulls in the raw HTTP/TLS stack; only --system-proxy needs it.
+    const { createProxyConnector } = await import('../cno/src/utils/proxy');
     // Registry and environment settings must feed both curl and raw clients.
     const registry = win32?.HKCU !== undefined ? win32 : null;
     refreshConfig(registry);
@@ -213,11 +223,6 @@ export function startProxy(): void {
     log.debug('http', () => config ? `successful setup proxy bypass: ${config.url}` : 'proxy not configured');
     setNetworkCurlHooks(applyNetwork);
     setRawConnectionHook(createProxyConnector(rawProxyFor));
-}
-
-export function disableCertVerify(): void {
-    skipCertVerify = true;
-    setNetworkCurlHooks(applyNetwork);
 }
 
 export function stopNetwork(): void {

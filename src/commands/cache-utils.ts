@@ -90,10 +90,9 @@ export function collectSpecifiers(dir: string, opts: CollectSpecifiersOptions = 
 }
 
 /**
- * Trailing-slash import-map target (`"@/": "./"`, `"fresh/": "jsr:@fresh/core@2/"`).
- * These are directory prefixes, not modules: the value only becomes a specifier
- * once a subpath is appended, so precaching it verbatim asks the resolver for a
- * directory and fails the whole scan. Reachable subpaths arrive via the entry graph.
+ * Trailing-slash import-map target (`"@/": "./"`). These are directory prefixes,
+ * not modules: precaching one verbatim asks the resolver for a directory and
+ * fails the whole scan. Reachable subpaths arrive via the entry graph.
  */
 function isPrefixMapping(value: string): boolean {
     return value.trim().endsWith('/');
