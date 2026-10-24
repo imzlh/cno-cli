@@ -1,7 +1,4 @@
-/**
- * CDP value shapes that cross the wire (worker ⇄ DevTools, main → worker).
- * Dynamic user-controlled payloads are `unknown`, never `any`.
- */
+/** CDP value shapes that cross the wire. */
 
 /** CDP RemoteObject `type` tag. */
 export type RemoteObjectType =

@@ -1,9 +1,6 @@
 /**
- * main/hooks.ts — bridge native main-thread signals into worker events.
- *
- * Each callback normalizes the native info object into a typed wire payload
- * (see shared/wire.ts) and forwards it to the worker. The script-init hook is
- * exposed, not auto-installed, so run.ts can register it on the runtime.
+ * main/hooks.ts — bridge native main-thread signals into worker events via
+ * shared/wire.ts payloads. The script-init hook is exposed, not auto-installed.
  */
 
 import { getTierLimits } from '../../../cno/src/utils/memory-tier'
@@ -96,10 +93,7 @@ export class Hooks {
 	private readonly liveStreamedServeRequests = new Set<string>()
 	private readonly droppedFetchBodyRequests = new Set<string>()
 	private readonly droppedServeBodyRequests = new Set<string>()
-	/**
-	 * When each id was registered for live streaming. Streaming drops the body
-	 * buffer, so these ids are absent from the maps the reaper iterates.
-	 */
+	/** Streaming drops the body buffer, so these ids need their own reaper map. */
 	private readonly streamRegisteredAt = new Map<string, number>()
 	private scriptHookInstalled = false
 	private loadListener: (() => void) | null = null
@@ -424,11 +418,8 @@ export class Hooks {
 	}
 
 	/**
-	 * Mark a request as live-streamed. `source` comes from the worker, which knows
-	 * whether the id is a fetch or a serve request (NetworkDomain tracks it in
-	 * reqMeta); marking both sets leaves the wrong-source entry with no Done event
-	 * to clear it, so it leaks. Optional so an older worker still works; the
-	 * timestamp below keeps such entries reclaimable.
+	 * `source` must be exact: marking both sets leaks the wrong-source entry,
+	 * which has no Done event to clear it. Optional for older workers.
 	 */
 	enableStreamingForRequest(requestId: string, source?: 'fetch' | 'serve'): Uint8Array {
 		let fetchData: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
@@ -853,11 +844,7 @@ export class Hooks {
 		return false
 	}
 
-	/**
-	 * Evict body buffers pending over 120 s, and truncated placeholders (total=0)
-	 * over 30 s — their Done event was lost (e.g. pipe saturation) and they would
-	 * otherwise leak. Runs at most once every 30 s.
-	 */
+	/** Evict buffers pending over 120 s and lost truncated placeholders after 30 s. */
 	private cleanupStaleBodyBuffers(): void {
 		const now = Date.now()
 		if (now - this.lastBufferCleanupTime < 30_000) return

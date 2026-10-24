@@ -1,10 +1,6 @@
 /**
- * Side-effect analysis for console eval previews (`throwOnSideEffect`).
- * A **blocklist**, not a sandbox: only known-dangerous operations are rejected —
- * assignment, ++/--, delete/throw/yield, optional-call `?.()`, `import()`, and
- * the named callees eval/Function/setTimeout/setInterval/setImmediate/
- * queueMicrotask/require and `new Worker`/`SharedWorker`/`Function`. Everything
- * else, including instance methods, is allowed so previews stay useful.
+ * Side-effect analysis for console eval previews (`throwOnSideEffect`). A
+ * blocklist, not a sandbox: only known-dangerous operations are rejected.
  */
 
 import { parse } from '../../../cts/deps/sucrase/src/parser/index'

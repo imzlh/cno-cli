@@ -32,8 +32,7 @@ export type EditorCommandResult =
     | { type: 'exit' };
 
 /**
- * Editor-side view of the session: presentation state, output, history and
- * the two session actions the editor cannot perform itself.
+ * Editor-side access to the session: presentation state, output and history.
  */
 export interface LineEditorHost {
     readonly config: { ps1: string; ps2: string; colors: boolean; showTime: boolean };

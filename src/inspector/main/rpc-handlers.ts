@@ -1,8 +1,6 @@
 /**
- * Registers every RPC method the worker may call on the main thread: the
- * `inspect`- and `lifecycle`-transport methods. `control`-transport methods
- * (breakpoints, requestPause) are applied on the debug channel by the worker
- * endpoint and never reach here. The endpoint forwards each result verbatim.
+ * The RPC methods the worker may call on the main thread: `inspect` and
+ * `lifecycle` only; `control` methods never reach here.
  */
 
 import { getMemoryFile } from '../../../cts/src/api'

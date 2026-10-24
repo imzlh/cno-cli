@@ -352,6 +352,16 @@ async function runTestChild(
     scriptArgs: string[],
 ): Promise<void> {
     let message: TestChildMessage;
+    // The runtime reports each unhandled rejection with exit code 1 and its event
+    // loop drains before the suite can report, so the worker would die without
+    // a result. A rejection is failure evidence, but the suite still owns the
+    // report: record it as a failed test and keep the worker alive.
+    // A throwing listener makes a rejection "handled" for the diagnostics hook.
+    const rejections: string[] = [];
+    const onRejection = (reason: unknown) => {
+        rejections.push(errorDetail(reason) ?? String(reason));
+    };
+    process.on('unhandledRejection', onRejection);
     try {
         validateInvocation(cli);
         const kernel = await prepareKernel(cli);
@@ -368,9 +378,14 @@ async function runTestChild(
             failFast: flags['fail-fast'] === true,
         });
         // Error does not survive the JSON result frame ({} → "[object Object]"); flatten first.
+        // Deduplicate: one Error reported again cannot add information.
+        const unhandled = [...new Set(rejections)];
         message = {
-            passed,
-            failedTests: getFailedTests().map((t) => ({ name: t.name, error: errorDetail(t.error) })),
+            passed: passed && unhandled.length === 0,
+            failedTests: [
+                ...getFailedTests().map((t) => ({ name: t.name, error: errorDetail(t.error) })),
+                ...unhandled.map((error) => ({ name: 'unhandled promise rejection', error })),
+            ],
         };
     } catch (e) {
         const { error } = commandErrorInfo(e);
@@ -379,6 +394,8 @@ async function runTestChild(
             error: error instanceof Error ? String(error.stack ?? error.message) : String(error),
             failedTests: [],
         };
+    } finally {
+        process.off('unhandledRejection', onRejection);
     }
     const { writeTestChildResult } = await import('./commands/test-result-pipe');
     await writeTestChildResult(message);
@@ -431,6 +448,9 @@ async function mainEntry(): Promise<void> {
     if (testInvocation !== null) {
         const { parseTestChildArgs } = await import('./commands/test');
         const invocation = parseTestChildArgs(os.args.slice(2), testInvocation);
+        // A test worker reports every rejection (see below), so its exit code
+        // comes only from the suite result.
+        Reflect.set(globalThis, REQUEST_EXIT_CODE_SLOT, () => {});
         return runTestChild(os.args[1], invocation.cli, invocation.scriptArgs);
     }
     Reflect.set(globalThis, REQUEST_EXIT_CODE_SLOT, requestExitCode);

@@ -1,9 +1,6 @@
 /**
- * worker/event-router.ts — turns raw worker-side debug events into domain calls.
- *
- * The single place mapping the `(WorkerEvent, params)` stream from the C debug
- * channel and native hooks onto CDP domains, keeping `bootstrap.ts` free of
- * switch logic. `params` is narrowed to the wire payload per event tag.
+ * worker/event-router.ts — maps the worker-side `(WorkerEvent, params)` stream
+ * onto CDP domains, keeping bootstrap.ts free of switch logic.
  */
 
 import type { ConsoleDomain } from '../domains/console'
@@ -27,10 +24,7 @@ import type { EmitEvent } from './dispatcher'
 
 export interface EventRouterDeps {
 	endpoint: WorkerEndpoint
-	/**
-	 * For domains that still need a direct emitter. Console forwarding is not one:
-	 * Runtime.consoleAPICalled is gated on Runtime.enable, so RuntimeDomain emits it.
-	 */
+	/** For domains needing a direct emitter; Runtime.consoleAPICalled is gated, so not one. */
 	emit: EmitEvent
 	debuggerDomain: DebuggerDomain
 	runtimeDomain: RuntimeDomain

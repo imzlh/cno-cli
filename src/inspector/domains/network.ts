@@ -1,8 +1,4 @@
-/**
- * Network CDP domain (worker). Translates native fetch/websocket hook events
- * into the Network.* events DevTools expects, answering body/cookie queries
- * from a bounded cache.
- */
+/** Network CDP domain (worker): maps native fetch/websocket events to Network.*. */
 
 import { Domain } from './base'
 import { CDPError, CdpErrorCode } from '../worker/dispatcher'
@@ -114,20 +110,13 @@ export class NetworkDomain extends Domain {
 	private wsMeta = new Map<string, WSRequestMeta>()
 	/** Serve requestIds that are WS upgrades — suppress loadingFinished from HTTP side. */
 	private wsUpgradeRequests = new Set<string>()
-	/**
-	 * Ids this session already announced with requestWillBeSent. A request in
-	 * flight when Network.enable arrives has none, so emitting its terminal
-	 * events would describe an id DevTools never saw.
-	 */
+	/** Ids announced with requestWillBeSent; terminal events for others are suppressed. */
 	private announced = new Set<string>()
 	/** Last time any event touched a requestId — drives staleness eviction. */
 	private lastSeen = new Map<string, number>()
 	private lastCleanupTime = 0
 
-	/**
-	 * Return to the detached state: `enabled`, the cookie jar and every
-	 * requestId-keyed map are per-session state, not shared with a second client.
-	 */
+	/** Return to the detached state; all per-session state is dropped. */
 	setConnected(connected: boolean): void {
 		if (connected) return
 		this.enabled = false
@@ -225,9 +214,8 @@ export class NetworkDomain extends Domain {
 			return { bufferedData }
 		})
 		/**
-		 * Search a cached response body, one CDP SearchMatch per matching line
-		 * with a 0-based lineNumber. An unknown id is an error, as in
-		 * getResponseBody below.
+		 * Search a cached response body, one SearchMatch per matching line.
+		 * An unknown id is an error, as in getResponseBody.
 		 */
 		this.on('Network.searchInResponseBody', (p) => {
 			const requestId = this.reqStr(p, 'requestId')
@@ -421,10 +409,8 @@ export class NetworkDomain extends Domain {
 					type: resourceType,
 					frameId: context.frameId,
 				})
-				// Drive staleness eviction from the REQUEST path: a workload where
-				// nothing completes never reaches handleNetworkDoneEvent and would
-				// grow every requestId-keyed map for the process lifetime.
-				// cleanupStaleEntries throttles itself to once per 30 s.
+				// Evict here too: a workload where nothing completes never reaches
+				// handleNetworkDoneEvent and would grow these maps forever.
 				this.cleanupStaleEntries(timestamp)
 				break
 			}
@@ -720,10 +706,8 @@ export class NetworkDomain extends Domain {
 					})
 				}
 				this.event('Network.webSocketClosed', { requestId: data.requestId, timestamp: data.timestamp })
-				// Release every map this id can appear in unconditionally. A client
-				// websocket (source 'fetch') never enters wsUpgradeRequests, so a
-				// guarded release would leak one reqStartTimes entry per closed
-				// connection; deleting an absent key is a no-op.
+				// Release unconditionally: a 'fetch' websocket never enters
+				// wsUpgradeRequests, and deleting an absent key is a no-op.
 				this.wsUpgradeRequests.delete(data.requestId)
 				this.reqStartTimes.delete(data.requestId)
 				this.reqMeta.delete(data.requestId)
@@ -940,10 +924,8 @@ export class NetworkDomain extends Domain {
 			this.dropBufferedBodyForRequest(requestId)
 			return false
 		}
-		// Evict oldest-first. `dropBufferedBodyForRequest` zeroes an entry but keeps
-		// its key (the request is still live and its Done event must still find it),
-		// so this MUST iterate rather than re-reading the map head: re-reading spins
-		// forever the moment the head entry has nothing left to reclaim.
+		// Evict oldest-first, iterating: `dropBufferedBodyForRequest` keeps the key
+		// of an emptied entry, so re-reading the map head would spin forever.
 		for (const candidate of this.pendingBodies.keys()) {
 			if (this.pendingBodyBytes + incomingBytes <= maxBytes) break
 			if (candidate === requestId) continue
@@ -1272,8 +1254,7 @@ export class NetworkDomain extends Domain {
 
 	/**
 	 * Evict requestId-keyed entries untouched for 120 s, at most once per 30 s.
-	 * Keyed on `lastSeen`, not the start time: a download or websocket that
-	 * legitimately runs longer must not lose its metadata mid-flight.
+	 * Keyed on `lastSeen`, not start time, so long-lived downloads keep metadata.
 	 */
 	private cleanupStaleEntries(now: number): void {
 		if (now - this.lastCleanupTime < 30) return

@@ -1,7 +1,4 @@
-/**
- * Distinguishes user source from runtime internals so the pause controller never
- * breaks inside engine/runtime code.
- */
+/** Distinguishes user source from runtime internals so the debugger never pauses inside them. */
 
 const INTERNAL_PREFIXES = ['<core>', '<devtools>', '<compiled>', '<eval>', 'node:'];
 

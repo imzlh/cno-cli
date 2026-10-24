@@ -47,22 +47,16 @@ function parseProxyUrl(raw: string, defaultType: ProxyType = 'http'): Omit<Proxy
 }
 
 /**
- * `NO_PROXY` from the environment. Applies to whichever proxy ends up in effect,
- * including one that came from the Windows registry — that is how curl behaves.
- *
- * Lowercase is read first: curl documents `http_proxy` (lowercase only) as the
- * canonical spelling, and prefers the lowercase form for the rest where both
- * exist. On Windows the two spellings alias a single variable, so the ordering
- * is a no-op there rather than a double read.
+ * `NO_PROXY` from the environment, for whichever proxy is in effect. Lowercase
+ * is read first, as curl prefers it.
  */
 function envNoProxy(): string | null {
     return readEnv('no_proxy') ?? readEnv('NO_PROXY');
 }
 
 /**
- * Proxy configuration from the standard environment variables, or null when the
- * environment names no proxy at all. Never throws: a malformed value degrades to
- * "no env proxy" instead of taking down the whole setup.
+ * Proxy config from the environment, or null when none is named. Never throws:
+ * a malformed value degrades to "no env proxy".
  */
 function readEnvConfigs(): EnvProxyConfigs | null {
     const noProxy = envNoProxy();

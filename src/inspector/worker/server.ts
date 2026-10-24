@@ -1,9 +1,4 @@
-/**
- * worker/server.ts — the DevTools-facing HTTP + WebSocket endpoint.
- *
- * Serves the CDP discovery JSON and upgrades the WS path to a WebSocket.
- * Socket-to-dispatcher wiring is delegated to `onConnect`.
- */
+/** worker/server.ts — DevTools HTTP discovery plus the WebSocket upgrade. */
 
 import { Server, type HttpRequest, type HttpResponse } from '@cnojs/http/server';
 import { createWebSocketFromConnection } from '../../../cno/src/webapi/websocket';
@@ -93,9 +88,8 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 	}
 
 	/**
-	 * DNS-rebinding guard, as in the Node inspector: a browser can be tricked into
-	 * resolving an attacker domain to 127.0.0.1 but cannot forge the Host header,
-	 * so only IP literals and `localhost` are accepted.
+	 * DNS-rebinding guard: a browser cannot forge the Host header, so only IP
+	 * literals and `localhost` are accepted.
 	 */
 	function isAllowedHost(hostHeader: string | undefined): boolean {
 		// No Host at all is HTTP/1.0 or a raw non-browser client; a browser always sends one.
@@ -121,9 +115,8 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 	}
 
 	/**
-	 * A DevTools frontend sends no Origin on the upgrade; a page driven by an
-	 * attacker always does. Reject cross-origin upgrades so a rebound page cannot
-	 * drive the debugger (which is arbitrary code execution) even if it guesses the URL.
+	 * A real frontend sends no Origin on the upgrade; a page always does. Reject
+	 * cross-origin upgrades, since driving the debugger is arbitrary code execution.
 	 */
 	function isAllowedOrigin(origin: string | undefined): boolean {
 		if (origin === undefined || origin === '') return true

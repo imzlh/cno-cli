@@ -1,7 +1,4 @@
-/**
- * The single import point for the native `debug` module (QuickJS debugger
- * primitives + cross-thread DebugChannel). Available on both threads.
- */
+/** The single import point for the native `debug` module (both threads). */
 
 export const native = import.meta.use('debug');
 
@@ -57,7 +54,7 @@ export const ChannelReq = {
 
 /**
  * JS stack levels between `current_stack_frame` and user code for frame APIs.
- * Values differ by call depth — do not collapse to one constant.
+ * Do not collapse to one constant.
  */
 export const FrameOffset = {
 	/** From PauseController.buildCallFrame (inside onBreak). */

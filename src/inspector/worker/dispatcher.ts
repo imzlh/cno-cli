@@ -1,9 +1,6 @@
 /**
- * worker/dispatcher.ts — routes "Domain.method" CDP commands to handlers.
- *
- * Each domain registers the methods it owns; unknown methods answer the CDP
- * "method not found" code. Params arrive as decoded JSON, modelled as `CdpParams`
- * (`Record<string, unknown>`) and narrowed per handler — no `any` on this path.
+ * worker/dispatcher.ts — routes "Domain.method" CDP commands to handlers;
+ * unknown methods answer CDP's "method not found".
  */
 
 /** Decoded CDP command params: arbitrary JSON object, narrowed per-handler. */
@@ -28,11 +25,7 @@ export const CdpErrorCode = {
 	MethodNotFound: -32601,
 	InvalidParams: -32602,
 	InternalError: -32603,
-	/**
-	 * CDP's own "the command cannot run in this state" code, outside the JSON-RPC
-	 * reserved range. V8 uses it for every wrong-state command (e.g. a paused-only
-	 * call while running answers "Can only perform operation while paused.").
-	 */
+	/** CDP's "command cannot run in this state" code, outside the JSON-RPC range. */
 	ServerError: -32000,
 } as const
 

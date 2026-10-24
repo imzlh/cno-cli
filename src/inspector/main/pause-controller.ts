@@ -1,8 +1,4 @@
-/**
- * The onBreak safepoint handler. When the engine pauses, builds the CDP call-frame
- * stack from the native frame API, ships a Paused event, then blocks in the
- * synchronous service loop until DevTools resumes — returning the requested step.
- */
+/** The onBreak safepoint handler: builds CDP frames, emits Paused, then blocks. */
 
 import { log } from '../../../cts/src/api'
 import type { CallFrame, PausedEvent, Scope } from '../shared/cdp'
@@ -81,10 +77,8 @@ export class PauseController {
 			hitLine,
 			data: this.pauseData(reason, thrown),
 		}
-		// A dropped Paused event means the worker never sends a resume, and
-		// serviceWhilePaused() would freeze the process with no way out (the C ring
-		// holds 64 slots and ring_push fails when full). Losing a breakpoint stop is
-		// bad; an unkillable hang is worse.
+		// A dropped Paused event means no resume ever arrives and serviceWhilePaused()
+		// freezes the process; an unkillable hang is worse than a lost stop.
 		const delivered = this.endpoint.emit(WorkerEvent.Paused, payload)
 		if (delivered === false) {
 			log.debug('debug', () => 'onBreak: Paused event was DROPPED (ring full) — resuming instead of blocking')
@@ -218,10 +212,7 @@ export class PauseController {
 		return this.serializer.serialize(thrown, BACKTRACE_GROUP, { preview: true })
 	}
 
-	/**
-	 * Map a CDP scope index ([local, closure?, global]) to the C-layer scope
-	 * number: 0 = args+locals, 1 = closures, 2 = global.
-	 */
+	/** Map CDP scope index [local, closure?, global] to the C-layer scope number. */
 	normalizeScope(callFrameId: string, cdpScopeNumber: number): number {
 		const len = this.scopeChainLengths.get(callFrameId)
 		if (len == null) return cdpScopeNumber

@@ -1,7 +1,6 @@
 /**
- * Runtime CDP domain (worker): console-tab evaluation, the single execution
- * context, and host bindings. Evaluation is delegated to the main thread over
- * the inspect transport; this domain only enforces the side-effect gate locally.
+ * Runtime CDP domain (worker): console evaluation, the execution context and
+ * host bindings. Evaluation is delegated to the main thread.
  */
 
 import type {
@@ -21,10 +20,7 @@ import { buildConsoleStackTrace, consoleAPICalledType } from '../shared/console-
 import { getMemoryTier } from '../../../cno/src/utils/memory-tier'
 import type { ConsolePayload } from '../shared/wire'
 
-/**
- * Console messages held until `Runtime.enable`, bounded like ConsoleDomain's:
- * an unbounded buffer in a process that logs in a loop is a memory leak.
- */
+/** Messages held until `Runtime.enable`, bounded to avoid leaking. */
 const MAX_CONSOLE_BACKLOG = { low: 100, normal: 300, high: 500 }[getMemoryTier()] ?? 300
 
 export class RuntimeDomain extends Domain {
@@ -182,11 +178,7 @@ export class RuntimeDomain extends Domain {
 		this.event('Runtime.bindingCalled', { name, payload, executionContextId: 1 })
 	}
 
-	/**
-	 * Forward main-thread console output as Runtime.consoleAPICalled, gated on
-	 * Runtime.enable and buffered until then, so a reattaching frontend still
-	 * sees what it missed.
-	 */
+	/** Buffer console output until Runtime.enable, then emit Runtime.consoleAPICalled. */
 	onConsole(payload: ConsolePayload): void {
 		if (this.enabled) {
 			this.emitConsoleAPICalled(payload)

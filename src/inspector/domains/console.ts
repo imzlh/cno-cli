@@ -1,8 +1,4 @@
-/**
- * Console CDP domain (worker): buffers console messages (bounded) so a
- * late-connecting DevTools sees earlier output, then replays them on
- * Console.enable. Args arrive as RemoteObjects from the main thread.
- */
+/** Console CDP domain (worker), buffering pre-attach output for Console.enable. */
 
 import { Domain } from './base'
 import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
@@ -50,10 +46,7 @@ export class ConsoleDomain extends Domain {
 		})
 	}
 
-	/**
-	 * Detach: `enabled` is per-session state in V8, so go back to buffering
-	 * instead of dropping what a re-attaching frontend missed.
-	 */
+	/** Detach: `enabled` is per-session, so resume buffering rather than drop. */
 	setConnected(connected: boolean): void {
 		if (!connected) this.enabled = false
 	}

@@ -1,9 +1,4 @@
-/**
- * Main-thread composition root: DevTools ⇄ Worker (WS + CDP) ⇄ this. The main
- * thread is the sole authority for JS execution and inspection; this wires the
- * endpoint, serializer, evaluator, hooks and pause controller, exposing
- * attach(), detach(), inspectorUrl and scriptInitHook.
- */
+/** Main-thread inspector composition root: wires endpoint, evaluator and hooks. */
 
 import { errMsg, log, type ModuleInfo } from '../../../cts/src/api'
 import { type DebugChannelMain, native } from '../shared/native'
@@ -22,12 +17,8 @@ type WorkerErrorPayload = { message: string; stack?: string; phase?: string }
 type InspectorState = 'idle' | 'attaching' | 'active' | 'stopping'
 
 /**
- * Loopback-only bind check. `0.0.0.0`/`::` are wildcards and anything else is a
- * routable address; both are reachable off-box.
- *
- * This gates a warning that is really the security model: discovery is
- * unauthenticated by protocol necessity, so anyone who can reach the port can
- * read the token, and the token is arbitrary code execution.
+ * Loopback-only check. Discovery is unauthenticated, so a non-loopback bind lets
+ * anyone reaching the port read the token and execute arbitrary code.
  */
 export function isLoopbackHost(host: string): boolean {
 	const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '')

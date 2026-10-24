@@ -57,24 +57,15 @@ export function resolveExtDir(): string | null {
 
 /** Name → candidate filenames within the ext directory. */
 const EXTENSIONS: Record<string, readonly string[]> = {
-    // Optional native accelerator for cts scan/transform (worker_safe); without
-    // it registered, the graph silently falls back to Sucrase.
+    // Optional native accelerator for cts scan/transform; without it the graph
+    // falls back to Sucrase.
     'oxc': ['oxc' + DLEXT],
-    // Optional protocol natives when not statically embedded (CJS_EXTRA_*).
-    // A built-in embed wins over a dyn register of the same name. Standalone
-    // CMake targets keep their libCNO_* names on Unix.
+    // Built-in embed (CJS_EXTRA_*) wins over a dyn register of the same name.
     'ext:h2': ['cno_nghttp2' + DLEXT, 'libCNO_nghttp2' + DLEXT, 'CNO_nghttp2' + DLEXT],
     'ext:quic': ['cno_quicly' + DLEXT, 'libCNO_QUIC' + DLEXT, 'CNO_QUIC' + DLEXT],
 };
 
-/**
- * Register every native extension we can find. Skips missing files so a partial
- * install still boots, and entries whose name is already built in (statically
- * embedded via CJS_EXTRA_*) — the built-in always wins.
- *
- * Runs in the main process and every worker booted via src/main.ts, so
- * dyn_registry is populated per JSRuntime.
- */
+/** Skips missing files, so a partial install still boots. */
 export function registerExtensions(): void {
     const dir = resolveExtDir();
     if (!dir) return;

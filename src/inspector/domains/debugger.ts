@@ -1,8 +1,4 @@
-/**
- * Debugger CDP domain (worker): breakpoint bookkeeping and the pause/resume
- * state machine. Breakpoints and stepping are control-class RPCs applied in C
- * at a safepoint; source/eval queries use the inspect transport.
- */
+/** Debugger CDP domain (worker): breakpoints and the pause/resume state machine. */
 
 import { fileUrlToPath, log, toPosixPath } from '../../../cts/src/api'
 import type {
@@ -25,10 +21,9 @@ import { Domain } from './base'
 const timers = import.meta.use('timers')
 const INITIAL_PAUSE_SETTLE_MS = 50
 /**
- * How long a pause may be held when the socket is attached but `Debugger.enable`
- * has not arrived — the --inspect-brk startup race. Unbounded, it would park the
- * main thread in serviceWhilePaused() forever; the timer is cancelled the moment
- * enable arrives, so it expires only when no debugger is coming at all.
+ * Bound on holding a pause before `Debugger.enable` (the --inspect-brk race):
+ * unbounded, serviceWhilePaused() parks the main thread forever. The timer is
+ * cancelled as soon as enable arrives.
  */
 const UNENABLED_PAUSE_GRACE_MS = 2000
 
@@ -215,11 +210,8 @@ export class DebuggerDomain extends Domain {
 		})
 
 		this.on('Debugger.setVariableValue', (p) => {
-			// Paused-only: setVariableValue addresses the stack at
-			// FrameOffset.PausedSetVariable, meaningful only while serviceWhilePaused
-			// is blocked; while RUNNING it would write unrelated frames. Gate on
-			// `paused` (set once onPaused ran, when scopeChainLengths becomes valid),
-			// not rpc.isPaused(), which is true before that event is processed.
+			// Paused-only, and gate on `paused` (set once onPaused ran), not
+			// rpc.isPaused(), which is true before that event is processed.
 			if (!this.paused) {
 				throw new CDPError(CdpErrorCode.ServerError, 'Can only perform operation while paused.')
 			}
@@ -351,8 +343,7 @@ export class DebuggerDomain extends Domain {
 
 	/**
 	 * The rejection MUST be swallowed: the worker's `unhandledrejection` listener
-	 * reports a worker crash, which rejects the attach `ready` promise and aborts
-	 * the session. pipe-rpc's `failAllPending` makes that reachable.
+	 * reports a worker crash and aborts the session.
 	 */
 	private installNativeBreakpointSafely(bp: CdpBreakpoint): void {
 		this.installNativeBreakpoint(bp).catch((e: unknown) => {
@@ -446,11 +437,8 @@ export class DebuggerDomain extends Domain {
 		this.rpc.setPaused(true)
 		this.pendingPausedEvent = p
 		if (!this.enabled) {
-			// Connected but Debugger not enabled: the --inspect-brk race, or a
-			// session that never enables Debugger. Hold the event so
-			// Debugger.enable flushes it (break-on-start stays deterministic), but
-			// bound the hold so a frontend that never asks cannot freeze the
-			// debuggee forever.
+			// Hold until Debugger.enable flushes it, bounded so a frontend that
+			// never enables Debugger cannot freeze the debuggee.
 			this.armUnenabledPauseTimeout()
 			return
 		}
@@ -458,10 +446,9 @@ export class DebuggerDomain extends Domain {
 	}
 
 	/**
-	 * Resume once if a pause is still held with Debugger disabled. Mirrors the
-	 * synchronous `!connected` branch of onPaused rather than doResume(), whose
-	 * pipe await could reject from a timer callback into an unhandledrejection.
-	 * No Debugger.resumed is emitted because no Debugger.paused ever was.
+	 * Resume once if a pause is still held with Debugger disabled. Not
+	 * doResume(): its pipe await could reject from a timer into an
+	 * unhandledrejection.
 	 */
 	private armUnenabledPauseTimeout(): void {
 		if (this.unenabledPauseTimer != null) return

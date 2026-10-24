@@ -1,7 +1,4 @@
-/**
- * Pipe envelope plus every event/payload shape shared by both threads. Enums
- * are plain (not `const enum`) so the bundler and `isolatedModules` stay happy.
- */
+/** Pipe envelope and every event/payload shape shared by both threads. */
 
 import type { RpcMethod } from './rpc-contract'
 import type { RemoteObject } from './cdp'

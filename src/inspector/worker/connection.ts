@@ -1,10 +1,6 @@
 /**
  * worker/connection.ts — binds one DevTools WebSocket to the CDP dispatcher.
- *
- * Exactly one client is active at a time. `CdpChannel` is the mutable seam
- * between "whoever is connected" and the domains: domains call `channel.emit()`
- * unconditionally and the channel forwards or drops. A stale close must not
- * detach a socket that replaced it.
+ * A stale close must not detach a socket that replaced it.
  */
 
 import { isRecord, parseCDPMessage, type CDPMessage } from '../shared/cdp'
@@ -40,10 +36,7 @@ export class CdpChannel {
 	clearSink(sink: CdpSink): void {
 		if (this.sink === sink) this.sink = null
 	}
-	/**
-	 * Unconditionally detach the current sink. Used when an incoming connection
-	 * displaces an existing one: the caller does not hold the old sink reference.
-	 */
+	/** Unconditional detach, for a displaced connection whose caller has no sink ref. */
 	dropSink(): void {
 		this.sink = null
 	}
@@ -76,9 +69,8 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 	const { channel, dispatcher, rpc, debuggerDomain, runtimeDomain, consoleDomain, networkDomain, fetchDomain } = deps
 
 	/**
-	 * Return every domain to its detached state. Domain `enabled` flags, paused
-	 * Fetch requests and the paused safepoint are per-SESSION state in CDP and
-	 * must not survive the client that created them.
+	 * Return every domain to its detached state; `enabled` and pause state are
+	 * per-session and must not survive the client that created them.
 	 */
 	const releaseSession = (): void => {
 		debuggerDomain.setConnected(false)
@@ -94,10 +86,8 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 	// leaving it half-attached (its commands would be silently ignored forever).
 	const superseded = channel.takeSocket(ws)
 	if (superseded) {
-		// The displaced socket's own onclose cannot do this: it early-returns on
-		// `!channel.isActive(...)`, already false by then — and a client that
-		// vanished may never send one. Drop the sink FIRST so the teardown's own
-		// events (Debugger.resumed) are not delivered to the incoming client.
+		// The displaced socket's own onclose early-returns once it is inactive, so
+		// drop the sink FIRST here: teardown events must not reach the new client.
 		channel.dropSink()
 		releaseSession()
 		try { superseded.close() } catch { /* already gone */ }
@@ -123,10 +113,7 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 			return
 		}
 		const { id, method, params, sessionId } = message
-		// Never drop a command silently: a client with a malformed id would wait
-		// forever with no indication. `parseCDPMessage` only keeps a number-or-null
-		// id, so a string or float id lands here too. Replies carry result/error
-		// rather than a command and legitimately have no id, so they are ignored.
+		// Never drop a command silently; replies legitimately carry no id.
 		if (id == null) {
 			if ('result' in message || 'error' in message) return
 			thisSend({ id: null, error: { code: CdpErrorCode.InvalidRequest, message: "Message must have integer 'id' property" } })

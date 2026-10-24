@@ -1,8 +1,4 @@
-/**
- * The main-thread object table: real JS references behind opaque `obj:N` ids,
- * tracked by group so a group can be released at once. Pure storage; CDP
- * RemoteObject shaping lives in remote-object.ts.
- */
+/** Real JS references behind opaque `obj:N` ids, released by group. */
 
 import { getMemoryTier } from '../../../cno/src/utils/memory-tier'
 

@@ -1,7 +1,4 @@
-/**
- * Convert raw console method names into the CDP level/type strings the Console
- * domain and Runtime.consoleAPICalled expect, plus the shared stackTrace shape.
- */
+/** Console method names to CDP level/type strings, plus the stackTrace shape. */
 
 import type { ConsoleCallFrame } from './wire'
 import { toPosixPath } from '../../../cts/src/api'
@@ -73,11 +70,8 @@ export function buildConsoleStackTrace(
 }
 
 /**
- * Map a raw native console frame into CDP coordinates.
- *
- * QuickJS frame lines are 1-based; CDP expects 0-based lines/columns. The
- * sourcemap module also expects the generated line in QuickJS coordinates and
- * returns the original column already 0-based.
+ * Map a native console frame into CDP coordinates: QuickJS lines are 1-based,
+ * CDP 0-based; the sourcemap module expects the generated line 1-based.
  */
 export function remapConsoleFrame(
 	filePath: string,

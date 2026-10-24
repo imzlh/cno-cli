@@ -1,7 +1,4 @@
-/**
- * Target CDP domain (worker). cno exposes one fixed target (the running
- * script); the handlers mostly report it so DevTools' target plumbing works.
- */
+/** Target CDP domain (worker); cno exposes one fixed target. */
 
 import { isRecord, parseCDPMessage, type CDPMessage } from '../shared/cdp'
 import {

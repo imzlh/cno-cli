@@ -1,7 +1,4 @@
-/**
- * Expression evaluation and script compilation for Runtime/Debugger CDP entry
- * points. Paused evaluation runs in-frame; running evaluation uses engine eval.
- */
+/** Evaluation and script compilation for Runtime/Debugger CDP entry points. */
 
 import { FrameOffset, native } from '../shared/native'
 import { containsAwait } from '../domains/side-effect'
@@ -37,9 +34,8 @@ function unwrapEvalResult(v: unknown): unknown {
 }
 
 /**
- * The completion value, boxed. Load-bearing: the IIFE is an `async function`,
- * whose return value is ALWAYS adopted, so a bare thenable would resolve before
- * `q.awaitPromise` is consulted.
+ * The async IIFE always adopts a returned thenable, so the completion value
+ * must be boxed to survive until `q.awaitPromise` is consulted.
  */
 type Captured = { readonly v: unknown }
 
@@ -61,10 +57,7 @@ async function evalWithCapturedCompletion(expression: string, sourceURL = '<devt
 	}
 }
 
-/**
- * Unwrap the box produced by `returnifyLastStatement(_, true)`. A
- * statement-only body yields no box, i.e. `undefined`, as node reports.
- */
+/** A statement-only body yields no box, i.e. `undefined`, as node reports. */
 function unboxCaptured(boxed: unknown): unknown {
 	if (boxed && typeof boxed === 'object' && CAPTURE_KEY in boxed) return Reflect.get(boxed, CAPTURE_KEY)
 	return undefined
@@ -82,11 +75,7 @@ function isSyntaxLikeError(e: unknown): boolean {
 		|| /\b(?:SyntaxError|Transform Error|Unexpected|Missing|Invalid|Unterminated)\b/i.test(message)
 }
 
-/**
- * Turn the last top-level statement into a `return`. `box` wraps it in
- * `{[CAPTURE_KEY]: ...}`, because the async IIFE would otherwise adopt and
- * resolve a returned promise.
- */
+/** `box` wraps the return, because the async IIFE would otherwise adopt a promise. */
 function returnifyLastStatement(source: string, box = false): string {
 	const trimmed = source.trim()
 	if (!trimmed) return ''
@@ -209,11 +198,7 @@ function byValue(val: unknown): RemoteObject {
 
 export class Evaluator {
 	private readonly compiledScripts = new Map<string, { mod: CModuleEngine.Module; persist: boolean }>()
-	/**
-	 * CDP has no `Runtime.releaseScript`, and DevTools persists watch expressions
-	 * and autocomplete probes, so each entry pins a compiled engine.Module that
-	 * nothing ever removes.
-	 */
+	/** CDP never releases scripts, so bound the number of pinned engine modules. */
 	private static readonly MAX_COMPILED_SCRIPTS = 256
 
 	constructor(private readonly serializer: Serializer) {}
@@ -313,9 +298,8 @@ export class Evaluator {
 	}
 
 	/**
-	 * Resolve the `this` receiver for callFunctionOn. An unknown objectId is an
-	 * error, as node answers -32000 "Could not find object with given id";
-	 * `has()` distinguishes "not in the store" from "stored value IS undefined".
+	 * An unknown objectId is an error, as node answers. `has()` distinguishes
+	 * "not in the store" from "stored value IS undefined".
 	 */
 	private resolveReceiver(objectId?: string): unknown {
 		if (!objectId) return undefined
@@ -328,11 +312,8 @@ export class Evaluator {
 	compileScript(q: RpcParams['compileScript']): CompileScriptResponse {
 		const sourceURL = q.sourceURL || '<compiled>'
 		try {
-			// The completion value must be reachable after eval(); a bare
-			// expression statement leaves `namespace.default` undefined.
-			// KNOWN GAP: a statement body compiles into `export default (var q=1;)`
-			// and fails, though node accepts it. Clean failure, and DevTools'
-			// console uses Runtime.evaluate, so the wrapper stays.
+			// The completion value must be reachable after eval(); a statement body
+			// fails to compile, which is accepted (DevTools uses Runtime.evaluate).
 			const mod = new engine.Module(`export default (${q.expression})`, sourceURL)
 			// sourceURL is caller-controlled and often reused — never key on it.
 			const scriptId = `script:${++nextCompiledScriptId}`
@@ -354,11 +335,8 @@ export class Evaluator {
 		const entry = this.compiledScripts.get(q.scriptId)
 		if (!entry) return this.errorResult(new Error(`unknown scriptId: ${q.scriptId}`))
 		try {
-			// NOT bracketed with ModuleCompiler.evalTracked, unlike the CLI entry-eval
-			// sites. This mod comes from a raw `new engine.Module`, so it is not in
-			// esmCache and nothing can re-enter it mid-evaluation — the precondition
-			// for the JS_MODULE_STATUS_EVALUATING abort. A repeat runScript re-evals
-			// an EVALUATED module, which js_link_module allows.
+			// No evalTracked: this raw engine.Module is not in esmCache, so nothing
+			// can re-enter it mid-evaluation.
 			await entry.mod.eval()
 			let val = entry.mod.namespace.default
 			// Without this a promise-valued script answers the Promise itself, which

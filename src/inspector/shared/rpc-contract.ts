@@ -1,11 +1,6 @@
 /**
- * Worker↔main RPC: the method set, each parameter shape, and the transport each
- * method travels over. Identity and transport live together, so a method cannot
- * be sent over the wrong wire.
- *
- * Transport classes: inspect (main JS thread; channel while paused, pipe while
- * running), lifecycle (worker→main handshake, always the pipe), control
- * (breakpoints/stepping/pause, always the DebugChannel).
+ * Worker↔main RPC: method set, parameter shapes and transport, colocated so a
+ * method cannot travel over the wrong wire.
  */
 
 import type { RpcCallArgument } from './cdp'

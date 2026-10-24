@@ -1,8 +1,4 @@
-/**
- * CDP value serialization (main thread only): live JS values into RemoteObjects,
- * minting objectIds through an ObjectStore. Inputs are `unknown` and narrowed
- * structurally, so no `any` leaks out.
- */
+/** Serialize live JS values into CDP RemoteObjects, minting objectIds. */
 
 import { ObjectStore } from './object-store';
 import type {
@@ -74,10 +70,8 @@ export class Serializer {
 	}
 
 	buildPreview(value: unknown, subtype?: RemoteObjectSubtype, description?: string): ObjectPreview {
-		// Map/Set entry keys and values recurse here and are often primitives.
-		// CDP ObjectPreview.type is the full RemoteObject type enum, so report
-		// the real type — otherwise `new Map([[1,'a']])` previews as
-		// `Number => String` instead of `1 => "a"`.
+		// Report the real primitive type, or Map/Set entries preview as
+		// `Number => String` rather than `1 => "a"`.
 		const primitive = this.primitivePreview(value);
 		if (primitive) return primitive;
 

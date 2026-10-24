@@ -1,8 +1,4 @@
-/**
- * Fetch CDP domain (worker). Request interception: a matching pattern pauses the
- * request (Fetch.requestPaused) and holds a resolver; anything unmatched
- * resolves with `null` (proceed unchanged) immediately.
- */
+/** Fetch CDP domain (worker): request interception via Fetch.requestPaused. */
 
 import { Domain } from './base'
 import type { CDPDispatcher, EmitEvent } from '../worker/dispatcher'
@@ -30,12 +26,9 @@ interface HeaderEntry {
 }
 
 /**
- * Compile a CDP `Fetch.RequestPattern.urlPattern` into a matcher.
- *
- * Deliberately NOT a regex: '*' as '.*' backtracks catastrophically (`*a*a*a…`
- * wedged the debug worker for 60s+), so this scans literal segments left to
- * right instead. CDP semantics: '*' is zero or more of ANY character (it spans
- * '/'), '?' is exactly one, everything else is literal.
+ * Compile a CDP `Fetch.RequestPattern.urlPattern` into a matcher. Linear scan,
+ * NOT a regex: '*' as '.*' backtracks catastrophically. '*' is zero or more of
+ * any character (spanning '/'), '?' exactly one, the rest literal.
  */
 export function compileUrlPattern(pattern: string): (url: string) => boolean {
 	// Cap pattern length so a pathological pattern cannot blow up the segment scan.
@@ -177,10 +170,7 @@ export class FetchDomain extends Domain {
 		}
 	}
 
-	/**
-	 * Detach: release every paused request. Without this the native fetch promise
-	 * never settles and the program hangs waiting for a continue/fulfill.
-	 */
+	/** Detach: release every paused request, or the program hangs forever. */
 	setConnected(connected: boolean): void {
 		if (!connected) this.disable()
 	}
