@@ -3,7 +3,14 @@ project(cno-cli LANGUAGES C)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(ExternalProject)
 
-option(CNO_BUNDLE_MINIFY  "Minify the JS bundle"                   OFF)
+# Startup cost is dominated by decoding the embedded bytecode blob, which has no
+# lazy path, so bundle size matters: minify by default in release builds.
+if(CNO_RELEASE)
+    set(_MINIFY_DEFAULT ON)
+else()
+    set(_MINIFY_DEFAULT OFF)
+endif()
+option(CNO_BUNDLE_MINIFY  "Minify the JS bundle"                   ${_MINIFY_DEFAULT})
 option(CNO_WITH_BROTLI    "Enable native Brotli compression"      ON)
 option(CNO_EMBED_EXT_H2   "Statically embed HTTP/2 extension"      OFF)
 option(CNO_EMBED_EXT_QUIC "Statically embed QUIC extension"        OFF)
