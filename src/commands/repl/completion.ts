@@ -52,7 +52,6 @@ export class CompletionEngine {
                         default: break;
                     }
                     if (!Number.isNaN(+base)) return +base;
-                    // Check for regex flags
                     if (pos - base.length >= 2 && line[pos - base.length - 1] === '/') {
                         return new RegExp('', base);
                     }
@@ -70,7 +69,7 @@ export class CompletionEngine {
 
         for (let i = 0, curr = obj; i < 10 && curr != null; i++, curr = Object.getPrototypeOf(curr)) {
             for (const key of Object.getOwnPropertyNames(curr)) {
-                if (typeof key === 'string' && !/^\d+$/.test(key) && key.startsWith(prefix) && !seen.has(key)) {
+                if (!/^\d+$/.test(key) && key.startsWith(prefix) && !seen.has(key)) {
                     seen.add(key);
                     results.push(key);
                 }

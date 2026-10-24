@@ -46,7 +46,6 @@ export class JSColorizer {
             this.#currentStyle = null;
             this.#start = this.#index;
             const char = this.#str[this.#index++];
-            if (char === undefined) break;
 
             switch (char) {
                 case ' ': case '\t': case '\r': case '\n': continue;
@@ -208,7 +207,6 @@ export class JSColorizer {
         this.#currentStyle = 'number';
         while (this.#index < this.#length) {
             const c = this.#str[this.#index];
-            if (c === undefined) break;
             if (this.#isWordChar(c) || c === '.' || c === '+' || c === '-') {
                 if (c === '.' && (this.#index === this.#length - 1 || this.#str[this.#index + 1] === '.')) break;
                 this.#index++;
@@ -229,7 +227,6 @@ export class JSColorizer {
             this.#index = this.#start;
         }
 
-        // Check for keywords
         this.#canBeRegex = true;
         while (this.#index < this.#length && this.#isWordChar(this.#str[this.#index] ?? '')) this.#index++;
 
@@ -240,7 +237,6 @@ export class JSColorizer {
             return;
         }
 
-        // Check if function call
         let next = this.#index;
         while (next < this.#length && this.#str[next] === ' ') next++;
         if (this.#str[next] === '(') {

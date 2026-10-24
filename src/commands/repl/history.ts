@@ -102,10 +102,7 @@ export class HistoryStore {
         }
     }
 
-    /**
-     * One-shot import of legacy `~/.cno_history` text if the DB is empty.
-     * Does not remove the text file.
-     */
+    /** One-shot import of legacy text history when the DB is empty; leaves the file. */
     migrateFromTextFile(textPath: string): void {
         if (this.#lines.length > 0) return;
         let body: string;
@@ -137,10 +134,7 @@ export class HistoryStore {
         this.#draft = '';
     }
 
-    /**
-     * Append one non-empty line and write it to SQLite immediately.
-     * Consecutive duplicates are ignored.
-     */
+    /** Append one line, writing it to SQLite immediately; duplicates are ignored. */
     append(line: string): boolean {
         if (!line.length) return false;
         if (this.#lines[this.#lines.length - 1] === line) return false;

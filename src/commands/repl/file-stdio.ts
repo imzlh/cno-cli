@@ -96,7 +96,7 @@ export class FileInput implements ReplInputHandle {
                 if (!this.#reading || this.#closed) return;
                 if (n === null || n <= 0) {
                     this.#reading = false;
-                    this.onread?.(null, undefined);  // EOF
+                    this.onread?.(null, undefined);
                     return;
                 }
                 this.onread?.(this.#buf.subarray(0, n), undefined);
