@@ -2,9 +2,12 @@ import { ok, strictEqual } from 'node:assert';
 import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { err, ErrorKind, codeForKind, isResolutionMiss } from '../../cts/src/errors.ts';
+import { err, ErrorKind, codeForKind, isErrorKind, isResolutionMiss } from '../../cts/src/errors.ts';
 import { esmResolveError } from '../../cts/src/runtime/hooks.ts';
 import { createRuntime } from '../../cts/src/api/index.ts';
+import { HttpHandler } from '../../cts/src/resolve/protocols/http.ts';
+import { StepType } from '../../cts/src/flow.ts';
+
 
 // A failed dynamic import() must carry `code` AND `url`, as node does.
 // Measured on node v24.18.0:
@@ -168,3 +171,113 @@ Deno.test('cts import(): real resolver miss composes into a coded error', () => 
         try { rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
     }
 });
+
+// Import failures keep their kind and code.
+//
+// Before the fix the resolve hook defaulted every un-kinded error to
+// ModuleNotFound, http.ts reported every non-2xx (500, 503, 429, ...) as
+// ModuleNotFound, and flow.ts let curl transport errors (DNS, TLS, timeout,
+// refused connection) escape un-kinded. isResolutionMiss() then treated those
+// failures as "try the next CJS location", hiding a real network failure
+// behind a misleading MODULE_NOT_FOUND.
+//
+// A 404/410 stays a resolution miss on purpose: npm.ts already deliberately
+// maps a registry 404 to "package does not exist", and
+//  is how optional dependencies are skipped.
+
+/** The resolve hook's catch in cts/src/runtime/hooks.ts, mirrored. */
+function wrapAsHookDoes(spec: string, parent: string, cause: unknown): Error {
+    const kind = cause instanceof Error && isErrorKind(cause.kind) ? cause.kind : ErrorKind.Generic;
+    return esmResolveError(spec, parent, cause, kind);
+}
+
+/**
+ * Answer the handler's NET_FETCH step with `status` and return what resolve
+ * throws. The network is not exercised: Deno's listener cannot complete an
+ * HTTP exchange in this process, so this isolates the status mapping.
+ */
+function httpStatusOutcome(status: number): unknown {
+    // mkdtemp, not `${Date.now()}`: concurrent test files may share a clock tick,
+    // and a cache hit here would skip the fetch entirely.
+    const root = Deno.makeTempDirSync({ prefix: 'cno-imperr-http-' });
+    mkdirSync(root, { recursive: true });
+    // No real network: the injected transport answers the fetch step.
+    const rt = createRuntime({
+        cacheDir: join(root, '.cache'),
+        disableLock: true,
+        enableCache: false,
+        silent: true,
+        enableNode: false,
+        enableHttp: true,
+    });
+    try {
+        const flow = new HttpHandler(rt.config).resolve('https://example.invalid/mod.ts', join(root, 'entry.mjs'));
+        // Steps always leave a StepResult; FS_EXISTS answers "absent" so the
+        // handler goes on to the NET_FETCH step, which is then answered with `status`.
+        let step = flow.next();
+        while (!step.done && (step.value as { type: number }).type !== StepType.NET_FETCH) {
+            step = flow.next(undefined);
+        }
+        ok(!step.done, `expected a NET_FETCH step, got ${JSON.stringify(step.value ?? null)}`);
+        try {
+            flow.next({ status, headers: [], body: new Uint8Array(0) });
+        } catch (e) {
+            return e;
+        }
+        return new Error('resolve unexpectedly completed without an error');
+    } finally {
+        rt.cleanup();
+        try { rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+}
+
+for (const status of [500, 503, 429]) {
+    Deno.test(`cts http: status ${status} is a NetworkError, not a resolution miss`, () => {
+        const thrown = httpStatusOutcome(status);
+        ok(thrown instanceof Error, `expected an error, got ${String(thrown)}`);
+        strictEqual(thrown.kind, ErrorKind.NetworkError, `${status} → kind ${String(thrown.kind)}: ${thrown.message}`);
+        const wrapped = wrapAsHookDoes('https://example.invalid/mod.ts', 'D:/proj/entry.ts', thrown);
+        const code = Reflect.get(wrapped, 'code');
+        ok(code !== 'MODULE_NOT_FOUND' && code !== 'ERR_MODULE_NOT_FOUND',
+            `network failure must not read as not-found, got ${String(code)}`);
+        ok(!isResolutionMiss(wrapped), 'a CJS require() walk must not fall through a network failure');
+    });
+}
+
+Deno.test('cts http: a 404 stays a resolution miss (npm.ts convention)', () => {
+    const thrown = httpStatusOutcome(404);
+    ok(thrown instanceof Error, `expected an error, got ${String(thrown)}`);
+    strictEqual(thrown.kind, ErrorKind.ModuleNotFound);
+    const wrapped = wrapAsHookDoes('https://example.invalid/missing.ts', 'D:/proj/entry.ts', thrown);
+    strictEqual(Reflect.get(wrapped, 'code'), 'ERR_MODULE_NOT_FOUND');
+});
+
+Deno.test('cts jsr: status mapping matches npm.ts (404 miss, 5xx network)', () => {
+    // The JSR handler shares the helper the http handler uses; assert the
+    // source carries it so the two cannot drift apart silently.
+    const src = readFileSync(join(import.meta.dirname!, '../../cts/src/resolve/protocols/jsr.ts'), 'utf8');
+    ok((src.match(/this\.httpStatusError\(res\.status/g) ?? []).length === 2,
+        'both the metadata and the download path must classify statuses');
+});
+
+Deno.test('cts flow: a failed transfer is wrapped as NetworkError', () => {
+    // The curl calls sit inside the wrapper, so a future edit that unwraps
+    // them brings back an un-kinded (hence non-NetworkError) failure.
+    const src = readFileSync(join(import.meta.dirname!, '../../cts/src/flow.ts'), 'utf8');
+    for (const call of ['await curl.perform()', 'curl.performSync()']) {
+        const at = src.indexOf(call);
+        ok(at > 0, `${call} not found`);
+        ok(src.slice(at, at + 120).includes('catch (e) {') && src.indexOf('fetchFailed(step, e)', at) > at,
+            `${call} must be wrapped in fetchFailed`);
+    }
+    ok(/err\(ErrorKind\.NetworkError, `Failed to fetch/.test(src), 'the wrapper must use NetworkError');
+});
+
+Deno.test('cts hooks.ts: un-kinded resolve errors no longer default to ModuleNotFound', () => {
+    const src = readFileSync(join(import.meta.dirname!, '../../cts/src/runtime/hooks.ts'), 'utf8');
+    const at = src.indexOf('const kind = e instanceof Error && isErrorKind(e.kind)');
+    ok(at > 0, 'hook kind selection not found');
+    ok(src.slice(at, at + 200).includes('ErrorKind.Generic'), 'an un-kinded error must become Generic');
+    ok(!src.slice(at, at + 200).includes('ModuleNotFound'), 'an un-kinded error must not become ModuleNotFound');
+});
+

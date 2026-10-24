@@ -463,7 +463,10 @@ Deno.test('webapi upstream: Request accepts stringifiers URL objects and cloned 
     strictEqual(fromInit.headers.get('test-header'), 'value');
 
     const stream = new Request('http://foo/', { body: 'a test body', method: 'POST' }).body;
-    const r1 = new Request('http://foo/', { body: stream, method: 'POST' });
+    // Node rejects a stream body unless the init opts into half-duplex
+    // (node v24.20: "RequestInit: duplex option is required when sending a body.").
+    throws(() => new Request('http://foo/', { body: stream, method: 'POST' }), TypeError);
+    const r1 = new Request('http://foo/', { body: stream!, method: 'POST', duplex: 'half' } as RequestInit);
     const r2 = r1.clone();
     strictEqual(await r1.text(), 'a test body');
     strictEqual(await r2.text(), 'a test body');

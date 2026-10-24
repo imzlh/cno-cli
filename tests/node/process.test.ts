@@ -473,6 +473,29 @@ Deno.test('process upstream: stdio exposes fd and writable tty size fields', () 
     }
 });
 
+// A redirected stdout/stderr is not a TTY. Node's tty.WriteStream still exposes
+// `columns`/`rows` as numbers there, and reports 0 when the size is unknown, so
+// arithmetic like `columns > 0` never sees undefined/NaN.
+Deno.test('process: write stream columns/rows are numbers, 0 when not a TTY', () => {
+    const originalTTY = process.stdout.isTTY;
+    const originalColumns = process.stdout.columns;
+    const originalRows = process.stdout.rows;
+    try {
+        process.stdout.isTTY = false;
+        process.stdout.columns = undefined;
+        process.stdout.rows = undefined;
+        strictEqual(process.stdout.columns, 0);
+        strictEqual(process.stdout.rows, 0);
+        strictEqual(process.stdout.columns > 0, false);
+        strictEqual(Number.isNaN(process.stdout.columns + 1), false);
+        strictEqual(process.stdout.getWindowSize().length, 2);
+    } finally {
+        process.stdout.isTTY = originalTTY;
+        process.stdout.columns = originalColumns;
+        process.stdout.rows = originalRows;
+    }
+});
+
 // Windows stdio must be in CRT *binary* mode. Inherited descriptors default to
 // text mode, which rewrites every \n as \r\n and corrupts binary writes.
 // tjs__normalize_stdio (circu.js/src/vm.c) forces _O_BINARY on fds 0/1/2.

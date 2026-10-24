@@ -1,6 +1,7 @@
-import { strictEqual, throws } from 'node:assert';
+import { ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { LinkError, WasmCompiler } from '../../cts/src/compile/wasm.ts';
+import { ErrorKind } from '../../cts/src/errors.ts';
 import type { ModuleInfo } from '../../cts/src/types.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
@@ -34,7 +35,12 @@ Deno.test('cts wasm: failed circular load clears pending state and retries clean
             return new engine.Module('export function answer() { return 42; }', gluePath);
         }
 
-        throws(() => compiler.load(wasmInfo, resolve, loadModule), LinkError);
+        // Capture by hand: this runtime's assert.throws() returns undefined.
+        let err1: Error | undefined;
+        try { compiler.load(wasmInfo, resolve, loadModule); } catch (e) { err1 = e as Error; }
+        ok(err1 instanceof LinkError, `expected a LinkError, got ${String(err1)}`);
+        strictEqual(err1.kind, ErrorKind.ModuleNotFound);
+        strictEqual(Reflect.get(err1, 'code'), 'MODULE_NOT_FOUND');
         strictEqual(compiler.hasPendingLoads(), false);
 
         createCycle = false;
@@ -98,7 +104,16 @@ Deno.test('cts wasm: rejects async ESM dependencies without caching a partial mo
             `${gluePath}?${asyncDependency ? 'async' : 'sync'}`,
         );
 
-        throws(() => compiler.load(wasmInfo, resolve, loadModule), LinkError);
+        let asyncErr: (Error & { cause?: unknown }) | undefined;
+        try { compiler.load(wasmInfo, resolve, loadModule); } catch (e) { asyncErr = e as Error & { cause?: unknown }; }
+        ok(asyncErr instanceof LinkError, `expected a LinkError, got ${String(asyncErr)}`);
+        // Not a bare Error: the async dependency is reported with its own code.
+        // Checked on the message, not `.code`/`.cause`: this runtime rebuilds
+        // errors that cross the wasm-host boundary and drops own properties.
+        const cause = asyncErr.cause;
+        ok(cause instanceof Error, 'the async-dependency failure must be kept as the cause');
+        ok(asyncErr.message.includes('Cannot require() async ESM module'),
+            `expected the async-dependency message, got ${asyncErr.message}`);
         strictEqual(compiler.hasPendingLoads(), false);
 
         asyncDependency = false;

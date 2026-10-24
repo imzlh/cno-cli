@@ -20,12 +20,28 @@ import {
     completePackManifest,
     decodePack,
     encodePack,
+    readSourceBlob,
     type PackManifest,
     type PackModuleEntry,
 } from '../../cts/src/api/index.ts';
 
 const crypto = import.meta.use('crypto');
 const encoder = new TextEncoder();
+
+/** Header + manifest bytes + blob, without validating or completing anything —
+ *  a tamperer (or a truncated writer) can assemble this shape too. */
+function rawBytes(manifest: unknown, blob: Uint8Array): Uint8Array {
+    const manifestBytes = encoder.encode(JSON.stringify(manifest));
+    const out = new Uint8Array(42 + manifestBytes.byteLength + blob.byteLength);
+    const view = new DataView(out.buffer);
+    out.set([0x4a, 0x53, 0x50, 0x4b], 0); // "JSPK"
+    view.setUint16(4, 4, true);
+    view.setUint32(6, manifestBytes.byteLength, true);
+    out.set(new Uint8Array(crypto.sha256(manifestBytes)), 10);
+    out.set(manifestBytes, 42);
+    out.set(blob, 42 + manifestBytes.byteLength);
+    return out;
+}
 
 /** Assemble a container without going through encodePack's validation, the way
  *  a tamperer would:
@@ -37,16 +53,7 @@ const encoder = new TextEncoder();
  *  layout invariants below still have to be enforced independently. */
 function rawPack(manifest: unknown, blob: Uint8Array): Uint8Array {
     const completed = completePackManifest(manifest as PackManifest, blobSourceFromBytes(blob));
-    const manifestBytes = encoder.encode(JSON.stringify(completed));
-    const out = new Uint8Array(42 + manifestBytes.byteLength + blob.byteLength);
-    const view = new DataView(out.buffer);
-    out.set([0x4a, 0x53, 0x50, 0x4b], 0); // "JSPK"
-    view.setUint16(4, 4, true);
-    view.setUint32(6, manifestBytes.byteLength, true);
-    out.set(new Uint8Array(crypto.sha256(manifestBytes)), 10);
-    out.set(manifestBytes, 42);
-    out.set(blob, 42 + manifestBytes.byteLength);
-    return out;
+    return rawBytes(completed, blob);
 }
 
 function sourceEntry(id: string, offset: number, length: number, sourceOffset: number, sourceLength: number): PackModuleEntry {
@@ -122,6 +129,36 @@ Deno.test('pack layout: partial overlap and nesting are rejected', () => {
     const sourceStraddle = twoModuleManifest();
     sourceStraddle.modules['pack:/b.ts']!.sourceOffset = 5;
     throws(() => decodePack(rawPack(sourceStraddle, BLOB40)), /overlaps/);
+});
+
+Deno.test('pack layout: a source entry without its source range is rejected, not crashed', () => {
+    // validRange(undefined, undefined) used to pass, so this manifest reached
+    // readSourceBlob/completePackManifest with an undefined offset and the
+    // PackManifest cast claimed fields that did not exist.
+    const base = twoModuleManifest();
+    const missing = structuredClone(base) as unknown as { modules: Record<string, Record<string, unknown>> };
+    delete missing.modules['pack:/b.ts']!.sourceOffset;
+    const pack = rawBytes(missing, BLOB40);
+    throws(() => decodePack(pack), (e: Error) => {
+        ok(/source module "pack:\/b.ts" is missing its source range/.test(e.message), `unexpected message: ${e.message}`);
+        return true;
+    });
+
+    // Only half the pair present is just as malformed.
+    const half = structuredClone(base) as unknown as { modules: Record<string, Record<string, unknown>> };
+    delete half.modules['pack:/b.ts']!.sourceLength;
+    throws(() => decodePack(rawBytes(half, BLOB40)), /missing its source range/);
+
+    // Writer side refuses the same draft instead of range()-ing undefined.
+    const draft = structuredClone(base);
+    delete draft.modules['pack:/b.ts']!.sourceOffset;
+    throws(() => encodePack(draft, BLOB40), /missing its source range/);
+    throws(() => completePackManifest(draft, blobSourceFromBytes(BLOB40)), /missing its source range/);
+
+    // Public reader API guards too, given an unvalidated entry.
+    const decoded = decodePack(rawPack(base, BLOB40));
+    const forged = { ...base.modules['pack:/b.ts']!, sourceOffset: undefined, sourceLength: undefined };
+    throws(() => readSourceBlob(decoded, forged), /missing fallback source bytes/);
 });
 
 Deno.test('pack layout: legitimate dedup and empty files still decode', () => {
