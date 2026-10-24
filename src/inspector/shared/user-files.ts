@@ -1,9 +1,6 @@
 /**
- * inspector/shared/user-files.ts — distinguishes user source from runtime
- * internals.
- *
- * The pause controller uses this to skip breaks that land inside engine/runtime
- * code so the user never sees internal frames in DevTools.
+ * Distinguishes user source from runtime internals so the pause controller never
+ * breaks inside engine/runtime code.
  */
 
 const INTERNAL_PREFIXES = ['<core>', '<devtools>', '<compiled>', '<eval>', 'node:'];

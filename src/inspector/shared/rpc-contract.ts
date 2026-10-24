@@ -1,21 +1,11 @@
 /**
- * inspector/shared/rpc-contract.ts — the single source of truth for worker↔main
- * RPC: the method set, each method's parameter shape, and which transport each
- * method travels over.
+ * Worker↔main RPC: the method set, each parameter shape, and the transport each
+ * method travels over. Identity and transport live together, so a method cannot
+ * be sent over the wrong wire.
  *
- * Because identity (`RpcMethod`) and transport (`RPC_TRANSPORT`) live together,
- * a method can never be sent over the wrong wire — the historical bug where
- * control ops silently fell through to the async pipe is structurally
- * impossible now.
- *
- * Transport classes:
- *   • inspect   — needs the main JS thread; channel while PAUSED, pipe while RUNNING.
- *   • lifecycle — worker→main handshake (ready / setConnected); always the pipe.
- *   • control   — breakpoints / stepping / pause; applied in C at a safepoint, so
- *                always the DebugChannel regardless of run state.
- *
- * Param shapes use precise field types; dynamic JS values are `unknown` and
- * structured CDP arguments use `RpcCallArgument` — no `any`.
+ * Transport classes: inspect (main JS thread; channel while paused, pipe while
+ * running), lifecycle (worker→main handshake, always the pipe), control
+ * (breakpoints/stepping/pause, always the DebugChannel).
  */
 
 import type { RpcCallArgument } from './cdp'
@@ -153,11 +143,7 @@ export function isControlMethod(method: RpcMethod): boolean {
 	return RPC_TRANSPORT[method] === 'control'
 }
 
-/**
- * Result of an RPC method. Results are arbitrary CDP JSON, so the contract is
- * `unknown` — every endpoint produces a concrete CDP shape (EvaluateResponse,
- * GetPropertiesResponse, …) and every caller forwards it verbatim to DevTools.
- */
+/** Arbitrary CDP JSON; producers know the concrete shape, callers forward it verbatim. */
 export type RpcResult = unknown
 
 /** A main-thread handler for one RPC method, typed by its parameter shape. */

@@ -1,11 +1,7 @@
 /**
- * domains/network.ts — Network CDP domain (worker thread).
- *
- * Translates cno's native fetch / websocket hook events (delivered over the
- * wire as discriminated `NetFetchEvent` / `NetWSEvent` unions) into the CDP
- * Network.* events DevTools expects, and answers body/cookie queries from a
- * bounded local cache. Response bodies are buffered up to a cap so the Network
- * tab can show payloads without unbounded memory growth.
+ * Network CDP domain (worker). Translates native fetch/websocket hook events
+ * into the Network.* events DevTools expects, answering body/cookie queries
+ * from a bounded cache.
  */
 
 import { Domain } from './base'
@@ -119,11 +115,9 @@ export class NetworkDomain extends Domain {
 	/** Serve requestIds that are WS upgrades — suppress loadingFinished from HTTP side. */
 	private wsUpgradeRequests = new Set<string>()
 	/**
-	 * requestIds for which THIS session already emitted requestWillBeSent. A
-	 * request in flight when Network.enable arrives has no requestWillBeSent, so
-	 * emitting its responseReceived/loadingFinished would hand DevTools terminal
-	 * events for an id it never saw. Chrome/Node never report such a request at
-	 * all. REASONED from the CDP event ordering contract.
+	 * Ids this session already announced with requestWillBeSent. A request in
+	 * flight when Network.enable arrives has none, so emitting its terminal
+	 * events would describe an id DevTools never saw.
 	 */
 	private announced = new Set<string>()
 	/** Last time any event touched a requestId — drives staleness eviction. */
@@ -131,10 +125,8 @@ export class NetworkDomain extends Domain {
 	private lastCleanupTime = 0
 
 	/**
-	 * Return to the detached state. `enabled`, the cookie jar and every
-	 * requestId-keyed map are per-SESSION state in CDP: a second client must not
-	 * inherit session 1's Network.enable, nor be able to read session 1's response
-	 * bodies back out with getResponseBody. Mirrors FetchDomain.setConnected.
+	 * Return to the detached state: `enabled`, the cookie jar and every
+	 * requestId-keyed map are per-session state, not shared with a second client.
 	 */
 	setConnected(connected: boolean): void {
 		if (connected) return
@@ -181,12 +173,8 @@ export class NetworkDomain extends Domain {
 		})
 		this.on('Network.canEmulateNetworkConditions', () => ({ result: false }))
 		this.on('Network.emulateNetworkConditions', (p) => {
-			// canEmulateNetworkConditions answers `false` in this same domain, so
-			// answering {} here claimed to have applied throttling that this runtime
-			// cannot apply. Required params are validated; a request that asks for
-			// NO throttling is honoured as a genuine no-op, because "unthrottled" is
-			// the state cno is actually in. A request for real emulation is refused
-			// rather than silently ignored.
+			// canEmulateNetworkConditions is false here, so only a no-throttle
+			// request may succeed; real emulation is refused, not silently ignored.
 			if (typeof p.offline !== 'boolean') {
 				throw new CDPError(CdpErrorCode.InvalidParams, "CDP param 'offline' is required")
 			}
@@ -237,15 +225,9 @@ export class NetworkDomain extends Domain {
 			return { bufferedData }
 		})
 		/**
-		 * Search a cached response body. This used to be `() => ({ result: [] })`,
-		 * which ignored every parameter and so reported "no matches" for a string
-		 * the cached body demonstrably contained — a wrong answer on valid input,
-		 * not merely an unimplemented one. It also fabricated a successful empty
-		 * search for an id that never existed, contradicting the standard
-		 * getResponseBody applies ~30 lines below.
-		 *
-		 * Shape follows CDP `SearchMatch[]`: one entry per matching LINE, with a
-		 * 0-based lineNumber, as Chrome reports it.
+		 * Search a cached response body, one CDP SearchMatch per matching line
+		 * with a 0-based lineNumber. An unknown id is an error, as in
+		 * getResponseBody below.
 		 */
 		this.on('Network.searchInResponseBody', (p) => {
 			const requestId = this.reqStr(p, 'requestId')
@@ -284,10 +266,8 @@ export class NetworkDomain extends Domain {
 			const result: Array<{ lineNumber: number; lineContent: string }> = []
 			const lines = text.split('\n')
 			for (let i = 0; i < lines.length; i++) {
-				// An empty query, or a regex like `.*`, matches every line; cap the
-				// answer so one command cannot serialize the whole body back line
-				// by line. The body is already capped, so this is a serialization
-				// bound, not a correctness one.
+				// A query like `.*` matches every line; cap the answer. The body is
+				// already capped, so this bounds serialization only.
 				if (result.length >= MAX_SEARCH_MATCHES) break
 				let line = lines[i] ?? ''
 				if (line.endsWith('\r')) line = line.slice(0, -1)
@@ -321,10 +301,8 @@ export class NetworkDomain extends Domain {
 			return { success: true }
 		})
 		this.on('Network.setCookies', (p) => {
-			// `cookies` is required and must be an array. A wrong-typed value used
-			// to degrade to [] and answer {}, storing nothing while reporting that
-			// the whole batch had been set. Malformed ENTRIES inside a well-formed
-			// array stay best-effort — they are skipped, not rejected.
+			// `cookies` is required and must be an array; malformed ENTRIES inside
+			// a well-formed array stay best-effort.
 			if (!Array.isArray(p.cookies)) {
 				throw new CDPError(CdpErrorCode.InvalidParams, "CDP param 'cookies' is required")
 			}
@@ -337,12 +315,8 @@ export class NetworkDomain extends Domain {
 		this.on('Network.getResponseBody', (p) => {
 			const requestId = this.reqStr(p, 'requestId')
 			const entry = this.responseBodyCache.get(requestId)
-			// A requestId we never saw, or whose body was already evicted, is an
-			// error — not an empty body. Returning `{body:''}` made a released or
-			// bogus id indistinguishable from a genuinely empty 204 body.
-			// MEASURED against node v24.18 (`inspector.Session`):
-			//   Network.getResponseBody {requestId:'never-existed'}
-			//     -> -32602 "Request not found"
+			// An unknown or evicted requestId is an error, not an empty body: node
+			// answers -32602 "Request not found".
 			if (!entry) {
 				throw new CDPError(CdpErrorCode.InvalidParams, 'Request not found')
 			}
@@ -447,14 +421,10 @@ export class NetworkDomain extends Domain {
 					type: resourceType,
 					frameId: context.frameId,
 				})
-				// Staleness eviction used to be reachable ONLY from
-				// handleNetworkDoneEvent, so a workload in which nothing completes
-				// never reclaimed anything and every requestId-keyed map grew for
-				// the process lifetime (OBSERVED: 1000 abandoned requests retained
-				// 5000 entries, 5000 retained 25000 — linear, zero decay). Drive
-				// the tick from the REQUEST path, where the growth happens.
-				// cleanupStaleEntries is internally throttled to once per 30 s, so
-				// this costs one subtraction per request in the common case.
+				// Drive staleness eviction from the REQUEST path: a workload where
+				// nothing completes never reaches handleNetworkDoneEvent and would
+				// grow every requestId-keyed map for the process lifetime.
+				// cleanupStaleEntries throttles itself to once per 30 s.
 				this.cleanupStaleEntries(timestamp)
 				break
 			}
@@ -553,10 +523,9 @@ export class NetworkDomain extends Domain {
 					initiator,
 					resourceType,
 				})
-				// WebSocket upgrades: skip HTTP events — the WS hook will emit
-				// requestWillBeSent + webSocketCreated with the same requestId.
-				// Emitting here would create a phantom "pending" entry that never
-				// receives a responseReceived.
+				// WebSocket upgrades: the WS hook emits requestWillBeSent and
+				// webSocketCreated for the same requestId, so HTTP events here would
+				// leave a phantom pending entry.
 				if (resourceType === 'WebSocket') {
 					this.wsUpgradeRequests.add(data.requestId)
 					this.lastSeen.set(data.requestId, timestamp)
@@ -751,17 +720,10 @@ export class NetworkDomain extends Domain {
 					})
 				}
 				this.event('Network.webSocketClosed', { requestId: data.requestId, timestamp: data.timestamp })
-				// Release every map this id can appear in, UNCONDITIONALLY.
-				// NetWSKind.Created sets reqStartTimes for every websocket, but this
-				// release used to be guarded by `wsUpgradeRequests.has(id)`, and that
-				// set is populated only by the serve-side HTTP-upgrade path. A CLIENT
-				// websocket (`new WebSocket()`, source 'fetch') therefore never took
-				// the branch and leaked one permanent reqStartTimes entry per closed
-				// connection (OBSERVED: 1000 open/close cycles -> 1000 entries, 5000
-				// -> 5000). The id was then invisible to the first cleanup loop, which
-				// iterates lastSeen, and reclaimable only by the second — which ran
-				// only on an HTTP Done, and a pure-websocket workload has none.
-				// Deleting an absent key is a no-op, so the serve path is unaffected.
+				// Release every map this id can appear in unconditionally. A client
+				// websocket (source 'fetch') never enters wsUpgradeRequests, so a
+				// guarded release would leak one reqStartTimes entry per closed
+				// connection; deleting an absent key is a no-op.
 				this.wsUpgradeRequests.delete(data.requestId)
 				this.reqStartTimes.delete(data.requestId)
 				this.reqMeta.delete(data.requestId)
@@ -1309,15 +1271,9 @@ export class NetworkDomain extends Domain {
 	}
 
 	/**
-	 * Evict orphaned entries from every requestId-keyed map.
-	 * When Done events are lost (e.g. pipe saturation) or a request is aborted
-	 * without a terminal event, these maps grow unbounded. Clean up entries
-	 * untouched for 120 s. Runs at most once every 30 s.
-	 *
-	 * Keyed on `lastSeen` (last event for the id), NOT the start time: a download
-	 * or a WebSocket that legitimately runs longer than 120 s must not have its
-	 * metadata evicted mid-flight, which would strand its body and make its
-	 * terminal event unannounced.
+	 * Evict requestId-keyed entries untouched for 120 s, at most once per 30 s.
+	 * Keyed on `lastSeen`, not the start time: a download or websocket that
+	 * legitimately runs longer must not lose its metadata mid-flight.
 	 */
 	private cleanupStaleEntries(now: number): void {
 		if (now - this.lastCleanupTime < 30) return

@@ -1,14 +1,8 @@
 /**
- * main/inspector.ts — the public composition root, running on the main thread.
- *
- *   DevTools ⇄ Worker (WS + CDP) ⇄ [this: main-thread app]
- *
- * The main thread is the sole authority for JS execution and inspection. This
- * class wires the pieces together — endpoint (pipe + channel transports),
- * serializer/object-store, evaluator, network/script hooks, and the pause
- * controller — then exposes the small lifecycle contract that commands/run.ts
- * and the REPL consume: attach(), detach(), inspectorUrl and
- * scriptInitHook.
+ * Main-thread composition root: DevTools ⇄ Worker (WS + CDP) ⇄ this. The main
+ * thread is the sole authority for JS execution and inspection; this wires the
+ * endpoint, serializer, evaluator, hooks and pause controller, exposing
+ * attach(), detach(), inspectorUrl and scriptInitHook.
  */
 
 import { errMsg, log, type ModuleInfo } from '../../../cts/src/api'
@@ -28,13 +22,12 @@ type WorkerErrorPayload = { message: string; stack?: string; phase?: string }
 type InspectorState = 'idle' | 'attaching' | 'active' | 'stopping'
 
 /**
- * Loopback-only bind check. `0.0.0.0`/`::` are wildcards (every interface), and
- * anything else is a specific routable address; both are reachable off-box.
+ * Loopback-only bind check. `0.0.0.0`/`::` are wildcards and anything else is a
+ * routable address; both are reachable off-box.
  *
- * This gates a warning that matters more than it looks: discovery is
- * unauthenticated by protocol necessity, so anyone who can reach the port can read
- * the token, and the token is arbitrary code execution. `--allow-*` is not enforced,
- * so the bind address and the token are the entire security model.
+ * This gates a warning that is really the security model: discovery is
+ * unauthenticated by protocol necessity, so anyone who can reach the port can
+ * read the token, and the token is arbitrary code execution.
  */
 export function isLoopbackHost(host: string): boolean {
 	const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '')

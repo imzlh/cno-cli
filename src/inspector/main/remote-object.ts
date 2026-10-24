@@ -1,13 +1,7 @@
 /**
- * inspector/main/remote-object.ts — CDP value serialization (main thread only).
- *
- * Turns live JS values into CDP RemoteObjects, minting objectIds through an
- * ObjectStore. The worker only ever sees the resulting JSON. Object identity /
- * lifetime is delegated to ObjectStore; this file is the "shape" half of the
- * old monolithic Serializer.
- *
- * All inputs are `unknown` (genuinely arbitrary user values) and narrowed via
- * `typeof` / structural casts — no `any` leaks into the rest of the codebase.
+ * CDP value serialization (main thread only): live JS values into RemoteObjects,
+ * minting objectIds through an ObjectStore. Inputs are `unknown` and narrowed
+ * structurally, so no `any` leaks out.
  */
 
 import { ObjectStore } from './object-store';
@@ -124,20 +118,19 @@ export class Serializer {
 			let keys: string[] = [];
 			if (!value || (typeof value !== 'object' && typeof value !== 'function')) return preview;
 			keys = safeObjectKeys(value);
-			/* Object.keys only returns own enumerable properties, but most
-			 * built-in objects (Response, Request, URL, etc.) store their
-			 * interesting properties as getters on the prototype. Walk one
-			 * level up the chain to surface those in the preview too. */
+			/* Object.keys returns only own enumerable properties, but built-ins
+			 * (Response, Request, URL, ...) keep theirs as prototype getters.
+			 * Walk one level up to surface those in the preview. */
 			if (keys.length === 0) {
 				keys = safePrototypePropertyNames(value);
 			}
-				for (let i = 0; i < keys.length; i++) {
-					if (i >= MAX_PREVIEW_PROPS) {
-						preview.overflow = true;
-						break;
-					}
-					const k = keys[i];
-					if (k === undefined) continue;
+			for (let i = 0; i < keys.length; i++) {
+				if (i >= MAX_PREVIEW_PROPS) {
+					preview.overflow = true;
+					break;
+				}
+				const k = keys[i];
+				if (k === undefined) continue;
 				const prop = safePropertyValue(value, k);
 				if (!prop.ok) continue;
 				const v = prop.value;

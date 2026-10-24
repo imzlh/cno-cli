@@ -1,11 +1,8 @@
 /**
  * worker/server.ts — the DevTools-facing HTTP + WebSocket endpoint.
  *
- * Serves the CDP discovery JSON (`/json`, `/json/list`, `/json/version`) so a
- * DevTools frontend can find us, then upgrades the well-known WS path to a raw
- * connection and wraps it as a WebSocket. Connection wiring (binding the socket
- * to the dispatcher) is delegated to the caller via `onConnect`, so this file
- * stays purely about transport.
+ * Serves the CDP discovery JSON and upgrades the WS path to a WebSocket.
+ * Socket-to-dispatcher wiring is delegated to `onConnect`.
  */
 
 import { Server, type HttpRequest, type HttpResponse } from '@cnojs/http/server';
@@ -96,10 +93,9 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 	}
 
 	/**
-	 * DNS-rebinding guard, matching what the Node inspector does: a browser can be
-	 * tricked into resolving an attacker domain to 127.0.0.1, but it cannot forge
-	 * the Host header, so only IP literals and `localhost` are accepted. Verified
-	 * against real node v24.18: Host 127.0.0.1/localhost/[::1] -> 200, evil.com -> 400.
+	 * DNS-rebinding guard, as in the Node inspector: a browser can be tricked into
+	 * resolving an attacker domain to 127.0.0.1 but cannot forge the Host header,
+	 * so only IP literals and `localhost` are accepted.
 	 */
 	function isAllowedHost(hostHeader: string | undefined): boolean {
 		// No Host at all is HTTP/1.0 or a raw non-browser client; a browser always sends one.
@@ -143,10 +139,9 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 		const path = req.url.split('?')[0]
 		const headers = Object.fromEntries(req.headers.map(([n, v]): [string, string] => [n.toLowerCase(), v]));
 
-		// Applied to every route: the discovery JSON leaks the ws URL + token, so it
-		// must be unreachable from a rebound origin even though it needs no token.
-		// Every Host occurrence must pass: the H1 parser does not reject duplicate
-		// Host headers, and a last-wins lookup would let `evil.com, 127.0.0.1` through.
+		// Applies to every route: the discovery JSON leaks the ws URL + token, so no
+		// rebound origin may reach it. Every Host occurrence must pass — the parser
+		// does not reject duplicates, and last-wins would let `evil.com, 127.0.0.1` in.
 		const hostValues = req.headers.filter(([n]) => n.toLowerCase() === 'host').map(([, v]) => v)
 		if (!hostValues.every((v) => isAllowedHost(v))) {
 			await res.writeHead(400, 'Bad Request', [['Content-Length', '0']]); await res.end(); return
@@ -177,10 +172,9 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 			return
 		}
 
-		// Discovery is intentionally unauthenticated, exactly as the real node
-		// inspector serves it: a client must read /json/version to learn the ws URL
-		// and its token, so gating these on that same token can never succeed.
-		// The DNS-rebinding defense is the Host check above, not secrecy here.
+		// Discovery is unauthenticated, as in the real node inspector: a client must
+		// read /json/version to learn the token, so gating it on that token cannot
+		// work. The Host check above is the rebinding defense.
 		if (path === '/json' || path === '/json/list') {
 			await respondJson(res, [listEntry])
 			return

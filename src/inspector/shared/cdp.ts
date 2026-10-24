@@ -1,13 +1,6 @@
 /**
- * inspector/shared/cdp.ts — Chrome DevTools Protocol value shapes that travel
- * across the wire (worker ⇄ DevTools, and main → worker as RPC results/events).
- *
- * These are plain data types with no behaviour. The main thread mints
- * RemoteObjects (see main/remote-object.ts); the worker only ever forwards the
- * resulting JSON to DevTools.
- *
- * Dynamic, user-controlled payloads are typed `unknown` rather than `any`, so
- * every consumer is forced to narrow before use.
+ * CDP value shapes that cross the wire (worker ⇄ DevTools, main → worker).
+ * Dynamic user-controlled payloads are `unknown`, never `any`.
  */
 
 /** CDP RemoteObject `type` tag. */

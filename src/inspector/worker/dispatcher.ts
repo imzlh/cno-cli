@@ -1,13 +1,9 @@
 /**
  * worker/dispatcher.ts — routes "Domain.method" CDP commands to handlers.
  *
- * The worker speaks raw CDP coming off the WebSocket. Each domain registers the
- * methods it owns; unknown methods are reported with the CDP/JSON-RPC
- * "method not found" code so frontend failures stay diagnosable.
- *
- * CDP params arrive as decoded JSON, i.e. an untyped object. We model that as
- * `CdpParams` (a `Record<string, unknown>`) and let each handler narrow the
- * exact fields it needs — no `any` enters the domain code.
+ * Each domain registers the methods it owns; unknown methods answer the CDP
+ * "method not found" code. Params arrive as decoded JSON, modelled as `CdpParams`
+ * (`Record<string, unknown>`) and narrowed per handler — no `any` on this path.
  */
 
 /** Decoded CDP command params: arbitrary JSON object, narrowed per-handler. */
@@ -34,9 +30,8 @@ export const CdpErrorCode = {
 	InternalError: -32603,
 	/**
 	 * CDP's own "the command cannot run in this state" code, outside the JSON-RPC
-	 * reserved range. MEASURED from node v24.18: `Debugger.evaluateOnCallFrame`
-	 * while running answers `{"code":-32000,"message":"Can only perform operation
-	 * while paused."}`, and V8 uses the same code for every wrong-state command.
+	 * reserved range. V8 uses it for every wrong-state command (e.g. a paused-only
+	 * call while running answers "Can only perform operation while paused.").
 	 */
 	ServerError: -32000,
 } as const

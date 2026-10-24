@@ -1,16 +1,7 @@
 /**
- * inspector/shared/wire.ts — the pipe envelope plus every event/payload shape
- * shared by both threads.
- *
- * The uv MessagePipe carries three frame kinds (RPC request, RPC response, and
- * main\u2192worker event). Events are tagged by `WorkerEvent`; network payloads carry
- * a `NetFetchKind` / `NetWSKind` discriminator.
- *
- * Enums are plain (not `const enum`) so the bundler/`isolatedModules` stay happy,
- * and members are PascalCase to read as ordinary TS identifiers. Frame
- * `params`/`result` are `unknown`; consumers narrow via the payload interfaces
- * below (keyed off the event/sub-type tag) before touching any field.
- */ 
+ * Pipe envelope plus every event/payload shape shared by both threads. Enums
+ * are plain (not `const enum`) so the bundler and `isolatedModules` stay happy.
+ */
 
 import type { RpcMethod } from './rpc-contract'
 import type { RemoteObject } from './cdp'

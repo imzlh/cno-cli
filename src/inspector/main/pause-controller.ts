@@ -1,10 +1,7 @@
 /**
- * main/pause-controller.ts — the onBreak safepoint handler.
- *
- * When the engine pauses, this builds the CDP call-frame stack (locals,
- * closures, `this`, global) from the native frame API, ships a Paused event to
- * the worker, then blocks in the synchronous service loop until DevTools asks
- * to resume — returning the requested step mode to the engine.
+ * The onBreak safepoint handler. When the engine pauses, builds the CDP call-frame
+ * stack from the native frame API, ships a Paused event, then blocks in the
+ * synchronous service loop until DevTools resumes — returning the requested step.
  */
 
 import { log } from '../../../cts/src/api'
@@ -84,11 +81,10 @@ export class PauseController {
 			hitLine,
 			data: this.pauseData(reason, thrown),
 		}
-		// A dropped Paused event means the worker never learns we are paused, so it
-		// will never send a resume. Blocking in serviceWhilePaused() would then
-		// freeze the process with no way out (the C ring is 64 slots and
-		// ring_push returns false when full). Continue execution instead: losing a
-		// breakpoint stop is bad, but an unkillable hang is far worse.
+		// A dropped Paused event means the worker never sends a resume, and
+		// serviceWhilePaused() would freeze the process with no way out (the C ring
+		// holds 64 slots and ring_push fails when full). Losing a breakpoint stop is
+		// bad; an unkillable hang is worse.
 		const delivered = this.endpoint.emit(WorkerEvent.Paused, payload)
 		if (delivered === false) {
 			log.debug('debug', () => 'onBreak: Paused event was DROPPED (ring full) — resuming instead of blocking')
@@ -223,10 +219,8 @@ export class PauseController {
 	}
 
 	/**
-	 * Convert a CDP scope index to the C-layer semantic scope number.
-	 * CDP scopeNumber is an index into the call frame's scopeChain array
-	 * ([local, closure?, global], length 2 or 3). The C layer expects:
-	 *   0 = args+locals, 1 = closures, 2 = global.
+	 * Map a CDP scope index ([local, closure?, global]) to the C-layer scope
+	 * number: 0 = args+locals, 1 = closures, 2 = global.
 	 */
 	normalizeScope(callFrameId: string, cdpScopeNumber: number): number {
 		const len = this.scopeChainLengths.get(callFrameId)

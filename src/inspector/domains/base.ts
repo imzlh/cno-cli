@@ -1,10 +1,6 @@
 /**
- * shared base for every CDP domain that runs on the worker.
- *
- * A domain owns a slice of the protocol (Debugger.*, Runtime.*, …). It registers
- * its command handlers on the dispatcher and emits events through `event`. The
- * base keeps the wiring uniform and gives each domain a typed `on()` helper so
- * handler params stay `CdpParams` (never `any`).
+ * Base for every CDP domain on the worker: uniform dispatcher wiring and typed
+ * param helpers that keep handler params `CdpParams`, never `any`.
  */
 
 import { CDPError, CdpErrorCode, type CDPDispatcher, type CdpParams, type CDPHandler, type EmitEvent } from '../worker/dispatcher'
@@ -29,12 +25,7 @@ export abstract class Domain {
 		return typeof v === 'string' ? v : undefined
 	}
 
-	/**
-	 * Read a string field that the CDP contract guarantees is present (e.g. a
-	 * requestId / objectId / scriptId on a command). Throws when missing so a
-	 * malformed request surfaces immediately instead of silently passing
-	 * `undefined` downstream.
-	 */
+	/** Read a field the CDP contract guarantees, failing fast on a malformed request. */
 	protected reqStr(params: CdpParams, key: string): string {
 		const v = this.str(params, key)
 		if (v === undefined) throw new CDPError(CdpErrorCode.InvalidParams, `CDP param '${key}' is required`)
@@ -52,11 +43,7 @@ export abstract class Domain {
 		return typeof v === 'number' ? v : undefined
 	}
 
-	/**
-	 * Treat the raw CDP params as a typed structure. This is a safe narrowing
-	 * when the handler immediately accesses known fields — the alternative is
-	 * one cast per handler, which is worse.
-	 */
+	/** Reinterpret raw CDP params as a known structure: one cast instead of one per field. */
 	protected extract<T extends object>(params: CdpParams): T {
 		return params as T
 	}

@@ -25,9 +25,9 @@ function binaryDir(): string {
 }
 
 /**
- * Resolve the directory holding native shared-library extensions
- * (oxc, ext-h2, ext-quic). Returns null if none found — the runtime will
- * fall back to whatever circu.js has statically linked.
+ * Resolve the directory holding native shared-library extensions (oxc, ext-h2,
+ * ext-quic). Returns null if none found — the runtime then uses whatever
+ * circu.js statically linked.
  */
 export function resolveExtDir(): string | null {
     const envPath = readEnv('CTS_EXT_PATH');
@@ -57,26 +57,23 @@ export function resolveExtDir(): string | null {
 
 /** Name → candidate filenames within the ext directory. */
 const EXTENSIONS: Record<string, readonly string[]> = {
-    // Optional native accelerator for cts scan/transform (worker_safe).
-    // Without this entry, tryLoadOxc must register itself — and a failed
-    // re-register used to silently fall back to Sucrase for the whole graph.
+    // Optional native accelerator for cts scan/transform (worker_safe); without
+    // it registered, the graph silently falls back to Sucrase.
     'oxc': ['oxc' + DLEXT],
     // Optional protocol natives when not statically embedded (CJS_EXTRA_*).
-    // Built-in embed always wins over dyn register of the same name.
-    // Standalone CMake targets keep their libCNO_* names on Unix.
+    // A built-in embed wins over a dyn register of the same name. Standalone
+    // CMake targets keep their libCNO_* names on Unix.
     'ext:h2': ['cno_nghttp2' + DLEXT, 'libCNO_nghttp2' + DLEXT, 'CNO_nghttp2' + DLEXT],
     'ext:quic': ['cno_quicly' + DLEXT, 'libCNO_QUIC' + DLEXT, 'CNO_QUIC' + DLEXT],
 };
 
 /**
- * Register all native extension .so/.dll files we can find with the
- * runtime's dynamic-module registry. Skips entries whose file is missing
- * so a partial install still boots. Also silently skips entries whose
- * name is already a built-in (e.g. statically embedded via CJS_EXTRA_*) —
- * the built-in always wins.
+ * Register every native extension we can find. Skips missing files so a partial
+ * install still boots, and entries whose name is already built in (statically
+ * embedded via CJS_EXTRA_*) — the built-in always wins.
  *
- * Runs on the main process and every worker that boots via src/main.ts
- * (parse workers included) so dyn_registry is populated per JSRuntime.
+ * Runs in the main process and every worker booted via src/main.ts, so
+ * dyn_registry is populated per JSRuntime.
  */
 export function registerExtensions(): void {
     const dir = resolveExtDir();

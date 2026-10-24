@@ -1,9 +1,6 @@
 /**
- * domains/target.ts — Target CDP domain (worker thread).
- *
- * cno exposes a single fixed target (the running script). The handlers are
- * mostly stubs that report that one target so DevTools' target plumbing is
- * satisfied.
+ * Target CDP domain (worker). cno exposes one fixed target (the running
+ * script); the handlers mostly report it so DevTools' target plumbing works.
  */
 
 import { isRecord, parseCDPMessage, type CDPMessage } from '../shared/cdp'

@@ -93,8 +93,8 @@ function startServe(
             installedSignals.add(signal);
         }
     } catch {
-        // Signal support can be unavailable in a restricted host. Roll back any
-        // listener installed before a later registration failed.
+        // Signal support may be unavailable on a restricted host; roll back any
+        // listener installed before a registration failed.
         removeSignalListeners();
     }
 }

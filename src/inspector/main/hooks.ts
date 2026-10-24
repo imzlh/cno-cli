@@ -1,10 +1,9 @@
 /**
  * main/hooks.ts — bridge native main-thread signals into worker events.
  *
- * Installs the script-init, fetch/websocket/intercept, lifecycle and binding
- * hooks. Each callback normalizes the native info object into a typed wire
- * payload (see shared/wire.ts) and forwards it to the worker. The script-init
- * hook is exposed (not auto-installed) so run.ts can register it on the runtime.
+ * Each callback normalizes the native info object into a typed wire payload
+ * (see shared/wire.ts) and forwards it to the worker. The script-init hook is
+ * exposed, not auto-installed, so run.ts can register it on the runtime.
  */
 
 import { getTierLimits } from '../../../cno/src/utils/memory-tier'
@@ -82,9 +81,8 @@ export class Hooks {
 	private readonly pendingIntercepts = new Map<string, (result: InterceptResult | null) => void>()
 	private readonly installedBindings = new Set<string>()
 	private readonly scriptSourcePaths = new Map<string, string>()
-	// Body buffer accumulators — chunks are held here until the Done event fires,
-	// then flushed as part of the Done payload. This avoids per-chunk pipe writes
-	// (which carry large Uint8Array payloads and saturate the TCP socket buffer).
+	// Chunks accumulate here until the Done event, which carries the whole body;
+	// per-chunk pipe writes saturate the socket buffer.
 	private readonly fetchBodyBuffers = new Map<string, BodyBufferState>()
 	private readonly serveBodyBuffers = new Map<string, BodyBufferState>()
 	private readonly completedFetchBodies = new Map<string, { data: Uint8Array; createdAt: number }>()
@@ -100,8 +98,7 @@ export class Hooks {
 	private readonly droppedServeBodyRequests = new Set<string>()
 	/**
 	 * When each id was registered for live streaming. Streaming drops the body
-	 * buffer, so such ids are absent from the two maps the reaper iterates; this
-	 * gives the reaper a handle on them. See enableStreamingForRequest.
+	 * buffer, so these ids are absent from the maps the reaper iterates.
 	 */
 	private readonly streamRegisteredAt = new Map<string, number>()
 	private scriptHookInstalled = false
@@ -251,14 +248,12 @@ export class Hooks {
 					connection: i.connection,
 				} satisfies NetFetchRes),
 			onData: (i: FetchDataInfo) => {
-				// Buffer body chunks on the main thread — flushed with Done event
-				// to avoid saturating the pipe with per-chunk writes.
+				// Buffer on the main thread; flushed with the Done event.
 				this.handleFetchBodyData(i)
 			},
 			onFinished: (i: FetchFinishedInfo) => {
-				// Flush accumulated body chunks with the Done event.
-				// The body may be in fetchBodyBuffers (normal) or completedFetchBodies
-				// (if the buffer was truncated by preview/capacity limits).
+				// The body is in fetchBodyBuffers normally, or completedFetchBodies
+				// if it was truncated by preview/capacity limits.
 				const buf = this.fetchBodyBuffers.get(i.requestId)
 				const mergedEntry = this.completedFetchBodies.get(i.requestId)
 				this.dropFetchBodyBuffer(i.requestId)
@@ -431,11 +426,9 @@ export class Hooks {
 	/**
 	 * Mark a request as live-streamed. `source` comes from the worker, which knows
 	 * whether the id is a fetch or a serve request (NetworkDomain tracks it in
-	 * reqMeta). Without it this had to mark BOTH sets, and the wrong-source entry
-	 * had no Done event to clear it — a guaranteed permanent leak per call
-	 * (MEASURED: a fetch-only id landed in liveStreamedServeRequests too).
-	 * `source` is optional so an older worker still works; it then falls back to
-	 * the old both-sets behaviour, but the timestamp below keeps it reclaimable.
+	 * reqMeta); marking both sets leaves the wrong-source entry with no Done event
+	 * to clear it, so it leaks. Optional so an older worker still works; the
+	 * timestamp below keeps such entries reclaimable.
 	 */
 	enableStreamingForRequest(requestId: string, source?: 'fetch' | 'serve'): Uint8Array {
 		let fetchData: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
@@ -450,11 +443,8 @@ export class Hooks {
 			this.liveStreamedServeRequests.add(requestId)
 			this.droppedServeBodyRequests.delete(requestId)
 		}
-		// Streaming drops the body buffer, so this id is no longer present in
-		// fetchBodyBuffers/serveBodyBuffers — the only maps the reaper iterates.
-		// Record when it was registered so cleanupStaleBodyBuffers can still
-		// reclaim it if the Done event is lost, which is exactly the case the
-		// reaper exists to cover.
+		// Streaming drops the body buffer, so the id is absent from the two maps
+		// the reaper iterates; record it so a lost Done event is still reclaimable.
 		this.streamRegisteredAt.set(requestId, Date.now())
 		if (fetchData.byteLength === 0) return serveData
 		if (serveData.byteLength === 0) return fetchData
@@ -479,10 +469,8 @@ export class Hooks {
 
 	// ── console ─────────────────────────────────────────────────────
 	private installConsole(): void {
-		// Not idempotent without this guard: a second install would capture the
-		// FIRST install's wrappers as its "originals", so teardown would restore a
-		// wrapper instead of the real console method — the hook becomes permanent
-		// and every call re-enters the previous wrapper.
+		// Without this guard a second install captures the FIRST install's wrappers
+		// as originals, so teardown restores a wrapper and the hook becomes permanent.
 		if (this.consoleOriginals) return
 		const con = globalThis.console;
 		const methods = ['log', 'warn', 'error', 'info', 'debug', 'dir', 'trace', 'table', 'assert', 'time', 'timeEnd', 'timeLog', 'count', 'countReset', 'group', 'groupEnd'] as const
@@ -521,11 +509,8 @@ export class Hooks {
 			const depth = native.getStackDepth()
 			for (let level = CONSOLE_HOOK_OFFSET; level < depth && callFrames.length < 32; level++) {
 				// getFrameInfo THROWS for a non-JS frame rather than returning null
-				// (mod_debug.c:789 "stack frame at level %i is not a JS function"),
-				// so this must be per-frame: a single native frame anywhere below the
-				// console call would otherwise escape to the outer catch and discard
-				// every frame already collected, silently truncating the whole stack.
-				// pause-controller.ts:103-114 wraps each native call the same way.
+				// (mod_debug.c), so catch per frame: one native frame must not discard
+				// every frame already collected below it.
 				let info: ReturnType<typeof native.getFrameInfo> | null = null
 				try {
 					info = native.getFrameInfo(level)
@@ -869,10 +854,9 @@ export class Hooks {
 	}
 
 	/**
-	 * Evict body buffers that have been pending for over 120 seconds, and
-	 * truncated placeholders (total=0) older than 30 seconds.  When the Done
-	 * event is lost (e.g. pipe saturation), these buffers would otherwise leak
-	 * indefinitely.  Runs at most once every 30 s.
+	 * Evict body buffers pending over 120 s, and truncated placeholders (total=0)
+	 * over 30 s — their Done event was lost (e.g. pipe saturation) and they would
+	 * otherwise leak. Runs at most once every 30 s.
 	 */
 	private cleanupStaleBodyBuffers(): void {
 		const now = Date.now()
@@ -898,9 +882,8 @@ export class Hooks {
 				this.droppedServeBodyRequests.delete(id)
 			}
 		}
-		// Live-streamed ids hold no body buffer, so the two loops above can never
-		// see them. Sweep them on their own registration timestamp, otherwise a lost
-		// Done event pins them (and their side-map entries) for the process lifetime.
+		// Live-streamed ids hold no body buffer, so the loops above never see them;
+		// sweep them by registration timestamp or a lost Done event pins them.
 		for (const [id, at] of this.streamRegisteredAt) {
 			if (at >= staleCutoff) continue
 			if (this.fetchBodyBuffers.has(id) || this.serveBodyBuffers.has(id)) continue

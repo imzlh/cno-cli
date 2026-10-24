@@ -1,11 +1,7 @@
 /**
- * domains/fetch.ts — Fetch CDP domain (worker thread).
- *
- * Implements request interception. cno's native fetch-intercept hook fires for
- * each request; if a DevTools pattern matches we pause the request (emit
- * Fetch.requestPaused) and hold a resolver. continue/fulfill/fail later send an
- * `InterceptResult` back to native over the inspect transport. Anything we
- * don't intercept is resolved with `null` (proceed unchanged) immediately.
+ * Fetch CDP domain (worker). Request interception: a matching pattern pauses the
+ * request (Fetch.requestPaused) and holds a resolver; anything unmatched
+ * resolves with `null` (proceed unchanged) immediately.
  */
 
 import { Domain } from './base'
@@ -36,23 +32,10 @@ interface HeaderEntry {
 /**
  * Compile a CDP `Fetch.RequestPattern.urlPattern` into a matcher.
  *
- * Deliberately NOT a regex. Every '*' compiles to '.*', so `*a*a*a…` becomes a
- * chain of adjacent '.*' groups and a URL that almost matches backtracks
- * catastrophically. MEASURED on the previous regex implementation (node v24.18,
- * identical compiled source): 4 wildcards 8.8ms, 8 wildcards 70,741ms, 20
- * wildcards did not finish in 60s — and the only guard was a 256-char pattern cap
- * that none of these came close to. A user typing `*a*a*b` into DevTools' network
- * filter wedged the debug worker with no error shown.
- *
- * The glob has no alternation and no nested groups, so it needs no backtracking:
- * split on '*', anchor the first and last literal segments, and scan the middle
- * ones left to right. Taking the earliest occurrence of each middle segment is
- * always safe here, because the '*' between them absorbs anything skipped — so a
- * greedy first match can never rule out an overall match. That makes matching
- * O(pattern x url) with no exponential case.
- *
- * Semantics follow CDP exactly: '*' is zero or more of ANY character (it spans
- * '/', unlike a filesystem glob), '?' is exactly one, everything else is literal.
+ * Deliberately NOT a regex: '*' as '.*' backtracks catastrophically (`*a*a*a…`
+ * wedged the debug worker for 60s+), so this scans literal segments left to
+ * right instead. CDP semantics: '*' is zero or more of ANY character (it spans
+ * '/'), '?' is exactly one, everything else is literal.
  */
 export function compileUrlPattern(pattern: string): (url: string) => boolean {
 	// Cap pattern length so a pathological pattern cannot blow up the segment scan.
@@ -195,9 +178,8 @@ export class FetchDomain extends Domain {
 	}
 
 	/**
-	 * DevTools detached: release every paused request. Without this the native
-	 * fetch promise behind a Fetch.requestPaused never settles and the program
-	 * hangs waiting for a continue/fulfill that can no longer arrive.
+	 * Detach: release every paused request. Without this the native fetch promise
+	 * never settles and the program hangs waiting for a continue/fulfill.
 	 */
 	setConnected(connected: boolean): void {
 		if (!connected) this.disable()

@@ -1,9 +1,7 @@
 /**
- * domains/console.ts — Console CDP domain (worker thread).
- *
- * Buffers console messages (bounded) so a late-connecting DevTools still sees
- * earlier output, then replays them on Console.enable. Console args arrive as
- * already-serialized RemoteObjects from the main thread.
+ * Console CDP domain (worker): buffers console messages (bounded) so a
+ * late-connecting DevTools sees earlier output, then replays them on
+ * Console.enable. Args arrive as RemoteObjects from the main thread.
  */
 
 import { Domain } from './base'
@@ -53,9 +51,8 @@ export class ConsoleDomain extends Domain {
 	}
 
 	/**
-	 * DevTools detached: go back to buffering. `enabled` is per-session state in
-	 * V8; leaving it set would drop every message emitted while nobody is
-	 * attached, so a re-attaching frontend would see an empty console.
+	 * Detach: `enabled` is per-session state in V8, so go back to buffering
+	 * instead of dropping what a re-attaching frontend missed.
 	 */
 	setConnected(connected: boolean): void {
 		if (!connected) this.enabled = false

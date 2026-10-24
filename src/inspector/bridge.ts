@@ -1,4 +1,4 @@
-import { Inspector } from './main/inspector'
+import type { Inspector } from './main/inspector'
 
 const INSPECTOR_BRIDGE = Symbol.for('cno.inspector.bridge')
 
@@ -45,6 +45,12 @@ export function uninstallInspectorBridge(bridge: InspectorBridge): void {
 	}
 }
 
+// `Inspector` is the heavy part of the CDP tree and most runs never open it,
+// so it is imported on first use rather than with this module.
+async function loadInspector(): Promise<typeof Inspector> {
+	return (await import('./main/inspector')).Inspector
+}
+
 function createInspectorBridge(options: InspectorBridgeInstallOptions): InstalledInspectorBridge {
 	let opening: Promise<Inspector> | null = null
 	let closing: Promise<void> | null = null
@@ -65,13 +71,15 @@ function createInspectorBridge(options: InspectorBridgeInstallOptions): Installe
 		const existing = current()
 		if (existing?.inspectorUrl) return existing
 
-		const inspector = new Inspector({
+		const PendingInspector = await loadInspector()
+		const inspector = new PendingInspector({
 			port: openOptions.port ?? 9229,
 			host: openOptions.host ?? '127.0.0.1',
 			entryFile: options.entryFile,
 		})
 		publish(inspector)
-
+		// Concurrent callers wait on the same attach; set before the await so
+		// dispose() during the Inspector load still observes the open.
 		opening = inspector.attach()
 			.then(() => {
 				if (disposed || closing || current() !== inspector) throw new Error('Inspector bridge is closed')

@@ -1,13 +1,6 @@
 /**
- * shared/console-utils.ts — helpers for converting raw console method names into
- * CDP wire shapes, shared by the Console domain and the event router.
- *
- * The hooks layer sends raw JS method names (e.g. 'warn', 'group'). The Console
- * domain expects CDP level strings ('warning', 'log'). Runtime.consoleAPICalled
- * expects CDP type strings ('warning', 'startGroup', 'endGroup').
- *
- * Both consumers also need the same stackTrace construction, so we extract that
- * here to keep the two call sites in sync.
+ * Convert raw console method names into the CDP level/type strings the Console
+ * domain and Runtime.consoleAPICalled expect, plus the shared stackTrace shape.
  */
 
 import type { ConsoleCallFrame } from './wire'

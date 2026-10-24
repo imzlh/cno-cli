@@ -1,13 +1,10 @@
 /**
  * worker/connection.ts — binds one DevTools WebSocket to the CDP dispatcher.
  *
- * Exactly one DevTools client is active at a time. `CdpChannel` is the mutable
- * seam between “whoever is connected” and the domains: domains call
- * `channel.emit(...)` unconditionally, and the channel forwards to the current
- * socket (or drops the event when nobody is attached). On connect we flip every
- * domain to connected and tell the main thread; on disconnect we reverse it,
- * but only if *this* socket is still the active one (guards against a stale
- * close racing a fresh connection).
+ * Exactly one client is active at a time. `CdpChannel` is the mutable seam
+ * between "whoever is connected" and the domains: domains call `channel.emit()`
+ * unconditionally and the channel forwards or drops. A stale close must not
+ * detach a socket that replaced it.
  */
 
 import { isRecord, parseCDPMessage, type CDPMessage } from '../shared/cdp'
@@ -45,8 +42,7 @@ export class CdpChannel {
 	}
 	/**
 	 * Unconditionally detach the current sink. Used when an incoming connection
-	 * displaces an existing one: the caller does not hold the old sink reference,
-	 * and the teardown that follows must not emit into the incoming socket.
+	 * displaces an existing one: the caller does not hold the old sink reference.
 	 */
 	dropSink(): void {
 		this.sink = null
@@ -81,8 +77,8 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 
 	/**
 	 * Return every domain to its detached state. Domain `enabled` flags, paused
-	 * Fetch requests and the paused safepoint are all per-SESSION state in CDP, so
-	 * they must not survive the client that created them.
+	 * Fetch requests and the paused safepoint are per-SESSION state in CDP and
+	 * must not survive the client that created them.
 	 */
 	const releaseSession = (): void => {
 		debuggerDomain.setConnected(false)
@@ -99,14 +95,9 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 	const superseded = channel.takeSocket(ws)
 	if (superseded) {
 		// The displaced socket's own onclose cannot do this: it early-returns on
-		// `!channel.isActive(...)`, which is already false by the time a close
-		// handshake completes — and a client that vanished may never send one at all.
-		// Without this the previous session's paused Fetch requests were held forever
-		// and its Fetch.enable leaked into the new session.
-		//
-		// Ordered deliberately: drop the sink FIRST so the teardown's own events
-		// (Debugger.resumed) are not delivered to the incoming client as if they
-		// belonged to it.
+		// `!channel.isActive(...)`, already false by then — and a client that
+		// vanished may never send one. Drop the sink FIRST so the teardown's own
+		// events (Debugger.resumed) are not delivered to the incoming client.
 		channel.dropSink()
 		releaseSession()
 		try { superseded.close() } catch { /* already gone */ }
@@ -132,15 +123,10 @@ export function handleDevToolsConnection(ws: WebSocket, deps: ConnectionDeps): v
 			return
 		}
 		const { id, method, params, sessionId } = message
-		// Never drop a command silently: a client that sent a malformed id would
-		// otherwise wait forever with no indication anything was wrong. Real node
-		// answers every shape — MEASURED on v24.18: `{"method":"Runtime.enable"}`
-		// with no id returns
-		// {"error":{"code":-32600,"message":"Message must have integer 'id' property"}}.
-		// `parseCDPMessage` only keeps a number-or-null id, so a string or float id
-		// arrives here as absent and lands in this branch too; node rejects those as
-		// well. Messages carrying `result`/`error` are replies rather than commands
-		// and legitimately have no id for us, so they stay ignored.
+		// Never drop a command silently: a client with a malformed id would wait
+		// forever with no indication. `parseCDPMessage` only keeps a number-or-null
+		// id, so a string or float id lands here too. Replies carry result/error
+		// rather than a command and legitimately have no id, so they are ignored.
 		if (id == null) {
 			if ('result' in message || 'error' in message) return
 			thisSend({ id: null, error: { code: CdpErrorCode.InvalidRequest, message: "Message must have integer 'id' property" } })

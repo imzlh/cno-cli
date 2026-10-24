@@ -23,8 +23,15 @@
  * THE SOFTWARE.
  */
 
-import { LockStore, cwd, errMsg, fatal, isAbsolute, isParseWorker, joinPaths, log, runParseWorker, toPosixPath } from '../cts/src/api';
-import type { ConfigOptions } from '../cts/src/api';
+// Imported from the defining modules rather than the api barrel: this is the
+// startup path, so keep lazy command modules out of what it can reach.
+import { fatal } from '../cts/src/errors';
+import { LockStore } from '../cts/src/lock';
+import { isParseWorker, runParseWorker } from '../cts/src/parse';
+import type { ConfigOptions } from '../cts/src/types';
+import { cwd, isAbsolute, joinPaths, toPosixPath } from '../cts/src/utils/path';
+import { log } from '../cts/src/utils/log';
+import { errMsg } from '../cts/src/utils/misc';
 import { EV, installEventReceiver, PRIORITY_FALLBACK } from '../cts/src/runtime/event-mux';
 import { resources as processResources } from '../cts/src/runtime/resources';
 
@@ -36,21 +43,11 @@ import { registerExtensions } from './bootstrap';
 import { CliExit, commandErrorInfo } from './command-error';
 import { missingFlagValues, parseArgv, readArgv, unknownFlags, type ParsedCli } from './cli';
 import { effectiveRuntimeFlags, prepareKernel, type KernelContext } from './kernel';
-import { spawnBinary } from './commands/bin';
-import { runCache } from './commands/cache';
 import { decodeWorkerRuntimeConfig } from './config';
 import { readEnv } from './env';
-import { runEval } from './commands/eval';
-import { runPack } from './commands/pack';
-import { runRepl } from './commands/repl';
-import { runFile } from './commands/run';
-import { runServe } from './commands/serve';
-import { runSetup } from './commands/setup';
-import { printTaskList, runTask, taskExists } from './commands/task';
-import { parseTestChildArgs, runTest, TEST_CHILD_ENV } from './commands/test';
-import { writeTestChildResult, type TestChildMessage } from './commands/test-result-pipe';
 import { C, showHelp, showVersion } from './help';
-import { disableCertVerify, startProxy, stopNetwork } from './network';
+import { configureTlsHooks } from './network';
+import type { TestChildMessage } from './commands/test-result-pipe';
 
 import '../cno/src/main';   // main polyfill(cno) entry
 
@@ -122,6 +119,7 @@ async function runEntry(
     config?: Partial<ConfigOptions>,
 ): Promise<void> {
     if (isEvalEntry(entry)) {
+        const { runEval } = await import('./commands/eval');
         return runEval({
             code: entry.slice(5),
             flags,
@@ -131,6 +129,7 @@ async function runEntry(
         });
     }
 
+    const { runFile } = await import('./commands/run');
     return runFile({
         file: entry, args, flags,
         rawArgs,
@@ -139,7 +138,8 @@ async function runEntry(
     });
 }
 
-function listTasks(flags: Record<string, string | boolean>, prefixArgs: string[] = []): void {
+async function listTasks(flags: Record<string, string | boolean>, prefixArgs: string[] = []): Promise<void> {
+    const { printTaskList } = await import('./commands/task');
     if (!printTaskList(flags, prefixArgs)) {
         console.log('  \x1b[2mNo tasks defined.\x1b[0m');
     }
@@ -153,7 +153,7 @@ const REQUEST_EXIT_CODE_SLOT = Symbol.for('cno.runtime.requestExitCode');
 function runProcessCleanup(): void {
     if (cleanupStarted) return;
     cleanupStarted = true;
-    stopNetwork();
+    networkModule?.stopNetwork();
     try { LockStore.closeAll(); }
     catch (e) { log.debug('cleanup', () => `lock cleanup failed: ${e}`); }
     processResources.release();
@@ -211,18 +211,19 @@ function validateInvocation(cli: ParsedCli): void {
     }
 }
 
-function applyNetworkFlags(flags: Record<string, string | boolean>): void {
-    if (flags['system-proxy']) {
-        try {
-            startProxy();
-        } catch (e) {
-            console.warn(`${C.warn('!')} Configure proxy failed: ${errMsg(e)}`);
-        }
-    }
-    // Fetch and raw TLS maintain separate verification state.
-    if (flags['skip-cert-verify']) {
-        disableCertVerify();
-        disableRawCertVerify();
+// The proxy connector (and its HTTP/TLS stack) loads only for --system-proxy.
+let networkModule: typeof import('./network') | null = null;
+
+async function applyNetworkFlags(flags: Record<string, string | boolean>): Promise<void> {
+    configureTlsHooks(flags);
+    // Raw TLS verification is separate from the fetch-side hooks above.
+    if (flags['skip-cert-verify']) disableRawCertVerify();
+    if (!flags['system-proxy']) return;
+    const network = networkModule ??= await import('./network');
+    try {
+        await network.startProxy();
+    } catch (e) {
+        console.warn(`${C.warn('!')} Configure proxy failed: ${errMsg(e)}`);
     }
 }
 
@@ -232,14 +233,17 @@ async function dispatch(): Promise<void> {
     // Help/version complete before runtime preparation or other side effects.
     if (cli.cmd === 'help' || (cli.cmd !== 'pack' && cli.flags.help === true)) return showHelp();
     if (cli.cmd === 'version' || cli.flags.version === true) return showVersion();
-    if (cli.cmd === 'pack' && cli.flags.help === true) return runPack(cli.positional, cli.flags);
+    if (cli.cmd === 'pack' && cli.flags.help === true) {
+        const { runPack } = await import('./commands/pack');
+        return runPack(cli.positional, cli.flags);
+    }
     validateInvocation(cli);
 
     // Every command shares the same Deno.args/process.argv source.
     setArgs(cli.rawArgs);
-    const kernel = prepareKernel(cli);
+    const kernel = await prepareKernel(cli);
     const flags = effectiveRuntimeFlags(kernel, cli.flags);
-    applyNetworkFlags(flags);
+    await applyNetworkFlags(flags);
 
     switch (cli.cmd) {
     case 'eval': {
@@ -248,14 +252,21 @@ async function dispatch(): Promise<void> {
             console.error(`Usage: ${C.cyan('cno eval')} ${C.cyan('"<code>"')}`);
             exitWithCode(1);
         }
+        const { runEval } = await import('./commands/eval');
         return runEval({ code, flags: cli.flags, kernel, rawArgs: cli.rawArgs });
     }
-    case 'cache':
+    case 'cache': {
+        const { runCache } = await import('./commands/cache');
         return runCache(cli.positional, cli.flags, kernel);
-    case 'pack':
+    }
+    case 'pack': {
+        const { runPack } = await import('./commands/pack');
         return runPack(cli.positional, cli.flags, kernel);
-    case 'task':
+    }
+    case 'task': {
+        const { runTask } = await import('./commands/task');
         return runTask(cli.positional, flags, cli.kernelArgs);
+    }
     case 'exec': {
         // `rawArgs.entry` defaults to `repl` for commands without an
         // entry, so validate the actual exec positional explicitly.
@@ -265,29 +276,37 @@ async function dispatch(): Promise<void> {
             exitWithCode(1);
         }
         const cacheDir = typeof flags['cache-dir'] === 'string' ? flags['cache-dir'] : undefined;
+        const { spawnBinary } = await import('./commands/bin');
         // Only the cno prefix belongs to the child runtime. Anything after
         // `exec <bin>` is the bin's own argv and must stay untouched.
         const code = await spawnBinary(bin, args, {}, os.cwd, cacheDir, cli);
         if (code !== 0) exitWithCode(code);
         return;
     }
-    case 'repl':
+    case 'repl': {
+        const { runRepl } = await import('./commands/repl');
         return runRepl(cli.flags, kernel, cli.rawArgs);
-    case 'test':
+    }
+    case 'test': {
+        const { runTest } = await import('./commands/test');
         return runTest(
             cli.positional,
             flags,
             { kernelArgs: cli.kernelArgs, commandArgs: cli.commandArgs },
             kernel.inspect !== null,
         );
-    case 'setup':
+    }
+    case 'setup': {
+        const { runSetup } = await import('./commands/setup');
         return runSetup(flags);
+    }
     case 'serve': {
         const [file, ...args] = cli.positional;
         if (!file) {
             console.error(`Usage: ${C.cyan('cno serve')} ${C.cyan('<file>')} [args…]`);
             exitWithCode(1);
         }
+        const { runServe } = await import('./commands/serve');
         return runServe(file, args, cli.flags, cli.rawArgs, kernel);
     }
     case 'run':
@@ -295,12 +314,19 @@ async function dispatch(): Promise<void> {
         // Bare cno opens the REPL; cno run without a target lists tasks.
         const [file, ...args] = cli.positional;
         if (!file) {
-            if (cli.cmd === null) return runRepl(cli.flags, kernel, cli.rawArgs);
+            if (cli.cmd === null) {
+                const { runRepl } = await import('./commands/repl');
+                return runRepl(cli.flags, kernel, cli.rawArgs);
+            }
             return listTasks(flags, cli.kernelArgs);
         }
-        if (file === 'task') return runTask(args, flags, cli.kernelArgs);
-        if (cli.cmd === 'run' && !looksLikeFileTarget(file) && taskExists(file, flags, cli.kernelArgs)) {
-            return runTask([file, ...args], flags, cli.kernelArgs);
+        if (file === 'task') {
+            const { runTask } = await import('./commands/task');
+            return runTask(args, flags, cli.kernelArgs);
+        }
+        if (cli.cmd === 'run' && !looksLikeFileTarget(file)) {
+            const { runTask, taskExists } = await import('./commands/task');
+            if (taskExists(file, flags, cli.kernelArgs)) return runTask([file, ...args], flags, cli.kernelArgs);
         }
         return runEntry(file, args, cli.flags, cli.rawArgs, kernel);
     }
@@ -328,11 +354,12 @@ async function runTestChild(
     let message: TestChildMessage;
     try {
         validateInvocation(cli);
-        const kernel = prepareKernel(cli);
+        const kernel = await prepareKernel(cli);
         const flags = effectiveRuntimeFlags(kernel, cli.flags);
-        applyNetworkFlags(flags);
+        await applyNetworkFlags(flags);
         // Deno test modules are not "main"; import.meta.main is false under `deno test`.
         const rawArgs = makeRunArgs(file, scriptArgs, cli);
+        const { runFile } = await import('./commands/run');
         await runFile({ file, args: scriptArgs, flags: cli.flags, rawArgs, kernel, asMain: false });
         // Use the module-level startTest / getFailedTests exports directly
         const { startTest, getFailedTests } = await import('../cno/src/deno/index');
@@ -353,6 +380,7 @@ async function runTestChild(
             failedTests: [],
         };
     }
+    const { writeTestChildResult } = await import('./commands/test-result-pipe');
     await writeTestChildResult(message);
 }
 
@@ -373,7 +401,7 @@ async function workerEntry(): Promise<void> {
         const isNodeWorker = isNodeWorkerData(workerData);
         if (isNodeWorker) worker.pipe?.unref();
         try {
-            const kernel = prepareKernel({ kernelOptions: [], commandOptions: [] }, { inheritNodeOptions: false });
+            const kernel = await prepareKernel({ kernelOptions: [], commandOptions: [] }, { inheritNodeOptions: false });
             await runEntry(file, [], {}, makeRunArgs(file), kernel, decodeWorkerRuntimeConfig(workerData?.__cts_runtime_config));
         } catch (e) {
             if (!isWorkerCloseError(e)) throw e;
@@ -392,12 +420,16 @@ try {
     fatal(e, 'registerExtensions');
 }
 
+// Read at call time so the test module stays off the startup parse path.
+const TEST_CHILD_ENV_NAME = '__CNO_TEST_CHILD';
+
 async function mainEntry(): Promise<void> {
-    const testInvocation = readEnv(TEST_CHILD_ENV);
-    if (testInvocation !== null) os.unsetenv(TEST_CHILD_ENV);
+    const testInvocation = readEnv(TEST_CHILD_ENV_NAME);
+    if (testInvocation !== null) os.unsetenv(TEST_CHILD_ENV_NAME);
 
     if (worker.isWorker) return workerEntry();
     if (testInvocation !== null) {
+        const { parseTestChildArgs } = await import('./commands/test');
         const invocation = parseTestChildArgs(os.args.slice(2), testInvocation);
         return runTestChild(os.args[1], invocation.cli, invocation.scriptArgs);
     }

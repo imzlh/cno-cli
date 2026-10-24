@@ -1,15 +1,6 @@
 /**
- * inspector/shared/native.ts — the single point of contact with the native
- * `debug` module (QuickJS debugger primitives + cross-thread DebugChannel).
- *
- * Every other file imports its native constants from here instead of reaching
- * for bare `debug.FOO` references. This gives us:
- *   • one `import.meta.use('debug')` to reason about, and
- *   • clean, well-named TypeScript groupings for the otherwise-flat constant
- *     soup the native module exposes (break reasons, step modes, channel ops).
- *
- * Available on BOTH threads: the main thread drives execution/inspection and
- * the worker owns the channel handle, so both legitimately use this module.
+ * The single import point for the native `debug` module (QuickJS debugger
+ * primitives + cross-thread DebugChannel). Available on both threads.
  */
 
 export const native = import.meta.use('debug');
@@ -26,10 +17,7 @@ export const BreakReason = {
 	Interrupt: native.INTERRUPT,
 } as const;
 
-/**
- * Step / resume codes. `None` (0) doubles as "plain continue": it is the value
- * handed to `dc.resume()` / `step()` when no stepping is requested.
- */
+/** Step / resume codes; `None` (0) doubles as plain continue. */
 export const Step = {
 	None: native.STEP_NONE,
 	Into: native.STEP_INTO,
@@ -68,14 +56,8 @@ export const ChannelReq = {
 } as const;
 
 /**
- * JS stack levels between `current_stack_frame` and user code for frame APIs
- * (`getLocalVariables` / `evalInFrame` / `setVariable`). Level 0 is the active
- * frame at the call site; these skip inspector/engine frames only.
- *
- * Values differ by call depth — do not collapse to one constant:
- *   onBreak/buildCallFrame  → fewer frames (pause handler only)
- *   setVariableValue RPC    → service loop + handler
- *   evaluateOnCallFrame RPC → same + Evaluator.evaluateSync
+ * JS stack levels between `current_stack_frame` and user code for frame APIs.
+ * Values differ by call depth — do not collapse to one constant.
  */
 export const FrameOffset = {
 	/** From PauseController.buildCallFrame (inside onBreak). */

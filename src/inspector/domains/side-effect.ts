@@ -1,20 +1,10 @@
 /**
- * domains/side-effect.ts — side-effect analysis for console eval preview.
- *
- * DevTools previews expressions as you type (`throwOnSideEffect`). Uses a
- * **blocklist** strategy: only known-dangerous operations are rejected.
- *
- * Always rejected (state mutation / control flow):
- *   - assignment operators, ++/--, delete, throw, yield
- *   - optional-chaining calls  ?.()
- *   - import()
- *
- * Rejected by name (known-dangerous callees / constructors):
- *   - eval, Function, setTimeout, setInterval, setImmediate, queueMicrotask, require
- *   - new Worker / SharedWorker / Function
- *
- * Everything else — including console.log, instance methods, unknown
- * constructors — is allowed so the preview is maximally useful.
+ * Side-effect analysis for console eval previews (`throwOnSideEffect`).
+ * A **blocklist**, not a sandbox: only known-dangerous operations are rejected —
+ * assignment, ++/--, delete/throw/yield, optional-call `?.()`, `import()`, and
+ * the named callees eval/Function/setTimeout/setInterval/setImmediate/
+ * queueMicrotask/require and `new Worker`/`SharedWorker`/`Function`. Everything
+ * else, including instance methods, is allowed so previews stay useful.
  */
 
 import { parse } from '../../../cts/deps/sucrase/src/parser/index'

@@ -1,8 +1,6 @@
 /**
- * domains/protocol.ts — low-risk CDP support domains.
- *
- * DevTools probes a few optional domains while attaching. Keep this list close
- * to Node/V8 debugging and avoid browser/page identity.
+ * Low-risk CDP support domains DevTools probes while attaching. Kept close to
+ * Node/V8 debugging; avoid browser/page identity.
  */
 
 import { CDPError, CdpErrorCode, type CDPDispatcher, type EmitEvent } from '../worker/dispatcher';

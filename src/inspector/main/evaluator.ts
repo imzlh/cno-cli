@@ -1,10 +1,6 @@
 /**
- * main/evaluator.ts — expression evaluation and script compilation.
- *
- * Owns the engine-facing side of Runtime.evaluate / Debugger.evaluateOnCallFrame
- * / Runtime.callFunctionOn / compileScript / runScript. While paused it uses
- * the native in-frame evaluator; while running it uses the async engine eval.
- * Results are turned into RemoteObjects by the shared Serializer.
+ * Expression evaluation and script compilation for Runtime/Debugger CDP entry
+ * points. Paused evaluation runs in-frame; running evaluation uses engine eval.
  */
 
 import { FrameOffset, native } from '../shared/native'
@@ -41,21 +37,9 @@ function unwrapEvalResult(v: unknown): unknown {
 }
 
 /**
- * The completion value, boxed.
- *
- * The box is load-bearing, not decoration. `evalWithCapturedCompletion` is an
- * `async function`, and an async function's return value is ALWAYS adopted: a
- * returned thenable is resolved before the caller's `await` sees it. Returning
- * the bare completion value therefore made `Runtime.evaluate` resolve every
- * Promise regardless of `awaitPromise`, because the value had already been
- * unwrapped by the time `q.awaitPromise` was consulted.
- *
- * MEASURED, cno before this change: evaluate `new Promise(r=>setTimeout(()=>r(99),200))`
- * with `awaitPromise:false` -> {"type":"number","value":99}.
- * MEASURED, node v24.18.0, same expression and flag ->
- * {"type":"object","subtype":"promise","className":"Promise",objectId:...}.
- * The slot itself always held the real Promise (measured: `slotIsThenable=true`),
- * so the loss happened purely at the async-return boundary.
+ * The completion value, boxed. Load-bearing: the IIFE is an `async function`,
+ * whose return value is ALWAYS adopted, so a bare thenable would resolve before
+ * `q.awaitPromise` is consulted.
  */
 type Captured = { readonly v: unknown }
 
@@ -66,10 +50,8 @@ async function evalWithCapturedCompletion(expression: string, sourceURL = '<devt
 			await engine.eval(`${slotRef(slot)} = (${expression})`, sourceURL, engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)
 		} catch (e) {
 			if (!isSyntaxLikeError(e)) throw e
-			// The fallback IIFE is async so the body may use top-level await. That
-			// makes its return value adopted too, so the box has to be built INSIDE
-			// the IIFE — `await (async()=>{...})()` on a Promise-valued body would
-			// otherwise resolve it here, before awaitPromise is consulted.
+			// The fallback IIFE is async so the body may use top-level await; that
+			// makes its return value adopted too, so the box must be built INSIDE it.
 			await engine.eval(`${slotRef(slot)} = await (async () => {\n${returnifyLastStatement(expression, true)}\n})()`, sourceURL, engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)
 			return { v: unboxCaptured(Reflect.get(globalThis, slot)) }
 		}
@@ -80,11 +62,8 @@ async function evalWithCapturedCompletion(expression: string, sourceURL = '<devt
 }
 
 /**
- * Unwrap the in-VM box produced by `returnifyLastStatement(_, true)`.
- *
- * A statement-only body (`var q=1;`) gets no `return`, so the IIFE yields
- * undefined rather than a box; that is not an error, it is `undefined` as the
- * completion value, which is what node reports for the same input.
+ * Unwrap the box produced by `returnifyLastStatement(_, true)`. A
+ * statement-only body yields no box, i.e. `undefined`, as node reports.
  */
 function unboxCaptured(boxed: unknown): unknown {
 	if (boxed && typeof boxed === 'object' && CAPTURE_KEY in boxed) return Reflect.get(boxed, CAPTURE_KEY)
@@ -104,13 +83,9 @@ function isSyntaxLikeError(e: unknown): boolean {
 }
 
 /**
- * Turn the last top-level statement into a `return`, so the IIFE fallback has a
- * completion value.
- *
- * `box` wraps that value in `{[CAPTURE_KEY]: ...}` inside the VM. It must be
- * applied in-VM because the IIFE is async: a bare `return somePromise` would be
- * adopted by the IIFE's own promise and resolved before the caller could honour
- * `awaitPromise:false`.
+ * Turn the last top-level statement into a `return`. `box` wraps it in
+ * `{[CAPTURE_KEY]: ...}`, because the async IIFE would otherwise adopt and
+ * resolve a returned promise.
  */
 function returnifyLastStatement(source: string, box = false): string {
 	const trimmed = source.trim()
@@ -235,11 +210,9 @@ function byValue(val: unknown): RemoteObject {
 export class Evaluator {
 	private readonly compiledScripts = new Map<string, { mod: CModuleEngine.Module; persist: boolean }>()
 	/**
-	 * Cap on retained compiled scripts. CDP has no `Runtime.releaseScript`, and
-	 * DevTools calls `Runtime.compileScript` with `persistScript: true` for watch
-	 * expressions and autocomplete probes, so nothing ever removes a persisted
-	 * entry — each one pinning a compiled engine.Module. Without a bound a long
-	 * session grows this map forever. Same leak shape as fetch.ts MAX_CACHED_BODIES.
+	 * CDP has no `Runtime.releaseScript`, and DevTools persists watch expressions
+	 * and autocomplete probes, so each entry pins a compiled engine.Module that
+	 * nothing ever removes.
 	 */
 	private static readonly MAX_COMPILED_SCRIPTS = 256
 
@@ -340,15 +313,9 @@ export class Evaluator {
 	}
 
 	/**
-	 * Resolve the `this` receiver for callFunctionOn, rejecting a stale handle.
-	 *
-	 * A released or unknown objectId used to resolve to `undefined`, so the function
-	 * silently ran with `this === undefined` against the wrong receiver instead of
-	 * reporting failure — a DevTools getter probe or "Store as global variable" on a
-	 * handle whose group was already released would quietly do the wrong thing.
+	 * Resolve the `this` receiver for callFunctionOn. An unknown objectId is an
+	 * error, as node answers -32000 "Could not find object with given id";
 	 * `has()` distinguishes "not in the store" from "stored value IS undefined".
-	 * MEASURED, node v24.18: callFunctionOn with a released objectId answers
-	 * {"code":-32000,"message":"Could not find object with given id"}.
 	 */
 	private resolveReceiver(objectId?: string): unknown {
 		if (!objectId) return undefined
@@ -362,24 +329,15 @@ export class Evaluator {
 		const sourceURL = q.sourceURL || '<compiled>'
 		try {
 			// The completion value must be reachable after eval(); a bare
-			// expression statement leaves `namespace.default` undefined, so
-			// runScript would always report `undefined`.
-			//
-			// KNOWN GAP: CDP's `expression` is a script body, not strictly an
-			// expression, so a statement compiles here into
-			// `export default (var q=1;)` and fails. MEASURED: node v24.18 compiles
-			// `var q=1;` successfully and returns a scriptId. The failure is at least
-			// clean — it lands in the catch below as exceptionDetails rather than
-			// escaping the RPC layer — but DevTools' own console never takes this path
-			// (it uses Runtime.evaluate), so the wrapper is kept for the completion
-			// value it buys.
+			// expression statement leaves `namespace.default` undefined.
+			// KNOWN GAP: a statement body compiles into `export default (var q=1;)`
+			// and fails, though node accepts it. Clean failure, and DevTools'
+			// console uses Runtime.evaluate, so the wrapper stays.
 			const mod = new engine.Module(`export default (${q.expression})`, sourceURL)
 			// sourceURL is caller-controlled and often reused — never key on it.
 			const scriptId = `script:${++nextCompiledScriptId}`
-			// Evict oldest-first once at the cap. A displaced scriptId then answers
-			// "unknown scriptId" from runScript, which is the same error DevTools
-			// already handles for a stale id (MEASURED, node v24.18: a second run of
-			// any compiled script answers -32000 "No script with given id").
+			// Evict oldest-first at the cap; the displaced id then answers the same
+			// "unknown scriptId" error DevTools already handles for a stale id.
 			if (this.compiledScripts.size >= Evaluator.MAX_COMPILED_SCRIPTS) {
 				const oldest = this.compiledScripts.keys().next().value
 				if (oldest !== undefined) this.compiledScripts.delete(oldest)
@@ -397,22 +355,14 @@ export class Evaluator {
 		if (!entry) return this.errorResult(new Error(`unknown scriptId: ${q.scriptId}`))
 		try {
 			// NOT bracketed with ModuleCompiler.evalTracked, unlike the CLI entry-eval
-			// sites (src/commands/run.ts, src/commands/eval.ts). Deliberate: this mod
-			// comes from a raw `new engine.Module` in compileScript, so it is not in
-			// esmCache and no require() can resolve to it — nothing can re-enter it
-			// mid-evaluation, which is the precondition for the JS_MODULE_STATUS_EVALUATING
-			// abort. The Evaluator also holds no compiler reference to bracket with.
-			// A repeat runScript on a persisted script re-evals an EVALUATED module,
-			// and that status IS in js_link_module's allow-list (quickjs.c:32089).
+			// sites. This mod comes from a raw `new engine.Module`, so it is not in
+			// esmCache and nothing can re-enter it mid-evaluation — the precondition
+			// for the JS_MODULE_STATUS_EVALUATING abort. A repeat runScript re-evals
+			// an EVALUATED module, which js_link_module allows.
 			await entry.mod.eval()
 			let val = entry.mod.namespace.default
-			// runScript honours awaitPromise exactly as evaluate does. Without this a
-			// promise-valued script answered the Promise itself, which under
-			// returnByValue serialises to `{}` — a silently wrong result rather than
-			// an error. MEASURED, cno before this change: compileScript
-			// `import("node:os").then(m=>typeof m.platform)` + runScript
-			// {awaitPromise:true,returnByValue:true} -> value {}. MEASURED, node
-			// v24.18.0, same sequence -> value "function".
+			// Without this a promise-valued script answers the Promise itself, which
+			// under returnByValue serialises to `{}` — silently wrong, not an error.
 			if (q.awaitPromise && isThenable(val)) val = await val
 			if (!entry.persist) this.compiledScripts.delete(q.scriptId)
 			if (q.returnByValue) return { result: byValue(val) }
@@ -447,7 +397,7 @@ export class Evaluator {
 					return undefined
 				}
 			}
-			// Unknown unserializable value — log and return undefined rather than silently swallowing.
+			// Unknown unserializable value — warn and return undefined.
 			try { nativeConsole.warn(`unknown unserializableValue: ${u}`) } catch { /* ignore */ }
 			return undefined
 		}

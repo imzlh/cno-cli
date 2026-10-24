@@ -1,10 +1,7 @@
 /**
- * domains/runtime.ts — Runtime CDP domain (worker thread).
- *
- * Drives console-tab evaluation, the (single) execution context, and host
- * bindings. All real evaluation is delegated to the main thread over the
- * inspect transport; this domain only enforces the side-effect gate locally so
- * DevTools' as-you-type previews never mutate program state.
+ * Runtime CDP domain (worker): console-tab evaluation, the single execution
+ * context, and host bindings. Evaluation is delegated to the main thread over
+ * the inspect transport; this domain only enforces the side-effect gate locally.
  */
 
 import type {
@@ -25,9 +22,8 @@ import { getMemoryTier } from '../../../cno/src/utils/memory-tier'
 import type { ConsolePayload } from '../shared/wire'
 
 /**
- * Console messages held until `Runtime.enable`. Same reason ConsoleDomain keeps a
- * backlog, and the same bound: an unbounded buffer in a process that logs in a loop
- * is a memory leak with no upper limit.
+ * Console messages held until `Runtime.enable`, bounded like ConsoleDomain's:
+ * an unbounded buffer in a process that logs in a loop is a memory leak.
  */
 const MAX_CONSOLE_BACKLOG = { low: 100, normal: 300, high: 500 }[getMemoryTier()] ?? 300
 
@@ -52,13 +48,9 @@ export class RuntimeDomain extends Domain {
 			this.event('Runtime.executionContextCreated', {
 				context: { id: 1, origin: '', name: 'cno', uniqueId: '1', auxData: { isDefault: true } },
 			})
-			// Replay console output produced before the frontend enabled the domain.
-			// MEASURED, node v24.18: attach, wait 1.5s while the target logs every
-			// 300ms, THEN Runtime.enable -> 11 consoleAPICalled arrive at once,
-			// carrying "tick 1".."tick 11", i.e. every message from before the enable.
-			// Without this a reattaching DevTools showed an empty console, because
+			// Replay console output produced before the frontend enabled the domain:
 			// modern DevTools reads Runtime.consoleAPICalled and treats the Console
-			// domain as deprecated — so ConsoleDomain's backlog alone never surfaced.
+			// domain as deprecated, so its backlog alone never surfaced.
 			const backlog = this.consoleBacklog
 			this.consoleBacklog = []
 			for (const payload of backlog) this.emitConsoleAPICalled(payload)
@@ -123,12 +115,9 @@ export class RuntimeDomain extends Domain {
 
 		this.on('Runtime.compileScript', (p) => {
 			const q = this.extract<RuntimeCompileScriptParams>(p)
-			// `expression` is required by the CDP contract (it is non-optional in
-			// RuntimeCompileScriptParams). MEASURED, node v24.18, params {}:
-			//   -32602 "Invalid parameters" (data names the field).
-			// MEASURED, cno before this check: a REAL, usable scriptId — it compiled
-			// `export default (undefined)` and stored it in the compiled-script table,
-			// so the reply was indistinguishable from a successful compile.
+			// `expression` is required by the CDP contract; without the check a
+			// missing one compiled `export default (undefined)` and answered with a
+			// usable-looking scriptId.
 			this.reqStr(p, 'expression')
 			return this.rpc.call('compileScript', {
 				expression: q.expression,
@@ -194,14 +183,9 @@ export class RuntimeDomain extends Domain {
 	}
 
 	/**
-	 * Console output from the main thread, forwarded as Runtime.consoleAPICalled.
-	 *
-	 * Gated on Runtime.enable and buffered until then, both MEASURED against node
-	 * v24.18: with a target logging every 300ms, a session that attached and never
-	 * called Runtime.enable received 0 consoleAPICalled over 1.5s, and one that
-	 * enabled after 1.5s received all 11 missed messages at once. This used to emit
-	 * unconditionally from event-router.ts, so cno both sent events DevTools had not
-	 * subscribed to and lost anything logged before the enable.
+	 * Forward main-thread console output as Runtime.consoleAPICalled, gated on
+	 * Runtime.enable and buffered until then, so a reattaching frontend still
+	 * sees what it missed.
 	 */
 	onConsole(payload: ConsolePayload): void {
 		if (this.enabled) {
@@ -225,10 +209,8 @@ export class RuntimeDomain extends Domain {
 	setConnected(connected: boolean): void {
 		this.connected = connected
 		if (!connected) {
-			// Back to buffering, like ConsoleDomain: `enabled` is per-session state in
-			// V8, so a reattaching frontend's Runtime.enable must replay what it missed
-			// while nobody was attached. Leaving it set would emit into a dead sink and
-			// drop the messages permanently.
+			// `enabled` is per-session state in V8: leaving it set would emit into a
+			// dead sink and drop everything a reattaching frontend missed.
 			this.enabled = false
 			this.rpc.notify('releaseObjectGroup', { objectGroup: 'console' })
 			this.rpc.notify('releaseObjectGroup', { objectGroup: 'runtime' })

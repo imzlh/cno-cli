@@ -1,29 +1,41 @@
-import { createRuntime, cwd, joinPaths } from '../cts/src/api';
-import type { ConfigOptions } from '../cts/src/api';
+import type { ConfigOptions } from '../cts/src/types';
+import { cwd, joinPaths } from '../cts/src/utils/path';
 import setArgs, { type Args } from '../cno/src/utils/args';
 import { flagsFromOptions, optionValues, OPTION_REGISTRY, parseNodeOptions, type Flags, type ParsedCli } from './cli';
 import { CliCommandError } from './command-error';
 import { flagsToConfig, publishWorkerRuntimeConfig } from './config';
 import { loadEnvFiles, readEnv } from './env';
-import { Inspector } from './inspector';
-import { installInspectorBridge } from './inspector/bridge';
 import { inspectOptions, type InspectOptions } from './inspector/options';
+
+import type { Inspector } from './inspector';
+
+type RuntimeModule = typeof import('../cts/src/runtime/index');
+type InspectorModule = typeof import('./inspector');
+type BridgeModule = typeof import('./inspector/bridge');
+type KernelModules = Pick<InspectorModule & BridgeModule, 'Inspector' | 'installInspectorBridge'>;
 
 type NodePreload = { kind: 'require' | 'import' | 'loader'; specifier: string };
 
 export interface KernelContext {
     readonly config: Partial<ConfigOptions>;
     readonly inspect: InspectOptions | null;
-    /** Prefix defaults for commands, excluding options owned exclusively by the kernel. */
+    /** Prefix defaults available to commands. */
     readonly runtimeFlags: Flags;
     readonly preloads: readonly string[];
     readonly nodePreloads: readonly NodePreload[];
+    /** Inspector/bridge implementations, loaded on first need. */
+    readonly modules: BridgeModule;
+    /** The compiler/runtime chain, loaded on first need. */
+    readonly runtimeModule: () => Promise<RuntimeModule>;
 }
 
 type KernelCli = Pick<ParsedCli, 'kernelOptions' | 'commandOptions'>;
 
 /** Prepare common runtime settings exactly once, before dispatching a command. */
-export function prepareKernel(cli: KernelCli, options: { inheritNodeOptions?: boolean } = {}): KernelContext {
+export async function prepareKernel(
+    cli: KernelCli,
+    options: { inheritNodeOptions?: boolean } = {},
+): Promise<KernelContext> {
     const runtimeOptions = [...cli.kernelOptions, ...cli.commandOptions].filter(option =>
         OPTION_REGISTRY.get(option.name)?.consumer === 'runtime',
     );
@@ -32,8 +44,10 @@ export function prepareKernel(cli: KernelCli, options: { inheritNodeOptions?: bo
     // An env file can supply NODE_OPTIONS; validate it before any runtime or
     // Inspector has been started. The CLI registry owns its option grammar too.
     const nodeOptions = options.inheritNodeOptions === false ? [] : parseNodeOptions(readEnv('NODE_OPTIONS') ?? undefined);
+    const commandControls = new Set(cli.commandOptions.map(option => OPTION_REGISTRY.get(option.name)?.consumer));
     const prefixOptions = cli.kernelOptions.filter(option =>
-        OPTION_REGISTRY.get(option.name)?.consumer === 'kernel',
+        OPTION_REGISTRY.get(option.name)?.consumer === 'kernel' ||
+        (commandControls.has('runtime') && OPTION_REGISTRY.get(option.name)?.prefix),
     );
     const kernelOptions = [...nodeOptions, ...prefixOptions];
     const kernelFlags = flagsFromOptions(kernelOptions);
@@ -46,6 +60,8 @@ export function prepareKernel(cli: KernelCli, options: { inheritNodeOptions?: bo
     return {
         config: flagsToConfig(flagsFromOptions(prefixOptions), flagsFromOptions(nodeOptions)),
         inspect: inspectOptions(kernelFlags),
+        modules: await loadInspectorBridge(),
+        runtimeModule,
         runtimeFlags: flagsFromOptions(cli.kernelOptions.filter(option => {
             const definition = OPTION_REGISTRY.get(option.name);
             return definition?.consumer === 'runtime' || (definition?.consumer === 'command' && definition.prefix);
@@ -53,6 +69,18 @@ export function prepareKernel(cli: KernelCli, options: { inheritNodeOptions?: bo
         preloads: optionValues(runtimeOptions, ['preload']),
         nodePreloads,
     };
+}
+
+// The bridge is cheap and always installed; the inspector subtree is large and
+// only an --inspect run reaches it, so it loads on demand below.
+async function loadInspectorBridge(): Promise<BridgeModule> {
+    return await import('./inspector/bridge');
+}
+
+let runtimeModulePromise: Promise<RuntimeModule> | null = null;
+
+function runtimeModule(): Promise<RuntimeModule> {
+    return runtimeModulePromise ??= import('../cts/src/runtime/index');
 }
 
 /** Commands receive only their own controls plus prepared runtime defaults. */
@@ -70,7 +98,7 @@ export function applyLocationFlag(flags: Flags): void {
 }
 
 export interface KernelRuntime {
-    runtime: ReturnType<typeof createRuntime>;
+    runtime: ReturnType<RuntimeModule['createRuntime']>;
     initialize(rawArgs?: Args): Promise<void>;
     finish(): void;
     close(): Promise<void>;
@@ -85,8 +113,8 @@ export async function openKernelRuntime(
     options: { repl?: boolean } = {},
 ): Promise<KernelRuntime> {
     let inspector: Inspector | null = null;
-    let runtime: ReturnType<typeof createRuntime> | undefined;
-    let bridge: ReturnType<typeof installInspectorBridge> | undefined;
+    let runtime: ReturnType<RuntimeModule['createRuntime']> | undefined;
+    let bridge: ReturnType<KernelModules['installInspectorBridge']> | undefined;
     let finished = false;
     let closed = false;
     let closePromise: Promise<void> | undefined;
@@ -104,8 +132,11 @@ export async function openKernelRuntime(
         return closePromise;
     };
     try {
+        const { installInspectorBridge } = kernel.modules;
         if (kernel.inspect) {
             const inspect = kernel.inspect;
+            // Resolved here, before construction, so a failed load leaves no half-init.
+            const { Inspector } = await import('./inspector');
             inspector = new Inspector({
                 ...inspect,
                 entryFile: entry,
@@ -115,6 +146,7 @@ export async function openKernelRuntime(
             // Attach before CTS installs engine.onModule so script hooks compose.
             await inspector.attach();
         }
+        const { createRuntime } = await kernel.runtimeModule();
         runtime = createRuntime(config, dir);
         const activeRuntime = runtime;
         bridge = installInspectorBridge({

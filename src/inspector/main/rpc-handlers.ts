@@ -1,13 +1,8 @@
 /**
- * main/rpc-handlers.ts - registers every RPC method the worker may call on the
- * main thread.
- *
- * These are the `inspect`- and `lifecycle`-transport methods (evaluate,
- * getProperties, ready, setConnected). `control`-transport methods
- * (breakpoints, requestPause) are applied directly on the debug channel by the
- * worker endpoint and never reach here.
- *
- * Every handler returns a concrete CDP shape; the endpoint forwards it verbatim.
+ * Registers every RPC method the worker may call on the main thread: the
+ * `inspect`- and `lifecycle`-transport methods. `control`-transport methods
+ * (breakpoints, requestPause) are applied on the debug channel by the worker
+ * endpoint and never reach here. The endpoint forwards each result verbatim.
  */
 
 import { getMemoryFile } from '../../../cts/src/api'
