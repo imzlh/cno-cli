@@ -126,6 +126,11 @@ CJS requiring ESM uses the sync bridge in `cts/src/compile/bridge.ts`. If
 top-level await is unresolved, `require()` must throw instead of returning a
 partially evaluated namespace.
 
+Compilation, bytecode linking, and synchronous evaluation share
+`moduleEvaluationKey(info)` for cycle checks. It uses `localPath` so file and
+package aliases cannot re-enter the same file, while explicit `moduleId` views
+remain independent. QuickJS names and cache identities still use `moduleRef`.
+
 ## Precache Flow
 
 `cno cache` calls CTS precache methods:

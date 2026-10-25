@@ -34,7 +34,7 @@ jobs:
       - if: inputs.run-tests
         run: pnpm run type-check
       - if: inputs.run-tests
-        run: node --test tests/cts/setup-polyfill.test.mjs
+        run: node --test tests/cts/setup-polyfill.test.mjs tests/cts/cli-lifecycle.test.mjs tests/node/util-source.test.mjs
       - run: pnpm run bundle:min
 
   native:
@@ -129,6 +129,10 @@ jobs:
       - name: Build cno and OXC
         id: native-build
         run: node scripts/ci/build.mjs
+
+      - name: Check cycle guards and packing against the staged runtime
+        if: inputs.run-tests
+        run: node --test tests/cts/module-id-cycle-guard.test.mjs tests/cts/pack-command.test.mjs
 
       - name: Save Windows native dependencies
         if: always() && !cancelled() && runner.os == 'Windows' && steps.vcpkg-cache.outputs.cache-hit != 'true' && steps.vcpkg-cache.outputs.cache-primary-key != ''

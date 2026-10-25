@@ -71,29 +71,28 @@ function createInspectorBridge(options: InspectorBridgeInstallOptions): Installe
 		const existing = current()
 		if (existing?.inspectorUrl) return existing
 
-		const PendingInspector = await loadInspector()
-		const inspector = new PendingInspector({
-			port: openOptions.port ?? 9229,
-			host: openOptions.host ?? '127.0.0.1',
-			entryFile: options.entryFile,
-		})
-		publish(inspector)
-		// Concurrent callers wait on the same attach; set before the await so
-		// dispose() during the Inspector load still observes the open.
-		opening = inspector.attach()
-			.then(() => {
+		// Track loading as part of opening so concurrent callers share it and
+		// close() can cancel before the inspector has been constructed.
+		opening = (async () => {
+			const PendingInspector = await loadInspector()
+			if (disposed || closing) throw new Error('Inspector bridge is closed')
+			const inspector = new PendingInspector({
+				port: openOptions.port ?? 9229,
+				host: openOptions.host ?? '127.0.0.1',
+				entryFile: options.entryFile,
+			})
+			publish(inspector)
+			try {
+				await inspector.attach()
 				if (disposed || closing || current() !== inspector) throw new Error('Inspector bridge is closed')
 				options.onOpen?.(inspector)
 				return inspector
-			})
-			.catch(async (error) => {
+			} catch (error) {
 				try { await inspector.detach() } catch { /* preserve the attach failure */ }
 				if (current() === inspector) publish(null)
 				throw error
-			})
-			.finally(() => {
-				opening = null
-			})
+			}
+		})().finally(() => { opening = null })
 
 		return opening
 	}
@@ -101,11 +100,12 @@ function createInspectorBridge(options: InspectorBridgeInstallOptions): Installe
 	const close = (): Promise<void> => {
 		if (closing) return closing
 		const inspector = current()
-		if (!inspector) return Promise.resolve()
+		const pending = opening
+		if (!inspector && !pending) return Promise.resolve()
 		closing = (async () => {
-			try { await inspector.detach() }
+			try { await inspector?.detach() }
 			finally {
-				try { await opening } catch { /* opening owns its failure */ }
+				try { await pending } catch { /* opening owns its failure */ }
 				if (current() === inspector) publish(null)
 			}
 		})().finally(() => { closing = null })

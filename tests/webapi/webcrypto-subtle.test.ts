@@ -132,29 +132,38 @@ Deno.test('webcrypto: AES-GCM encrypt then decrypt round-trips', async () => {
     strictEqual(decodeUtf8(pt), 'secret-data');
 });
 
-Deno.test('webcrypto upstream: RSA-OAEP encrypt decrypt and oversized plaintext reject', async () => {
-    const keyPair = await crypto.subtle.generateKey(
-        {
-            name: 'RSA-OAEP',
-            modulusLength: 2048,
-            publicExponent: new Uint8Array([1, 0, 1]),
-            hash: 'SHA-256',
-        },
-        true,
-        ['encrypt', 'decrypt'],
-    );
-    const plaintext = encodeUtf8('rsa oaep secret');
-    const encrypted = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, keyPair.publicKey, plaintext);
-    ok(encrypted instanceof ArrayBuffer);
-    strictEqual(encrypted.byteLength, 256);
+Deno.test('webcrypto upstream: RSA-OAEP preserves hashes, labels and plaintext size limits', async () => {
+    for (const [hash, maxLength] of [['SHA-256', 190], ['SHA-512', 126]] as const) {
+        const keyPair = await crypto.subtle.generateKey(
+            {
+                name: 'RSA-OAEP',
+                modulusLength: 2048,
+                publicExponent: new Uint8Array([1, 0, 1]),
+                hash,
+            },
+            true,
+            ['encrypt', 'decrypt'],
+        );
+        for (const label of [undefined, encodeUtf8('oaep context')]) {
+            const algorithm = { name: 'RSA-OAEP', label };
+            const plaintext = new Uint8Array(maxLength).fill(0x61);
+            const encrypted = await crypto.subtle.encrypt(algorithm, keyPair.publicKey, plaintext);
+            ok(encrypted instanceof ArrayBuffer);
+            strictEqual(encrypted.byteLength, 256);
 
-    const decrypted = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, keyPair.privateKey, encrypted);
-    deepStrictEqual(new Uint8Array(decrypted), plaintext);
+            const decrypted = await crypto.subtle.decrypt(algorithm, keyPair.privateKey, encrypted);
+            deepStrictEqual(new Uint8Array(decrypted), plaintext);
 
-    await rejects(
-        () => crypto.subtle.encrypt({ name: 'RSA-OAEP' }, keyPair.publicKey, new Uint8Array(191)),
-        DOMException,
-    );
+            await rejects(
+                () => crypto.subtle.encrypt(algorithm, keyPair.publicKey, new Uint8Array(maxLength + 1)),
+                (error: unknown) => {
+                    ok(error instanceof DOMException);
+                    strictEqual(error.name, 'OperationError');
+                    return true;
+                },
+            );
+        }
+    }
 });
 
 Deno.test('webcrypto: AES-GCM with wrong IV fails to decrypt', async () => {

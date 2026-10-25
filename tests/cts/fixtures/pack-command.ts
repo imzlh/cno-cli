@@ -1,7 +1,7 @@
 import { deepStrictEqual, strictEqual, throws } from 'node:assert';
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { makePosixTempDir } from '../_helpers/temp.ts';
+import { makePosixTempDir } from '../../_helpers/temp.ts';
 import {
     decodePack,
     encodePack,
@@ -9,7 +9,7 @@ import {
     readBlob,
     readSourceBlob,
     type PackManifest,
-} from '../../cts/src/api/index.ts';
+} from '../../../cts/src/pack/format.ts';
 
 const decoder = new TextDecoder();
 const crypto = import.meta.use('crypto');

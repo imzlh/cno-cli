@@ -9,11 +9,9 @@ import { makePosixTempDir } from '../_helpers/temp.ts';
 import {
     decodePack,
     encodePack,
-    bytesEqual,
-    hasExpectedContent,
-    safeExtractBaseName,
     type PackManifest,
-} from '../../cts/src/api/index.ts';
+} from '../../cts/src/pack/format.ts';
+import { bytesEqual, hasExpectedContent, safeExtractBaseName } from '../../cts/src/pack/integrity.ts';
 import { attributeViewId, specScheme } from '../../cts/src/pack/identity.ts';
 import { sizeBucketForModule, summarizePackSizes } from '../../cts/src/pack/size.ts';
 import { moduleViewRef } from '../../cts/src/types.ts';

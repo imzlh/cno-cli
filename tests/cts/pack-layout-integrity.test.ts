@@ -23,7 +23,7 @@ import {
     readSourceBlob,
     type PackManifest,
     type PackModuleEntry,
-} from '../../cts/src/api/index.ts';
+} from '../../cts/src/pack/format.ts';
 
 const crypto = import.meta.use('crypto');
 const encoder = new TextEncoder();
@@ -135,7 +135,7 @@ Deno.test('pack layout: a source entry without its source range is rejected, not
     // validRange(undefined, undefined) used to pass, so this manifest reached
     // readSourceBlob/completePackManifest with an undefined offset and the
     // PackManifest cast claimed fields that did not exist.
-    const base = twoModuleManifest();
+    const base = completePackManifest(twoModuleManifest(), blobSourceFromBytes(BLOB40));
     const missing = structuredClone(base) as unknown as { modules: Record<string, Record<string, unknown>> };
     delete missing.modules['pack:/b.ts']!.sourceOffset;
     const pack = rawBytes(missing, BLOB40);

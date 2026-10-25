@@ -30,7 +30,7 @@ import {
     readSourceBlob,
     type PackContainer,
     type PackManifest,
-} from '../../cts/src/api/index.ts';
+} from '../../cts/src/pack/format.ts';
 
 const crypto = import.meta.use('crypto');
 const encoder = new TextEncoder();

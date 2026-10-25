@@ -104,7 +104,9 @@ export class LineEditor {
             this.#stdout = openReplOutput(os.STDOUT_FILENO);
         }
         if (opts.tty) {
-            this.#stdin = new streams.TTY(os.STDIN_FILENO, true) as RawInput;
+            const stdin = new streams.TTY(os.STDIN_FILENO, true);
+            stdin.mode = streams.TTY_MODE_RAW_VT;
+            this.#stdin = stdin;
             this.#refreshTermWidth();
         } else {
             this.#stdin = openReplInput(os.STDIN_FILENO);
