@@ -11,10 +11,20 @@ import type { ConfigOptions } from '../../cts/src/types.ts';
 function withoutCtsMemoryLimit<T>(fn: () => T): T {
     const previous = Deno.env.get('CTS_MEMORY_LIMIT');
     if (previous !== undefined) Deno.env.delete('CTS_MEMORY_LIMIT');
+    const restore = () => {
+        if (previous === undefined) Deno.env.delete('CTS_MEMORY_LIMIT');
+        else Deno.env.set('CTS_MEMORY_LIMIT', previous);
+    };
+    let restoreSynchronously = true;
     try {
-        return fn();
+        const result = fn();
+        if (result instanceof Promise) {
+            restoreSynchronously = false;
+            return result.finally(restore) as T;
+        }
+        return result;
     } finally {
-        if (previous !== undefined) Deno.env.set('CTS_MEMORY_LIMIT', previous);
+        if (restoreSynchronously) restore();
     }
 }
 
@@ -28,13 +38,13 @@ Deno.test('max-old-space-size: CLI flag becomes a real memory cap', () => {
     });
 });
 
-Deno.test('kernel config: NODE_OPTIONS defaults precede explicit prefix options', () => {
-    withoutCtsMemoryLimit(() => {
+Deno.test('kernel config: NODE_OPTIONS defaults precede explicit prefix options', async () => {
+    await withoutCtsMemoryLimit(async () => {
         const previous = Deno.env.get('NODE_OPTIONS');
         try {
             for (const option of ['--max-old-space-size=32', '--max-old-space-size 32']) {
                 Deno.env.set('NODE_OPTIONS', `${option} --conditions=environment`);
-                const inherited = prepareKernel(parseArgv(['run', 'main.ts']));
+                const inherited = await prepareKernel(parseArgv(['run', 'main.ts']));
                 strictEqual(inherited.config.memoryLimit, 32 * MB);
                 deepStrictEqual(inherited.config.conditions, ['environment']);
 
@@ -42,11 +52,11 @@ Deno.test('kernel config: NODE_OPTIONS defaults precede explicit prefix options'
                     '--max-old-space-size=48', '--conditions=prefix',
                     'run', '--max-old-space-size=96', '--conditions=ignored', 'main.ts',
                 ]);
-                const explicit = prepareKernel(cli);
+                const explicit = await prepareKernel(cli);
                 strictEqual(explicit.config.memoryLimit, 48 * MB);
                 deepStrictEqual(explicit.config.conditions, ['environment', 'prefix']);
 
-                const v8 = prepareKernel(parseArgv(['--v8-flags=--max-old-space-size=24', 'run', 'main.ts']));
+                const v8 = await prepareKernel(parseArgv(['--v8-flags=--max-old-space-size=24', 'run', 'main.ts']));
                 strictEqual(v8.config.memoryLimit, 24 * MB);
             }
         } finally {
@@ -56,13 +66,13 @@ Deno.test('kernel config: NODE_OPTIONS defaults precede explicit prefix options'
     });
 });
 
-Deno.test('kernel config: command runtime values override prefix defaults without losing core settings', () => {
-    withoutCtsMemoryLimit(() => {
+Deno.test('kernel config: command runtime values override prefix defaults without losing core settings', async () => {
+    await withoutCtsMemoryLimit(async () => {
         const cli = parseArgv([
             '--cache-dir=prefix-cache', '--memory-limit=64MB', '--no-http',
             'run', '--cache-dir=command-cache', '--memory-limit=128MB', 'main.ts',
         ]);
-        const kernel = prepareKernel(cli, { inheritNodeOptions: false });
+        const kernel = await prepareKernel(cli, { inheritNodeOptions: false });
         const config = { ...kernel.config, ...flagsToConfig(effectiveRuntimeFlags(kernel, cli.flags)) };
         strictEqual(config.cacheDir, 'command-cache');
         strictEqual(config.memoryLimit, 64 * MB);
@@ -70,18 +80,18 @@ Deno.test('kernel config: command runtime values override prefix defaults withou
     });
 });
 
-Deno.test('kernel config: task config defaults respect explicit command values', () => {
+Deno.test('kernel config: task config defaults respect explicit command values', async () => {
     for (const commandArgs of [[], ['--config=command.json']]) {
         const cli = parseArgv(['--config=prefix.json', 'task', ...commandArgs, 'build']);
-        const kernel = prepareKernel(cli, { inheritNodeOptions: false });
+        const kernel = await prepareKernel(cli, { inheritNodeOptions: false });
         strictEqual(effectiveRuntimeFlags(kernel, cli.flags).config,
             commandArgs.length ? 'command.json' : 'prefix.json');
     }
 });
 
-Deno.test('kernel config: explicit false disables Inspector and runtime switches', () => {
+Deno.test('kernel config: explicit false disables Inspector and runtime switches', async () => {
     const cli = parseArgv(['--inspect=false', '--no-http=true', 'run', '--no-http=false', 'main.ts']);
-    const kernel = prepareKernel(cli, { inheritNodeOptions: false });
+    const kernel = await prepareKernel(cli, { inheritNodeOptions: false });
     strictEqual(kernel.inspect, null);
     strictEqual(cli.kernelFlags.inspect, false);
     strictEqual(cli.kernelFlags['no-http'], true);
