@@ -1,224 +1,246 @@
 # cno-cli
 
-`cno-cli` is the integrated command-line runtime built from the projects in
-this repository. It runs TypeScript and JavaScript on top of `circu.js`, with a
-Deno-like CLI surface, Web APIs, Deno APIs, and a growing Node.js compatibility
-layer.
+[![CI](https://github.com/imzlh/cno-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/imzlh/cno-cli/actions/workflows/ci.yml)
 
-This checkout is a monorepo-style development tree. The runtime that users run
-is the final `cno` binary; the subdirectories are the layers that are bundled or
-linked into it.
+`cno` is a standalone runtime for TypeScript and JavaScript. It provides a
+Deno-style command line, browser-friendly Web APIs, and practical compatibility
+with Deno and Node.js code.
 
-> [!IMPORTANT]
-> On October 9, 2026, Deno [announced](https://deno.com/blog/cloudflare) that
-> Deno is dying and will stop entire development after 1 year. I am reconsidering
-> the roadmap of this project, and -- really need your help!
->
-> The worst case is, release this project after several bug-fixes, and die,
-> following the footprint as deno.
+Use it to run a script without a separate build step, start a small server, run
+tests and project tasks, or work with dependencies from npm, JSR, and remote
+URLs.
 
-## Repository Layout
+> [!NOTE]
+> cno is under active development. Compatibility is intentionally practical
+> rather than complete, so code that depends on every detail of Deno or Node.js
+> may still need changes. Bug reports and real-world examples are welcome.
 
-| Path | Role |
-| --- | --- |
-| `src/` | CLI entry point, command dispatch, inspector, setup/cache/test/task commands |
-| `cts/` | TypeScript loader: resolution, transform, bytecode cache, CJS/ESM bridge |
-| `cno/` | Runtime polyfills: Web API, Deno API, Node.js modules, `CNO` namespace |
-| `circu.js/` | Native runtime core: QuickJS, libuv, built-in C modules, `cjsc` |
-| `http/` | `@cnojs/http`, low-level protocol helpers used by cno polyfills, server only |
-| `ext-oxc/` | Optional native OXC extension for fast transform and import scanning |
-| `ext-quic/` | Optional QUIC extension used by WebTransport-related code |
-| `tests/` | Runtime tests grouped by compatibility surface |
-| `scripts/` | Build helpers, especially the esbuild bundler |
+## Highlights
 
-`AGENT.md` is the authoritative maintainer guide for architecture notes, coding
-constraints, and repo-specific debugging rules.
+- Runs TypeScript, TSX, JavaScript, JSX, ESM, and CommonJS.
+- Resolves local files plus `npm:`, `jsr:`, `http:`, `https:`, `node:`, and
+  `data:` imports.
+- Includes familiar Web APIs such as `fetch`, streams, WebSocket, WebCrypto,
+  workers, and `Deno.serve`.
+- Provides many Deno APIs and Node.js built-in modules.
+- Includes commands for tests, tasks, dependency caching, a REPL, debugging,
+  servers, and portable `.jspack` bundles.
+- Ships as a native executable; a Node.js or Deno installation is not required
+  to run it.
 
-## Runtime Shape
+## Install
 
-The common execution path is:
+Download the archive for your operating system and CPU from
+[GitHub Releases](https://github.com/imzlh/cno-cli/releases/latest), then extract
+the whole archive.
 
-```text
-cno CLI
-  -> cts runtime
-     -> resolver/source/compiler
-     -> cno polyfills
-     -> circu.js native runtime
-```
+Keep the included `ext/` directory, and `lib/` when present, next to the `cno`
+executable. Some release variants use files from those directories at runtime.
+Add the extracted directory to `PATH` if you want to call `cno` from anywhere.
 
-Important boundaries:
-
-- `src/main.ts` parses CLI arguments and dispatches commands.
-- `src/commands/run.ts` creates a CTS runtime and loads the entry module.
-- `cts/src/runtime/index.ts` owns resolver, compiler, lock handling, OXC, and
-  precache lifecycle.
-- `cts/src/resolve/` maps `file:`, `npm:`, `jsr:`, `http:`, `node:`, and
-  `data:` specifiers to `ModuleInfo`.
-- `cts/src/compile/` loads ESM, CJS, JSON/text/binary, and WASM.
-- `cno/src/main.ts` installs Web API, Deno, CNO, and Node global polyfills.
-
-## Commands
+Check the installation and prepare the Node.js compatibility files:
 
 ```sh
-cno run <file> [args...]
-cno <file> [args...]
-cno eval "<code>"
-cno repl
-cno test [paths...]
-cno task [name]
-cno cache [file]
+cno --version
 cno setup
-cno exec <bin> [args...]
 ```
 
-Common flags include:
+On Windows, use `cno.exe` if the extracted directory is not yet on `PATH`.
+
+## Quick Start
+
+Create `hello.ts`:
+
+```ts
+const name: string = Deno.args[0] ?? "world";
+console.log(`Hello, ${name}!`);
+```
+
+Run it directly:
 
 ```sh
---cache-dir=<dir>
---lock-dir=<dir>
---no-lock
---frozen
---reload
---precache
---no-http
---no-jsr
---no-node
---no-oxc
---disable-cache
---ignore-scripts
---npm-mode=normal|soft|hard
---inspect[=host:port]
---inspect-brk[=host:port]
---inspect-wait[=host:port]
+cno hello.ts cno
+# Hello, cno!
 ```
 
-Deno permission and unstable flags are accepted as compatibility no-ops where
-the CLI parser recognizes them.
+`run` is optional when the first argument is a file path:
 
-## Cache And Lock Behavior
+```sh
+cno run hello.ts cno
+cno hello.ts cno
+```
 
-`cno cache` is the command that prepares dependency resolution state and writes
-`cts.lock`. `run`, `eval`, `repl`, and `test` open an existing project lock
-read-only when available, otherwise they use the cache directory or an in-memory
-store.
+Evaluate a short expression or open the interactive REPL:
 
-No-argument `cno cache` seeds from `deno.json` imports and
-`package.json` dependencies, devDependencies, and optionalDependencies.
+```sh
+cno eval 'console.log(6 * 7)'
+cno repl
+```
 
-`--npm-mode` only affects `cno cache` materialization:
+## Imports And Dependencies
 
-- `normal`: flat CTS cache only.
-- `soft`: top-level directory links into the flat cache.
-- `hard`: per-file hard links, falling back to copies when needed.
+Imports can use familiar Deno- and Node-style specifiers:
 
-## Development
+```ts
+import { join } from "node:path";
+import packageJson from "./package.json" with { type: "json" };
+
+console.log(join(packageJson.name, "cache"));
+```
+
+npm and JSR packages can be imported without manually creating a
+`node_modules` directory:
+
+```ts
+import leftPad from "npm:left-pad@1.3.0";
+import { Hono } from "jsr:@hono/hono@4.12.27";
+```
+
+Prepare dependencies ahead of time and write the resolution cache with:
+
+```sh
+cno cache app.ts
+```
+
+Running `cno cache` without a file reads dependencies from `deno.json` and
+`package.json`. If a tool requires a physical `node_modules` tree, use
+`--npm-mode=soft` or `--npm-mode=hard` with the cache command.
+
+## Run A Server
+
+A module whose default export contains a `fetch` function can be served
+directly:
+
+```ts
+export default {
+  fetch(request: Request): Response {
+    return new Response(`Hello from ${new URL(request.url).pathname}`);
+  },
+};
+```
+
+```sh
+cno serve --port=8000 server.ts
+```
+
+## Tests And Tasks
+
+cno runs tests declared with `Deno.test` and discovers files such as
+`example.test.ts` and `example_test.ts`:
+
+```ts
+import { strictEqual } from "node:assert";
+
+Deno.test("addition", () => {
+  strictEqual(20 + 22, 42);
+});
+```
+
+```sh
+cno test
+cno test tests/
+cno test --filter=addition
+```
+
+Tasks can come from `deno.json`, `deno.jsonc`, or `package.json`:
+
+```sh
+cno task
+cno task dev
+```
+
+## Command Overview
+
+| Command | Purpose |
+| --- | --- |
+| `cno <file> [args...]` | Run a TypeScript or JavaScript file |
+| `cno run <file> [args...]` | Run a file explicitly |
+| `cno serve <file>` | Serve a module's default `fetch` export |
+| `cno eval <code>` | Evaluate inline code |
+| `cno repl` | Start an interactive TypeScript REPL |
+| `cno test [paths...]` | Run test files |
+| `cno task [name]` | Run a project task |
+| `cno cache [file]` | Prepare dependencies and update `cts.lock` |
+| `cno exec <bin> [args...]` | Run an npm package binary, similar to `pnpx` |
+| `cno pack <file>` | Package an entry and its dependencies as `.jspack` |
+| `cno setup` | Install or refresh Node.js compatibility files |
+
+Useful options include:
+
+| Option | Purpose |
+| --- | --- |
+| `--reload` / `--precache` | Prepare the dependency graph before running |
+| `--cached-only` | Refuse network downloads |
+| `--frozen` | Fail when an import is missing from `cts.lock` |
+| `--no-http`, `--no-jsr`, `--no-node` | Disable selected import sources |
+| `--cache-dir=<path>` | Choose another cache directory |
+| `--inspect`, `--inspect-brk` | Start the Chrome DevTools debugger; place before the command |
+| `--memory-limit=<size>` | Set a runtime memory limit; place before the command |
+
+Run `cno --help` for the complete command and option reference.
+
+## Compatibility And Security
+
+cno aims to run useful Deno, Node.js, and Web-platform code, but it is not a
+complete replacement for any of those runtimes. In particular:
+
+- Some APIs and Node.js built-in modules are only partially implemented.
+- npm packages that rely on native addons, an exact `node_modules` layout, or
+  subtle Node.js behavior may not work yet.
+- Optional native features can vary by release and platform.
 
 > [!WARNING]
-> if you just want to build it one-step, just try `build.sh` for posix-compatible shells and `build.ps1` for windows.
-> Don't forget to install dependencies before building.
+> cno does not currently provide Deno's permission sandbox. Permission flags
+> such as `--allow-read` and `--deny-net` are accepted for command-line
+> compatibility but are not enforced. Do not use them as a security boundary,
+> and do not run untrusted code.
 
-Initialize the nested submodules and install JavaScript dependencies with the
-pnpm version declared in `package.json`:
+See [Compatibility](docs/compatibility.md) for current support boundaries and
+[CLI](docs/cli.md) for detailed command behavior.
+
+## Build From Source
+
+Most users should use a release archive. To build cno yourself, first install a
+C/C++ toolchain, CMake, pnpm, and the platform libraries listed in the
+[build guide](docs/build-test.md). Rust is optional and enables the faster OXC
+TypeScript transformer.
+
+Clone the repository with its submodules and install the JavaScript
+dependencies:
 
 ```sh
-git submodule update --init --recursive
+git clone --recurse-submodules https://github.com/imzlh/cno-cli.git
+cd cno-cli
 pnpm install --frozen-lockfile
 pnpm --dir cno install --frozen-lockfile
 pnpm --dir cts install --frozen-lockfile
 ```
 
-The root, `cno`, and `cts` are separate pnpm projects with their own lockfiles.
-All three installs are required because the CLI bundles source from the
-subprojects. Run these commands from the repository root on any platform.
-
-Check that the JavaScript bundle builds:
+Build on Linux or macOS:
 
 ```sh
-pnpm run bundle
+./build.sh
 ```
 
-Type-check the TypeScript bundle surface:
+Build on Windows from PowerShell:
 
-```sh
-pnpm run type-check
+```powershell
+.\build.ps1
 ```
 
-The first type check downloads and verifies the pinned Deno declarations;
-subsequent runs reuse them from `node_modules/.cache/cno-types/`.
+The assembled files are written to `dist/exe/`. For platform-specific setup,
+manual CMake commands, and validation steps, read
+[Building and testing](docs/build-test.md).
 
-Configure and build the native binary:
+## Contributing
 
-```sh
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
+Issues and pull requests are welcome. When reporting a runtime problem, include
+`cno --version`, your operating system and CPU architecture, and a small
+reproduction when possible.
 
-The staged binary is written to:
+Development documentation is collected in the
+[documentation index](docs/README.md).
 
-```text
-build/stage/cno
-```
+## License
 
-After changing only `cno/src/node/` polyfills, refresh the installed Node
-polyfill cache for the staged binary:
-
-```sh
-build/stage/cno setup
-```
-
-For broader native or bundled changes, rebuild with CMake.
-
-> [!NOTE]
-> You can also build the oxc native extension with:
-> `cd ext-oxc && cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build`
-> and then copy the built library to the `stage/ext` directory.
-
-## Testing
-
-The test runner discovers files matching:
-
-```text
-[._]test.[jt]sx?
-```
-
-Typical focused test commands:
-
-```sh
-build/stage/cno test tests/node
-build/stage/cno test tests/deno
-build/stage/cno test tests/webapi
-build/stage/cno test tests/cts
-build/stage/cno test tests/cjs
-```
-
-`cno test` runs each test file in a real child process so process and signal
-behavior are closer to normal runtime behavior.
-
-## Native Extensions (experimental, non-stable)
-
-The root CMake build can statically embed optional extensions:
-
-```sh
-cmake -B build -DCNO_EMBED_EXT_H2=ON
-cmake -B build -DCNO_EMBED_EXT_QUIC=ON
-```
-
-External extensions can also be placed under the staged extension directory or
-loaded through the runtime extension registration path.
-
-## Documentation Map
-
-- `docs/README.md`: documentation index for maintainers.
-- `docs/architecture.md`: runtime layers and active execution path.
-- `docs/api-surfaces.md`: public and semi-public API surfaces.
-- `docs/cli.md`: command routing, flags, and command behavior.
-- `docs/compatibility.md`: compatibility status language and support boundaries.
-- `docs/module-loading.md`: CTS resolver/compiler/cache/lock behavior.
-- `docs/polyfills.md`: Web API, Deno, Node, and CNO compatibility layers.
-- `docs/build-test.md`: build, setup, and validation commands.
-- `docs/native-extensions.md`: native runtime and extension model.
-- `docs/inspector.md`: CDP inspector architecture.
-- `AGENT.md`: maintainer and agent rules. Read this before changing code.
-- Subproject READMEs: `cts/readme.md`, `cno/readme.md`,
-  `circu.js/README.md`, `http/readme.md`, `ext-oxc/README.md`,
-  `ext-quic/readme.md`.
+MIT
