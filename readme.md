@@ -15,6 +15,20 @@ URLs.
 > rather than complete, so code that depends on every detail of Deno or Node.js
 > may still need changes. Bug reports and real-world examples are welcome.
 
+## Project Direction
+
+On October 9, 2026, Deno
+[announced](https://deno.com/blog/cloudflare) that its active development is
+expected to wind down over the following year. Because Deno compatibility is
+an important part of cno, this change also affects the assumptions behind
+cno's roadmap.
+
+The project may move from broad feature development toward stable releases and
+bug-fix-focused maintenance. That direction is not final: feedback from people
+using cno will help decide what remains worth building and maintaining. If you
+rely on cno, please share your use cases, report compatibility gaps, or
+contribute fixes and documentation.
+
 ## Highlights
 
 - Runs TypeScript, TSX, JavaScript, JSX, ESM, and CommonJS.
