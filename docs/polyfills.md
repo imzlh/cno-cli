@@ -81,6 +81,12 @@ querystring, readline, repl, sqlite, sqlite3, stream, string_decoder, timers,
 tls, tty, url, util, v8, vm, wasi, worker_threads, zlib
 ```
 
+The compatibility identity targets Node 26. Common v25/v26 additions include
+`crypto.randomUUIDv7()`, `stream/consumers.bytes()`, SQLite statement options,
+and practical subsets of `stream/iter` and `zlib/iter`. Experimental modules
+that require substantially different native/runtime architecture are not
+advertised merely to match Node's builtin list.
+
 Shared Node internals live under:
 
 ```text

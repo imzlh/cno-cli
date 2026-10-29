@@ -12,16 +12,18 @@ Deno.test('module: builtinModules and isBuiltin expose bare builtin names', () =
     ok(module.isBuiltin('node:fs'));
     ok(!module.isBuiltin('node:not-real'));
     ok(!module.isBuiltin('internal/errors'));
-    // Measured on real node v24.18.0: `node:test`, `node:sqlite`, `node:sea` and
-    // `node:test/reporters` are listed and resolvable ONLY with the prefix.
-    // `isBuiltin('test')` is FALSE upstream — a bare `test` would shadow a user's
-    // own ./test module. This test previously asserted the opposite and real Node
-    // failed it too, so it was a wrong expectation rather than a cno defect.
+    // Prefix-only builtins must not shadow same-named user packages.
     ok(!module.isBuiltin('test'), 'bare test is not a builtin');
     ok(module.isBuiltin('node:test'), 'node:test is a builtin');
     ok(module.isBuiltin('node:sqlite'), 'node:sqlite is a builtin');
+    ok(module.isBuiltin('node:stream/iter'), 'node:stream/iter is a builtin');
+    ok(module.isBuiltin('zlib/iter'), 'zlib/iter is a builtin');
     ok(module.builtinModules.includes('node:test'), 'builtinModules lists node:test verbatim');
+    ok(module.builtinModules.includes('stream/iter'), 'builtinModules lists stream/iter');
+    ok(module.builtinModules.includes('zlib/iter'), 'builtinModules lists zlib/iter');
     ok(!module.builtinModules.includes('test'), 'builtinModules omits bare test');
+    ok(!module.isBuiltin('node:sea'), 'unsupported node:sea is not advertised');
+    ok(!module.isBuiltin('node:test/reporters'), 'unsupported reporters are not advertised');
     ok(!module.isBuiltin(''));
     ok(!module.isBuiltin(undefined as unknown as string));
 });

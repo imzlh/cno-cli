@@ -22,8 +22,11 @@ Deno.test('cts: isBuiltinSpecifier only accepts known builtin subpaths', async (
     const { isBuiltinSpecifier } = await import('../../cts/src/resolve/builtins.ts');
     ok(isBuiltinSpecifier('fs/promises'));
     ok(isBuiltinSpecifier('node:stream/web'));
+    ok(isBuiltinSpecifier('stream/iter'));
+    ok(isBuiltinSpecifier('node:zlib/iter'));
     ok(!isBuiltinSpecifier('string_decoder/'));
     ok(!isBuiltinSpecifier('fs/utils'));
+    ok(!isBuiltinSpecifier('node:test/reporters'));
 });
 
 Deno.test('cts: builtins.ts exports BUILTINS and isBuiltinSpecifier', async () => {
