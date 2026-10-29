@@ -75,7 +75,7 @@ Implemented or partial areas include:
 
 ```text
 assert, async_hooks, buffer, child_process, console, constants, crypto,
-dgram, diagnostics_channel, dns, events, fs, http, http2, https, inspector,
+dgram, diagnostics_channel, dns, events, ffi, fs, http, http2, https, inspector,
 ipc_channel, module, net, os, path, perf_hooks, process, punycode,
 querystring, readline, repl, sqlite, sqlite3, stream, string_decoder, timers,
 tls, tty, url, util, v8, vm, wasi, worker_threads, zlib
@@ -83,9 +83,14 @@ tls, tty, url, util, v8, vm, wasi, worker_threads, zlib
 
 The compatibility identity targets Node 26. Common v25/v26 additions include
 `crypto.randomUUIDv7()`, `stream/consumers.bytes()`, SQLite statement options,
-and practical subsets of `stream/iter` and `zlib/iter`. Experimental modules
-that require substantially different native/runtime architecture are not
-advertised merely to match Node's builtin list.
+`node:ffi`, and practical subsets of `stream/iter` and `zlib/iter`.
+Experimental modules that require substantially different native/runtime
+architecture are not advertised merely to match Node's builtin list.
+
+`node:ffi` supports dynamic libraries, typed calls, symbol lookup, same-thread
+callbacks, raw pointer access, memory views/exports, and the current libuv loop
+pointer. Current-process image lookup (`dlopen(null)`) remains intentionally
+unsupported; callbacks follow Node's same-system-thread restriction.
 
 Shared Node internals live under:
 

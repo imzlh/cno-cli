@@ -15,6 +15,8 @@ Deno.test('cts: isBuiltinSpecifier detects node: prefix', async () => {
     const { isBuiltinSpecifier } = await import('../../cts/src/resolve/builtins.ts');
     ok(isBuiltinSpecifier('node:fs'));
     ok(isBuiltinSpecifier('fs'));
+    ok(isBuiltinSpecifier('node:ffi'));
+    ok(!isBuiltinSpecifier('ffi'));
     ok(!isBuiltinSpecifier('./local'));
 });
 

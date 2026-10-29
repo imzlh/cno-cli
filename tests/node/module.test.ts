@@ -14,14 +14,18 @@ Deno.test('module: builtinModules and isBuiltin expose bare builtin names', () =
     ok(!module.isBuiltin('internal/errors'));
     // Prefix-only builtins must not shadow same-named user packages.
     ok(!module.isBuiltin('test'), 'bare test is not a builtin');
+    ok(!module.isBuiltin('ffi'), 'bare ffi is not a builtin');
+    ok(module.isBuiltin('node:ffi'), 'node:ffi is a builtin');
     ok(module.isBuiltin('node:test'), 'node:test is a builtin');
     ok(module.isBuiltin('node:sqlite'), 'node:sqlite is a builtin');
     ok(module.isBuiltin('node:stream/iter'), 'node:stream/iter is a builtin');
     ok(module.isBuiltin('zlib/iter'), 'zlib/iter is a builtin');
     ok(module.builtinModules.includes('node:test'), 'builtinModules lists node:test verbatim');
+    ok(module.builtinModules.includes('node:ffi'), 'builtinModules lists node:ffi verbatim');
     ok(module.builtinModules.includes('stream/iter'), 'builtinModules lists stream/iter');
     ok(module.builtinModules.includes('zlib/iter'), 'builtinModules lists zlib/iter');
     ok(!module.builtinModules.includes('test'), 'builtinModules omits bare test');
+    ok(!module.builtinModules.includes('ffi'), 'builtinModules omits bare ffi');
     ok(!module.isBuiltin('node:sea'), 'unsupported node:sea is not advertised');
     ok(!module.isBuiltin('node:test/reporters'), 'unsupported reporters are not advertised');
     ok(!module.isBuiltin(''));
@@ -35,6 +39,7 @@ Deno.test('module: default export exposes Module static helpers', () => {
     strictEqual(Module.builtinModules, module.builtinModules);
     ok(Module.builtinModules.includes('node:test'));
     ok(Module.builtinModules.includes('node:sqlite'));
+    ok(Module.builtinModules.includes('node:ffi'));
 });
 
 Deno.test('module: createRequire accepts file URL strings and objects', () => {
