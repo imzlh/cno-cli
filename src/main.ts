@@ -147,6 +147,8 @@ async function listTasks(flags: Record<string, string | boolean>, prefixArgs: st
 
 let cleanupStarted = false;
 let requestedExitCode = 0;
+const REQUEST_EXIT_CODE_NAMESPACE = 'cno.runtime';
+const REQUEST_EXIT_CODE_KEY = 'requestExitCode';
 const REQUEST_EXIT_CODE_SLOT = Symbol.for('cno.runtime.requestExitCode');
 
 /** Terminal cleanup runs after user exit/unload handlers, never after entry evaluation. */
@@ -183,6 +185,15 @@ function requestExitCode(code: number): void {
     if (!Number.isInteger(code) || code === 0 || requestedExitCode !== 0) return;
     requestedExitCode = code;
     syncExitCode();
+}
+
+function installRequestExitCodeHandler(handler: (code: number) => void): void {
+    try {
+        import.meta.use('evbus')?.set(REQUEST_EXIT_CODE_NAMESPACE, REQUEST_EXIT_CODE_KEY, handler);
+    } catch {
+        // Older hosts or unavailable buses continue to use the legacy slot.
+    }
+    Reflect.set(globalThis, REQUEST_EXIT_CODE_SLOT, handler);
 }
 
 installEventReceiver('cli-lifecycle', (name) => {
@@ -450,10 +461,10 @@ async function mainEntry(): Promise<void> {
         const invocation = parseTestChildArgs(os.args.slice(2), testInvocation);
         // A test worker reports every rejection (see below), so its exit code
         // comes only from the suite result.
-        Reflect.set(globalThis, REQUEST_EXIT_CODE_SLOT, () => {});
+        installRequestExitCodeHandler(() => {});
         return runTestChild(os.args[1], invocation.cli, invocation.scriptArgs);
     }
-    Reflect.set(globalThis, REQUEST_EXIT_CODE_SLOT, requestExitCode);
+    installRequestExitCodeHandler(requestExitCode);
     await dispatch();
     syncExitCode();
 }

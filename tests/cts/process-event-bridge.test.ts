@@ -494,6 +494,7 @@ function singletonProcess(): {
     on(e: string, f: (...a: unknown[]) => void): unknown;
     off(e: string, f: (...a: unknown[]) => void): unknown;
     listenerCount(e: string): number;
+    rawListeners(e: string): Array<(...a: unknown[]) => void>;
     removeAllListeners(e?: string): unknown;
 } {
     const p = Reflect.get(globalThis, 'process');
@@ -501,26 +502,39 @@ function singletonProcess(): {
     return p as never;
 }
 
-Deno.test('rejection: EV_UNHANDLED_REJECTION emits unhandledRejection (reason, promise)', () => {
+// Synthetic events must not be recorded as real rejections by the test child.
+function withIsolatedRejectionListeners(body: (proc: ReturnType<typeof singletonProcess>) => void): void {
+    const proc = singletonProcess();
+    const saved = proc.rawListeners('unhandledRejection');
+    proc.removeAllListeners('unhandledRejection');
+    try {
+        body(proc);
+    } finally {
+        proc.removeAllListeners('unhandledRejection');
+        for (const listener of saved) proc.on('unhandledRejection', listener);
+    }
+}
+
+Deno.test('rejection: EV_UNHANDLED_REJECTION emits unhandledRejection (reason, promise)', () => withIsolatedRejectionListeners((P) => {
     const off = installNodeProcessRejectionBridge();
-    const P = singletonProcess();
-    const seen: unknown[][] = [];
-    const onRej = (...args: unknown[]) => { seen.push(args); };
-    P.on('unhandledRejection', onRej);
+    try {
+        const seen: unknown[][] = [];
+        const onRej = (...args: unknown[]) => { seen.push(args); };
+        P.on('unhandledRejection', onRej);
 
-    const reason = new Error('rejected-with-handler');
-    const promise = Promise.resolve();
-    getEventMux().dispatch(EV.UNHANDLED_REJECTION, [promise, reason]);
+        const reason = new Error('rejected-with-handler');
+        const promise = Promise.resolve();
+        getEventMux().dispatch(EV.UNHANDLED_REJECTION, [promise, reason]);
 
-    strictEqual(seen.length, 1, 'handler ran once');
-    strictEqual(seen[0]?.[0], reason, "Node's first arg is the reason");
-    strictEqual(seen[0]?.[1], promise, "Node's second arg is the promise");
+        strictEqual(seen.length, 1, 'handler ran once');
+        strictEqual(seen[0]?.[0], reason, "Node's first arg is the reason");
+        strictEqual(seen[0]?.[1], promise, "Node's second arg is the promise");
 
-    P.off('unhandledRejection', onRej);
-    off();
-});
+        P.off('unhandledRejection', onRej);
+    } finally { off(); }
+}));
 
-Deno.test('rejection: a delivered rejection returns FALSE (vm.c:242 aborts on non-false)', () => {
+Deno.test('rejection: a delivered rejection returns FALSE (vm.c:242 aborts on non-false)', () => withIsolatedRejectionListeners((P) => {
     // POLARITY, and it is INVERTED relative to EV_JOB_EXCEPTION:
     //   vm.c:242    `!JS_IsEqual(ret, JS_FALSE)` -> JS_EXCEPTION   (false = handled)
     //   utils.c:180 ` JS_IsEqual(ret, JS_FALSE)` -> TJS_Stop       (true  = handled)
@@ -528,58 +542,57 @@ Deno.test('rejection: a delivered rejection returns FALSE (vm.c:242 aborts on no
     // abort the process on exactly the rejections the program handled. That
     // inversion already shipped once, in webapi's 'unhandledrejection' arm.
     const off = installNodeProcessRejectionBridge();
-    const P = singletonProcess();
-    const onRej = () => {};
-    P.on('unhandledRejection', onRej);
+    try {
+        const onRej = () => {};
+        P.on('unhandledRejection', onRej);
 
-    strictEqual(
-        getEventMux().dispatch(EV.UNHANDLED_REJECTION, [Promise.resolve(), new Error('p')]),
-        false,
-        'false = do not abort',
-    );
+        strictEqual(
+            getEventMux().dispatch(EV.UNHANDLED_REJECTION, [Promise.resolve(), new Error('p')]),
+            false,
+            'false = do not abort',
+        );
 
-    P.off('unhandledRejection', onRej);
-    off();
-});
+        P.off('unhandledRejection', onRej);
+    } finally { off(); }
+}));
 
-Deno.test('rejection: a throwing handler must not become a native abort', () => {
+Deno.test('rejection: a throwing handler must not become a native abort', () => withIsolatedRejectionListeners((P) => {
     const off = installNodeProcessRejectionBridge();
-    const P = singletonProcess();
-    const bad = () => { throw new Error('handler blew up'); };
-    P.on('unhandledRejection', bad);
+    try {
+        const bad = () => { throw new Error('handler blew up'); };
+        P.on('unhandledRejection', bad);
 
-    // Must still be the non-fatal `false`. If the throw escaped, mux.dispatch
-    // would discard this receiver's return value and `defaultReturn` would
-    // stand — also false here, so assert the survival separately below.
-    strictEqual(
-        getEventMux().dispatch(EV.UNHANDLED_REJECTION, [Promise.resolve(), new Error('p')]),
-        false,
-        'still non-fatal after a throwing handler',
-    );
-    ok(true, 'dispatch returned instead of propagating');
+        // Must still be the non-fatal `false`. If the throw escaped, mux.dispatch
+        // would discard this receiver's return value and `defaultReturn` would
+        // stand — also false here, so assert the survival separately below.
+        strictEqual(
+            getEventMux().dispatch(EV.UNHANDLED_REJECTION, [Promise.resolve(), new Error('p')]),
+            false,
+            'still non-fatal after a throwing handler',
+        );
+        ok(true, 'dispatch returned instead of propagating');
 
-    P.off('unhandledRejection', bad);
-    off();
-});
+        P.off('unhandledRejection', bad);
+    } finally { off(); }
+}));
 
-Deno.test('rejection: with no handler the bridge abstains and the diagnostic stays', () => {
+Deno.test('rejection: with no handler the bridge abstains and the diagnostic stays', () => withIsolatedRejectionListeners((P) => {
     const off = installNodeProcessRejectionBridge();
-    const P = singletonProcess();
-    P.removeAllListeners('unhandledRejection');
-    strictEqual(P.listenerCount('unhandledRejection'), 0, 'no handler');
+    try {
+        strictEqual(P.listenerCount('unhandledRejection'), 0, 'no handler');
 
-    let handledSeen: boolean | null = null;
-    const offProbe = installEventReceiver('diag-probe-5', (name, _d, ctx: EventContext) => {
-        if (name === EV.UNHANDLED_REJECTION) handledSeen = ctx.handled;
-        return undefined;
-    }, PRIORITY_DIAGNOSTICS);
+        let handledSeen: boolean | null = null;
+        const offProbe = installEventReceiver('diag-probe-5', (name, _d, ctx: EventContext) => {
+            if (name === EV.UNHANDLED_REJECTION) handledSeen = ctx.handled;
+            return undefined;
+        }, PRIORITY_DIAGNOSTICS);
 
-    getEventMux().dispatch(EV.UNHANDLED_REJECTION, [Promise.resolve(), new Error('unclaimed')]);
-    strictEqual(handledSeen, false, 'nothing handled it, so the diagnostic must print');
+        getEventMux().dispatch(EV.UNHANDLED_REJECTION, [Promise.resolve(), new Error('unclaimed')]);
+        strictEqual(handledSeen, false, 'nothing handled it, so the diagnostic must print');
 
-    offProbe();
-    off();
-});
+        offProbe();
+    } finally { off(); }
+}));
 
 /* ------------------------------------------------------------------ *
  * The diagnostics receiver must not claim events it does not handle
@@ -624,7 +637,7 @@ Deno.test('dispatch: an unrecognised event must not be claimed by diagnostics', 
     }
 });
 
-Deno.test('dispatch: the known events keep their polarity', () => {
+Deno.test('dispatch: the known events keep their polarity', () => withIsolatedRejectionListeners(() => {
     // Guards the change above from over-reaching: making the tail `undefined`
     // must not disturb the two events the receiver does claim.
     armBridge();
@@ -636,4 +649,4 @@ Deno.test('dispatch: the known events keep their polarity', () => {
         false,
         'UNHANDLED_REJECTION: false',
     );
-});
+}));
