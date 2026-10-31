@@ -47,7 +47,8 @@
         "allowJs": true
     },
     "files": [
-        "./node_modules/.cache/cno-types/lib.deno.d.ts"
+        "./node_modules/.cache/cno-types/lib.deno.d.ts",
+        "./node_modules/@types/bun/index.d.ts"
     ],
     "include": [
         "src/**/*.ts",
