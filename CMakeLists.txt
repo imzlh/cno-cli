@@ -17,6 +17,8 @@ option(CNO_EMBED_EXT_QUIC "Statically embed QUIC extension"        OFF)
 set(CJSC_PATH      "" CACHE FILEPATH "Pre-built host cjsc executable")
 set(CNO_EXT_DIR    "" CACHE PATH     "Pre-built native extensions dir (.so/.dll)")
 set(CNO_PREBUILT_BUNDLE "" CACHE FILEPATH "Host-generated JavaScript bundle; skips the Node/pnpm bundling step")
+set(CNO_PREBUILT_BUN_DIR "" CACHE PATH
+    "Host-generated Bun payload dir holding index.js and sqlite.js (default: lib/cno/bun beside CNO_PREBUILT_BUNDLE)")
 
 # ── Static extensions ─────────────────────────────────────────────────────────
 set(_EXT_SRCS "")
@@ -220,6 +222,9 @@ endif()
 # add_custom_target(cno-pnpm-install DEPENDS "${_NM_STAMP}")
 
 # esbuild bundle
+# Bun implementation is never part of the embedded bytecode blob. It is built as
+# separate self-contained ESM files and staged/installed next to the binary.
+set(_BUN_PAYLOAD_FILES index.js sqlite.js)
 if(CNO_PREBUILT_BUNDLE)
     get_filename_component(_CLI_BUNDLE "${CNO_PREBUILT_BUNDLE}" ABSOLUTE
         BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -227,6 +232,23 @@ if(CNO_PREBUILT_BUNDLE)
         message(FATAL_ERROR "CNO_PREBUILT_BUNDLE does not exist: ${_CLI_BUNDLE}")
     endif()
     message(STATUS "[cno] using host-generated JavaScript bundle: ${_CLI_BUNDLE}")
+    # The Bun payload is a separate runtime artifact. Cross and prebuilt builds
+    # must supply it explicitly; nothing is fetched or built at runtime.
+    if(CNO_PREBUILT_BUN_DIR)
+        get_filename_component(_BUN_PAYLOAD_SRC "${CNO_PREBUILT_BUN_DIR}" ABSOLUTE
+            BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    else()
+        get_filename_component(_CLI_BUNDLE_DIR "${_CLI_BUNDLE}" DIRECTORY)
+        set(_BUN_PAYLOAD_SRC "${_CLI_BUNDLE_DIR}/lib/cno/bun")
+    endif()
+    foreach(_bun_file IN LISTS _BUN_PAYLOAD_FILES)
+        if(NOT EXISTS "${_BUN_PAYLOAD_SRC}/${_bun_file}")
+            message(FATAL_ERROR
+                "Bun payload ${_bun_file} not found in ${_BUN_PAYLOAD_SRC}; "
+                "set -DCNO_PREBUILT_BUN_DIR=<dir with index.js and sqlite.js>")
+        endif()
+    endforeach()
+    message(STATUS "[cno] using host-generated Bun payload: ${_BUN_PAYLOAD_SRC}")
 else()
 set(_BUNDLE_SCRIPT "bundle")
 set(_CLI_BUNDLE    "${CMAKE_CURRENT_SOURCE_DIR}/dist/cno-cli.js")
@@ -241,21 +263,31 @@ file(GLOB_RECURSE _CLI_SRCS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/cno/src/*.ts"
     "${CMAKE_CURRENT_SOURCE_DIR}/http/src/*.ts"
     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/*.mjs")
+set(_BUN_PAYLOAD_SRC "${CMAKE_CURRENT_SOURCE_DIR}/dist/lib/cno/bun")
+set(_BUN_PAYLOAD_OUTPUTS "")
+foreach(_bun_file IN LISTS _BUN_PAYLOAD_FILES)
+    list(APPEND _BUN_PAYLOAD_OUTPUTS "${_BUN_PAYLOAD_SRC}/${_bun_file}")
+endforeach()
 set(_CLI_BUNDLE_DEPS
     ${_CLI_SRCS}
     "${CMAKE_CURRENT_SOURCE_DIR}/package.json")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pnpm-lock.yaml")
     list(APPEND _CLI_BUNDLE_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/pnpm-lock.yaml")
 endif()
+# `bundle` / `bundle:min` build the CLI bundle and the Bun payload together.
 add_custom_command(
-    OUTPUT  "${_CLI_BUNDLE}"
+    OUTPUT  "${_CLI_BUNDLE}" ${_BUN_PAYLOAD_OUTPUTS}
     COMMAND "${PNPM_EXE}" run "${_BUNDLE_SCRIPT}"
     DEPENDS ${_CLI_BUNDLE_DEPS}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "bundle → ${_CLI_BUNDLE}"
     VERBATIM)
 endif()
-add_custom_target(cno-cli-bundle DEPENDS "${_CLI_BUNDLE}")
+set(_BUN_PAYLOAD_INPUTS "")
+foreach(_bun_file IN LISTS _BUN_PAYLOAD_FILES)
+    list(APPEND _BUN_PAYLOAD_INPUTS "${_BUN_PAYLOAD_SRC}/${_bun_file}")
+endforeach()
+add_custom_target(cno-cli-bundle DEPENDS "${_CLI_BUNDLE}" ${_BUN_PAYLOAD_INPUTS})
 
 # cjsc → C source (bytecode as const uint8_t cjs_blob[])
 set(_STRIP_FLAG "-s")
@@ -290,6 +322,21 @@ add_custom_command(
     DEPENDS cjs-cli
     COMMENT "Stage cno → ${_STAGE_DIR}"
     VERBATIM)
+
+# Stage the Bun payload as lib/cno/bun, the layout the install step mirrors.
+set(_BUN_STAGE_DIR "${_STAGE_DIR}/lib/cno/bun")
+set(_STAGED_BUN "")
+foreach(_bun_file IN LISTS _BUN_PAYLOAD_FILES)
+    set(_dest "${_BUN_STAGE_DIR}/${_bun_file}")
+    add_custom_command(
+        OUTPUT  "${_dest}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_BUN_STAGE_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_BUN_PAYLOAD_SRC}/${_bun_file}" "${_dest}"
+        DEPENDS cno-cli-bundle "${_BUN_PAYLOAD_SRC}/${_bun_file}"
+        COMMENT "Stage lib/cno/bun/${_bun_file}"
+        VERBATIM)
+    list(APPEND _STAGED_BUN "${_dest}")
+endforeach()
 
 # Mirror runtime DLLs from cjs-cli output dir (Windows only)
 set(_DLL_STAMP "${_STAGE_DIR}/.dlls.stamp")
@@ -332,7 +379,7 @@ endif()
 
 # ── Umbrella target ───────────────────────────────────────────────────────────
 add_custom_target(cno ALL
-    DEPENDS "${_DLL_STAMP}" ${_STAGED_EXTS}
+    DEPENDS "${_DLL_STAMP}" ${_STAGED_EXTS} ${_STAGED_BUN}
     COMMENT "cno staged at ${_STAGE_DIR}")
 
 # ── Install ───────────────────────────────────────────────────────────────────
@@ -341,6 +388,9 @@ install(PROGRAMS "${_CNO_BIN}" DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(DIRECTORY "${_STAGE_DIR}/ext/"
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cno/ext"
         FILES_MATCHING PATTERN "*${CMAKE_SHARED_LIBRARY_SUFFIX}")
+install(DIRECTORY "${_BUN_STAGE_DIR}/"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cno/bun"
+        FILES_MATCHING PATTERN "*.js")
 if(WIN32)
     install(DIRECTORY "${_STAGE_DIR}/"
             DESTINATION "${CMAKE_INSTALL_BINDIR}"
@@ -359,4 +409,5 @@ message(STATUS "[cno] stage=${_STAGE_DIR}")
 message(STATUS "[cno] blob=${_BLOB_C}")
 message(STATUS "[cno] release=${CNO_RELEASE}  h2=${CNO_EMBED_EXT_H2}  quic=${CNO_EMBED_EXT_QUIC}")
 message(STATUS "[cno] ext_dir=${_ext_info}")
+message(STATUS "[cno] bun_payload=${_BUN_STAGE_DIR}")
 message(STATUS "")

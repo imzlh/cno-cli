@@ -4,6 +4,7 @@ import setArgs, { type Args } from '../cno/src/utils/args';
 import { flagsFromOptions, optionValues, OPTION_REGISTRY, parseNodeOptions, type Flags, type ParsedCli } from './cli';
 import { CliCommandError } from './command-error';
 import { flagsToConfig, publishWorkerRuntimeConfig } from './config';
+import { resolveBunDir } from './bun-runtime';
 import { loadEnvFiles, readEnv } from './env';
 import { inspectOptions, type InspectOptions } from './inspector/options';
 
@@ -57,8 +58,11 @@ export async function prepareKernel(
             nodePreloads.push({ kind: option.name, specifier: option.value });
         }
     }
+    const config = flagsToConfig(flagsFromOptions(prefixOptions), flagsFromOptions(nodeOptions));
+    const bunDir = resolveBunDir();
+    if (bunDir !== undefined) config.bunDir = bunDir;
     return {
-        config: flagsToConfig(flagsFromOptions(prefixOptions), flagsFromOptions(nodeOptions)),
+        config,
         inspect: inspectOptions(kernelFlags),
         modules: await loadInspectorBridge(),
         runtimeModule,

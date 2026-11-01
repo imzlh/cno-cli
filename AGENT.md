@@ -71,6 +71,60 @@ polyfill bootstrap installs Web APIs, Deno APIs, CNO APIs, and Node globals in
 that order. `process` and `Buffer` are lazy global getters backed by the Node
 bridge.
 
+## Bun Compatibility
+
+Bun compatibility is an optional, file-backed target; it is not part of the
+ordinary CLI implementation blob.
+
+```text
+src/main.ts
+  -> cno/src/main.ts
+  -> cno/src/bun/_internal/inject.ts   tiny lazy globalThis.Bun getter
+
+bun / bun:sqlite
+  -> CTS reserved builtin resolution
+  -> <install>/lib/cno/bun/{index,sqlite}.js
+```
+
+- Only `cno/src/bun/_internal/inject.ts` may enter the main bundle. Everything
+  else under `cno/src/bun/` is built by `scripts/bundle-bun.mjs` and staged or
+  installed under `lib/cno/bun`. Ordinary Deno/CNO startup must not read or
+  evaluate the Bun payload.
+- `bun` and the complete case-insensitive `bun:*` family are reserved before
+  import maps, lockfiles, packs, npm, or network resolution. Currently supported
+  module identities are exactly `bun` and `bun:sqlite`; unknown names fail closed.
+- Preserve native Bun module identity: default ESM import and `require('bun')`
+  are `globalThis.Bun`, while the public module namespace has no own `default`
+  property and exposes the enumerable Bun object keys as named exports.
+- Packs record canonical Bun edges but never embed payload source. Relocated
+  packs load the payload from the current installation, including in workers.
+- Extend Bun APIs under `cno/src/bun/`; keep CTS changes limited to resolution,
+  loading, CJS/ESM identity, packs, and narrow bridge facilities. Do not put Bun
+  implementations in the Node builtin registry or add the `bun` export condition
+  globally for Node/Deno resolution.
+- Use Bun 1.4.4 as the behavioral and typing baseline. A declaration in
+  `bun-types` is not evidence that an API is supported; add differential or
+  focused runtime tests and document partial behavior.
+- Bun work does not justify a libuv fork or unrelated `circu.js` changes. Reuse
+  existing Web, Deno, Node, CTS, and native primitives unless a separately
+  demonstrated host bug requires a lower-layer change.
+
+After Bun boundary or loader changes, rebuild the staged executable and run at
+least:
+
+```bash
+node scripts/bundle-bun.mjs release
+cmake --build build --target cno -j2
+build/stage/cno test tests/bun/*.test.ts --concurrency=1
+node --test tests/bun/*-unit.test.mjs tests/bun/lazy-global-unit.test.mjs \
+  tests/cts/bun-runtime.test.mjs tests/cts/bun-payload-boundary.test.mjs
+pnpm run type-check
+pnpm --dir cts run type-check
+```
+
+The payload-boundary test is mandatory: a passing API test does not excuse Bun
+implementation code leaking into the main blob or a pack.
+
 ## Working Rules
 
 ### Native Modules And Imports
@@ -99,6 +153,9 @@ bridge.
   lifetimes. When a native API changes, update `circu.js/types/` too.
 - `TypeScriptRuntime` owns engine module/event/promise hooks for its JS context.
   Creating another runtime in the same context replaces those hooks.
+- Cross-realm coordination — lifecycle events, shared bridges, exit-status
+  requests — goes through existing evbus channels, not through new `globalThis`
+  slots or `engine.onEvent()`-style single-slot setters.
 
 ### Module Semantics
 
@@ -351,6 +408,7 @@ cno/src/webapi/index.ts
   -> cno/src/deno/index.ts
   -> cno/src/cno/index.ts
   -> cno/src/node/_internal/inject.ts
+  -> cno/src/bun/_internal/inject.ts
 ```
 
 ### Directory Map

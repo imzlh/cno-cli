@@ -16,6 +16,7 @@ information is useful to human maintainers.
 | `api-surfaces.md` | Public and semi-public CLI, config, module, global, and extension surfaces |
 | `cli.md` | CLI parser, command routing, flags, and command-specific behavior |
 | `compatibility.md` | Compatibility status language and Web/Deno/Node support boundaries |
+| `bun-compatibility-plan.md` | Incremental Bun scope, ownership, milestones, and validation record |
 | `module-loading.md` | CTS resolver/compiler, cache, lock, npm, OXC, and precompile flow |
 | `polyfills.md` | Web API, Deno API, Node.js modules, and CNO namespace |
 | `build-test.md` | Build commands, staged binary, setup, and focused validation |

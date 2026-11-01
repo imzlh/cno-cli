@@ -201,6 +201,38 @@ Deno.test('DepScanner: warm cache reuses imports while pack-style scans bypass t
     }
 });
 
+Deno.test('DepScanner: warm import caches retain invalid runtime builtin edges', async () => {
+    const root = makePosixTempDir('dep-runtime-builtin-cache');
+    const main = join(root, 'main.ts');
+    const invalid = 'bun:not-a-real-module';
+    const config = () => createConfig({
+        cacheDir: join(root, 'cache'),
+        persistLock: true,
+        enableOxc: false,
+        silent: true,
+    });
+    try {
+        writeFileSync(main, `import ${JSON.stringify(invalid)};\n`);
+
+        const firstResolver = new ModuleResolver(config(), root, false);
+        const first = await new DepScanner(firstResolver, config()).scan(main, main);
+        strictEqual(first.errors.length, 1);
+        deepStrictEqual(firstResolver.lockStore.getImports(main), [invalid]);
+        firstResolver.flushLock();
+        firstResolver.lockStore.close();
+
+        const warmResolver = new ModuleResolver(config(), root, true);
+        const warm = await new DepScanner(warmResolver, config()).scan(main, main);
+        strictEqual(warm.errors.length, 1,
+            'a warm import cache must retry an invalid runtime builtin');
+        strictEqual(warm.errors[0]?.spec, invalid);
+        warmResolver.lockStore.close();
+    } finally {
+        try { LockStore.closeAll(); } catch {}
+        Deno.removeSync(root, { recursive: true });
+    }
+});
+
 Deno.test('DepScanner: worker infrastructure failure aborts instead of blaming a file', async () => {
     const root = makePosixTempDir('dep-worker-failure');
     const main = join(root, 'main.ts');

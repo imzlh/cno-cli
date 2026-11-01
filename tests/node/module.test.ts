@@ -42,6 +42,29 @@ Deno.test('module: default export exposes Module static helpers', () => {
     ok(Module.builtinModules.includes('node:ffi'));
 });
 
+Deno.test('module: runtime builtins are advertised and resolve without lookup paths', () => {
+    ok(module.isBuiltin('bun'));
+    ok(module.isBuiltin('bun:sqlite'));
+    ok(!module.isBuiltin('bun:not-real'));
+    ok(module.builtinModules.includes('bun'));
+    ok(module.builtinModules.includes('bun:sqlite'));
+    strictEqual(Module.isBuiltin('bun'), true);
+    strictEqual(Module.isBuiltin('bun:sqlite'), true);
+
+    const req = module.createRequire(import.meta.url);
+    strictEqual(req.resolve('bun'), 'bun');
+    strictEqual(req.resolve('bun:sqlite'), 'bun:sqlite');
+    strictEqual(req.resolve.paths('bun'), null);
+    strictEqual(req.resolve.paths('bun:sqlite'), null);
+
+    const bun = req('bun');
+    strictEqual(bun, Reflect.get(globalThis, 'Bun'));
+    strictEqual(req('bun'), bun);
+    const sqlite = req('bun:sqlite') as { Database?: unknown };
+    strictEqual(req('bun:sqlite'), sqlite);
+    strictEqual(typeof sqlite.Database, 'function');
+});
+
 Deno.test('module: createRequire accepts file URL strings and objects', () => {
     const fromString = module.createRequire(import.meta.url);
     const fromUrl = module.createRequire(new URL(import.meta.url));

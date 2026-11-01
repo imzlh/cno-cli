@@ -211,6 +211,23 @@ Deno.test('Blob upstream: constructor accepts nested blobs buffers and unusual o
     strictEqual(await new Blob([new Blob(['Hello']), ' World']).text(), 'Hello World');
 });
 
+Deno.test('Blob composition honors subclass byte storage', async () => {
+    const bytesSymbol = Symbol.for('cno.blob.bytes');
+    class LazyBlob extends Blob {
+        override get size(): number {
+            return 4;
+        }
+
+        [bytesSymbol](): Uint8Array<ArrayBuffer> {
+            return new TextEncoder().encode('lazy');
+        }
+    }
+
+    const composed = new Blob([new LazyBlob([])]);
+    strictEqual(composed.size, 4);
+    strictEqual(await composed.text(), 'lazy');
+});
+
 Deno.test('Blob upstream: slice supports negative indexes and rejects invalid content type', async () => {
     const blob = new Blob(['Deno', 'Foo'], { type: 'text/plain' });
     const sliced = blob.slice(-5, -2, 'Text/HTML');

@@ -23,7 +23,7 @@
  */
 import { build } from 'esbuild';
 import { argv, env, exit } from 'node:process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const mode = argv[2] || 'release';
+const BUN_INJECTOR = resolve(__dirname, '../cno/src/bun/_internal/inject.ts');
 
 // The Node compatibility sources must match the cno checkout bundled below.
 // Archive builds can supply the original commit explicitly when Git is absent.
@@ -69,7 +70,20 @@ const common = {
     platform:           'node',
     target:             'es2024',
     loader:             { '.json': 'json' },
-    keepNames:          true
+    keepNames:          true,
+    metafile:           true,
+    plugins: [{
+        name: 'no-embedded-bun-payload',
+        setup(builder) {
+            // The injector is the only Bun file the CLI bundle may contain. It
+            // resolves the real implementation at runtime from the staged
+            // lib/cno/bun payload (see scripts/bundle-bun.mjs).
+            builder.onLoad({ filter: /[/\\]cno[/\\]src[/\\]bun[/\\]/ }, ({ path }) => {
+                if (resolve(path) === BUN_INJECTOR) return null;
+                return { errors: [{ text: `Bun implementation cannot enter the embedded CLI bundle: ${path}` }] };
+            });
+        },
+    }],
 };
 
 let opts;
@@ -90,7 +104,18 @@ switch (mode) {
         exit(1);
 }
 
+// Tests redirect the output so they do not replace the dist/ artifacts.
+if (env.CNO_BUNDLE_OUTFILE) opts.outfile = env.CNO_BUNDLE_OUTFILE;
 mkdirSync(dirname(opts.outfile), { recursive: true });
-await build({ ...common, ...opts, define: { ...REVISION_DEFINES, ...opts.define } });
+const result = await build({ ...common, ...opts, define: { ...REVISION_DEFINES, ...opts.define } });
+const bunInputs = Object.keys(result.metafile.inputs)
+    .filter((input) => /(^|\/)cno\/src\/bun\//.test(input.replaceAll('\\', '/')));
+if (bunInputs.length !== 1 || resolve(bunInputs[0]) !== BUN_INJECTOR) {
+    throw new Error(`Embedded CLI bundle has unexpected Bun inputs: ${bunInputs.join(', ') || '<none>'}`);
+}
+// Tests inspect the exact input graph through this optional artifact.
+if (env.CNO_BUNDLE_METAFILE) {
+    writeFileSync(env.CNO_BUNDLE_METAFILE, JSON.stringify(result.metafile));
+}
 console.log(`bundle [${mode}] → ${opts.outfile}`);
 console.log(`Node polyfill revision: ${polyfillRevision}`);
