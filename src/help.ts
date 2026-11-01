@@ -88,6 +88,8 @@ ${C.bold('EVAL OPTIONS')}
 
 ${C.bold('TEST OPTIONS')}
   ${C.cyan('--filter')}=${C.dim('<substr>')}              Only run tests whose name matches
+  ${C.cyan('--exclude')}=${C.dim('<path|glob>')}          Skip matching files or directories ${C.dim('(repeatable)')}
+  ${C.cyan('--ignore')}=${C.dim('<path|glob,...>')}       Deno-compatible alias for ${C.cyan('--exclude')}
   ${C.cyan('--concurrency')}=${C.dim('<n>')}              Test files in parallel ${C.dim('(default: 4)')}
   ${C.cyan('--fail-fast')}                    Stop at the first failure ${C.dim('(forces serial)')}
   ${C.cyan('--permit-no-files')}              Exit 0 when no test file matches

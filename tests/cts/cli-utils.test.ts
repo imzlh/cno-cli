@@ -1,5 +1,5 @@
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
-import { commandOptionTokensFor, missingFlagValues, parseArgv, parseNodeOptions, splitNodeOptions, tokenizeOptions, unknownFlags, unknownKernelFlags, unknownCommandFlags } from '../../src/cli.ts';
+import { commandOptionTokensFor, missingFlagValues, optionValues, parseArgv, parseNodeOptions, splitNodeOptions, tokenizeOptions, unknownFlags, unknownKernelFlags, unknownCommandFlags } from '../../src/cli.ts';
 import { parseTestChildArgs } from '../../src/commands/test.ts';
 import {
     basename,
@@ -160,6 +160,26 @@ Deno.test('cli: value flags consume their value before the entry file', () => {
     strictEqual(test.flags.concurrency, '2');
     deepStrictEqual(test.positional, ['tests/cts']);
     deepStrictEqual(test.rawArgs.actionArgs, ['--concurrency', '2']);
+});
+
+Deno.test('cli: test exclusions preserve repeated values and aliases', () => {
+    const cli = parseArgv([
+        'test', '--exclude=tests/slow/**', '--ignore', 'tests/fixtures',
+        '--exclude', 'tests/generated', 'tests',
+    ]);
+    deepStrictEqual(optionValues(cli.commandOptions, ['exclude', 'ignore']), [
+        'tests/slow/**', 'tests/fixtures', 'tests/generated',
+    ]);
+    strictEqual(cli.flags.exclude, 'tests/generated');
+    strictEqual(cli.flags.ignore, 'tests/fixtures');
+    deepStrictEqual(cli.positional, ['tests']);
+    deepStrictEqual(unknownFlags(cli), []);
+
+    deepStrictEqual(missingFlagValues(parseArgv([
+        'test', '--exclude', '--fail-fast', 'tests',
+    ])), ['exclude']);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--exclude=tests/slow', 'main.ts'])), ['--exclude']);
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--ignore=tests/slow'])), ['--ignore']);
 });
 
 Deno.test('cli: repeated Node conditions are preserved and -C requires a value', () => {

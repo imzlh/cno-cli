@@ -124,7 +124,104 @@ function pathKey(path: string): string {
     return isWindows ? value.toLowerCase() : value;
 }
 
-function* walkSync(dir: string, visited = new Set<string>()): Generator<string> {
+function globSource(pattern: string): string {
+    let source = '';
+    for (let i = 0; i < pattern.length; i++) {
+        const char = pattern[i]!;
+        if (char === '*') {
+            const globstar = pattern[i + 1] === '*' &&
+                (i === 0 || pattern[i - 1] === '/') &&
+                (i + 2 === pattern.length || pattern[i + 2] === '/');
+            if (globstar) {
+                i++;
+                if (pattern[i + 1] === '/') {
+                    i++;
+                    source += '(?:[^/]+/)*';
+                } else {
+                    source += '.*';
+                }
+            } else {
+                source += '[^/]*';
+            }
+        } else if (char === '?') {
+            source += '[^/]';
+        } else {
+            source += /[\\^$.*+?()[\]{}|]/.test(char) ? `\\${char}` : char;
+        }
+    }
+    return source;
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+}
+
+interface ExcludeMatcher {
+    matches(path: string): boolean;
+}
+
+function compileExcludeMatchers(patterns: string[], base: string): ExcludeMatcher[] {
+    return patterns.map(rawPattern => {
+        const posix = toPosixPath(rawPattern);
+        const absolutePattern = isAbsolute(posix);
+        const normalized = normalizePath(absolutePattern ? posix : posix.replace(/^\.\//, ''));
+        if (!/[?*]/.test(normalized)) {
+            const targetPath = normalizePath(absolutePattern ? normalized : joinPaths(base, normalized));
+            const targets = [targetPath];
+            try {
+                const real = normalizePath(toPosixPath(fs.realpath(targetPath)));
+                if (real !== targetPath) targets.push(real);
+            } catch { /* a missing exclusion can still match lexically */ }
+            const keys = targets.map(target => isWindows ? target.toLowerCase() : target);
+            return {
+                matches(path: string): boolean {
+                    const candidate = isWindows ? path.toLowerCase() : path;
+                    return keys.some(target => candidate === target ||
+                        candidate.startsWith(target.endsWith('/') ? target : `${target}/`));
+                },
+            };
+        }
+        let source: string;
+        if (absolutePattern) {
+            source = globSource(normalized);
+        } else {
+            const wildcard = normalized.search(/[?*]/);
+            const slash = normalized.lastIndexOf('/', wildcard);
+            const literalPrefix = slash < 0 ? '' : normalized.slice(0, slash);
+            const globSuffix = slash < 0 ? normalized : normalized.slice(slash + 1);
+            const resolvedPrefix = normalizePath(joinPaths(base, literalPrefix));
+            source = `${escapeRegExp(resolvedPrefix.replace(/\/$/, ''))}/${globSource(globSuffix)}`;
+        }
+        const pattern = new RegExp(`^${source}$`, isWindows ? 'i' : '');
+        return {
+            matches(path: string): boolean {
+                let candidate: string | null = path;
+                while (true) {
+                    if (candidate === null) return false;
+                    if (pattern.test(candidate)) return true;
+                    const slash = candidate.lastIndexOf('/');
+                    if (slash < 0) return false;
+                    candidate = candidate.slice(0, slash);
+                }
+            },
+        };
+    });
+}
+
+function isExcluded(path: string, matchers: ExcludeMatcher[]): boolean {
+    if (!matchers.length) return false;
+    const lexical = normalizePath(toPosixPath(path));
+    if (matchers.some(matcher => matcher.matches(lexical))) return true;
+    try {
+        const real = normalizePath(toPosixPath(fs.realpath(path)));
+        return real !== lexical && matchers.some(matcher => matcher.matches(real));
+    } catch {
+        return false;
+    }
+}
+
+function* walkSync(dir: string, matchers: ExcludeMatcher[], visited = new Set<string>()): Generator<string> {
+    if (isExcluded(dir, matchers)) return;
     // stat() follows symlinks/junctions. Without an identity set a project
     // containing `test/loop -> .` recurses until the native stack is exhausted.
     const identity = pathKey(dir);
@@ -139,15 +236,16 @@ function* walkSync(dir: string, visited = new Set<string>()): Generator<string> 
         const s = statOrNull(full);
         if (!s) continue;
         if (s.isDirectory) {
-            yield* walkSync(full, visited);
-        } else if (s.isFile && TEST_RE.test(e)) {
+            yield* walkSync(full, matchers, visited);
+        } else if (s.isFile && TEST_RE.test(e) && !isExcluded(full, matchers)) {
             yield full;
         }
     }
 }
 
-export function collectTests(rawPaths: string[]): string[] {
+export function collectTests(rawPaths: string[], excludePatterns: string[] = []): string[] {
     const posixCwd = cwd();
+    const excludeMatchers = compileExcludeMatchers(excludePatterns, posixCwd);
     const roots = rawPaths.length
         ? rawPaths.map(p => {
             const norm = toPosixPath(p);
@@ -160,6 +258,7 @@ export function collectTests(rawPaths: string[]): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
     const push = (file: string, explicit: boolean): void => {
+        if (isExcluded(file, excludeMatchers)) return;
         const identity = pathKey(file);
         if (seen.has(identity)) return;
         // Explicit paths are an escape hatch for diagnostics; the marker only
@@ -174,7 +273,7 @@ export function collectTests(rawPaths: string[]): string[] {
         if (s.isFile) {
             push(r, true);
         } else if (s.isDirectory) {
-            for (const file of walkSync(r)) push(file, false);
+            for (const file of walkSync(r, excludeMatchers)) push(file, false);
         }
     }
     return out;
@@ -430,11 +529,12 @@ export async function runTest(
     flags: Record<string, string | boolean>,
     invocation: TestInvocation,
     inspectorEnabled = false,
+    excludePatterns: string[] = [],
 ): Promise<void> {
     const separator = rawPaths.indexOf('--');
     const paths = separator < 0 ? rawPaths : rawPaths.slice(0, separator);
     const scriptArgs = separator < 0 ? [] : rawPaths.slice(separator + 1);
-    const files = collectTests(paths);
+    const files = collectTests(paths, excludePatterns);
 
     if (!files.length) {
         if (flags['permit-no-files'] === true) {

@@ -41,7 +41,7 @@ import { disableRawCertVerify } from '../cno/src/utils/http';
 import { resolveObjectURLBytes } from '../cno/src/webapi/url';
 import { registerExtensions } from './bootstrap';
 import { CliExit, commandErrorInfo } from './command-error';
-import { missingFlagValues, parseArgv, readArgv, unknownFlags, type ParsedCli } from './cli';
+import { missingFlagValues, optionValues, parseArgv, readArgv, unknownFlags, type ParsedCli } from './cli';
 import { effectiveRuntimeFlags, prepareKernel, type KernelContext } from './kernel';
 import { decodeWorkerRuntimeConfig } from './config';
 import { readEnv } from './env';
@@ -297,6 +297,9 @@ async function dispatch(): Promise<void> {
             flags,
             { kernelArgs: cli.kernelArgs, commandArgs: cli.commandArgs },
             kernel.inspect !== null,
+            cli.commandOptions.flatMap(option => option.name === 'ignore' && typeof option.value === 'string'
+                ? option.value.split(',').filter(Boolean)
+                : option.name === 'exclude' && typeof option.value === 'string' ? [option.value] : []),
         );
     }
     case 'setup': {

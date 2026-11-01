@@ -286,6 +286,20 @@ host marker:
 An explicitly supplied file path bypasses both the discovery pattern and this
 marker, so a host-specific file can still be run deliberately for diagnostics.
 
+Use repeatable `--exclude=<path-or-glob>` options to remove files or directories
+from the discovered set. `--ignore` is accepted as a Deno-compatible spelling
+and also accepts comma-separated values.
+Relative patterns are resolved from the current working directory; `*` and `?`
+match within one path segment and `**` spans path segments. Quote globs so the
+shell does not expand them first:
+
+```sh
+cno test --exclude=tests/fixtures --ignore='**/slow*.test.ts' tests
+```
+
+Exclusions also apply to explicitly supplied files. If they remove every test,
+the command still fails unless `--permit-no-files` is present.
+
 Each test file runs in a real child process using a versioned environment
 sentinel carrying the prefix and command arguments separately. This
 keeps process and signal behavior closer to normal runtime behavior than a

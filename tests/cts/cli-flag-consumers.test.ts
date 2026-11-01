@@ -366,6 +366,8 @@ Deno.test('flag scoping: a flag valid elsewhere is rejected for this command', (
     deepStrictEqual(unknownFlags(parseArgv(['repl', '--concurrency=9'])), ['--concurrency']);
     deepStrictEqual(unknownFlags(parseArgv(['repl', '--fail-fast'])), ['--fail-fast']);
     deepStrictEqual(unknownFlags(parseArgv(['repl', '--permit-no-files'])), ['--permit-no-files']);
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--exclude=slow'])), ['--exclude']);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--ignore=slow', 'main.ts'])), ['--ignore']);
     deepStrictEqual(unknownFlags(parseArgv(['eval', '--filter=x', '1+1'])), ['--filter']);
 
     // pack-only flags must not be accepted by run/repl/test.
@@ -379,7 +381,7 @@ Deno.test('flag scoping: a flag valid elsewhere is rejected for this command', (
 
     // Sanity: each flag IS valid for its own command, so the scoping must not
     // over-reject. These pass today and must keep passing.
-    deepStrictEqual(unknownFlags(parseArgv(['test', '--filter=t', '--fail-fast'])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['test', '--filter=t', '--fail-fast', '--exclude=slow', '--ignore=fixtures'])), []);
     deepStrictEqual(unknownFlags(parseArgv(['pack', 'main.ts', '--out=o.jspack'])), []);
     deepStrictEqual(unknownFlags(parseArgv(['task', '--cwd=/tmp', 'build'])), []);
     deepStrictEqual(unknownFlags(parseArgv(['cache', '--frozen', '--no-http', 'main.ts'])), []);

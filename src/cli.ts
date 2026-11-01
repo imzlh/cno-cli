@@ -70,7 +70,7 @@ define(['precache', 'reload'], { consumer: 'runtime', prefix: true, commands: PR
 define(['system-proxy', 'skip-cert-verify', 'silent'], { consumer: 'runtime', prefix: true, commands: ALL_COMMANDS });
 define(['help', 'version'], { prefix: true, commands: ALL_COMMANDS });
 define(['port', 'host'], { value: 'required', commands: ['serve'] });
-define(['concurrency', 'filter'], { value: 'required', commands: ['test'] });
+define(['concurrency', 'filter', 'exclude', 'ignore'], { value: 'required', commands: ['test'] });
 define(['fail-fast', 'permit-no-files'], { commands: ['test'] });
 define(['out'], { value: 'optional', commands: ['pack'] });
 define(['cwd'], { value: 'required', commands: ['task'] });

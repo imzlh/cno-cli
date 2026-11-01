@@ -637,6 +637,9 @@ The cno runner discovers `[._]test.[jt]sx?` files, skips generated/vendor
 directories and recursively discovered files whose first 1 KiB contains a
 standalone `// @cno-host: false` line, and runs each test file in a child
 process. Explicitly named files bypass the extension and host-marker filters.
+Repeatable `--exclude`/`--ignore` patterns are applied after root resolution and
+also exclude explicitly named files; an empty result still requires
+`--permit-no-files`.
 This is intentional: process, signal, worker, and exit behavior should be
 exercised in a real child.
 

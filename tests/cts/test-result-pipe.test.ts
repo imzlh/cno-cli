@@ -124,6 +124,117 @@ Deno.test('test discovery preserves extension scope and honors cno-host false ma
     });
 });
 
+Deno.test('test discovery excludes repeated paths and glob patterns', async () => {
+    await withTempDir('test-exclude', async (root) => {
+        const originalCwd = Deno.cwd();
+        const keep = join(root, 'keep.test.ts');
+        const skipDir = join(root, 'skip');
+        const skip = join(skipDir, 'throws.test.ts');
+        const nestedDir = join(root, 'nested');
+        const slow = join(nestedDir, 'slow_case.test.ts');
+        const deepDir = join(nestedDir, 'deep');
+        const deep = join(deepDir, 'slow_deep.test.ts');
+        const similarDir = join(root, 'skipper');
+        const similar = join(similarDir, 'kept.test.ts');
+        await Deno.mkdir(skipDir);
+        await Deno.mkdir(deepDir, { recursive: true });
+        await Deno.mkdir(similarDir);
+        for (const file of [keep, skip, slow, deep, similar]) {
+            await Deno.writeTextFile(file, 'Deno.test("ok", () => {});\n');
+        }
+
+        try {
+            Deno.chdir(root);
+            deepStrictEqual(collectTests([root], ['skip', '**/slow*.test.ts']), [keep, similar]);
+            deepStrictEqual(collectTests([skip], ['skip']), []);
+            deepStrictEqual(collectTests([root], ['nested/*']), [keep, skip, similar]);
+            deepStrictEqual(collectTests([root], ['**/deep/slow_????.test.ts']), [keep, slow, skip, similar]);
+            deepStrictEqual(collectTests([root], [skip]), [keep, deep, slow, similar]);
+            deepStrictEqual(collectTests([root], ['nested/slow**deep.test.ts']), [keep, deep, slow, skip, similar]);
+
+            const alias = join(root, 'skip-alias');
+            let linked = true;
+            try {
+                await Deno.symlink(skipDir, alias);
+            } catch (error) {
+                if (Deno.build.os === 'windows') linked = false;
+                else throw error;
+            }
+            if (linked) {
+                deepStrictEqual(collectTests([skipDir], [alias]), []);
+                deepStrictEqual(collectTests([alias], [skipDir]), []);
+            }
+
+            const outside = join(root, '..', `${root.split(/[\\/]/).pop()}-outside`);
+            await Deno.mkdir(outside);
+            try {
+                const outsideTest = join(outside, 'outside.test.ts');
+                await Deno.writeTextFile(outsideTest, 'Deno.test("outside", () => {});\n');
+                deepStrictEqual(collectTests([outside], [`../${outside.split(/[\\/]/).pop()}/*.test.ts`]), []);
+            } finally {
+                await Deno.remove(outside, { recursive: true });
+            }
+        } finally {
+            Deno.chdir(originalCwd);
+        }
+    });
+});
+
+Deno.test({ name: 'test runner applies exclude aliases before spawning children', timeout: 15000 }, async () => {
+    await withTempDir('test-exclude-runner', async (root) => {
+        const keep = join(root, 'keep.test.ts');
+        const skipDir = join(root, 'skip');
+        const skip = join(skipDir, 'throws.test.ts');
+        const nestedDir = join(root, 'nested');
+        const slow = join(nestedDir, 'slow_case.test.ts');
+        await Deno.mkdir(skipDir);
+        await Deno.mkdir(nestedDir);
+        await Deno.writeTextFile(keep, 'Deno.test("kept", () => {});\n');
+        await Deno.writeTextFile(skip, 'throw new Error("EXCLUDED_DIRECTORY_RAN");\n');
+        await Deno.writeTextFile(slow, 'throw new Error("EXCLUDED_GLOB_RAN");\n');
+
+        const output = await new Deno.Command(Deno.execPath(), {
+            args: ['test', '--concurrency=1', '--exclude=skip', '--ignore=**/slow*', root],
+            cwd: root,
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const text = new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr);
+        strictEqual(output.code, 0, text);
+        ok(text.includes('1/1'), text);
+        ok(!text.includes('EXCLUDED_DIRECTORY_RAN'), text);
+        ok(!text.includes('EXCLUDED_GLOB_RAN'), text);
+
+        const comma = await new Deno.Command(Deno.execPath(), {
+            args: ['test', '--concurrency=1', '--ignore=skip,**/slow*', root],
+            cwd: root,
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const commaText = new TextDecoder().decode(comma.stdout) + new TextDecoder().decode(comma.stderr);
+        strictEqual(comma.code, 0, commaText);
+        ok(commaText.includes('1/1'), commaText);
+
+        const empty = await new Deno.Command(Deno.execPath(), {
+            args: ['test', '--permit-no-files', `--exclude=${keep}`, keep],
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const emptyText = new TextDecoder().decode(empty.stdout) + new TextDecoder().decode(empty.stderr);
+        strictEqual(empty.code, 0, emptyText);
+        ok(emptyText.includes('0/0'), emptyText);
+
+        const rejectedEmpty = await new Deno.Command(Deno.execPath(), {
+            args: ['test', `--exclude=${keep}`, keep],
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const rejectedText = new TextDecoder().decode(rejectedEmpty.stdout) + new TextDecoder().decode(rejectedEmpty.stderr);
+        strictEqual(rejectedEmpty.code, 1, rejectedText);
+        ok(rejectedText.includes('No test modules found'), rejectedText);
+    });
+});
+
 Deno.test({ name: 'test runner preserves kernel and command regions in every child', timeout: 15000 }, async () => {
     await withTempDir('test-result-pipe-argv', async (root) => {
         const files = [join(root, 'first.test.ts'), join(root, 'second.test.ts')];
