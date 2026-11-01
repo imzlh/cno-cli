@@ -16,7 +16,8 @@ export type EnvWarn = (message: string) => void;
 
 function resolveEnvFilePath(path: string): string {
     if (hasSchemeId(path) && !path.startsWith('/')) return path;
-    return resolvePath(os.cwd, path);
+    // resolvePath supplies cwd for relative inputs and preserves absolute ones.
+    return resolvePath(path);
 }
 
 function expand(value: string, vars: Record<string, string>): string {
