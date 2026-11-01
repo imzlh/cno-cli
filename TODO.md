@@ -13,27 +13,6 @@
   常驻进程）把它推过线。与接线迁移无关（节奏均匀、单测全部单独通过）。
 - 建议：把文件拆成 2~3 个，或给 runner 增加按文件覆盖超时的参数。
 
-### 2. `scheduler.postTask` 从未被安装，测试长期失败
-- 现象：`tests/webapi/scheduler.test.ts` 断言 `globalThis.scheduler` 存在，
-  实际 `undefined`。
-- 原因：`cno/src/webapi/scheduler.ts` 自 v2.9.2 起没有任何 bootstrap 路径
-  import 它（webapi/index.ts、deno/index.ts 均无引用），属于断线的功能模块。
-- 建议：要么在 webapi bootstrap 挂上（lazy 安装即可），要么删除模块和测试。
-
-### 3. structuredClone 对视图克隆报 `RangeError: invalid offset`
-- 现象：`tests/webapi/basic.test.ts` 的 "built-in clones use internal slots"
-  在 `cloneView`（`<core>:52836`）抛 RangeError。
-- 原因：structured-clone 的 ArrayBufferView 克隆路径对 offset/length 组合
-  计算有误（`cno/src/node/_internal/structured-clone.ts` 一带），与接线无关。
-- 建议：以该测试为回归用例修 cloneView 的 offset 处理。
-
-### 4. CDP Network 的 responseReceived 在重定向后上报 pre-redirect URL
-- 现象：`tests/node/cdp-network-lifecycle.test.ts` "EXPECTED-RED" 用例拿到
-  重定向前的 URL 与 200 状态的配对，服务器从未发过该组合。
-- 原因：`cno/src/webapi/fetch/perform.ts:441` 对 onResponse 钩子始终传
-  发起请求的 `url.href`，未用重定向后最终 URL。
-- 建议：onResponse 时改传当前（最后一次）请求 URL；注意 connect/upgrade 路径。
-
 ### 5. async_hooks 的 AsyncLocalStorage 跨 promise/timer 边界丢失
 - 现象：`tests/node/async-hooks*.test.ts` propagation 用例拿到 `undefined`。
 - 原因：ALS 传播依赖的 async hook 装载/续接点缺失，属于 async_hooks 域，
@@ -59,16 +38,34 @@
   finalization-registry-lifetime、proxy-env-precedence、streams-terminal-lifetime。
   多为 lifetime/timing 类，建议逐个与 Node oracle 差分后定性。
 
-### 7. node 宿主测试没有跳过机制，`cno test` 会误扫并报失败
-- 现象：`tests/cts/evbus-exit-code.test.mjs`、`evbus-module-bridge.test.mjs`、
-  `event-mux-realms.test.mjs` 头部注明 `node --test`，但 cno runner 的
-  `TEST_RE` 扫所有 `[._]test.[jt]sx?`，在 cno 宿主下因宿主能力差异失败
-  （esbuild 需 worker_threads 的 MessagePort 转移；`node:vm` 上下文在 cno
-  下映射为只有 BaseObjects+Eval 的 Sandbox，无 RegExp/Map/Set）。
-- 建议：给 runner 加 skip 约定（如文件头 `@cno-host: false` 或目录约定），
-  并在 AGENT.md 的 lane 说明处链接。
-
 ## 本轮已修复（保留原因，防回归）
+
+### 2. `scheduler.postTask` 未接入 bootstrap（已修复）
+- 原因：`cno/src/webapi/scheduler.ts` 安装全局，但没有 bootstrap import，模块
+  从未执行。
+- 修复：Web API 在 Abort API 之后加载 scheduler；
+  `tests/webapi/scheduler.test.ts` 通过。
+
+### 3. structuredClone 读取了视图可覆盖属性（已修复）
+- 原因：`cloneView` 直接读取 `buffer` / `byteOffset` / `byteLength`，own
+  property 可伪造内部槽并造成 invalid offset；同一回归还暴露 RegExp
+  source/flags 的同类问题。
+- 修复：通过缓存的 %TypedArray%、DataView、RegExp intrinsic getters 读取
+  内部槽；`tests/webapi/basic.test.ts` 通过。
+
+### 4. CDP 重定向响应使用发起 URL（已修复）
+- 原因：最终 `onResponse` 固定上报 `url.href`，把重定向前 URL 与最终 200
+  状态配对。
+- 修复：从 `CURLINFO_EFFECTIVE_URL` 读取终态 URL，并让回归测试等待
+  `/final`；`tests/node/cdp-network-lifecycle.test.ts` 通过。
+
+### 7. node 宿主测试误扫诊断与实际发现范围不符（已澄清）
+- 检查结果：原 `TEST_RE` 只发现 js/jsx/ts/tsx，三个 `.test.mjs` 从未被递归
+  扫描；原问题描述不成立。若为解决它而扩展到 mjs，会额外纳入仓库中其余
+  Node 宿主测试，反而造成范围回归。
+- 修复：保留原发现范围，并为递归候选增加头部 `// @cno-host: false`
+  跳过约定；显式文件路径仍绕过扩展名和 marker 过滤。三个 mjs 上的 marker
+  作为宿主 lane 元数据保留。
 
 ### 8. bridge.ts 在沙箱 realm 使用 `Set`（真回归）
 - 现象：`tests/cts/evbus-module-bridge-native.test.mjs` 在 node 与 cno 双宿主
