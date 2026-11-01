@@ -6,7 +6,7 @@ import { openKernelRuntime, type KernelContext, type KernelRuntime } from '../..
 import { Inspector } from '../../src/inspector/main/inspector.ts';
 import { installInspectorBridge, type InstalledInspectorBridge } from '../../src/inspector/bridge.ts';
 
-const bridgeKey = Symbol.for('cno.inspector.bridge');
+const bus = import.meta.use('evbus');
 const kernel: KernelContext = { config: {}, inspect: null, runtimeFlags: {}, preloads: [], nodePreloads: [] };
 
 async function withInspectorMock(fn: (mock: {
@@ -17,7 +17,7 @@ async function withInspectorMock(fn: (mock: {
     attach?: (inspector: Inspector) => Promise<void>;
     detach?: (inspector: Inspector) => Promise<void>;
 }) => Promise<void>): Promise<void> {
-    const descriptor = Object.getOwnPropertyDescriptor(globalThis, bridgeKey);
+    const published = bus.get('cno.inspector', 'bridge');
     const { attach, detach, allowProcessExit } = Inspector.prototype;
     const { addInitHook } = TypeScriptRuntime.prototype;
     const mock: Parameters<typeof fn>[0] = { opened: [], detached: [], unrefed: [], hooks: [] };
@@ -40,8 +40,8 @@ async function withInspectorMock(fn: (mock: {
     finally {
         Object.assign(Inspector.prototype, { attach, detach, allowProcessExit });
         TypeScriptRuntime.prototype.addInitHook = addInitHook;
-        if (descriptor) Object.defineProperty(globalThis, bridgeKey, descriptor);
-        else Reflect.deleteProperty(globalThis, bridgeKey);
+        if (published !== undefined) bus.set('cno.inspector', 'bridge', published);
+        else bus.delete('cno.inspector', 'bridge');
     }
 }
 
@@ -60,17 +60,17 @@ async function withRuntime(context: KernelContext, fn: (session: KernelRuntime) 
 Deno.test('kernel lifecycle: finish keeps the bridge usable and late inspectors unrefed', async () => {
     await withInspectorMock(async (mock) => {
         await withRuntime(kernel, async (session) => {
-            const bridge = Reflect.get(globalThis, bridgeKey) as InstalledInspectorBridge;
+            const bridge = bus.get('cno.inspector', 'bridge') as InstalledInspectorBridge;
             session.finish();
             await new Promise<void>(resolve => setTimeout(resolve, 0));
-            strictEqual(Reflect.get(globalThis, bridgeKey), bridge);
+            strictEqual(bus.get('cno.inspector', 'bridge'), bridge);
             await bridge.open({ port: 0 });
             deepStrictEqual(mock.unrefed, mock.opened);
             const closing = session.close();
             strictEqual(session.close(), closing);
             await closing;
             strictEqual(mock.detached.length, 1);
-            strictEqual(Reflect.get(globalThis, bridgeKey), undefined);
+            strictEqual(bus.get('cno.inspector', 'bridge'), undefined);
             await rejects(bridge.open(), /closed/);
         });
     });
@@ -83,7 +83,7 @@ Deno.test('kernel lifecycle: one init hook follows the current inspector across 
             inspector.scriptInitHook = () => { notifications.push(inspector); };
         };
         await withRuntime(kernel, async (session) => {
-            const bridge = Reflect.get(globalThis, bridgeKey) as InstalledInspectorBridge;
+            const bridge = bus.get('cno.inspector', 'bridge') as InstalledInspectorBridge;
             await bridge.open();
             await bridge.close();
             await bridge.open();
@@ -103,7 +103,7 @@ Deno.test('kernel lifecycle: initialization failures release resources and prese
         const failure = new Error('preload failed');
         mock.detach = async () => { throw new Error('detach failed'); };
         await withRuntime({ ...kernel, preloads: ['broken.ts'] }, async (session) => {
-            const bridge = Reflect.get(globalThis, bridgeKey) as InstalledInspectorBridge;
+            const bridge = bus.get('cno.inspector', 'bridge') as InstalledInspectorBridge;
             await bridge.open();
             session.runtime.loadModule = async () => { throw failure; };
             const cleanup = session.runtime.cleanup.bind(session.runtime);
@@ -116,7 +116,7 @@ Deno.test('kernel lifecycle: initialization failures release resources and prese
             await rejects(session.initialize(), error => error === failure);
             strictEqual(cleanups, 1);
             strictEqual(mock.detached.length, 1);
-            strictEqual(Reflect.get(globalThis, bridgeKey), undefined);
+            strictEqual(bus.get('cno.inspector', 'bridge'), undefined);
             await rejects(session.close(), /detach failed/);
             strictEqual(cleanups, 1);
         });
@@ -129,7 +129,7 @@ Deno.test('inspector bridge: disposing an older bridge preserves its replacement
         const second = installInspectorBridge({ entryFile: 'second.ts' });
         try {
             await first.dispose();
-            strictEqual(Reflect.get(globalThis, bridgeKey), second);
+            strictEqual(bus.get('cno.inspector', 'bridge'), second);
             await rejects(first.open(), /closed/);
             await second.open();
             strictEqual(second.isActive(), true);

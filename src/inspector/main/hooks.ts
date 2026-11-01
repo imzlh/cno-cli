@@ -209,7 +209,7 @@ export class Hooks {
 
 	// ── network ─────────────────────────────────────────────────────
 	private installNetwork(): void {
-		Reflect.set(debug, '__cnoNetworkHooks', {
+		import.meta.use('evbus').set('cno.inspector', 'networkHooks', {
 			getFetchHook: () => getFetchHook(),
 			getServeHook: () => getServeHook(),
 			captureCallFrames: () => this.captureNetworkCallFrames(),
@@ -616,7 +616,7 @@ export class Hooks {
 			/* ignore */
 		}
 		try {
-			Reflect.deleteProperty(debug, '__cnoNetworkHooks')
+			import.meta.use('evbus').delete('cno.inspector', 'networkHooks')
 		} catch {
 			/* ignore */
 		}

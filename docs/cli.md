@@ -26,8 +26,8 @@ are installed.
 - `--system-proxy`
 - `--skip-cert-verify`
 
-Process lifecycle handling is registered once through the CTS event multiplexer,
-so the main process, test children, and workers share the same exit boundary.
+Process lifecycle handling is registered on the evbus runtime-event channel, so
+the main process, test children, and workers share the same exit boundary.
 
 ## Command Routing
 

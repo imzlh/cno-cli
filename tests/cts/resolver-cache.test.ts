@@ -8,6 +8,28 @@ import { canonicalizePath, joinPaths } from '../../cts/src/utils/path.ts';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 
 for (const method of ['resolve', 'resolveAsync'] as const) {
+    Deno.test(`cts ${method}: frozen absolute entry is restored from the module lock`, async () => {
+        const root = makePosixTempDir('resolver-absolute-cache');
+        const resolver = new ModuleResolver(createConfig({
+            cacheDir: joinPaths(root, 'cache'), frozen: true, ignoreScripts: true,
+        }), root);
+        try {
+            const entry = canonicalizePath(joinPaths(root, 'entry.ts'));
+            const locked: ModuleInfo = {
+                specPath: entry,
+                localPath: entry,
+                format: 'esm',
+                fileKind: 'source',
+            };
+            resolver.lockStore.setModule(locked);
+
+            deepStrictEqual(await resolver[method](entry, `${root}/<entry>`), locked);
+        } finally {
+            resolver.close();
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     Deno.test(`cts ${method}: source lock wins over local packages and canonical lock entries`, async () => {
         const root = makePosixTempDir('resolver-source-cache');
         const resolver = new ModuleResolver(createConfig({

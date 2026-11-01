@@ -1,3 +1,4 @@
+// @cno-host: false
 // Run with: node --test tests/cts/evbus-exit-code.test.mjs
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -22,7 +23,9 @@ async function declarations(path, names) {
     }
     return names.map(name => {
         assert.ok(found.has(name), `missing ${name} in ${path}`);
-        return found.get(name);
+        // Extracted bodies are re-wrapped in an IIFE, so exported declarations
+        // lose their `export` modifier.
+        return found.get(name).replace(/^export\s+/, '');
     }).join('\n');
 }
 
@@ -35,9 +38,9 @@ async function script(source) {
     return new Script(result.code);
 }
 
-const sharedNames = ['REQUEST_EXIT_CODE_NAMESPACE', 'REQUEST_EXIT_CODE_KEY', 'REQUEST_EXIT_CODE_SLOT'];
-const cliSource = await declarations('../../src/main.ts', [
-    'requestedExitCode', ...sharedNames, 'currentProcessExitCode', 'syncExitCode', 'requestExitCode',
+const channelNames = ['evbus', 'RUNTIME_CHANNEL_NAMESPACE', 'CHANNEL_REQUEST_EXIT_CODE', 'publishChannel', 'readChannel'];
+const cliSource = await declarations('../../src/channels.ts', channelNames) + '\n' + await declarations('../../src/main.ts', [
+    'requestedExitCode', 'currentProcessExitCode', 'syncExitCode', 'requestExitCode',
     'installRequestExitCodeHandler', 'TEST_CHILD_ENV_NAME', 'mainEntry',
 ]);
 assert.ok(cliSource.includes("await import('./commands/test')"));
@@ -45,13 +48,11 @@ const cliScript = await script(cliSource.replace("await import('./commands/test'
     globalThis.cli = { mainEntry, installRequestExitCodeHandler, requestExitCode, syncExitCode };
 `);
 const runtimeScript = await script(await declarations('../../cts/src/runtime/index.ts', [
-    ...sharedNames, 'requestFailureExitCode',
+    'REQUEST_EXIT_CODE_NAMESPACE', 'REQUEST_EXIT_CODE_KEY', 'requestFailureExitCode',
 ]) + '\n globalThis.requestFailureExitCode = requestFailureExitCode;');
 
-const slot = Symbol.for('cno.runtime.requestExitCode');
 const namespace = 'cno.runtime';
 const key = 'requestExitCode';
-const readLegacy = context => new Script("globalThis[Symbol.for('cno.runtime.requestExitCode')]").runInContext(context);
 
 function createBus() {
     const values = new Map();
@@ -90,23 +91,20 @@ function cliRealm(bus, { isWorker = false, testInvocation = null } = {}) {
     return { context, calls };
 }
 
-function runtimeRealm(use, legacy) {
-    const context = createContext({ __test_use__: use });
-    if (legacy !== undefined) context[slot] = legacy;
+function runtimeRealm(use, bus) {
+    const context = createContext({ __test_use__: use ?? (() => bus) });
     runtimeScript.runInContext(context);
     return context;
 }
 
-test('CLI exit requests cross realms through evbus, with legacy registration retained', async () => {
+test('CLI exit requests cross realms through evbus', async () => {
     const bus = createBus();
     const { context, calls } = cliRealm(bus);
     await context.cli.mainEntry();
     assert.equal(calls.dispatch, 1);
-    assert.equal(typeof readLegacy(context), 'function');
-    assert.equal(bus.get(namespace, key), readLegacy(context));
+    assert.equal(typeof bus.get(namespace, key), 'function', 'the CLI published its handler');
 
-    const sandbox = runtimeRealm(() => bus);
-    assert.equal(readLegacy(sandbox), undefined);
+    const sandbox = runtimeRealm(null, bus);
     sandbox.requestFailureExitCode();
     sandbox.requestFailureExitCode();
     assert.deepEqual(calls.exitCodes, [1], 'the first failure request sets the status once');
@@ -118,7 +116,7 @@ test('explicit process exit codes, including zero, retain precedence', () => {
         const { context, calls } = cliRealm(bus);
         context.process.exitCode = code;
         context.cli.installRequestExitCodeHandler(context.cli.requestExitCode);
-        runtimeRealm(() => bus).requestFailureExitCode();
+        runtimeRealm(null, bus).requestFailureExitCode();
         assert.deepEqual(calls.exitCodes, [code]);
         context.process.exitCode = 5;
         context.cli.syncExitCode();
@@ -126,59 +124,42 @@ test('explicit process exit codes, including zero, retain precedence', () => {
     }
 });
 
-test('missing, invalid, or unreadable buses fall back to the realm-local handler', () => {
+test('a missing, invalid, or unreadable bus disables the failure request', () => {
     for (const use of [
         () => null,
-        () => { throw new Error('old host'); },
+        () => { throw new Error('broken host'); },
+        () => ({}),
         () => ({ get: () => undefined }),
         () => ({ get: () => 'not a function' }),
         () => ({ get: () => { throw new Error('read failed'); } }),
     ]) {
         const codes = [];
-        runtimeRealm(use, code => codes.push(code)).requestFailureExitCode();
-        assert.deepEqual(codes, [1]);
+        runtimeRealm(use, undefined).requestFailureExitCode();
+        assert.deepEqual(codes, [], 'no legacy fallback exists');
+        void codes;
     }
-
-    // A host with no evbus, or one whose set fails, still supports old CTS.
-    for (const bus of [null, { set: () => { throw new Error('write failed'); } }]) {
-        const { context } = cliRealm(bus);
-        const codes = [];
-        context.cli.installRequestExitCodeHandler(code => codes.push(code));
-        runtimeScript.runInContext(context);
-        context.requestFailureExitCode();
-        assert.deepEqual(codes, [1]);
-    }
-
-    const unreadable = runtimeRealm(() => null);
-    Object.defineProperty(unreadable, slot, { get() { throw new Error('legacy read failed'); } });
-    assert.doesNotThrow(() => unreadable.requestFailureExitCode());
 });
 
-test('a throwing evbus handler is never retried through the legacy slot', () => {
+test('a throwing evbus handler fails the request, never the runtime', () => {
     for (const thrown of [new Error('handler failed'), undefined]) {
-        let nativeCalls = 0;
-        let legacyCalls = 0;
-        const nativeHandler = () => { nativeCalls++; throw thrown; };
-        const legacyHandler = () => { legacyCalls++; };
-        const bus = { get: () => nativeHandler };
-        const sandbox = runtimeRealm(() => bus, legacyHandler);
-        assert.equal(readLegacy(sandbox), legacyHandler);
+        let calls = 0;
+        const bus = { get: () => () => { calls++; throw thrown; } };
+        const sandbox = runtimeRealm(() => bus, undefined);
         assert.doesNotThrow(() => sandbox.requestFailureExitCode());
-        assert.equal(nativeCalls, 1);
-        assert.equal(legacyCalls, 0);
+        assert.equal(calls, 1, 'the handler ran exactly once');
     }
 });
 
-test('test children install a no-op in both channels; workers install neither', async () => {
+test('test children install a no-op; workers install neither', async () => {
     const childBus = createBus();
     const child = cliRealm(childBus, { testInvocation: '1' });
     await child.context.cli.mainEntry();
     assert.equal(child.calls.testChild, 1);
     assert.equal(child.calls.dispatch, 0);
     assert.deepEqual(child.calls.unset, ['__CNO_TEST_CHILD']);
-    assert.equal(childBus.get(namespace, key), readLegacy(child.context));
-    runtimeRealm(() => childBus).requestFailureExitCode();
-    assert.deepEqual(child.calls.exitCodes, []);
+    assert.equal(typeof childBus.get(namespace, key), 'function', 'a no-op is published');
+    runtimeRealm(null, childBus).requestFailureExitCode();
+    assert.deepEqual(child.calls.exitCodes, [], 'the suite owns the exit status');
 
     const workerBus = createBus();
     const worker = cliRealm(workerBus, { isWorker: true });
@@ -186,6 +167,5 @@ test('test children install a no-op in both channels; workers install neither', 
     assert.equal(worker.calls.worker, 1);
     assert.equal(worker.calls.dispatch, 0);
     assert.equal(workerBus.get(namespace, key), undefined);
-    assert.equal(readLegacy(worker.context), undefined);
-    assert.doesNotThrow(() => runtimeRealm(() => workerBus).requestFailureExitCode());
+    assert.doesNotThrow(() => runtimeRealm(null, workerBus).requestFailureExitCode());
 });

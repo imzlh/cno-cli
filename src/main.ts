@@ -47,12 +47,12 @@ import { decodeWorkerRuntimeConfig } from './config';
 import { readEnv } from './env';
 import { C, showHelp, showVersion } from './help';
 import { configureTlsHooks } from './network';
+import { publishChannel, CHANNEL_BLOB_URL_RESOLVER, CHANNEL_REQUEST_EXIT_CODE } from './channels';
 import type { TestChildMessage } from './commands/test-result-pipe';
 
 import '../cno/src/main';   // main polyfill(cno) entry
 
-Reflect.set(globalThis, '__cno_resolve_blob_url', resolveObjectURLBytes);
-
+publishChannel(CHANNEL_BLOB_URL_RESOLVER, resolveObjectURLBytes);
 const fs = import.meta.use('fs');
 const console = import.meta.use('console');
 const worker = import.meta.use('worker');
@@ -147,9 +147,6 @@ async function listTasks(flags: Record<string, string | boolean>, prefixArgs: st
 
 let cleanupStarted = false;
 let requestedExitCode = 0;
-const REQUEST_EXIT_CODE_NAMESPACE = 'cno.runtime';
-const REQUEST_EXIT_CODE_KEY = 'requestExitCode';
-const REQUEST_EXIT_CODE_SLOT = Symbol.for('cno.runtime.requestExitCode');
 
 /** Terminal cleanup runs after user exit/unload handlers, never after entry evaluation. */
 function runProcessCleanup(): void {
@@ -188,12 +185,7 @@ function requestExitCode(code: number): void {
 }
 
 function installRequestExitCodeHandler(handler: (code: number) => void): void {
-    try {
-        import.meta.use('evbus')?.set(REQUEST_EXIT_CODE_NAMESPACE, REQUEST_EXIT_CODE_KEY, handler);
-    } catch {
-        // Older hosts or unavailable buses continue to use the legacy slot.
-    }
-    Reflect.set(globalThis, REQUEST_EXIT_CODE_SLOT, handler);
+    publishChannel(CHANNEL_REQUEST_EXIT_CODE, handler);
 }
 
 installEventReceiver('cli-lifecycle', (name) => {

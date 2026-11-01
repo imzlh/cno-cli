@@ -5,6 +5,7 @@ import { entryAndDir, entryUrl, hasUrlScheme, sourceExtension } from '../utils';
 import { CliCommandError } from '../command-error';
 import type { Args } from '../../cno/src/utils/args';
 import { flagsToConfig } from '../config';
+import { publishChannel, CHANNEL_MAIN_SCRIPT } from '../channels';
 import { applyLocationFlag, effectiveRuntimeFlags, openKernelRuntime, type KernelContext, type KernelRuntime } from '../kernel';
 
 const os = import.meta.use('os');
@@ -181,13 +182,13 @@ export async function runFile(opts: RunOpts): Promise<void> {
             const packStarted = Date.now();
             const { manifest } = loadPack(entry, runtime.resolver);
             const preparedAt = Date.now();
-            Reflect.set(globalThis, '__mainScript', entryUrl(manifest.entry));
+            publishChannel(CHANNEL_MAIN_SCRIPT, entryUrl(manifest.entry));
             mod = asMain
                 ? await runtime.loadEntry(manifest.entry, {}, manifest.modules[manifest.entry]?.lang ?? '')
                 : await runtime.loadModule(manifest.entry, {}, manifest.modules[manifest.entry]?.lang ?? '');
             log.debug('pack', () => `prepare=${preparedAt - packStarted}ms link=${Date.now() - preparedAt}ms`);
         } else {
-            Reflect.set(globalThis, '__mainScript', entryUrl(entry));
+            publishChannel(CHANNEL_MAIN_SCRIPT, entryUrl(entry));
             const resolved = isStdin ? { entry, npmBin: false } : resolveNpmRunEntry(runtime, entry, dir);
             const runEntry = resolved.entry;
             const entryLang = explicitExt ?? '';

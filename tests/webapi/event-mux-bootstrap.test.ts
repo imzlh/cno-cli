@@ -1,186 +1,113 @@
-import { strictEqual } from 'node:assert';
-import { installWebApiEventReceiver } from '../../cno/src/webapi/event-mux-bootstrap.ts';
+import { deepStrictEqual, strictEqual } from 'node:assert';
+import {
+    claimUnloadEvent,
+    dispatchLoadEvent,
+    dispatchUnloadEvent,
+    installLifecycleEventObserver,
+    installWebApiEventReceiver,
+    PRIORITY_WEBAPI,
+    type RuntimeEventBus,
+    type RuntimeEventFrame,
+} from '../../cno/src/webapi/event-mux-bootstrap.ts';
 
-const muxUrl = new URL(
-    '../../../cts/src/runtime/event-mux',
-    new URL('../../cno/src/webapi/event-mux-bootstrap.ts', import.meta.url),
-).href;
+const lifecycleSlot = Symbol.for('cno.runtime.lifecycle.v1');
 
-const receiver = () => undefined;
-const muxSlot = Symbol.for('cno.engine.eventMux.v1');
-
-async function withoutMuxRegistry(fn: () => Promise<void>): Promise<void> {
-    const prior = Reflect.get(globalThis, muxSlot);
-    const use = (import.meta as ImportMeta & { use?: (name: string) => unknown }).use;
-    const bus = use?.('evbus') as { has?: (namespace: string, key: string) => boolean } | null | undefined;
-    const priorHas = bus?.has;
+function withLifecycleState(
+    state: { loadFired: boolean; unloadFired: boolean },
+    fn: () => void,
+): void {
+    const target = globalThis as unknown as Record<symbol, unknown>;
+    const previous = target[lifecycleSlot];
     try {
-        Reflect.set(globalThis, muxSlot, undefined);
-        // A staged CNO already has a runtime-wide mux. Simulate an embedding
-        // with neither CTS nor that registry, without clearing its native bus.
-        if (bus && priorHas) bus.has = () => false;
-        await fn();
+        target[lifecycleSlot] = state;
+        fn();
     } finally {
-        if (bus && priorHas) bus.has = priorHas;
-        Reflect.set(globalThis, muxSlot, prior);
+        target[lifecycleSlot] = previous;
     }
 }
 
-Deno.test('webapi event mux: falls back only when the mux module is absent', async () => {
-    let standaloneCalls = 0;
-    const missing = Object.assign(new Error('module missing'), {
-        code: 'ERR_MODULE_NOT_FOUND',
-        url: muxUrl,
-    });
-
-    await withoutMuxRegistry(async () => {
-        await installWebApiEventReceiver(receiver, () => { standaloneCalls++; }, async () => {
-            throw missing;
-        });
-    });
-
-    strictEqual(standaloneCalls, 1);
-});
-
-Deno.test('webapi event mux: standalone process receivers share one native slot', async () => {
-    await withoutMuxRegistry(async () => {
-        const missing = Object.assign(new Error('module missing'), { code: 'ERR_MODULE_NOT_FOUND', url: muxUrl });
-        let nativeCalls = 0;
-        let dispatch: ((name: number, data: unknown) => boolean) | undefined;
-        const seen: string[] = [];
-        await installWebApiEventReceiver((_name, _data, ctx) => {
-            seen.push('webapi');
-            ctx.handled = true;
-            return true;
-        }, (fn) => { nativeCalls++; dispatch = fn; }, async () => { throw missing; });
-
-        const registry = Reflect.get(globalThis, muxSlot) as {
-            install(role: string, fn: (name: number, data: unknown, ctx: { handled: boolean }) => boolean, priority: number): () => void;
-        };
-        registry.install('node-process', (_name, _data, ctx) => {
-            seen.push(`process:${ctx.handled}`);
-            return false;
-        }, 50);
-        strictEqual(dispatch?.(1, null), false);
-        strictEqual(seen.join(','), 'webapi,process:true');
-        strictEqual(nativeCalls, 1);
-
-        await installWebApiEventReceiver(() => undefined, () => { nativeCalls++; }, async () => { throw missing; });
-        strictEqual(nativeCalls, 1, 'reinstall reuses the existing mux');
-    });
-});
-
-Deno.test('webapi event mux: failed standalone installation rolls back its registry', async () => {
-    await withoutMuxRegistry(async () => {
-        const missing = Object.assign(new Error('module missing'), { code: 'ERR_MODULE_NOT_FOUND', url: muxUrl });
-        const failure = new Error('native installation failed');
-        let thrown: unknown;
-        try {
-            await installWebApiEventReceiver(receiver, () => { throw failure; }, async () => { throw missing; });
-        } catch (error) {
-            thrown = error;
-        }
-        strictEqual(thrown, failure);
-        strictEqual(Reflect.get(globalThis, muxSlot), undefined);
-    });
-});
-
-Deno.test('webapi event mux: accepts the legacy structured missing-module code', async () => {
-    let standaloneCalls = 0;
-    const missing = Object.assign(new Error('module missing'), {
-        code: 'MODULE_NOT_FOUND',
-        url: muxUrl,
-    });
-
-    await withoutMuxRegistry(async () => {
-        await installWebApiEventReceiver(receiver, () => { standaloneCalls++; }, async () => {
-            throw missing;
-        });
-    });
-
-    strictEqual(standaloneCalls, 1);
-});
-
-Deno.test('webapi event mux: a different loader failure does not replace the receiver', async () => {
-    let standaloneCalls = 0;
-    const failure = Object.assign(new Error('dependency missing'), {
-        code: 'ERR_MODULE_NOT_FOUND',
-        url: 'file:///other-module.ts',
-    });
-    let thrown: unknown;
-
-    try {
-        await installWebApiEventReceiver(receiver, () => { standaloneCalls++; }, async () => {
-            throw failure;
-        });
-    } catch (error) {
-        thrown = error;
-    }
-
-    strictEqual(thrown, failure);
-    strictEqual(standaloneCalls, 0);
-});
-
-Deno.test('webapi event mux: a present registry prevents a raw fallback', async () => {
-    const prior = Reflect.get(globalThis, muxSlot);
-    const missing = Object.assign(new Error('module missing'), {
-        code: 'ERR_MODULE_NOT_FOUND',
-        url: muxUrl,
-    });
-    let standaloneCalls = 0;
-    let thrown: unknown;
-
-    try {
-        Reflect.set(globalThis, muxSlot, {});
-        try {
-            await installWebApiEventReceiver(receiver, () => { standaloneCalls++; }, async () => {
-                throw missing;
-            });
-        } catch (error) {
-            thrown = error;
-        }
-    } finally {
-        Reflect.set(globalThis, muxSlot, prior);
-    }
-
-    strictEqual(thrown, missing);
-    strictEqual(standaloneCalls, 0);
-});
-
-Deno.test('webapi event mux: installs through the mux when it loads', async () => {
-    let standaloneCalls = 0;
-    let installed: unknown[] = [];
-
-    await installWebApiEventReceiver(receiver, () => { standaloneCalls++; }, async () => ({
-        WEBAPI_ROLE: 'webapi',
-        PRIORITY_WEBAPI: 100,
-        installEventReceiver(...args) {
-            installed = args;
-            return () => {};
+function fakeBus() {
+    const calls: Array<{
+        namespace: string;
+        event: string;
+        listener: (frame: RuntimeEventFrame) => boolean | undefined;
+        priority?: number;
+    }> = [];
+    let unsubscribeCalls = 0;
+    const unsubscribe = () => { unsubscribeCalls++; };
+    const bus: RuntimeEventBus = {
+        RUNTIME_NAMESPACE: 'test.runtime',
+        RUNTIME_EVENT: 'event',
+        on(namespace, event, listener, priority) {
+            calls.push({ namespace, event, listener, priority });
+            return unsubscribe;
         },
-    }));
+    };
+    return { bus, calls, unsubscribe, unsubscribeCalls: () => unsubscribeCalls };
+}
 
-    strictEqual(installed[0], 'webapi');
-    strictEqual(installed[1], receiver);
-    strictEqual(installed[2], 100);
-    strictEqual(standaloneCalls, 0);
+Deno.test('webapi runtime events: subscribes directly at priority 100', () => {
+    const fixture = fakeBus();
+    const off = installWebApiEventReceiver(() => undefined, fixture.bus);
+
+    strictEqual(fixture.calls.length, 1);
+    strictEqual(fixture.calls[0]?.namespace, fixture.bus.RUNTIME_NAMESPACE);
+    strictEqual(fixture.calls[0]?.event, fixture.bus.RUNTIME_EVENT);
+    strictEqual(fixture.calls[0]?.priority, PRIORITY_WEBAPI);
+    strictEqual(off, fixture.unsubscribe);
 });
 
-Deno.test('webapi event mux: an install failure does not fall back to onEvent', async () => {
-    let standaloneCalls = 0;
-    const failure = new Error('install failed');
-    let thrown: unknown;
+Deno.test('webapi runtime events: forwards the native frame and shared context', () => {
+    const fixture = fakeBus();
+    const context = { handled: false, dispatched: false, rejectionEmitted: false };
+    const seen: unknown[] = [];
+    installWebApiEventReceiver((name, data, ctx) => {
+        seen.push(name, data, ctx);
+        ctx.handled = true;
+        return false;
+    }, fixture.bus);
 
-    try {
-        await installWebApiEventReceiver(receiver, () => { standaloneCalls++; }, async () => ({
-            WEBAPI_ROLE: 'webapi',
-            PRIORITY_WEBAPI: 100,
-            installEventReceiver() { throw failure; },
-        }));
-    } catch (error) {
-        thrown = error;
-    }
+    const result = fixture.calls[0]?.listener({ name: 7, data: 'payload', context });
+    strictEqual(result, false);
+    deepStrictEqual(seen, [7, 'payload', context]);
+    strictEqual(context.handled, true);
+});
 
-    strictEqual(thrown, failure);
-    strictEqual(standaloneCalls, 0);
+Deno.test('webapi runtime events: returned unsubscribe remains detachable', () => {
+    const fixture = fakeBus();
+    const off = installWebApiEventReceiver(() => undefined, fixture.bus);
+    off();
+    strictEqual(fixture.unsubscribeCalls(), 1);
+});
+
+Deno.test('webapi lifecycle: shared realm state suppresses duplicate load', () => {
+    withLifecycleState({ loadFired: false, unloadFired: false }, () => {
+        const listeners = new Map<string, () => void>();
+        installLifecycleEventObserver((type, listener) => listeners.set(type, listener));
+        listeners.get('load')?.();
+        let loads = 0;
+        const onLoad = () => { loads++; };
+        globalThis.addEventListener('load', onLoad);
+        try {
+            strictEqual(dispatchLoadEvent(), false);
+        } finally {
+            globalThis.removeEventListener('load', onLoad);
+        }
+        strictEqual(loads, 0);
+    });
+});
+
+Deno.test('webapi lifecycle: explicit and native unload share one claim', () => {
+    withLifecycleState({ loadFired: false, unloadFired: false }, () => {
+        let unloads = 0;
+        const onUnload = () => { unloads++; };
+        globalThis.addEventListener('unload', onUnload);
+        try {
+            strictEqual(dispatchUnloadEvent(), true);
+            strictEqual(claimUnloadEvent(), false);
+        } finally {
+            globalThis.removeEventListener('unload', onUnload);
+        }
+        strictEqual(unloads, 1);
+    });
 });

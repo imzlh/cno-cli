@@ -36,8 +36,9 @@ Deno.test({ name: 'native worker exit preserves its status without printing a fa
                 __node_workerData: null,
                 __cts_entry: 'eval:' + \`
                     const engine = import.meta.use('engine');
+                    const evbus = import.meta.use('evbus');
                     const worker = import.meta.use('worker');
-                    engine.onEvent((name, code) => {
+                    evbus.on(evbus.RUNTIME_NAMESPACE, evbus.RUNTIME_EVENT, ({ name, data: code }) => {
                         if (name === engine.EventType.EXIT) worker.pipe.postMessage(code);
                         return false;
                     });
@@ -47,6 +48,8 @@ Deno.test({ name: 'native worker exit preserves its status without printing a fa
             await new Promise((resolve, reject) => {
                 const timer = setTimeout(() => { worker.stop(); reject(new Error('worker exit timed out')); }, 3000);
                 worker.messagePipe.onmessage = code => {
+                    // CNO's own worker lifecycle reporter may post object frames first.
+                    if (typeof code !== 'number') return;
                     clearTimeout(timer);
                     if (code === 42) resolve(); else reject(new Error('wrong worker status: ' + code));
                 };

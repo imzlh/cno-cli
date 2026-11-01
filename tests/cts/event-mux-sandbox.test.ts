@@ -2,7 +2,6 @@ import { deepStrictEqual, strictEqual } from 'node:assert';
 import { Transformer } from '../../cts/src/source/transform.ts';
 
 const muxUrl = new URL('../../cts/src/runtime/event-mux.ts', import.meta.url).href;
-const bootstrapUrl = new URL('../../cno/src/webapi/event-mux-bootstrap.ts', import.meta.url).href;
 const processUrl = new URL('../../cno/src/node/process/mod.ts', import.meta.url).href;
 const source = await Deno.readTextFile(new URL(muxUrl));
 const sandboxSource = new Transformer({ sourceMaps: false })
@@ -43,7 +42,7 @@ async function runFixture(body: string): Promise<string[]> {
     }
 }
 
-Deno.test({ name: 'event mux: one native dispatch coordinates all sandbox realms once', timeout: 15000 }, async () => {
+Deno.test({ name: 'event mux: native evbus coordinates independent sandbox subscriptions once', timeout: 15000 }, async () => {
     const lines = await runFixture(`
         const first = makeSandbox();
         const second = makeSandbox();
@@ -53,7 +52,6 @@ Deno.test({ name: 'event mux: one native dispatch coordinates all sandbox realms
         second.call(\`mux.installEventReceiver('second', (name, data, ctx) => {
             if (name === 2 || name === 987) { log('MUX:second:' + ctx.handled); return true; }
         }, 50)\`);
-        Reflect.set(globalThis, Symbol.for('cno.engine.eventMux.v1'), undefined);
         const main = await import(${JSON.stringify(muxUrl)});
         main.installEventReceiver('main', (name, data, ctx) => {
             if (name === 2 || name === 987) { console.log('MUX:main:' + ctx.handled); return false; }
@@ -67,20 +65,22 @@ Deno.test({ name: 'event mux: one native dispatch coordinates all sandbox realms
     ]);
 });
 
-Deno.test({ name: 'event mux: sandbox cannot replace the native owner', timeout: 15000 }, async () => {
+Deno.test({ name: 'event mux: unsubscribing a sandbox leaves the main subscription active', timeout: 15000 }, async () => {
     const lines = await runFixture(`
-        engine.onEvent((name) => {
-            if (name === engine.EventType.EXIT) console.log('MUX:owner');
-            return true;
-        });
         const sandbox = makeSandbox();
-        sandbox.call('Object.defineProperty(globalThis, "isWorker", { value: false });');
-        sandbox.call(\`mux.installEventReceiver('sandbox', (name) => {
-            if (name === 2) log('MUX:sandbox');
-        })\`);
-        Deno.exit(0);
+        sandbox.call(\`globalThis.off = mux.installEventReceiver('sandbox', (name) => {
+            if (name === 997) log('MUX:sandbox');
+        }, 50)\`);
+        const main = await import(${JSON.stringify(muxUrl)});
+        main.installEventReceiver('main', (name) => {
+            if (name === 997) console.log('MUX:main');
+        }, 0);
+        main.getEventMux().dispatch(997, null);
+        sandbox.call('off(); off();');
+        console.log('MUX:next');
+        main.getEventMux().dispatch(997, null);
     `);
-    deepStrictEqual(lines, ['MUX:owner']);
+    deepStrictEqual(lines, ['MUX:sandbox', 'MUX:main', 'MUX:next', 'MUX:main']);
 });
 
 Deno.test({ name: 'event mux: sandbox collection preserves the active snapshot only', timeout: 15000 }, async () => {
@@ -89,7 +89,6 @@ Deno.test({ name: 'event mux: sandbox collection preserves the active snapshot o
         sandbox.call(\`mux.installEventReceiver('sandbox', (name) => {
             if (name === 998) log('MUX:sandbox');
         }, 0)\`);
-        Reflect.set(globalThis, Symbol.for('cno.engine.eventMux.v1'), undefined);
         const main = await import(${JSON.stringify(muxUrl)});
         main.installEventReceiver('drop-sandbox', (name) => {
             if (name === 998) {
@@ -107,27 +106,17 @@ Deno.test({ name: 'event mux: sandbox collection preserves the active snapshot o
 
 Deno.test({ name: 'event mux: standalone CNO routes process rejections without CTS', timeout: 15000 }, async () => {
     const lines = await runFixture(`
-        Reflect.set(globalThis, Symbol.for('cno.engine.eventMux.v1'), undefined);
-        const originalHas = evbus.has;
-        evbus.has = () => false;
-        const bootstrap = await import(${JSON.stringify(bootstrapUrl)});
-        const missingUrl = new URL('../../../cts/src/runtime/event-mux', ${JSON.stringify(bootstrapUrl)}).href;
-        const missing = Object.assign(new Error('missing CTS'), { code: 'ERR_MODULE_NOT_FOUND', url: missingUrl });
-        await bootstrap.installWebApiEventReceiver(() => undefined,
-            dispatch => engine.onEvent(dispatch), async () => { throw missing; });
-        evbus.has = originalHas;
         const proc = await import(${JSON.stringify(processUrl)});
         let calls = 0;
         proc.on('unhandledRejection', (reason, promise) => {
             calls++;
             console.log('MUX:rejection:' + reason + ':' + promise);
         });
-        const mux = Reflect.get(globalThis, Symbol.for('cno.engine.eventMux.v1'));
-        console.log('MUX:return:' + mux.dispatch(engine.EventType.UNHANDLED_REJECTION, ['promise', 'reason']));
+        console.log('MUX:return:' + evbus.dispatchRuntimeEvent(engine.EventType.UNHANDLED_REJECTION, ['promise', 'reason']));
         console.log('MUX:calls:' + calls);
-        const cts = await import(${JSON.stringify(muxUrl)});
-        cts.installNodeProcessRejectionBridge();
-        console.log('MUX:return:' + mux.dispatch(engine.EventType.UNHANDLED_REJECTION, ['promise', 'reason']));
+        // A second dispatch delivers again: rejectionEmitted is per dispatch,
+        // and CNO's direct bridge is the only delivery path (no CTS bridge).
+        console.log('MUX:return:' + evbus.dispatchRuntimeEvent(engine.EventType.UNHANDLED_REJECTION, ['promise', 'reason']));
         console.log('MUX:calls:' + calls);
     `);
     deepStrictEqual(lines, [

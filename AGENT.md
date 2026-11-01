@@ -438,6 +438,63 @@ modules need identical semantics, but do not duplicate native resource logic.
 binary. This is why a Node-only edit can usually be tested with `setup`, while
 Web API, Deno, bootstrap, and CLI edits normally require a rebuild.
 
+## evbus: Runtime Event Bus
+
+`import.meta.use('evbus')` (`circu.js/src/mod_evbus.c`, declared in
+`circu.js/types/evbus.d.ts`) is the runtime-scoped pub/sub and shared value
+registry. All realms of one QuickJS runtime share one bus; each worker has its
+own. Entries are retained, not cloned, and belong to the realm that published or
+subscribed; a finalized sandbox removes its own entries. It is a coordination
+channel, not an isolation boundary.
+
+**Value channels** are the only sanctioned cross-submodule wiring. Never add a
+`globalThis`/Symbol-slot alternative, and never piggyback state on a native
+module object. Consumers declare the matching string constants on their side;
+only a missing *value* is graceful, a missing bus is a broken install.
+
+| Namespace | Key | Publisher → Consumer |
+| --- | --- | --- |
+| `cno.runtime` | `requestExitCode` | CLI exit-status hook → cts diagnostics |
+| `cno.runtime` | `mainScript` | CLI entry URL → `Deno.mainModule`, `Bun.main` |
+| `cno.runtime` | `workerRuntimeConfig` | CLI resolved config → nested workers |
+| `cno.runtime` | `blobUrlResolver` | CLI → cts `blob:` protocol |
+| `cno.runtime` | `applyLocation` | webapi location → CLI `--location` re-apply |
+| `cno.inspector` | `bridge` / `networkHooks` | CLI inspector → node `inspector`, node network debug |
+| `cno.node` | `httpInternals` | bootstrap → node `http.Server` binding |
+| `cno.args` | `surface` / `refresh` | cts args state ↔ node `process` argv |
+| `cts.internal` | `bridge`, event `bridge-ready` | cts → cno module interop |
+
+`Symbol.for` slots that remain are protocol symbols (`nodejs.util.inspect.custom`,
+`cno.blob.bytes`) or within-submodule copy dedup (process emitter singleton,
+`cno.engine.eventMux.v1` facade) — not channels.
+
+**Runtime events.** Native code publishes lifecycle events through
+`tjs__dispatch_event()` onto the reserved `circu.runtime`/`event` channel as a
+frame `{ name, data, context }`. `context` is one shared object per dispatch
+(`handled`, `dispatched`, `rejectionEmitted`); receivers coordinate through it,
+never through module flags. Dispatch order is priority descending, then
+registration order; the last explicit boolean return wins, except
+`BEFORE_UNLOAD` where `true` is sticky. Polarity is per event and not uniform:
+`JOB_EXCEPTION` defaults `true` (handled/keep running), `UNHANDLED_REJECTION`
+defaults `false` (handled/do not abort); receivers without an opinion return
+`undefined`. Listener errors are isolated except on `BEFORE_UNLOAD`/`BEFORE_EXIT`,
+where they propagate into native teardown. Register receivers through
+`installEventReceiver(role, fn, priority)` in `cts/src/runtime/event-mux.ts`,
+which owns same-role replacement; the priority bands are webapi 100, node
+process 50, diagnostics 0, fallback −100.
+
+**Sandbox realms** (`engine.Sandbox`) expose only BaseObjects + Eval — no `Set`,
+`Map`, `JSON`, `RegExp`. Anything evaluable inside a sandbox, including shared
+bridge method implementations, must not use missing intrinsics;
+`tests/cts/evbus-module-bridge-native.test.mjs` enforces this.
+
+Test lanes: `tests/cts/evbus-exit-code.test.mjs`, `evbus-module-bridge.test.mjs`,
+and `event-mux-realms.test.mjs` are node-hosted (`node --test`) and carry the
+header `// @cno-host: false`, so recursive `cno test` discovery skips them.
+Passing one explicitly still runs it, which is useful when debugging host gaps.
+`evbus-module-bridge-native.test.mjs` runs the real binary and must pass in both
+lanes.
+
 ## HTTP And Protocol Layer
 
 `http/` is `@cnojs/http`, a low-level protocol library used by the compatibility
@@ -711,6 +768,8 @@ compatibility finding:
 - `docs/inspector.md` - CDP inspector architecture
 - `docs/native-extensions.md` - extension model and options
 - `docs/api-surfaces.md` - public and semi-public API boundaries
+- `TODO.md` - open findings from wiring reviews: known failing suites, their
+  causes, and the fixed regressions worth remembering
 - `readme.md` - contributor overview
 
 When this guide and current code disagree, verify behavior in code and tests,

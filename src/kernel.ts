@@ -97,7 +97,7 @@ export function applyLocationFlag(flags: Flags): void {
     if (typeof location !== 'string' || location.length === 0) return;
     const os = import.meta.use('os');
     os.setenv('CNO_LOCATION', location);
-    const apply = Reflect.get(globalThis, '__cno_applyLocation');
+    const apply = import.meta.use('evbus')?.get('cno.runtime', 'applyLocation');
     if (typeof apply === 'function') apply(location);
 }
 

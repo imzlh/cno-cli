@@ -268,7 +268,7 @@ Deno.test('resource-limits: --memory-limit is enforced inside an eval Worker', a
             import { Worker } from 'node:worker_threads';
             const w = new Worker(\`
                 const { parentPort } = require('node:worker_threads');
-                const cfg = Reflect.get(globalThis, '__cno_worker_runtime_config');
+                const cfg = import.meta.use('evbus').get('cno.runtime', 'workerRuntimeConfig');
                 const sink = []; let mb = 0;
                 try {
                     while (mb < ${CAP}) {

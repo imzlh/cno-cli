@@ -1,3 +1,4 @@
+// @cno-host: false
 // Run with: node --test tests/cts/evbus-module-bridge.test.mjs
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
@@ -130,9 +131,8 @@ test('evbus bridge: CTS and CNO share identity across isolated globals and reins
     assert.equal(bridge.nodeModuleInterop.getCache(), node.module.Module._cache);
     assert.equal(bridge.nodeModuleInterop.getExtensions(), node.module.Module._extensions);
     assert.equal(node.fileURLToPath('npm:example@1/index.js'), '/local/npm:example@1/index.js');
-    assert.equal(sandbox[legacySlot], undefined, 'CNO discovery does not need a global slot');
-    assert.equal(main[legacySlot], bridge, 'older CNO copies can still discover CTS');
-    assert.equal(Object.getOwnPropertyDescriptor(main, legacySlot).configurable, true);
+    assert.equal(sandbox[legacySlot], undefined, 'discovery never needs a global slot');
+    assert.equal(globalThis[legacySlot], undefined, 'the legacy slot stays unwritten');
 
     const replacementCache = { existing: 1 };
     node.module.Module._cache = replacementCache;
@@ -148,7 +148,7 @@ test('evbus bridge: CTS and CNO share identity across isolated globals and reins
     const otherCts = load(sandbox, ctsSource);
     install(otherCts, { marker: 'sandbox' });
     assert.equal(otherCts.getInternalBridge(), bridge);
-    assert.equal(sandbox[legacySlot], bridge);
+    assert.equal(bus.get('cts.internal', 'bridge'), bridge, 'the bus entry stays the shared identity');
     assert.equal(bus.writes, 1, 'sandbox installs must not take ownership of the shared entry');
 });
 
@@ -176,16 +176,16 @@ test('evbus bridge: CNO waits for CTS before creating the shared bridge', () => 
 });
 
 for (const absentBus of [null, new Error('old runtime')]) {
-    test(`evbus bridge: legacy global fallback (${absentBus === null ? 'missing' : 'throws'})`, () => {
+    test(`evbus bridge: an absent bus degrades to a realm-local bridge (${absentBus === null ? 'missing' : 'throws'})`, () => {
         const context = makeContext(absentBus);
         const cts = load(context, ctsSource);
         install(cts);
         const bridge = cts.getInternalBridge();
+        assert.equal(bridge, cts.getInternalBridge(), 'realm-local bridge identity is stable');
         const node = load(context, cnoSource);
-        assert.equal(node.getCtsBridge(), bridge);
-        assert.equal(cts.getNodeModuleInterop(), bridge.nodeModuleInterop);
-        assert.equal(node.fileURLToPath('npm:example@1/index.js'), '/local/npm:example@1/index.js');
-        assert.equal(Object.getOwnPropertyDescriptor(context, legacySlot).configurable, true);
+        assert.equal(node.getCtsBridge(), undefined, 'CNO cannot discover a bridge without a bus');
+        assert.equal(node.fileURLToPath('npm:example@1/index.js'), 'npm:example@1/index.js');
+        assert.equal(Object.getOwnPropertyDescriptor(context, legacySlot), undefined);
     });
 }
 
@@ -197,12 +197,12 @@ test('evbus bridge: preserve unrelated non-configurable legacy slots', () => {
     const cts = load(context, ctsSource);
     install(cts);
     const node = load(context, cnoSource);
-    assert.equal(context[legacySlot], sentinel);
+    assert.equal(context[legacySlot], sentinel, 'neither side writes the legacy slot');
     assert.equal(node.getCtsBridge(), cts.getInternalBridge());
     assert.equal(node.fileURLToPath('npm:example@1/index.js'), '/local/npm:example@1/index.js');
 });
 
-test('evbus bridge: migrate an existing legacy object without changing its identity', () => {
+test('evbus bridge: a pre-existing legacy object is ignored in favour of the bus', () => {
     const bus = makeBus();
     const context = makeContext(bus);
     const interop = {};
@@ -210,8 +210,6 @@ test('evbus bridge: migrate an existing legacy object without changing its ident
     Object.defineProperty(context, legacySlot, { value: legacy, configurable: false });
     const cts = load(context, ctsSource);
     install(cts);
-    assert.equal(cts.getInternalBridge(), legacy);
-    assert.equal(cts.getNodeModuleInterop(), interop);
-    assert.equal(bus.get('cts.internal', 'bridge'), legacy);
-    assert.equal(context[legacySlot], legacy);
+    assert.equal(bus.get('cts.internal', 'bridge'), cts.getInternalBridge());
+    assert.notEqual(cts.getInternalBridge(), legacy);
 });

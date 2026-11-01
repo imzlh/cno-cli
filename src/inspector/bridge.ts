@@ -1,6 +1,10 @@
 import type { Inspector } from './main/inspector'
 
-const INSPECTOR_BRIDGE = Symbol.for('cno.inspector.bridge')
+// Published on the evbus `cno.inspector` channel; node:inspector discovers it
+// there. The native module ships with the pinned circu.js core.
+const evbus = import.meta.use('evbus')
+const INSPECTOR_NAMESPACE = 'cno.inspector'
+const INSPECTOR_BRIDGE_KEY = 'bridge'
 
 export interface OpenInspectorOptions {
 	port?: number
@@ -30,18 +34,13 @@ export interface InstalledInspectorBridge extends InspectorBridge {
 
 export function installInspectorBridge(options: InspectorBridgeInstallOptions): InstalledInspectorBridge {
 	const bridge = createInspectorBridge(options)
-	Object.defineProperty(globalThis, INSPECTOR_BRIDGE, {
-		value: bridge,
-		writable: true,
-		enumerable: false,
-		configurable: true,
-	})
+	evbus.set(INSPECTOR_NAMESPACE, INSPECTOR_BRIDGE_KEY, bridge)
 	return bridge
 }
 
 export function uninstallInspectorBridge(bridge: InspectorBridge): void {
-	if (Object.getOwnPropertyDescriptor(globalThis, INSPECTOR_BRIDGE)?.value === bridge) {
-		Reflect.deleteProperty(globalThis, INSPECTOR_BRIDGE)
+	if (evbus.get(INSPECTOR_NAMESPACE, INSPECTOR_BRIDGE_KEY) === bridge) {
+		evbus.delete(INSPECTOR_NAMESPACE, INSPECTOR_BRIDGE_KEY)
 	}
 }
 

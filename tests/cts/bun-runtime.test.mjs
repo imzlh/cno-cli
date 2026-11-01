@@ -28,6 +28,11 @@ const bundle = await build({
 function load({ exe, files = [], env = {}, cwd = '/work' }) {
     const stats = [];
     const present = new Set(files);
+    const values = new Map();
+    const bus = {
+        get: (namespace, key) => values.get(`${namespace}:${key}`),
+        set: (namespace, key, value) => values.set(`${namespace}:${key}`, value),
+    };
     const native = {
         os: {
             exePath: exe,
@@ -51,6 +56,7 @@ function load({ exe, files = [], env = {}, cwd = '/work' }) {
         },
         engine: {},
         error: { errno: {} },
+        evbus: bus,
         asyncfs: {},
         nodeapi: {},
         worker: {},
@@ -62,7 +68,7 @@ function load({ exe, files = [], env = {}, cwd = '/work' }) {
     const module = { exports: {} };
     const context = { module, exports: module.exports, __test_use__: name => native[name], console, Buffer, process, TextDecoder, TextEncoder, URL, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval };
     runInNewContext(bundle.outputFiles[0].text, context);
-    return { api: module.exports, stats, context };
+    return { api: module.exports, stats, context, bus };
 }
 
 const payload = dir => [`${dir}/index.js`, `${dir}/sqlite.js`];
@@ -133,11 +139,11 @@ test('missing executable path disables discovery without throwing', () => {
 });
 
 test('bunDir crosses into the worker runtime config', () => {
-    const { api, context } = load({ exe: '/usr/bin/cno' });
+    const { api, bus } = load({ exe: '/usr/bin/cno' });
     api.publishWorkerRuntimeConfig({ bunDir: '/usr/lib/cno/bun', cacheDir: '/c' });
-    const published = context.__cno_worker_runtime_config;
+    const published = bus.get('cno.runtime', 'workerRuntimeConfig');
     assert.equal(published.bunDir, '/usr/lib/cno/bun');
     assert.equal(api.decodeWorkerRuntimeConfig(published).bunDir, '/usr/lib/cno/bun');
     api.publishWorkerRuntimeConfig({});
-    assert.equal(context.__cno_worker_runtime_config.bunDir, undefined);
+    assert.equal(bus.get('cno.runtime', 'workerRuntimeConfig').bunDir, undefined);
 });

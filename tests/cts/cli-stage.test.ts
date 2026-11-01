@@ -2380,10 +2380,9 @@ Deno.test({
         }).spawn();
 
         const writer = child.stdin.getWriter();
-        // src/commands/repl/index.ts used to install `engine.onEvent(() => false)`
-        // here. `false` is the FATAL value for EV_JOB_EXCEPTION
-        // (circu.js/src/utils.c:180 calls TJS_Stop), so a throw from a timer
-        // killed the REPL — the opposite of that receiver's stated intent.
+        // The REPL's runtime-evbus listener must use the per-event safe value.
+        // `false` is fatal for EV_JOB_EXCEPTION (circu.js/src/utils.c:180 calls
+        // TJS_Stop), so a timer throw must not tear down the session.
         await writer.write(new TextEncoder().encode(
             'setTimeout(() => { throw new Error("BOOM"); }, 5)\n'
             + 'await new Promise((r) => setTimeout(r, 200))\n'
@@ -2427,8 +2426,8 @@ Deno.test({
 
         const output = await child.output();
         strictEqual(output.code, 0, decodeUtf8(output.stderr));
-        // The old single-slot engine.onEvent() displaced the event multiplexer,
-        // so the diagnostics receiver never ran and async errors vanished.
+        // REPL and diagnostics are independent runtime-evbus subscriptions;
+        // the REPL fallback must not prevent diagnostics from seeing rejection.
         const combined = decodeUtf8(output.stdout) + decodeUtf8(output.stderr);
         ok(combined.includes('REJECTED_MARKER'), `rejection was silent: ${combined}`);
         ok(combined.includes('2'), combined);

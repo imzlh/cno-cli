@@ -256,9 +256,9 @@ Deno.test('worker runtime config: resource caps require safe bytes while timeout
 });
 
 Deno.test('worker runtime config: published snapshots detach nested state and preserve all schema keys', () => {
-    const slot = '__cno_worker_runtime_config';
-    const hadPrevious = Object.hasOwn(globalThis, slot);
-    const previous = Reflect.get(globalThis, slot);
+    const bus = import.meta.use('evbus');
+    const hadPrevious = bus.has('cno.runtime', 'workerRuntimeConfig');
+    const previous = bus.get('cno.runtime', 'workerRuntimeConfig');
     const config: Partial<ConfigOptions> = {
         conditions: ['parent'], importMap: { dep: '/parent.ts' },
         importMapScopes: { '/scope/': { dep: '/scoped.ts' } },
@@ -266,7 +266,7 @@ Deno.test('worker runtime config: published snapshots detach nested state and pr
     };
     try {
         publishWorkerRuntimeConfig(config);
-        const published = Reflect.get(globalThis, slot) as Partial<ConfigOptions>;
+        const published = bus.get('cno.runtime', 'workerRuntimeConfig') as Partial<ConfigOptions>;
         deepStrictEqual(Object.keys(published), [...WORKER_RUNTIME_CONFIG_KEYS]);
         strictEqual(published.silent, undefined);
         published.conditions!.push('worker');
@@ -279,8 +279,8 @@ Deno.test('worker runtime config: published snapshots detach nested state and pr
             pathAliases: { 'app/*': ['src/*'] },
         });
     } finally {
-        if (hadPrevious) Reflect.set(globalThis, slot, previous);
-        else Reflect.deleteProperty(globalThis, slot);
+        if (hadPrevious) bus.set('cno.runtime', 'workerRuntimeConfig', previous);
+        else bus.delete('cno.runtime', 'workerRuntimeConfig');
     }
 });
 

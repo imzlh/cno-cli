@@ -333,33 +333,18 @@ Deno.test({ name: 'network e2e: a followed redirect is reported as a single fetc
     }
 });
 
-Deno.test({ name: 'network e2e: EXPECTED-RED responseReceived reports the post-redirect URL', timeout: TEST_TIMEOUT_MS }, async () => {
-    // EXPECTED RED -- documents defect N-1, unfixed at time of writing.
-    //
-    // OBSERVED: for fetch('/redirect') that 302s to '/final', the runtime knows
-    // the truth (Response.url === '.../final', Response.redirected === true,
-    // body 'FINAL-BODY') but CDP reports response.url === '.../redirect' with
-    // status 200 and the /final body -- a request/response pair that never
-    // existed on the wire. The server answered /redirect with 302.
-    //
-    // Root cause is OUTSIDE network.ts: cno/src/webapi/fetch/perform.ts:441
-    // hands `netHook.onResponse` the original `url.href`. The correct value is
-    // already computed in the same function by readFinalUrl()/CURLINFO_EFFECTIVE_URL
-    // and used at perform.ts:580-582 for Response.url. network.ts:349 faithfully
-    // forwards whatever it is given.
-    //
-    // When perform.ts is fixed this test turns green as-is; it is the contract.
+Deno.test({ name: 'network e2e: responseReceived reports the post-redirect URL', timeout: TEST_TIMEOUT_MS }, async () => {
     const s = await attach(randomPort());
     try {
         await s.send('Network.enable');
         await s.until('a completed fetch-side redirect', (e) =>
             e.some((x) => x.method === 'Network.responseReceived'
                 && String(x.params?.requestId ?? '').startsWith('fetch-')
-                && String(x.params?.response?.url ?? '').includes('/redirect')));
+                && String(x.params?.response?.url ?? '').endsWith('/final')));
 
         const res = netEvents(s).find((e) => e.method === 'Network.responseReceived'
             && String(e.params?.requestId ?? '').startsWith('fetch-')
-            && String(e.params?.response?.url ?? '').includes('/redirect'))!;
+            && String(e.params?.response?.url ?? '').endsWith('/final'))!;
         const url = String(res.params?.response?.url);
         const status = res.params?.response?.status;
 

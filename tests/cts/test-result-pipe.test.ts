@@ -2,7 +2,7 @@ import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readTestChildResult } from '../../src/commands/test-result-pipe.ts';
-import { parseTestChildArgs } from '../../src/commands/test.ts';
+import { collectTests, parseTestChildArgs } from '../../src/commands/test.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
 class FakePipe {
@@ -95,6 +95,18 @@ Deno.test('test child argument protocol rejects malformed regions', () => {
     throws(() => parseTestChildArgs([], JSON.stringify({
         version: 1, kernelArgs: ['run'], commandArgs: [],
     })), /Invalid test child argument regions/);
+});
+
+Deno.test('test discovery skips cno-host false markers but explicit files remain runnable', async () => {
+    await withTempDir('test-host-marker', async (root) => {
+        const skipped = join(root, 'node_only.test.mjs');
+        const discovered = join(root, 'portable.test.mjs');
+        await Deno.writeTextFile(skipped, '// @cno-host: false\nthrow new Error("node host only");\n');
+        await Deno.writeTextFile(discovered, '// @cno-host: true\nDeno.test("portable", () => {});\n');
+
+        deepStrictEqual(collectTests([root]), [discovered]);
+        deepStrictEqual(collectTests([skipped]), [skipped]);
+    });
 });
 
 Deno.test({ name: 'test runner preserves kernel and command regions in every child', timeout: 15000 }, async () => {

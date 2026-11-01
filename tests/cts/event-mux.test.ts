@@ -1,13 +1,8 @@
 /**
- * Engine-event multiplexer.
+ * CTS' realm-local facade over native runtime evbus subscriptions.
  *
- * Regression cover for the single-slot `engine.onEvent()` defect: the native
- * setter (circu.js/src/mod_engine.c:871) frees the previous receiver, so the
- * cts diagnostics receiver silently displaced the webapi 'load'/'unload' bridge
- * and addEventListener('unload'|'load'|'unhandledrejection') never fired.
- *
- * These load the mux from DISK by relative path, so they exercise the current
- * source rather than the copy baked into cno.exe.
+ * These load the facade from disk, while native evbus owns cross-realm
+ * ordering, shared dispatch context, return aggregation, and detachment.
  */
 import { notStrictEqual, ok, strictEqual } from 'node:assert';
 import {
@@ -28,23 +23,49 @@ import {
     type EventContext,
 } from '../../cts/src/runtime/event-mux.ts';
 
-/** Remove every receiver so each test starts from a known bus. */
+/** Remove facade-owned receivers; CNO stays subscribed directly to evbus. */
 function resetMux(): void {
     const mux = getEventMux();
     for (const role of mux.roles()) {
         // install-then-uninstall is the only public removal path
         installEventReceiver(role, () => undefined)();
     }
-    strictEqual(mux.roles().length, 0, 'bus drained');
+    strictEqual(mux.roles().length, 0, 'facade drained');
 }
 
-Deno.test('mux: two receivers both fire — neither displaces the other', () => {
+/** Claim synthetic events before CNO can forward them into the test harness. */
+function armQuietWebapi(): () => void {
+    return installEventReceiver(WEBAPI_ROLE, (_n, _d, ctx) => {
+        ctx.dispatched = true;
+        ctx.rejectionEmitted = true;
+        return undefined;
+    }, PRIORITY_WEBAPI + 1);
+}
+
+// Synthetic rejections must not become failed tests in the test child.
+function withIsolatedRejectionListeners(body: () => void): void {
+    const proc = Reflect.get(globalThis, 'process') as {
+        rawListeners(e: string): Array<(...args: unknown[]) => void>;
+        removeAllListeners(e: string): unknown;
+        on(e: string, listener: (...args: unknown[]) => void): unknown;
+    };
+    const saved = proc.rawListeners('unhandledRejection');
+    proc.removeAllListeners('unhandledRejection');
+    try {
+        body();
+    } finally {
+        proc.removeAllListeners('unhandledRejection');
+        for (const listener of saved) proc.on('unhandledRejection', listener);
+    }
+}
+
+Deno.test('mux: independent native subscriptions both fire', () => {
     resetMux();
     const seen: string[] = [];
     const offA = installEventReceiver('a', () => { seen.push('a'); return undefined; });
     const offB = installEventReceiver('b', () => { seen.push('b'); return undefined; });
 
-    getEventMux().dispatch(EV.EXIT, 0);
+    getEventMux().dispatch(987, 0);
     strictEqual(seen.join(','), 'a,b', 'both receivers ran');
 
     offA(); offB();
@@ -57,7 +78,7 @@ Deno.test('mux: registration order does not matter — priority decides', () => 
     const off1 = installEventReceiver('diag', () => { seen.push('diag'); return undefined; }, PRIORITY_DIAGNOSTICS);
     const off2 = installEventReceiver('web', () => { seen.push('web'); return undefined; }, PRIORITY_WEBAPI);
 
-    getEventMux().dispatch(EV.UNHANDLED_REJECTION, [null, new Error('x')]);
+    getEventMux().dispatch(987, undefined);
     strictEqual(seen.join(','), 'web,diag', 'higher priority ran first');
 
     // And the reverse registration order gives the same dispatch order.
@@ -65,7 +86,7 @@ Deno.test('mux: registration order does not matter — priority decides', () => 
     const seen2: string[] = [];
     const off3 = installEventReceiver('web', () => { seen2.push('web'); return undefined; }, PRIORITY_WEBAPI);
     const off4 = installEventReceiver('diag', () => { seen2.push('diag'); return undefined; }, PRIORITY_DIAGNOSTICS);
-    getEventMux().dispatch(EV.UNHANDLED_REJECTION, [null, new Error('x')]);
+    getEventMux().dispatch(987, undefined);
     strictEqual(seen2.join(','), 'web,diag', 'order-independent');
     off3(); off4();
 });
@@ -82,30 +103,19 @@ Deno.test('mux: ctx.handled carries preventDefault across receivers', () => {
         return false;
     }, PRIORITY_DIAGNOSTICS);
 
-    getEventMux().dispatch(EV.UNHANDLED_REJECTION, [null, new Error('handled')]);
+    getEventMux().dispatch(987, undefined);
     strictEqual(warned, false, 'diagnostic suppressed when handled');
 
     offWeb();
     warned = false;
-    getEventMux().dispatch(EV.UNHANDLED_REJECTION, [null, new Error('unhandled')]);
+    getEventMux().dispatch(987, undefined);
     strictEqual(warned, true, 'diagnostic still prints when nothing handled it');
     offDiag();
 });
 
-Deno.test('mux: native return polarity preserved per event', () => {
-    resetMux();
-    const mux = getEventMux();
-    // No receivers with an opinion -> per-event defaults.
-    const off = installEventReceiver('quiet', () => undefined);
-    // vm.c:242 — any non-false aborts, so a rejection must yield false.
-    strictEqual(mux.dispatch(EV.UNHANDLED_REJECTION, [null, 1]), false, 'rejection: false');
-    // utils.c:180 — false calls TJS_Stop, so a job exception must yield true.
-    strictEqual(mux.dispatch(EV.JOB_EXCEPTION, new Error('j')), true, 'job exception: true');
-    off();
-});
-
 Deno.test('mux: a throwing receiver does not stop the others or change the return', () => {
     resetMux();
+    const offQuiet = armQuietWebapi();
     let reached = false;
     const offBad = installEventReceiver('bad', () => { throw new Error('boom'); }, PRIORITY_WEBAPI);
     const offGood = installEventReceiver('good', () => { reached = true; return undefined; }, PRIORITY_DIAGNOSTICS);
@@ -114,6 +124,7 @@ Deno.test('mux: a throwing receiver does not stop the others or change the retur
     strictEqual(reached, true, 'later receiver still ran');
     strictEqual(ret, true, 'return value unaffected by the thrower');
     offBad(); offGood();
+    offQuiet();
 });
 
 Deno.test('mux: same-role reinstall replaces, so no double dispatch', () => {
@@ -121,14 +132,25 @@ Deno.test('mux: same-role reinstall replaces, so no double dispatch', () => {
     let count = 0;
     const off1 = installEventReceiver('dup', () => { count++; return undefined; });
     const off2 = installEventReceiver('dup', () => { count++; return undefined; });
-    getEventMux().dispatch(EV.EXIT, 0);
+    getEventMux().dispatch(987, 0);
     strictEqual(count, 1, 'role registered once');
     strictEqual(getEventMux().roles().filter((r) => r === 'dup').length, 1, 'single entry');
-    off1(); off2();
+    off1();
+    strictEqual(getEventMux().has('dup'), true, 'stale off does not detach the replacement');
+    off2();
+    strictEqual(getEventMux().has('dup'), false, 'replacement is independently detachable');
 });
 
-Deno.test('compat bridge: dispatches unload/exit to the global EventTarget on EXIT', () => {
+Deno.test('CTS facade plus CNO webapi: global EventTarget receives unload/exit once on EXIT', () => {
     resetMux();
+    // Under CNO the real webapi owns delivery; the CTS compat bridge stands down.
+    const lifecycle = Reflect.get(globalThis, Symbol.for('cno.runtime.lifecycle.v1')) as
+        { loadFired: boolean; unloadFired: boolean } | undefined;
+    const saved = lifecycle && { loadFired: lifecycle.loadFired, unloadFired: lifecycle.unloadFired };
+    if (lifecycle) {
+        lifecycle.loadFired = false;
+        lifecycle.unloadFired = false;
+    }
     const fired: string[] = [];
     const onUnload = () => fired.push('unload');
     const onExit = () => fired.push('exit');
@@ -136,19 +158,24 @@ Deno.test('compat bridge: dispatches unload/exit to the global EventTarget on EX
     addEventListener('exit', onExit);
 
     const off = installWebApiCompatBridge();
-    getEventMux().dispatch(EV.EXIT, 0);
-
-    strictEqual(fired.join(','), 'unload,exit', 'unload then exit');
-
-    off();
-    removeEventListener('unload', onUnload);
-    removeEventListener('exit', onExit);
+    try {
+        getEventMux().dispatch(EV.EXIT, 0);
+        strictEqual(fired.join(','), 'unload,exit', 'unload then exit');
+    } finally {
+        off();
+        removeEventListener('unload', onUnload);
+        removeEventListener('exit', onExit);
+        if (lifecycle && saved) Object.assign(lifecycle, saved);
+    }
 });
 
-Deno.test('compat bridge: unhandledrejection fires and preventDefault sets ctx.handled', () => {
+Deno.test('CTS facade plus CNO webapi: global unhandledrejection fires once and preventDefault sets ctx.handled', () => withIsolatedRejectionListeners(() => {
     resetMux();
+    // Under CNO the real webapi owns delivery; the CTS compat bridge stands down.
     let got: unknown;
+    let count = 0;
     const onRej = (e: Event) => {
+        count++;
         got = (e as unknown as { reason?: unknown }).reason;
         e.preventDefault();
     };
@@ -164,14 +191,16 @@ Deno.test('compat bridge: unhandledrejection fires and preventDefault sets ctx.h
     const err = new Error('rej-payload');
     const p = Promise.reject(err);
     p.catch(() => {}); // keep this test's own promise from becoming a real rejection
-    getEventMux().dispatch(EV.UNHANDLED_REJECTION, [p, err]);
-
-    strictEqual(got, err, 'listener received the reason');
-    strictEqual(handledSeen, true, 'preventDefault propagated as ctx.handled');
-
-    offBridge(); offProbe();
-    removeEventListener('unhandledrejection', onRej as EventListener);
-});
+    try {
+        getEventMux().dispatch(EV.UNHANDLED_REJECTION, [p, err]);
+        strictEqual(count, 1, 'exactly one unhandledrejection dispatch');
+        strictEqual(got, err, 'listener received the reason');
+        strictEqual(handledSeen, true, 'preventDefault propagated as ctx.handled');
+    } finally {
+        offBridge(); offProbe();
+        removeEventListener('unhandledrejection', onRej as EventListener);
+    }
+}));
 
 Deno.test('compat bridge: stands down once webapi registers (no double dispatch)', () => {
     resetMux();
@@ -185,7 +214,7 @@ Deno.test('compat bridge: stands down once webapi registers (no double dispatch)
         dispatchEvent(new Event('unload'));
         ctx.dispatched = true;
         return undefined;
-    }, PRIORITY_WEBAPI);
+    }, PRIORITY_WEBAPI + 1);
 
     getEventMux().dispatch(EV.EXIT, 0);
     strictEqual(count, 1, 'exactly one unload dispatch');
@@ -195,8 +224,8 @@ Deno.test('compat bridge: stands down once webapi registers (no double dispatch)
 });
 
 Deno.test('mux: identity is shared via the global symbol slot', async () => {
-    // A second import of the same source must find the same bus, which is what
-    // makes the baked copy and a disk-loaded copy cooperate.
+    // A second import shares realm-local role/lifecycle bookkeeping. The native
+    // runtime channel, rather than this object, joins separate realms.
     const again = await import('../../cts/src/runtime/event-mux.ts');
     strictEqual(again.getEventMux(), getEventMux(), 'same mux object');
 });
@@ -284,11 +313,10 @@ Deno.test('lifecycle: unload fires once, and is idempotent', () => {
 });
 
 Deno.test('lifecycle: a native EV_EXIT suppresses a later explicit unload', () => {
-    // webapi's bridge fires 'unload' on EV_EXIT unconditionally and cannot
-    // consult a flag. So the guard records the native event instead: a suite
-    // that called Deno.exit() must not then get a second 'unload' from
-    // startTest's post-suite dispatch.
+    // Silence global native delivery to observe the facade guard alone: an
+    // EV_EXIT must suppress startTest's later explicit unload dispatch.
     resetMux();
+    const offQuiet = armQuietWebapi();
     resetLifecycleFlagsForTest();
     const seen: string[] = [];
     const off = record('unload', seen);
@@ -302,6 +330,7 @@ Deno.test('lifecycle: a native EV_EXIT suppresses a later explicit unload', () =
     strictEqual(seen.length, 0, 'no unload from the explicit path');
 
     off();
+    offQuiet();
 });
 
 Deno.test('lifecycle: native EV_LOAD does NOT satisfy the load guard', () => {
@@ -309,6 +338,7 @@ Deno.test('lifecycle: native EV_LOAD does NOT satisfy the load guard', () => {
     // the only dispatch a user can observe would be suppressed. This is the
     // asymmetry with EV_EXIT above, and it is deliberate.
     resetMux();
+    const offQuiet = armQuietWebapi();
     resetLifecycleFlagsForTest();
     const seen: string[] = [];
     const off = record('load', seen);
@@ -321,6 +351,7 @@ Deno.test('lifecycle: native EV_LOAD does NOT satisfy the load guard', () => {
     strictEqual(seen.length, 1, 'user-visible load still fires');
 
     off();
+    offQuiet();
 });
 
 /* ------------------------------------------------------------------ *
@@ -336,26 +367,28 @@ Deno.test('lifecycle: native EV_LOAD does NOT satisfy the load guard', () => {
 
 Deno.test('polarity: rejection defaults to false (do not abort)', () => {
     resetMux();
+    const offQuiet = armQuietWebapi();
     // With no receiver expressing an opinion, the default must be the
     // non-aborting value. NEGATIVE CONTROL: `true` here would mean vm.c:242
     // raises JS_EXCEPTION on every unhandled rejection.
     strictEqual(getEventMux().dispatch(EV.UNHANDLED_REJECTION, [null, new Error('x')]), false);
+    offQuiet();
 });
 
 Deno.test('polarity: job exception defaults to true (do not TJS_Stop)', () => {
     resetMux();
+    const offQuiet = armQuietWebapi();
     // NEGATIVE CONTROL: `false` here is the value utils.c:180 turns into
     // TJS_Stop, i.e. it would kill the process on any job exception.
     strictEqual(getEventMux().dispatch(EV.JOB_EXCEPTION, new Error('x')), true);
+    offQuiet();
 });
 
 Deno.test('polarity: the REPL fallback band overrides a fatal return', () => {
-    // src/commands/repl/index.ts was a raw `onEvent(() => false)`. For
-    // EV_JOB_EXCEPTION that flat `false` is the FATAL value — a throw from a
-    // timer would have torn down the REPL, the opposite of its purpose. The
-    // migrated receiver sits in PRIORITY_FALLBACK, below everything, and the
-    // last explicit boolean wins, so it can always restore the safe value.
+    // The REPL subscribes in PRIORITY_FALLBACK, below everything. Since the
+    // last explicit boolean wins, it can restore the safe per-event value.
     resetMux();
+    const offQuiet = armQuietWebapi();
     const offBad = installEventReceiver('hostile', () => false, PRIORITY_DIAGNOSTICS);
     strictEqual(getEventMux().dispatch(EV.JOB_EXCEPTION, new Error('x')), false, 'hostile wins alone');
 
@@ -370,15 +403,18 @@ Deno.test('polarity: the REPL fallback band overrides a fatal return', () => {
     strictEqual(getEventMux().dispatch(EV.UNHANDLED_REJECTION, [null, new Error('x')]), false, 'repl non-aborting');
 
     offBad(); offRepl();
+    offQuiet();
 });
 
 Deno.test('polarity: a throwing receiver cannot change the native return', () => {
     resetMux();
+    const offQuiet = armQuietWebapi();
     const off = installEventReceiver('throws', () => { throw new Error('broken receiver'); });
     // Must fall back to the per-event default, not to a fatal value.
     strictEqual(getEventMux().dispatch(EV.JOB_EXCEPTION, new Error('x')), true);
     strictEqual(getEventMux().dispatch(EV.UNHANDLED_REJECTION, [null, new Error('x')]), false);
     off();
+    offQuiet();
 });
 
 Deno.test('lifecycle: load brackets before the suite, unload after', async () => {

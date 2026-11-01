@@ -2,6 +2,7 @@ import type { ConfigOptions } from '../../cts/src/api';
 import { joinPaths, loadConfigFile } from '../../cts/src/api';
 import { CliCommandError } from '../command-error';
 import { flagsToConfig } from '../config';
+import { publishChannel, CHANNEL_MAIN_SCRIPT } from '../channels';
 import { entryUrl, sourceExtension } from '../utils';
 import type { Args } from '../../cno/src/utils/args';
 import { applyLocationFlag, effectiveRuntimeFlags, openKernelRuntime, type KernelContext, type KernelRuntime } from '../kernel';
@@ -50,7 +51,7 @@ export async function runEval(opts: EvalOpts): Promise<void> {
         const { runtime } = session;
         await session.initialize(opts.rawArgs);
 
-        Reflect.set(globalThis, '__mainScript', entryUrl(evalPath));
+        publishChannel(CHANNEL_MAIN_SCRIPT, entryUrl(evalPath));
         const code = flags.print === true ? printableCode(opts.code, format) : opts.code;
         const mod = runtime.loadSourceEntry(code, evalPath, { main: true }, { lang: ext, format });
         // evalTracked: a self-require() of <eval> aborts the process otherwise.

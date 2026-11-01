@@ -1,5 +1,6 @@
 import { parseSize } from '../cts/src/api';
 import type { ConfigOptions } from '../cts/src/api';
+import { publishChannel, CHANNEL_WORKER_RUNTIME_CONFIG } from './channels';
 import { flagsFromOptions, tokenizeOptions, type Flags } from './cli';
 import { readEnv } from './env';
 
@@ -97,7 +98,7 @@ export function applyMaxOldSpaceSize(cfg: Partial<ConfigOptions>, flags: Flags, 
 export function publishWorkerRuntimeConfig(cfg: Partial<ConfigOptions>): void {
     const snapshot = decodeWorkerRuntimeConfig(cfg);
     const workerConfig = Object.fromEntries(WORKER_RUNTIME_CONFIG_KEYS.map(key => [key, snapshot?.[key]]));
-    Reflect.set(globalThis, '__cno_worker_runtime_config', workerConfig);
+    publishChannel(CHANNEL_WORKER_RUNTIME_CONFIG, workerConfig);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

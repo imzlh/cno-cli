@@ -24,17 +24,14 @@ async function withTransport(fn: (client: InspectorProtocolClient, mock: {
     sockets: ClientSocket[];
     open: () => Promise<string>;
 }) => Promise<void>): Promise<void> {
-    const bridgeKey = Symbol.for('cno.inspector.bridge');
-    const bridgeDescriptor = Object.getOwnPropertyDescriptor(globalThis, bridgeKey);
+    const bus = import.meta.use('evbus');
+    const published = bus.get('cno.inspector', 'bridge');
     const socketDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket');
     const mock = { sockets: [] as ClientSocket[], open: () => Promise.resolve('ws://127.0.0.1:9229') };
     const client = new InspectorProtocolClient();
-    Object.defineProperty(globalThis, bridgeKey, {
-        configurable: true,
-        value: {
-            open: () => mock.open(), close: async () => {}, url: () => undefined,
-            waitForConnection: async () => {}, waitForDebugger: async () => {}, isActive: () => false,
-        },
+    bus.set('cno.inspector', 'bridge', {
+        open: () => mock.open(), close: async () => {}, url: () => undefined,
+        waitForConnection: async () => {}, waitForDebugger: async () => {}, isActive: () => false,
     });
     Object.defineProperty(globalThis, 'WebSocket', {
         configurable: true,
@@ -45,8 +42,8 @@ async function withTransport(fn: (client: InspectorProtocolClient, mock: {
     try { await fn(client, mock); }
     finally {
         client.disconnect();
-        if (bridgeDescriptor) Object.defineProperty(globalThis, bridgeKey, bridgeDescriptor);
-        else Reflect.deleteProperty(globalThis, bridgeKey);
+        if (published !== undefined) bus.set('cno.inspector', 'bridge', published);
+        else bus.delete('cno.inspector', 'bridge');
         if (socketDescriptor) Object.defineProperty(globalThis, 'WebSocket', socketDescriptor);
         else Reflect.deleteProperty(globalThis, 'WebSocket');
     }

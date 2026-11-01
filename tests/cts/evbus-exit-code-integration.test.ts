@@ -36,21 +36,19 @@ Deno.test({ name: 'evbus exit: a sandbox can request the CLI status without its 
     });
 });
 
-Deno.test({ name: 'evbus exit: a throwing handler is not retried through legacy during a rejection', timeout: 20000 }, async () => {
+Deno.test({ name: 'evbus exit: a throwing handler fails the request, not the runtime', timeout: 20000 }, async () => {
     await withTempDir('evbus-exit-throw', async root => {
         const marker = join(root, 'marker');
         const file = join(root, 'main.mjs');
         await Deno.writeTextFile(file, `
             let evbusCalls = 0;
-            let legacyCalls = 0;
             import.meta.use('evbus').set('cno.runtime', 'requestExitCode', () => { evbusCalls++; throw undefined; });
-            globalThis[Symbol.for('cno.runtime.requestExitCode')] = () => { legacyCalls++; };
             Promise.reject(new Error('expected rejection'));
-            setTimeout(() => Deno.writeTextFileSync(${JSON.stringify(marker)}, evbusCalls + ':' + legacyCalls), 30);
+            setTimeout(() => Deno.writeTextFileSync(${JSON.stringify(marker)}, String(evbusCalls)), 30);
         `);
         const result = await runCno(root, ['run', file]);
         strictEqual(result.code, 0, result.stdout + result.stderr);
-        strictEqual(await Deno.readTextFile(marker), '1:0');
+        strictEqual(await Deno.readTextFile(marker), '1');
         ok(result.stderr.includes('expected rejection'), result.stderr);
     });
 });

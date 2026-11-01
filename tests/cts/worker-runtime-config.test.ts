@@ -34,7 +34,7 @@ Deno.test({ name: 'runtime config: explicit false overrides environment while pr
             }));
             const code = `
                 import value from 'project-value';
-                const cfg = Reflect.get(globalThis, '__cno_worker_runtime_config');
+                const cfg = import.meta.use('evbus').get('cno.runtime', 'workerRuntimeConfig');
                 console.log('CONFIG:' + JSON.stringify({ value, http: cfg.enableHttp, cache: cfg.enableCache, silent: cfg.silent }));
             `;
             await Deno.writeTextFile(join(root, 'main.mjs'), code);
@@ -63,7 +63,7 @@ Deno.test({ name: 'runtime config: explicit false overrides environment while pr
 Deno.test({ name: 'runtime config: eval keeps environment defaults when flags are absent', timeout: 10000 }, async () => {
     await withTempDir('eval-config-defaults', async root => {
         const code = `
-            const cfg = Reflect.get(globalThis, '__cno_worker_runtime_config');
+            const cfg = import.meta.use('evbus').get('cno.runtime', 'workerRuntimeConfig');
             console.log('CONFIG:' + JSON.stringify({ silent: cfg.silent, cache: cfg.enableCache }));
         `;
         deepStrictEqual(probe(await runCno(root, ['eval', code], {
@@ -74,15 +74,17 @@ Deno.test({ name: 'runtime config: eval keeps environment defaults when flags ar
 
 Deno.test({ name: 'runtime config: file and eval workers inherit the prepared snapshot after environment changes', timeout: 15000 }, async () => {
     await withTempDir('worker-config-snapshot', async root => {
+        // ESM workers: raw CJS files cannot parse `import.meta`, and the config
+        // channel is read through evbus.
         const workerSource = `
-            const { parentPort } = require('node:worker_threads');
-            const cfg = Reflect.get(globalThis, '__cno_worker_runtime_config');
+            import { parentPort } from 'node:worker_threads';
+            const cfg = import.meta.use('evbus').get('cno.runtime', 'workerRuntimeConfig');
             parentPort.postMessage({
                 silent: cfg.silent, jsx: cfg.jsxPragma, fragment: cfg.jsxFragmentPragma,
                 timeout: cfg.requestTimeout, ttl: cfg.jsrCacheTTL,
             });
         `;
-        await Deno.writeTextFile(join(root, 'worker.cjs'), workerSource);
+        await Deno.writeTextFile(join(root, 'worker.mjs'), workerSource);
         await Deno.writeTextFile(join(root, 'main.mjs'), `
             import { Worker } from 'node:worker_threads';
             for (const [name, value] of Object.entries({
@@ -90,7 +92,7 @@ Deno.test({ name: 'runtime config: file and eval workers inherit the prepared sn
                 CTS_REQUEST_TIMEOUT: '1', CTS_JSR_CACHE_TTL: '0',
             })) Deno.env.set(name, value);
             async function runWorker(evalMode) {
-                const worker = new Worker(evalMode ? ${JSON.stringify(workerSource)} : new URL('./worker.cjs', import.meta.url), { eval: evalMode });
+                const worker = new Worker(evalMode ? ${JSON.stringify(workerSource)} : new URL('./worker.mjs', import.meta.url), { eval: evalMode });
                 let timer;
                 try {
                     return await new Promise((resolve, reject) => {
@@ -128,7 +130,7 @@ Deno.test({ name: 'runtime config: parent empty import map overrides a worker di
             import value from 'worker-value';
             parentPort.postMessage({
                 value,
-                map: Reflect.get(globalThis, '__cno_worker_runtime_config').importMap,
+                map: import.meta.use('evbus').get('cno.runtime', 'workerRuntimeConfig').importMap,
             });
         `);
         await Deno.writeTextFile(join(root, 'main.mjs'), `

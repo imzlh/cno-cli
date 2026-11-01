@@ -18,13 +18,22 @@ const result = await build({
     define: { 'import.meta.use': '__test_use__' },
 });
 const source = result.outputFiles[0].text;
-const bridgeSlot = Symbol.for('cts.internal');
 
-function realm(bridge, native = () => undefined) {
-    const context = {
-        __test_use__: native,
-        ...(bridge ? { [bridgeSlot]: bridge } : {}),
-    };
+// The injector discovers CTS through the `cts.internal` evbus channel only.
+// An explicit `native` owns every lookup; the default publishes `bridge` there.
+function realm(bridge, native) {
+    const holder = { bridge };
+    const use = native ?? (name => {
+        if (name === 'evbus') {
+            return {
+                get: (namespace, key) =>
+                    namespace === 'cts.internal' && key === 'bridge' ? holder.bridge : undefined,
+                set() { throw new Error('injector must not publish a bridge'); },
+            };
+        }
+        return undefined;
+    });
+    const context = { __test_use__: use };
     runInNewContext(source, context);
     return context;
 }
@@ -67,12 +76,25 @@ test('global Bun lazily loads the canonical builtin once and preserves its ident
 });
 
 test('access before ModuleCompiler is ready fails synchronously and remains retryable', () => {
-    const context = realm();
+    const holder = { bridge: undefined };
+    const context = {
+        __test_use__: name => {
+            if (name === 'evbus') {
+                return {
+                    get: (namespace, key) =>
+                        namespace === 'cts.internal' && key === 'bridge' ? holder.bridge : undefined,
+                    set() { throw new Error('injector must not publish a bridge'); },
+                };
+            }
+            return () => undefined;
+        },
+    };
+    runInNewContext(source, context);
     assert.throws(() => context.Bun, { code: 'ERR_CTS_BRIDGE_UNAVAILABLE' });
-    context[bridgeSlot] = {};
+    holder.bridge = {};
     assert.throws(() => context.Bun, { code: 'ERR_CTS_BRIDGE_UNAVAILABLE' });
     const bun = {};
-    context[bridgeSlot].mkRequire = () => id => {
+    holder.bridge.mkRequire = () => id => {
         assert.equal(id, 'bun');
         return bun;
     };

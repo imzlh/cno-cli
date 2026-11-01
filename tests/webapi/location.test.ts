@@ -68,7 +68,7 @@ console.log('value=' + String(location));
 });
 
 Deno.test({ name: 'webapi: cno eval --location installs Location (same as run)', timeout: 15000 }, async () => {
-    // Polyfill loads before CLI flags; eval must call __cno_applyLocation, not only setenv.
+    // Polyfill loads before CLI flags; eval must call the published applyLocation, not only setenv.
     const output = await new Deno.Command(Deno.execPath(), {
         args: [
             'eval',
