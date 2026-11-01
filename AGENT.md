@@ -490,10 +490,11 @@ bridge method implementations, must not use missing intrinsics;
 
 Test lanes: `tests/cts/evbus-exit-code.test.mjs`, `evbus-module-bridge.test.mjs`,
 and `event-mux-realms.test.mjs` are node-hosted (`node --test`) and carry the
-header `// @cno-host: false`, so recursive `cno test` discovery skips them.
-Passing one explicitly still runs it, which is useful when debugging host gaps.
-`evbus-module-bridge-native.test.mjs` runs the real binary and must pass in both
-lanes.
+header `// @cno-host: false`. The `.mjs` suffix is outside recursive `cno test`
+discovery today; the marker records the lane and protects against future
+discovery changes. Passing one explicitly still runs it, which is useful when
+debugging host gaps. `evbus-module-bridge-native.test.mjs` runs the real binary
+and must pass in both lanes.
 
 ## HTTP And Protocol Layer
 
@@ -633,8 +634,11 @@ Use the layer table below:
 ## Testing
 
 The cno runner discovers `[._]test.[jt]sx?` files, skips generated/vendor
-directories, and runs each test file in a child process. This is intentional:
-process, signal, worker, and exit behavior should be exercised in a real child.
+directories and recursively discovered files whose first 1 KiB contains a
+standalone `// @cno-host: false` line, and runs each test file in a child
+process. Explicitly named files bypass the extension and host-marker filters.
+This is intentional: process, signal, worker, and exit behavior should be
+exercised in a real child.
 
 Focused buckets:
 

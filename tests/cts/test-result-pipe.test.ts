@@ -97,15 +97,30 @@ Deno.test('test child argument protocol rejects malformed regions', () => {
     })), /Invalid test child argument regions/);
 });
 
-Deno.test('test discovery skips cno-host false markers but explicit files remain runnable', async () => {
+Deno.test('test discovery preserves extension scope and honors cno-host false markers', async () => {
     await withTempDir('test-host-marker', async (root) => {
-        const skipped = join(root, 'node_only.test.mjs');
-        const discovered = join(root, 'portable.test.mjs');
+        const skipped = join(root, 'node_only.test.ts');
+        const discovered = join(root, 'portable.test.ts');
+        const exactBoundary = join(root, 'exact_boundary.test.ts');
+        const lateMarker = join(root, 'late_marker.test.ts');
+        const markerWithSuffix = join(root, 'marker_suffix.test.ts');
+        const newlineBoundary = join(root, 'newline_boundary.test.ts');
+        const continuedBoundary = join(root, 'continued_boundary.test.ts');
+        const explicitMjs = join(root, 'node_host.test.mjs');
+        const marker = '// @cno-host: false';
+        const boundaryPrefix = ' '.repeat(1024 - marker.length);
         await Deno.writeTextFile(skipped, '// @cno-host: false\nthrow new Error("node host only");\n');
         await Deno.writeTextFile(discovered, '// @cno-host: true\nDeno.test("portable", () => {});\n');
+        await Deno.writeTextFile(exactBoundary, boundaryPrefix + marker);
+        await Deno.writeTextFile(newlineBoundary, `${boundaryPrefix}${marker}\n`);
+        await Deno.writeTextFile(lateMarker, `${' '.repeat(1024)}\n// @cno-host: false\n`);
+        await Deno.writeTextFile(markerWithSuffix, '// @cno-host: false for now\n');
+        await Deno.writeTextFile(continuedBoundary, `${boundaryPrefix}${marker} for now\n`);
+        await Deno.writeTextFile(explicitMjs, 'throw new Error("explicit node host test");\n');
 
-        deepStrictEqual(collectTests([root]), [discovered]);
+        deepStrictEqual(collectTests([root]), [continuedBoundary, lateMarker, markerWithSuffix, discovered]);
         deepStrictEqual(collectTests([skipped]), [skipped]);
+        deepStrictEqual(collectTests([explicitMjs]), [explicitMjs]);
     });
 });
 

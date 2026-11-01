@@ -276,6 +276,16 @@ Skipped directories:
 node_modules, .git, dist, build, build_release
 ```
 
+Recursive discovery also skips a test whose first 1 KiB contains a standalone
+host marker:
+
+```ts
+// @cno-host: false
+```
+
+An explicitly supplied file path bypasses both the discovery pattern and this
+marker, so a host-specific file can still be run deliberately for diagnostics.
+
 Each test file runs in a real child process using a versioned environment
 sentinel carrying the prefix and command arguments separately. This
 keeps process and signal behavior closer to normal runtime behavior than a

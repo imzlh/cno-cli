@@ -10,6 +10,7 @@ const console = import.meta.use('console');
 const process = import.meta.use('process');
 const fs = import.meta.use('fs');
 const timers = import.meta.use('timers');
+const engine = import.meta.use('engine');
 const sysError = import.meta.use('error');
 
 // A child that exits before its result pipe opens (or leaks fd 3 into a daemon)
@@ -31,6 +32,8 @@ export const TEST_CHILD_ENV = '__CNO_TEST_CHILD';
 
 // Matches: foo.test.ts, foo_test.ts, foo.test.js, foo_test.js (and .tsx/.jsx)
 const TEST_RE = /[._]test\.[jt]sx?$/;
+const CNO_HOST_FALSE_RE = /^[ \t]*\/\/[ \t]*@cno-host:[ \t]*false[ \t]*\r?$/m;
+const HOST_MARKER_BYTES = 1024;
 // Directories to skip while walking
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'build_release']);
 
@@ -57,6 +60,34 @@ function statOrNull(path: string): CModuleFS.Stats | null {
     } catch (error) {
         if (isNotFound(error)) return null;
         throw error;
+    }
+}
+
+function isCnoHostTest(path: string): boolean {
+    let fd: number | undefined;
+    try {
+        fd = fs.open(path, 'r');
+        const bytes = new Uint8Array(HOST_MARKER_BYTES + 1);
+        let count = 0;
+        while (count < bytes.byteLength) {
+            const read = fs.read(fd, bytes.subarray(count));
+            if (read <= 0) break;
+            count += read;
+        }
+        let header = engine.decodeString(bytes.subarray(0, Math.min(count, HOST_MARKER_BYTES)));
+        // Prevent the probe boundary from masquerading as the end of a marker line.
+        if (count > HOST_MARKER_BYTES) {
+            const next = bytes[HOST_MARKER_BYTES];
+            header += next === 0x0a ? '\n' : next === 0x0d ? '\r' : '\0';
+        }
+        return !CNO_HOST_FALSE_RE.test(header);
+    } catch {
+        // Keep normal read/load errors observable in the test child.
+        return true;
+    } finally {
+        if (fd !== undefined) {
+            try { fs.close(fd); } catch { /* best-effort probe cleanup */ }
+        }
     }
 }
 
@@ -128,9 +159,12 @@ export function collectTests(rawPaths: string[]): string[] {
     // not run a file twice and inflate the tally — deno dedupes too.
     const seen = new Set<string>();
     const out: string[] = [];
-    const push = (file: string): void => {
+    const push = (file: string, explicit: boolean): void => {
         const identity = pathKey(file);
         if (seen.has(identity)) return;
+        // Explicit paths are an escape hatch for diagnostics; the marker only
+        // keeps incompatible files out of recursive discovery.
+        if (!explicit && !isCnoHostTest(file)) return;
         seen.add(identity);
         out.push(file);
     };
@@ -138,9 +172,9 @@ export function collectTests(rawPaths: string[]): string[] {
         const s = statOrNull(r);
         if (!s) continue;
         if (s.isFile) {
-            push(r);
+            push(r, true);
         } else if (s.isDirectory) {
-            for (const file of walkSync(r)) push(file);
+            for (const file of walkSync(r)) push(file, false);
         }
     }
     return out;
