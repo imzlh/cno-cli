@@ -195,6 +195,41 @@ it excludes command options and `NODE_OPTIONS`. Script arguments feed both
 The CLI accepts many Deno permission and unstable flags as no-ops so Deno-style
 commands can run without immediate flag failures.
 
+## Runtime Flags
+
+These options apply to the runtime commands (`run`, `serve`, `eval`, `test`,
+`cache`, `pack`, `repl`); `--env`/`--env-file` also applies to `task`:
+
+| Flag | Effect |
+| --- | --- |
+| `--ext=<lang>` | Language for an extensionless entry or `-` |
+| `--env`, `--env-file=<path>` | Load an env file before the entry (repeatable) |
+| `--preload=<module>` | Evaluate a module before the entry (repeatable) |
+| `--location=<url>` | Value for `globalThis.location` |
+| `--import-map=<file>` | Import map for bare specifiers; relative targets resolve from the map's directory and the CLI map replaces import maps from config files |
+| `--request-timeout=<ms>` | Download timeout for http/jsr/npm fetches (default 120000) |
+| `--jsr-cache-ttl=<days>` | JSR module metadata time-to-live (default 7) |
+| `--jsx-pragma=<name>` | JSX element factory (default `React.createElement`) |
+| `--jsx-fragment-pragma=<name>` | JSX fragment factory (default `React.Fragment`) |
+| `--enable-inline-sourcemap` | Honor `//# sourceMappingURL` annotations shipped with passthrough js/mjs/cjs sources: the referenced map (resolved relative to the source file) is loaded into the native runtime so stack traces point at the original source. Transpiled sources need no flag — their maps are injected once at transpile time and survive `.jsc` caching. Off by default because each annotated file costs one stat, read, and JSON parse. Scheme-qualified annotations (`data:`, `https://`) are skipped, as are packed (`.jspack`) modules — pack strips annotations — and annotated modules stay out of the bytecode cache so every load re-injects. |
+
+`--import-map` was previously an accepted no-op; it now loads the file and
+fails when the file cannot be read.
+
+## Serve Command
+
+`cno serve` runs the entry's `default.fetch` export through `Deno.serve`.
+`--port` (default 8000) and `--host` (default 0.0.0.0) select the TCP address.
+
+- `--cert=<file>` together with `--key=<file>` enables TLS; both are PEM files
+  and must be supplied as a pair. The listen line reports `https` when TLS is
+  active.
+- `--unix=<path>` listens on a Unix socket instead of TCP; `--port`/`--host`
+  are ignored in that mode. Unix sockets cannot be combined with the TLS pair.
+
+TLS options belong after `serve`; a `--cert` placed before the command stays
+the accepted cross-command no-op.
+
 ## Inspector Flags
 
 Inspector addresses are validated in `src/inspector/options.ts`.
@@ -299,6 +334,21 @@ cno test --exclude=tests/fixtures --ignore='**/slow*.test.ts' tests
 
 Exclusions also apply to explicitly supplied files. If they remove every test,
 the command still fails unless `--permit-no-files` is present.
+
+Scheduling and budget flags:
+
+- `--timeout=<ms>` overrides the per-file worker timeout (default 60000).
+  `CNO_TEST_CHILD_TIMEOUT_MS` remains the environment fallback; the flag wins.
+- `--concurrency=<n>` runs test files in parallel (default 4). `--jobs`, `-j`,
+  and `--parallel` are Deno-compatible spellings of the same knob; when mixed,
+  the precedence is `--concurrency` > `--jobs` > `--parallel`, and a bare
+  `--parallel` uses the default width.
+- `--shuffle[=<seed>]` randomizes the order test files run in, which surfaces
+  order-dependent suites. The effective seed is printed to stderr, so a failing
+  order can be replayed with `--shuffle=<seed>`.
+- `--no-run` discovers and counts matching files without executing them. Deno
+  type-checks under this flag; cno has no type checker, so it only proves
+  discovery. An empty set still fails unless `--permit-no-files` is present.
 
 Each test file runs in a real child process using a versioned environment
 sentinel carrying the prefix and command arguments separately. This

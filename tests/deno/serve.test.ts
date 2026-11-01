@@ -603,3 +603,130 @@ Deno.test({ name: 'deno: Deno.serve handles request body HEAD stream and handler
         await target.stop();
     }
 });
+
+// ─── cno serve CLI flags (--unix, --cert/--key) ─────────────────────────────
+
+const CLI_TARGET = fileURLToPath(new URL('./targets/serve-cli.target.ts', import.meta.url));
+
+async function connectUnixWithRetry(socketPath: string, budgetMs: number, target: Target): Promise<Deno.Conn> {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+        if (target.failure) throw target.failure;
+        try {
+            return await Deno.connect({ transport: 'unix', path: socketPath });
+        } catch (error) {
+            if (isSandboxSocketError(error)) throw new SkipSignal();
+        }
+        await sleep(120);
+    }
+    throw new Error(`unix socket ${socketPath} never appeared within ${budgetMs}ms`);
+}
+
+class SkipSignal extends Error {}
+
+Deno.test({ name: 'deno: cno serve --unix listens on a socket file and answers fetch', timeout: SPAWN_TEST_TIMEOUT_MS }, async () => {
+    const dir = await Deno.makeTempDir();
+    const socketPath = `${dir}/cno.sock`;
+    const target = startTarget(['serve', '--unix', socketPath, CLI_TARGET]);
+    let conn: Deno.Conn | null = null;
+    try {
+        conn = await connectUnixWithRetry(socketPath, SERVER_START_BUDGET_MS, target);
+        await conn.write(new TextEncoder().encode([
+            'GET / HTTP/1.1',
+            'Host: localhost',
+            'Connection: close',
+            '',
+            '',
+        ].join('\r\n')));
+        const raw = await readUntil(conn, 'cli-ok');
+        ok(raw.includes('HTTP/1.1 200'));
+        ok(raw.includes('cli-ok'));
+    } catch (error) {
+        if (error instanceof SkipSignal) return;
+        throw error;
+    } finally {
+        try { conn?.close(); } catch {}
+        await target.stop();
+        removeTree(dir);
+    }
+});
+
+Deno.test({ name: 'deno: cno serve --cert/--key completes a TLS handshake with the pinned CA', timeout: SPAWN_TEST_TIMEOUT_MS }, async () => {
+    if (!await canListenTcp()) return;
+    const dir = await Deno.makeTempDir();
+    const target = startTarget([
+        'serve', `--port=${PORT}`, `--cert=${dir}/cert.pem`, `--key=${dir}/key.pem`, CLI_TARGET,
+    ]);
+    let conn: Deno.TlsConn | null = null;
+    try {
+        // The round trip needs a self-signed pair; skip where openssl is not
+        // available rather than weakening client verification.
+        const gen = await new Deno.Command('openssl', {
+            // Modern verifiers require a SAN, not just CN, for hostname checks.
+            args: ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2',
+                '-subj', '/CN=127.0.0.1',
+                '-addext', 'subjectAltName=IP:127.0.0.1,DNS:localhost',
+                '-keyout', `${dir}/key.pem`, '-out', `${dir}/cert.pem`],
+            stdout: 'null',
+            stderr: 'null',
+        }).output();
+        if (!gen.success) return;
+        const caCerts = [new TextDecoder().decode(await Deno.readFile(`${dir}/cert.pem`))];
+
+        const deadline = Date.now() + SERVER_START_BUDGET_MS;
+        let lastError: unknown = null;
+        while (Date.now() < deadline) {
+            if (target.failure) throw target.failure;
+            try {
+                conn = await Deno.connectTls({ hostname: '127.0.0.1', port: PORT, caCerts });
+                break;
+            } catch (error) {
+                lastError = error;
+            }
+            await sleep(120);
+        }
+        if (!conn) {
+            throw new Error(`TLS server never accepted within ${SERVER_START_BUDGET_MS}ms; last error: ${lastError}`);
+        }
+        await conn.write(new TextEncoder().encode([
+            'GET / HTTP/1.1',
+            'Host: 127.0.0.1',
+            'Connection: close',
+            '',
+            '',
+        ].join('\r\n')));
+        const raw = await readUntil(conn, 'cli-ok');
+        ok(raw.includes('HTTP/1.1 200'));
+        ok(raw.includes('cli-ok'));
+    } finally {
+        try { conn?.close(); } catch {}
+        await target.stop();
+        removeTree(dir);
+    }
+});
+
+Deno.test({ name: 'deno: cno serve validates the TLS pair and PEM files before listening', timeout: SPAWN_TEST_TIMEOUT_MS }, async () => {
+    const run = async (args: string[]): Promise<{ code: number; text: string }> => {
+        const output = await new Deno.Command(Deno.execPath(), {
+            args, stdout: 'piped', stderr: 'piped',
+        }).output();
+        return {
+            code: output.code,
+            text: new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr),
+        };
+    };
+
+    const halfPair = await run(['serve', '--cert=whatever.pem', CLI_TARGET]);
+    strictEqual(halfPair.code, 1);
+    ok(halfPair.text.includes('--cert and --key must be supplied together'), halfPair.text);
+
+    const missingFiles = await run(['serve', '--cert=missing-cert.pem', '--key=missing-key.pem', CLI_TARGET]);
+    strictEqual(missingFiles.code, 1);
+    ok(missingFiles.text.includes('--cert: cannot read file: missing-cert.pem'), missingFiles.text);
+
+    const incompatible = await run([
+        'serve', '--unix=/tmp/cno-incompatible.sock', '--cert=cert.pem', '--key=key.pem', CLI_TARGET,
+    ]);
+    strictEqual(incompatible.code, 1);
+    ok(incompatible.text.includes('--unix cannot be combined with --cert/--key'), incompatible.text);
+});

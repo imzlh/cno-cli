@@ -2,7 +2,7 @@ import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readTestChildResult } from '../../src/commands/test-result-pipe.ts';
-import { collectTests, parseTestChildArgs } from '../../src/commands/test.ts';
+import { collectTests, parseTestChildArgs, shuffleFiles } from '../../src/commands/test.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
 class FakePipe {
@@ -232,6 +232,93 @@ Deno.test({ name: 'test runner applies exclude aliases before spawning children'
         const rejectedText = new TextDecoder().decode(rejectedEmpty.stdout) + new TextDecoder().decode(rejectedEmpty.stderr);
         strictEqual(rejectedEmpty.code, 1, rejectedText);
         ok(rejectedText.includes('No test modules found'), rejectedText);
+    });
+});
+
+Deno.test('test runner shuffle is deterministic per seed and preserves the file set', () => {
+    const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    deepStrictEqual(shuffleFiles(files, 42), shuffleFiles(files, 42));
+    deepStrictEqual(shuffleFiles([], 1), []);
+    deepStrictEqual(shuffleFiles(['only'], 1), ['only']);
+    for (const seed of [0, 1, 42, 987654321]) {
+        const shuffled = shuffleFiles(files, seed);
+        deepStrictEqual([...shuffled].sort(), [...files].sort());
+        ok(!shuffled.every((file, index) => file === files[index]), `seed ${seed} must move something`);
+    }
+    ok(shuffleFiles(files, 1).join(',') !== shuffleFiles(files, 2).join(','));
+});
+
+Deno.test({ name: 'test runner --no-run discovers files without executing them', timeout: 15000 }, async () => {
+    await withTempDir('test-no-run', async (root) => {
+        const good = join(root, 'good.test.ts');
+        const bad = join(root, 'bad.test.ts');
+        await Deno.writeTextFile(good, 'Deno.test("good", () => {});\n');
+        await Deno.writeTextFile(bad, 'throw new Error("NO_RUN_STILL_LOADED");\n');
+
+        const output = await new Deno.Command(Deno.execPath(), {
+            args: ['test', '--no-run', root],
+            cwd: root,
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const text = new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr);
+        strictEqual(output.code, 0, text);
+        ok(text.includes('found 2 test modules'), text);
+        ok(!text.includes('NO_RUN_STILL_LOADED'), text);
+
+        // An empty set is still an error: --no-run proves discovery, not absence.
+        const none = await new Deno.Command(Deno.execPath(), {
+            args: ['test', '--no-run', join(root, 'missing')],
+            cwd: root,
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const noneText = new TextDecoder().decode(none.stdout) + new TextDecoder().decode(none.stderr);
+        strictEqual(none.code, 1, noneText);
+        ok(noneText.includes('No test modules found'), noneText);
+    });
+});
+
+Deno.test({ name: 'test runner --timeout kills a stalled worker ahead of the env fallback', timeout: 15000 }, async () => {
+    await withTempDir('test-timeout', async (root) => {
+        const stalled = join(root, 'stalled.test.ts');
+        await Deno.writeTextFile(stalled, [
+            'Deno.test("stalled", async () => {',
+            '    await new Promise((resolve) => setTimeout(resolve, 10_000));',
+            '});',
+        ].join('\n'));
+
+        // The flag must win over CNO_TEST_CHILD_TIMEOUT_MS, not lose to it.
+        const output = await new Deno.Command(Deno.execPath(), {
+            args: ['test', '--jobs=1', '--timeout=500', root],
+            cwd: root,
+            stdout: 'piped',
+            stderr: 'piped',
+            env: { CNO_TEST_CHILD_TIMEOUT_MS: '60000' },
+        }).output();
+        const text = new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr);
+        strictEqual(output.code, 1, text);
+        ok(text.includes('timed out after 500ms'), text);
+
+        const invalid = await new Deno.Command(Deno.execPath(), {
+            args: ['test', '--timeout=abc', root],
+            cwd: root,
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const invalidText = new TextDecoder().decode(invalid.stdout) + new TextDecoder().decode(invalid.stderr);
+        strictEqual(invalid.code, 1, invalidText);
+        ok(invalidText.includes('--timeout must be a positive integer'), invalidText);
+
+        const bare = await new Deno.Command(Deno.execPath(), {
+            args: ['test', '--timeout', root],
+            cwd: root,
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const bareText = new TextDecoder().decode(bare.stdout) + new TextDecoder().decode(bare.stderr);
+        strictEqual(bare.code, 1, bareText);
+        ok(bareText.includes('--timeout must be a positive integer'), bareText);
     });
 });
 

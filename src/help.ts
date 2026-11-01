@@ -76,11 +76,19 @@ ${C.bold('RUN OPTIONS')}
   ${C.cyan('--env')}, ${C.cyan('--env-file')}=${C.dim('<path>')}       Load an env file before the entry ${C.dim('(repeatable)')}
   ${C.cyan('--preload')}=${C.dim('<module>')}             Evaluate a module before the entry ${C.dim('(repeatable)')}
   ${C.cyan('--location')}=${C.dim('<url>')}               Value for ${C.cyan('globalThis.location')}
+  ${C.cyan('--import-map')}=${C.dim('<file>')}            Import map for bare specifiers ${C.dim('(replaces config-file maps)')}
+  ${C.cyan('--request-timeout')}=${C.dim('<ms>')}         Download timeout for http/jsr/npm fetches ${C.dim('(default: 120000)')}
+  ${C.cyan('--jsr-cache-ttl')}=${C.dim('<days>')}         JSR module metadata time-to-live ${C.dim('(default: 7)')}
+  ${C.cyan('--jsx-pragma')}=${C.dim('<name>')}, ${C.cyan('--jsx-fragment-pragma')}=${C.dim('<name>')}  JSX factories ${C.dim('(default: React.createElement / React.Fragment)')}
+  ${C.cyan('--enable-inline-sourcemap')}      Honor ${C.dim('//# sourceMappingURL')} maps shipped with js/mjs/cjs sources
+  ${C.dim(`Shared by the runtime commands; ${C.cyan('--env')}/${C.cyan('--env-file')} also applies to ${C.cyan('task')}.`)}
   ${C.dim(`Use ${C.cyan('-')} as the entry to read the program from stdin.`)}
 
 ${C.bold('SERVE OPTIONS')}
   ${C.cyan('--port')}=${C.dim('<n>')}                  Listening port ${C.dim('(default: 8000)')}
   ${C.cyan('--host')}=${C.dim('<hostname>')}           Listening hostname ${C.dim('(default: 0.0.0.0)')}
+  ${C.cyan('--cert')}=${C.dim('<file>')}, ${C.cyan('--key')}=${C.dim('<file>')}    TLS PEM certificate and key ${C.dim('(enables https; both required)')}
+  ${C.cyan('--unix')}=${C.dim('<path>')}               Listen on a Unix socket instead of TCP
 
 ${C.bold('EVAL OPTIONS')}
   ${C.cyan('--eval')}, ${C.cyan('-e')} ${C.dim('<code>')}              Evaluate inline code
@@ -90,7 +98,11 @@ ${C.bold('TEST OPTIONS')}
   ${C.cyan('--filter')}=${C.dim('<substr>')}              Only run tests whose name matches
   ${C.cyan('--exclude')}=${C.dim('<path|glob>')}          Skip matching files or directories ${C.dim('(repeatable)')}
   ${C.cyan('--ignore')}=${C.dim('<path|glob,...>')}       Deno-compatible alias for ${C.cyan('--exclude')}
+  ${C.cyan('--timeout')}=${C.dim('<ms>')}                 Per-file worker timeout ${C.dim('(default: 60000; env: CNO_TEST_CHILD_TIMEOUT_MS)')}
   ${C.cyan('--concurrency')}=${C.dim('<n>')}              Test files in parallel ${C.dim('(default: 4)')}
+  ${C.cyan('--jobs')}, ${C.cyan('-j')}=${C.dim('<n>')}, ${C.cyan('--parallel')}${C.dim('[=<n>]')}    Deno-compatible spellings of ${C.cyan('--concurrency')}
+  ${C.cyan('--shuffle')}${C.dim('[=<seed>]')}             Shuffle test file order; prints the seed for replay
+  ${C.cyan('--no-run')}                       Discover and count test files without running them
   ${C.cyan('--fail-fast')}                    Stop at the first failure ${C.dim('(forces serial)')}
   ${C.cyan('--permit-no-files')}              Exit 0 when no test file matches
   ${C.dim(`Everything after ${C.cyan('--')} reaches the test files as ${C.cyan('Deno.args')}.`)}
@@ -107,7 +119,7 @@ ${C.bold('SETUP OPTIONS')}
 
 ${C.bold('DENO COMPATIBILITY')}
   ${C.cyan('--allow-*')}, ${C.cyan('--deny-*')}, ${C.cyan('-A')}        Accepted and ignored — cno grants everything
-  ${C.cyan('--unstable-*')}, ${C.cyan('--check')}           Accepted and ignored
+  ${C.cyan('--unstable-*')}, ${C.cyan('--check')}, ${C.cyan('--doc')}, ${C.cyan('--trace-ops')}   Accepted and ignored
 
 ${C.bold('NETWORK')}
   ${C.cyan('--system-proxy')}                 Use a configured proxy for fetch, WebSocket and EventSource
@@ -132,6 +144,7 @@ ${C.bold('ENVIRONMENT')}
   ${C.cyan('CTS_DISABLE_CACHE')}              Disable module caching ${C.dim('(true/false)')}
   ${C.cyan('CTS_ENABLE_HTTP')}/${C.cyan('_JSR')}/${C.cyan('_NODE')}      Toggle each protocol ${C.dim('(true/false)')}
   ${C.cyan('CTS_NO_OXC')}                     Disable OXC acceleration ${C.dim('(true/false)')}
+  ${C.cyan('CTS_ENABLE_INLINE_SOURCEMAP')}    Honor embedded sourceMappingURL maps ${C.dim('(true/false)')}
   ${C.cyan('CTS_MEMORY_LIMIT')}               e.g. ${C.cyan('1GB')}
   ${C.cyan('CTS_MAX_STACK_SIZE')}             e.g. ${C.cyan('4MB')}
   ${C.cyan('CTS_WORKERS')}                    Precompile worker count ${C.dim('(0 = inline)')}

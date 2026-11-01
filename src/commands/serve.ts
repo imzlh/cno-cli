@@ -3,6 +3,8 @@ import type { KernelContext } from '../kernel';
 import { runFile } from './run';
 
 const console = import.meta.use('console');
+const fs = import.meta.use('fs');
+const engine = import.meta.use('engine');
 
 type ServeExport = Record<string, unknown>;
 
@@ -30,12 +32,48 @@ function serveHost(flags: Record<string, string | boolean>): string {
     return raw;
 }
 
-function formatListenUrl(addr: Deno.NetAddr): string {
+function serveUnixPath(flags: Record<string, string | boolean>): string | undefined {
+    const raw = flags['unix'];
+    if (raw === undefined) return undefined;
+    if (typeof raw !== 'string' || raw.length === 0) {
+        throw new TypeError(`invalid value for --unix: ${String(raw)}`);
+    }
+    return raw;
+}
+
+function readPemFile(flag: string, value: string | boolean | undefined): string {
+    if (typeof value !== 'string' || value.length === 0) {
+        throw new TypeError(`invalid value for --${flag}: ${String(value)}`);
+    }
+    try {
+        return engine.decodeString(fs.readFile(value));
+    } catch {
+        throw new TypeError(`--${flag}: cannot read file: ${value}`);
+    }
+}
+
+function serveTlsOptions(flags: Record<string, string | boolean>): { cert: string; key: string } | undefined {
+    const cert = flags.cert;
+    const key = flags.key;
+    if (cert === undefined && key === undefined) return undefined;
+    // Half a TLS pair would only fail deep inside the server; fail here instead.
+    if (cert === undefined || key === undefined) {
+        throw new TypeError('--cert and --key must be supplied together');
+    }
+    return { cert: readPemFile('cert', cert), key: readPemFile('key', key) };
+}
+
+function formatListenUrl(addr: Deno.Addr, secure: boolean): string {
+    if (addr.transport === 'unix' || addr.transport === 'unixpacket') return `unix:${addr.path}`;
+    if (addr.transport === 'vsock') return `vsock:${addr.cid}:${addr.port}`;
+    // The @types/bun ambient Deno namespace keeps UnixAddr in the remaining
+    // union, so the TCP shape is narrowed explicitly instead of by transport.
+    const tcp = addr as Deno.NetAddr;
     // URL syntax requires IPv6 literals to be enclosed in brackets.
-    const hostname = addr.hostname.includes(':') && !addr.hostname.startsWith('[')
-        ? `[${addr.hostname}]`
-        : addr.hostname;
-    return `http://${hostname}:${addr.port}/`;
+    const hostname = tcp.hostname.includes(':') && !tcp.hostname.startsWith('[')
+        ? `[${tcp.hostname}]`
+        : tcp.hostname;
+    return `${secure ? 'https' : 'http'}://${hostname}:${tcp.port}/`;
 }
 
 function startServe(
@@ -59,18 +97,28 @@ function startServe(
         throw new TypeError('default export onListen must be a function');
     }
 
-    const handler: Deno.ServeHandler<Deno.NetAddr> = (request, info) =>
+    const handler: Deno.ServeHandler<Deno.Addr> = (request, info) =>
         Reflect.apply(fetch, serverExport, [request, info]) as Response | Promise<Response>;
-    const listen = typeof onListen === 'function'
-        ? (addr: Deno.NetAddr) => { Reflect.apply(onListen, serverExport, [addr]); }
-        : (addr: Deno.NetAddr) => console.log(`cno serve: Listening on ${formatListenUrl(addr)}`);
+    const unixPath = serveUnixPath(flags);
+    if (unixPath !== undefined && (flags.cert !== undefined || flags.key !== undefined)) {
+        throw new TypeError('--unix cannot be combined with --cert/--key');
+    }
+    const tls = serveTlsOptions(flags);
+    const listen = (addr: Deno.Addr): void => {
+        if (typeof onListen === 'function') {
+            Reflect.apply(onListen, serverExport, [addr]);
+            return;
+        }
+        console.log(`cno serve: Listening on ${formatListenUrl(addr, tls !== undefined)}`);
+    };
 
-    const server = Deno.serve({
-        hostname: serveHost(flags),
-        port: servePort(flags),
-        handler,
-        onListen: listen,
-    });
+    // Each branch matches a declared Deno.serve overload; in the unix mode the
+    // runtime ignores hostname/port.
+    const server = unixPath !== undefined
+        ? Deno.serve({ path: unixPath, onListen: listen }, handler)
+        : tls
+          ? Deno.serve({ hostname: serveHost(flags), port: servePort(flags), ...tls, onListen: listen }, handler)
+          : Deno.serve({ hostname: serveHost(flags), port: servePort(flags), onListen: listen }, handler);
 
     let shuttingDown = false;
     const installedSignals = new Set<Deno.Signal>();

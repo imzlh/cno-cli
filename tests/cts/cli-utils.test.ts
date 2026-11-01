@@ -182,6 +182,85 @@ Deno.test('cli: test exclusions preserve repeated values and aliases', () => {
     deepStrictEqual(unknownFlags(parseArgv(['repl', '--ignore=tests/slow'])), ['--ignore']);
 });
 
+Deno.test('cli: test scheduling flags parse with the Deno spellings', () => {
+    const cli = parseArgv([
+        'test', '--timeout=120000', '--jobs=2', '-j4', '--parallel', '--shuffle=7', '--no-run', 'tests',
+    ]);
+    strictEqual(cli.flags.timeout, '120000');
+    strictEqual(cli.flags.jobs, '4');
+    strictEqual(cli.flags.parallel, true);
+    strictEqual(cli.flags.shuffle, '7');
+    strictEqual(cli.flags['no-run'], true);
+    deepStrictEqual(cli.positional, ['tests']);
+    deepStrictEqual(unknownFlags(cli), []);
+
+    const bare = parseArgv(['test', '--shuffle', '--parallel', 'tests']);
+    strictEqual(bare.flags.shuffle, true);
+    strictEqual(bare.flags.parallel, true);
+    deepStrictEqual(bare.positional, ['tests']);
+    strictEqual(parseArgv(['test', '--parallel=3']).flags.parallel, '3');
+    strictEqual(parseArgv(['test', '--timeout', '5000']).flags.timeout, '5000');
+    strictEqual(parseArgv(['test', '-j', '2']).flags.jobs, '2');
+
+    deepStrictEqual(missingFlagValues(parseArgv([
+        'test', '--timeout', '--fail-fast',
+    ])), ['timeout']);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--timeout=5000', 'main.ts'])), ['--timeout']);
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--jobs=2'])), ['--jobs']);
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--parallel'])), ['--parallel']);
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--shuffle'])), ['--shuffle']);
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--no-run'])), ['--no-run']);
+
+    // Deno test runners pass these; cno accepts and ignores them.
+    deepStrictEqual(unknownFlags(parseArgv(['test', '--doc', '--trace-ops', 'a_test.ts'])), []);
+});
+
+Deno.test('cli: runtime tuning flags are scoped and eval/task gain env options', () => {
+    const cli = parseArgv([
+        'run', '--import-map=maps.json', '--request-timeout=5000', '--jsr-cache-ttl=3',
+        '--jsx-pragma=h', '--jsx-fragment-pragma=f', 'app.ts',
+    ]);
+    strictEqual(cli.flags['import-map'], 'maps.json');
+    strictEqual(cli.flags['request-timeout'], '5000');
+    strictEqual(cli.flags['jsr-cache-ttl'], '3');
+    strictEqual(cli.flags['jsx-pragma'], 'h');
+    strictEqual(cli.flags['jsx-fragment-pragma'], 'f');
+    deepStrictEqual(unknownFlags(cli), []);
+
+    // --env/--env-file moved from PROGRAMS to eval and task; --preload to eval.
+    deepStrictEqual(unknownFlags(parseArgv([
+        'eval', '--env-file=.env', '--env=.env.local', '--preload=./init.ts', 'code',
+    ])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['task', '--env-file=.env', 'build'])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['task', '--preload=x', 'build'])), ['--preload']);
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--env=.env'])), ['--env']);
+    deepStrictEqual(missingFlagValues(parseArgv(['eval', '--env-file'])), ['env-file']);
+
+    // Runtime-scoped tuning flags stay rejected outside the runtime commands.
+    deepStrictEqual(unknownFlags(parseArgv(['exec', '--import-map=x', 'bin'])), ['--import-map']);
+    deepStrictEqual(unknownFlags(parseArgv(['setup', '--request-timeout=1'])), ['--request-timeout']);
+    deepStrictEqual(unknownFlags(parseArgv(['task', '--jsx-pragma=h'])), ['--jsx-pragma']);
+    deepStrictEqual(unknownFlags(parseArgv(['task', '--enable-inline-sourcemap'])), ['--enable-inline-sourcemap']);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--enable-inline-sourcemap', 'main.ts'])), []);
+});
+
+Deno.test('cli: serve TLS and unix flags are serve-scoped with required values', () => {
+    const cli = parseArgv([
+        'serve', '--port=8443', '--host=127.0.0.1', '--cert=cert.pem', '--key=key.pem', '--unix=/tmp/s.sock', 'srv.ts',
+    ]);
+    strictEqual(cli.flags.cert, 'cert.pem');
+    strictEqual(cli.flags.key, 'key.pem');
+    strictEqual(cli.flags.unix, '/tmp/s.sock');
+    deepStrictEqual(unknownFlags(cli), []);
+
+    deepStrictEqual(missingFlagValues(parseArgv(['serve', '--key'])), ['key']);
+    deepStrictEqual(missingFlagValues(parseArgv(['serve', '--unix'])), ['unix']);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--key=key.pem', 'main.ts'])), ['--key']);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--unix=/tmp/s', 'main.ts'])), ['--unix']);
+    // --cert stays a global accepted no-op so other Deno-style commands keep working.
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--cert=ca.pem', 'main.ts'])), []);
+});
+
 Deno.test('cli: repeated Node conditions are preserved and -C requires a value', () => {
     const cli = parseArgv([
         '--conditions=development',

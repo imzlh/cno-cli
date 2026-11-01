@@ -17,10 +17,19 @@ const sysError = import.meta.use('error');
 // must not hang `cno test` forever.
 const DEFAULT_CHILD_TIMEOUT_MS = 60_000;
 
-function childTimeoutMs(): number {
-    const raw = readEnv('CNO_TEST_CHILD_TIMEOUT_MS');
-    if (raw) {
+/** --timeout wins over the env override; `null` marks an invalid flag value. */
+function resolveChildTimeoutMs(flags: Record<string, string | boolean>): number | null {
+    const raw = flags['timeout'];
+    if (raw !== undefined) {
+        if (typeof raw !== 'string') return null;
         const value = Number(raw);
+        // A bad budget silently falling back to 60s hides a typo in CI configs.
+        if (raw.length === 0 || !Number.isSafeInteger(value) || value <= 0) return null;
+        return value;
+    }
+    const envRaw = readEnv('CNO_TEST_CHILD_TIMEOUT_MS');
+    if (envRaw) {
+        const value = Number(envRaw);
         if (Number.isFinite(value) && value >= 0) return Math.floor(value);
     }
     return DEFAULT_CHILD_TIMEOUT_MS;
@@ -281,6 +290,52 @@ export function collectTests(rawPaths: string[], excludePatterns: string[] = [])
 
 // ─── Runner ─────────────────────────────────────────────────────────────────
 
+// Small seeded PRNG so a failing shuffled order can be replayed from the seed.
+function mulberry32(seed: number): () => number {
+    let state = seed >>> 0;
+    return () => {
+        state = (state + 0x6D2B79F5) | 0;
+        let t = Math.imul(state ^ (state >>> 15), 1 | state);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+export function shuffleFiles(files: string[], seed: number): string[] {
+    const random = mulberry32(seed);
+    const out = files.slice();
+    for (let i = out.length - 1; i > 0; i--) {
+        const j = Math.floor(random() * (i + 1));
+        [out[i], out[j]] = [out[j]!, out[i]!];
+    }
+    return out;
+}
+
+function shuffleSeed(raw: string | boolean): number | null {
+    if (raw === true) return Math.floor(Math.random() * 0x100000000);
+    if (typeof raw !== 'string') return null;
+    const value = Number(raw);
+    return raw.length > 0 && Number.isSafeInteger(value) && value >= 0 && value <= 0xFFFFFFFF
+        ? value
+        : null;
+}
+
+/**
+ * --jobs/-j and --parallel are Deno spellings of --concurrency; when mixed,
+ * the documented precedence is concurrency > jobs > parallel.
+ */
+function concurrencyFamily(flags: Record<string, string | boolean>): [string, string | boolean | undefined] {
+    for (const name of ['concurrency', 'jobs', 'parallel'] as const) {
+        const value = flags[name];
+        if (value === undefined) continue;
+        // Bare `--parallel` just means "run in parallel" at the default width;
+        // an inline `--parallel=false` reads as "not requested".
+        if (name === 'parallel' && typeof value === 'boolean') return [name, undefined];
+        return [name, value];
+    }
+    return ['concurrency', undefined];
+}
+
 interface FailedTest {
     name: string;
     error?: string;
@@ -390,6 +445,7 @@ function parseConcurrency(value: string | boolean | undefined): number | null {
 
 async function runOne(
     file: string,
+    timeoutMs: number,
     flags: Record<string, string | boolean>,
     invocation: TestInvocation,
     scriptArgs: string[],
@@ -432,7 +488,7 @@ async function runOne(
             const failedTests = parseFailedTests(received.failedTests);
             return { file, passed: received.passed === true, duration: performance.now() - start, error: received.error, failedTests };
         };
-        const timeout = childTimeoutMs();
+        const timeout = timeoutMs;
         let timeoutId: number | undefined;
         const timeoutPromise = new Promise<{ kind: 'timeout' }>((resolve) => {
             timeoutId = timers.setTimeout(() => resolve({ kind: 'timeout' }), timeout);
@@ -490,6 +546,7 @@ async function runOne(
 async function runAll(
     files: string[],
     concurrency: number,
+    timeoutMs: number,
     flags: Record<string, string | boolean>,
     invocation: TestInvocation,
     scriptArgs: string[],
@@ -503,7 +560,7 @@ async function runAll(
         while (queue.length) {
             const file = queue.shift();
             if (file === undefined) continue;
-            const result = await runOne(file, flags, invocation, scriptArgs);
+            const result = await runOne(file, timeoutMs, flags, invocation, scriptArgs);
             results.push(result);
             if (failFast && !result.passed) {
                 queue.length = 0;
@@ -534,7 +591,7 @@ export async function runTest(
     const separator = rawPaths.indexOf('--');
     const paths = separator < 0 ? rawPaths : rawPaths.slice(0, separator);
     const scriptArgs = separator < 0 ? [] : rawPaths.slice(separator + 1);
-    const files = collectTests(paths, excludePatterns);
+    let files = collectTests(paths, excludePatterns);
 
     if (!files.length) {
         if (flags['permit-no-files'] === true) {
@@ -545,9 +602,36 @@ export async function runTest(
         throw new CliExit(1);
     }
 
-    const requestedConcurrency = parseConcurrency(flags['concurrency']);
+    // Deno's --no-run type-checks; cno has no type checker, so it only proves
+    // discovery (the registry still runs per file when the suite executes).
+    if (flags['no-run'] === true) {
+        console.log(`found ${files.length} test module${files.length === 1 ? '' : 's'}`);
+        return;
+    }
+
+    const shuffleRaw = flags['shuffle'];
+    // An inline `--shuffle=false` reads as "not requested" for this
+    // optional-value flag; only a real seed string needs validation.
+    if (shuffleRaw !== undefined && shuffleRaw !== false) {
+        const seed = shuffleSeed(shuffleRaw);
+        if (seed === null) {
+            console.error(`error: --shuffle seed must be an integer from 0 to 4294967295, got ${String(shuffleRaw)}`);
+            throw new CliExit(1);
+        }
+        // Print the effective seed so a failing order can be replayed exactly.
+        console.error(`cno test: shuffling test file order (seed ${seed})`);
+        files = shuffleFiles(files, seed);
+    }
+
+    const [concurrencyName, concurrencyRaw] = concurrencyFamily(flags);
+    const requestedConcurrency = parseConcurrency(concurrencyRaw);
     if (requestedConcurrency === null) {
-        console.error(`error: --concurrency must be a positive integer, got ${String(flags['concurrency'])}`);
+        console.error(`error: --${concurrencyName} must be a positive integer, got ${String(concurrencyRaw)}`);
+        throw new CliExit(1);
+    }
+    const timeoutMs = resolveChildTimeoutMs(flags);
+    if (timeoutMs === null) {
+        console.error(`error: --timeout must be a positive integer (milliseconds), got ${String(flags['timeout'])}`);
         throw new CliExit(1);
     }
     // Each file is a child and `--inspect*` is forwarded to all of them, so
@@ -558,7 +642,7 @@ export async function runTest(
     console.log(`${C.dim('Running')} ${files.length} test file${files.length === 1 ? '' : 's'} (concurrency=${concurrency})`);
     console.log('');
 
-    const results = await runAll(files, concurrency, flags, invocation, scriptArgs);
+    const results = await runAll(files, concurrency, timeoutMs, flags, invocation, scriptArgs);
 
     let passed = 0, failed = 0;
     const allFailed: Array<{ file: string; tests: FailedTest[] }> = [];

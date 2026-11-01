@@ -1,11 +1,13 @@
 // Regression tests for flags that were parsed and advertised but had no
 // consumer. See applyMaxOldSpaceSize / flagsToConfig for the measurements.
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
+import { join } from 'node:path';
 import { parseArgv, unknownFlags } from '../../src/cli.ts';
 import { buildCacheConfig } from '../../src/commands/cache-utils.ts';
 import { applyMaxOldSpaceSize, decodeWorkerRuntimeConfig, flagsToConfig, publishWorkerRuntimeConfig, WORKER_RUNTIME_CONFIG_KEYS } from '../../src/config.ts';
 import { effectiveRuntimeFlags, prepareKernel } from '../../src/kernel.ts';
 import type { ConfigOptions } from '../../cts/src/types.ts';
+import { withTempDir } from '../_helpers/temp.ts';
 
 // applyMaxOldSpaceSize defers to CTS_MEMORY_LIMIT, so the tests must control it.
 function withoutCtsMemoryLimit<T>(fn: () => T): T {
@@ -359,6 +361,47 @@ Deno.test('cli: max-old-space-size accepts both = and space forms', () => {
     strictEqual(spaced.rawArgs.entry, 'main.ts');
 });
 
+Deno.test('flagsToConfig: import map and cts tuning flags reach the config', async () => {
+    await withTempDir('cli-import-map-config', async (dir) => {
+        // The map lives in a subdirectory so the assertion proves relative
+        // targets resolve from the map's directory, not the process cwd.
+        const mapsDir = join(dir, 'maps');
+        await Deno.mkdir(mapsDir);
+        // Plain bare keys only: filterImports drops "#" keys, which belong to
+        // package.json imports and never reach the import map.
+        await Deno.writeTextFile(join(mapsDir, 'map.json'), JSON.stringify({
+            imports: { 'dep': './vendor/dep.ts' },
+            scopes: { './scoped/': { 'inner': './inner.ts' } },
+        }));
+        const cfg = flagsToConfig({ 'import-map': join(mapsDir, 'map.json') });
+        ok(cfg.importMap?.['dep']?.endsWith('/vendor/dep.ts'), JSON.stringify(cfg.importMap));
+        const scopeKey = Object.keys(cfg.importMapScopes ?? {})[0];
+        ok(scopeKey?.endsWith('/scoped/'), scopeKey);
+        ok(cfg.importMapScopes?.[scopeKey]?.['inner']?.endsWith('/inner.ts'), JSON.stringify(cfg.importMapScopes));
+
+        throws(() => flagsToConfig({ 'import-map': join(dir, 'missing.json') }), /--import-map/);
+        await Deno.writeTextFile(join(dir, 'invalid-root.json'), '[]');
+        throws(() => flagsToConfig({ 'import-map': join(dir, 'invalid-root.json') }), /--import-map/);
+    });
+
+    strictEqual(flagsToConfig({ 'request-timeout': '5000' }).requestTimeout, 5000);
+    strictEqual(flagsToConfig({ 'jsr-cache-ttl': '2' }).jsrCacheTTL, 2 * 24 * 60 * 60 * 1000);
+    strictEqual(flagsToConfig({ 'jsx-pragma': 'h' }).jsxPragma, 'h');
+    strictEqual(flagsToConfig({ 'jsx-fragment-pragma': 'f' }).jsxFragmentPragma, 'f');
+    throws(() => flagsToConfig({ 'request-timeout': 'abc' }), /--request-timeout/);
+    throws(() => flagsToConfig({ 'request-timeout': '0' }), /--request-timeout/);
+    throws(() => flagsToConfig({ 'request-timeout': '1.5' }), /--request-timeout/);
+    throws(() => flagsToConfig({ 'jsr-cache-ttl': '-1' }), /--jsr-cache-ttl/);
+    throws(() => flagsToConfig({ 'jsr-cache-ttl': '1000000000000' }), /--jsr-cache-ttl/);
+    strictEqual(flagsToConfig({ 'enable-inline-sourcemap': true }).enableInlineSourceMap, true);
+    strictEqual(flagsToConfig({ 'enable-inline-sourcemap': 'false' }).enableInlineSourceMap, false);
+    // Absent flags must not set the keys, so file config still applies.
+    const empty = flagsToConfig({});
+    strictEqual(empty.requestTimeout, undefined);
+    strictEqual(empty.jsrCacheTTL, undefined);
+    strictEqual(empty.importMap, undefined);
+});
+
 // Flags valid only for another subcommand must be rejected before dispatch.
 Deno.test('flag scoping: a flag valid elsewhere is rejected for this command', () => {
     // test-only flags must not be silently accepted by run/repl/eval/pack.
@@ -369,6 +412,10 @@ Deno.test('flag scoping: a flag valid elsewhere is rejected for this command', (
     deepStrictEqual(unknownFlags(parseArgv(['repl', '--exclude=slow'])), ['--exclude']);
     deepStrictEqual(unknownFlags(parseArgv(['run', '--ignore=slow', 'main.ts'])), ['--ignore']);
     deepStrictEqual(unknownFlags(parseArgv(['eval', '--filter=x', '1+1'])), ['--filter']);
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--timeout=1000'])), ['--timeout']);
+    deepStrictEqual(unknownFlags(parseArgv(['run', '--shuffle', 'main.ts'])), ['--shuffle']);
+    deepStrictEqual(unknownFlags(parseArgv(['eval', '--jobs=2', '1+1'])), ['--jobs']);
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--no-run'])), ['--no-run']);
 
     // pack-only flags must not be accepted by run/repl/test.
     deepStrictEqual(unknownFlags(parseArgv(['repl', '--out=x.jspack'])), ['--out']);
@@ -377,11 +424,16 @@ Deno.test('flag scoping: a flag valid elsewhere is rejected for this command', (
     // Task-only --cwd must not be accepted by test.
     deepStrictEqual(unknownFlags(parseArgv(['test', '--cwd=/tmp'])), ['--cwd']);
     deepStrictEqual(unknownFlags(parseArgv(['cache', '--no-lock', 'main.ts'])), ['--no-lock']);
-    deepStrictEqual(unknownFlags(parseArgv(['eval', '--env=.env', '1+1'])), ['--env']);
+    // serve-only TLS/socket flags must not leak into other commands.
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--key=key.pem'])), ['--key']);
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--unix=/tmp/s.sock'])), ['--unix']);
+    // eval and task now accept --env/--env-file; repl still rejects it.
+    deepStrictEqual(unknownFlags(parseArgv(['repl', '--env=.env'])), ['--env']);
 
     // Sanity: each flag IS valid for its own command, so the scoping must not
     // over-reject. These pass today and must keep passing.
     deepStrictEqual(unknownFlags(parseArgv(['test', '--filter=t', '--fail-fast', '--exclude=slow', '--ignore=fixtures'])), []);
+    deepStrictEqual(unknownFlags(parseArgv(['test', '--timeout=1000', '--jobs=2', '--parallel', '--shuffle=1', '--no-run'])), []);
     deepStrictEqual(unknownFlags(parseArgv(['pack', 'main.ts', '--out=o.jspack'])), []);
     deepStrictEqual(unknownFlags(parseArgv(['task', '--cwd=/tmp', 'build'])), []);
     deepStrictEqual(unknownFlags(parseArgv(['cache', '--frozen', '--no-http', 'main.ts'])), []);

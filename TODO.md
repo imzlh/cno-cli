@@ -11,7 +11,8 @@
   报 "test worker timed out without reporting a result"（后 16 个测试没跑）。
 - 原因：该文件每个用例都 spawn 子进程且预算按文件计；后台负载（如本会话的
   常驻进程）把它推过线。与接线迁移无关（节奏均匀、单测全部单独通过）。
-- 建议：把文件拆成 2~3 个，或给 runner 增加按文件覆盖超时的参数。
+- 建议：把文件拆成 2~3 个。runner 已支持 `cno test --timeout=120000` 按次覆盖
+  （`CNO_TEST_CHILD_TIMEOUT_MS` 仍作环境兜底，flag 优先），但拆文件才是根治。
 
 ### 5. async_hooks 的 AsyncLocalStorage 跨 promise/timer 边界丢失
 - 现象：`tests/node/async-hooks*.test.ts` propagation 用例拿到 `undefined`。
@@ -35,7 +36,9 @@
   负载波动，需复核是否真实回归。
 - `tests/webapi/` — h1/h2-body-cap、locks-broadcast（BroadcastChannel 跨
   worker 消息超时）、abort-signal-lifetime、console-upstream、
-  finalization-registry-lifetime、proxy-env-precedence、streams-terminal-lifetime。
+  finalization-registry-lifetime、proxy-env-precedence、streams-terminal-lifetime、
+  worker.test.ts（"queued messages survive GC before message listener
+  registration" 超时，隔离复现，同为 GC/lifetime 时序类，随 Bun 改动出现）。
   多为 lifetime/timing 类，建议逐个与 Node oracle 差分后定性。
 
 ## 本轮已修复（保留原因，防回归）

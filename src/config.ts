@@ -1,4 +1,4 @@
-import { parseSize } from '../cts/src/api';
+import { importMapFromFile, parseSize } from '../cts/src/api';
 import type { ConfigOptions } from '../cts/src/api';
 import { publishChannel, CHANNEL_WORKER_RUNTIME_CONFIG } from './channels';
 import { flagsFromOptions, tokenizeOptions, type Flags } from './cli';
@@ -9,7 +9,7 @@ const MIN_USABLE_STACK_SIZE = 512 * 1024;
 const WORKER_RUNTIME_STRING_KEYS = ['cacheDir', 'lockDir', 'polyfill', 'bunDir', 'baseUrl', 'jsxPragma', 'jsxFragmentPragma'] as const satisfies readonly (keyof ConfigOptions)[];
 const WORKER_RUNTIME_BOOLEAN_KEYS = [
     'enableHttp', 'enableJsr', 'enableNode', 'enableCache', 'cachedOnly',
-    'enableOxc', 'frozen', 'disableLock', 'ignoreScripts', 'silent',
+    'enableOxc', 'enableInlineSourceMap', 'frozen', 'disableLock', 'ignoreScripts', 'silent',
 ] as const satisfies readonly (keyof ConfigOptions)[];
 const WORKER_RUNTIME_NUMBER_KEYS = ['memoryLimit', 'maxStackSize', 'requestTimeout', 'jsrCacheTTL'] as const satisfies readonly (keyof ConfigOptions)[];
 
@@ -55,6 +55,7 @@ export function flagsToConfig(flags: Flags, defaults: Flags = {}): Partial<Confi
         ['disable-cache', 'enableCache', false], ['cached-only', 'cachedOnly', true],
         ['no-http', 'enableHttp', false], ['no-jsr', 'enableJsr', false],
         ['no-node', 'enableNode', false], ['no-oxc', 'enableOxc', false],
+        ['enable-inline-sourcemap', 'enableInlineSourceMap', true],
         ['silent', 'silent', true],
     ] as const) {
         const value = flags[name];
@@ -63,6 +64,38 @@ export function flagsToConfig(flags: Flags, defaults: Flags = {}): Partial<Confi
     }
     const polyfill = stringFlag('polyfill');
     if (polyfill) cfg.polyfill = polyfill;
+    const positiveSafeIntegerFlag = (name: string, unit: string): number | undefined => {
+        const value = flags[name];
+        if (value === undefined) return undefined;
+        const parsed = Number(value);
+        if (typeof value !== 'string' || value.length === 0 || !Number.isSafeInteger(parsed) || parsed <= 0) {
+            throw new Error(`--${name} must be a positive safe integer number of ${unit}`);
+        }
+        return parsed;
+    };
+    const importMapPath = stringFlag('import-map');
+    if (importMapPath) {
+        // An explicit CLI map replaces import maps from config files; the
+        // config layering in each command applies this last.
+        const fromFile = importMapFromFile(importMapPath);
+        if (!fromFile) throw new Error(`--import-map: cannot read import map file: ${importMapPath}`);
+        if (fromFile.importMap) cfg.importMap = fromFile.importMap;
+        if (fromFile.importMapScopes) cfg.importMapScopes = fromFile.importMapScopes;
+    }
+    const requestTimeout = positiveSafeIntegerFlag('request-timeout', 'milliseconds');
+    if (requestTimeout !== undefined) cfg.requestTimeout = requestTimeout;
+    const jsrCacheTtlDays = positiveSafeIntegerFlag('jsr-cache-ttl', 'days');
+    if (jsrCacheTtlDays !== undefined) {
+        const milliseconds = jsrCacheTtlDays * 24 * 60 * 60 * 1000;
+        if (!Number.isSafeInteger(milliseconds)) {
+            throw new Error('--jsr-cache-ttl is too large to represent in milliseconds');
+        }
+        cfg.jsrCacheTTL = milliseconds;
+    }
+    const jsxPragma = stringFlag('jsx-pragma');
+    if (jsxPragma) cfg.jsxPragma = jsxPragma;
+    const jsxFragmentPragma = stringFlag('jsx-fragment-pragma');
+    if (jsxFragmentPragma) cfg.jsxFragmentPragma = jsxFragmentPragma;
     const memoryLimit = stringFlag('memory-limit');
     if (memoryLimit) cfg.memoryLimit = sizeFlag('memory-limit', memoryLimit);
     const maxStackSize = stringFlag('max-stack-size');

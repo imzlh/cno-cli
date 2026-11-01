@@ -65,13 +65,18 @@ define(['no-lock'], { consumer: 'runtime', prefix: true, commands: ['run', 'serv
 define(['polyfill'], { value: 'required', consumer: 'runtime', prefix: true, commands: ['run', 'serve', 'eval', 'test'] });
 define(['ext'], { value: 'required', consumer: 'runtime', prefix: true, commands: ['run', 'serve', 'eval', 'test', 'pack'] });
 define(['location'], { value: 'required', consumer: 'runtime', prefix: true, commands: ['run', 'serve', 'eval', 'test'] });
-define(['env', 'env-file', 'preload'], { value: 'required', consumer: 'runtime', prefix: true, commands: PROGRAMS });
+define(['env', 'env-file'], { value: 'required', consumer: 'runtime', prefix: true, commands: [...PROGRAMS, 'eval', 'task'] });
+define(['preload'], { value: 'required', consumer: 'runtime', prefix: true, commands: [...PROGRAMS, 'eval'] });
 define(['precache', 'reload'], { consumer: 'runtime', prefix: true, commands: PROGRAMS });
 define(['system-proxy', 'skip-cert-verify', 'silent'], { consumer: 'runtime', prefix: true, commands: ALL_COMMANDS });
 define(['help', 'version'], { prefix: true, commands: ALL_COMMANDS });
-define(['port', 'host'], { value: 'required', commands: ['serve'] });
+define(['port', 'host', 'key', 'unix'], { value: 'required', commands: ['serve'] });
 define(['concurrency', 'filter', 'exclude', 'ignore'], { value: 'required', commands: ['test'] });
-define(['fail-fast', 'permit-no-files'], { commands: ['test'] });
+define(['timeout', 'jobs'], { value: 'required', commands: ['test'] });
+// Optional values are inline-only (`--shuffle=7`). Bare forms must not consume
+// the following test path.
+define(['shuffle', 'parallel'], { commands: ['test'] });
+define(['fail-fast', 'no-run', 'permit-no-files'], { commands: ['test'] });
 define(['out'], { value: 'optional', commands: ['pack'] });
 define(['cwd'], { value: 'required', commands: ['task'] });
 define(['eval'], { value: 'optional', commands: ['task', 'eval'] });
@@ -83,16 +88,19 @@ define([
     'allow-all', 'allow-net', 'allow-read', 'allow-write', 'allow-env', 'allow-run', 'allow-ffi', 'allow-sys', 'allow-import',
     'deny-net', 'deny-read', 'deny-write', 'deny-env', 'deny-run', 'deny-ffi', 'deny-sys', 'deny-import', 'no-prompt',
     'unstable', 'unstable-bare-node-builtins', 'unstable-byonm', 'unstable-sloppy-imports', 'unstable-workspaces', 'unstable-detect-cjs',
-    'check', 'no-check', 'quiet', 'no-config', 'no-remote', 'lock-write', 'no-npm', 'no-warnings',
+    'check', 'no-check', 'doc', 'trace-ops', 'quiet', 'no-config', 'no-remote', 'lock-write', 'no-npm', 'no-warnings',
 ], { consumer: 'noop', prefix: true, commands: ALL_COMMANDS });
-define(['cert', 'import-map', 'lock', 'log-level', 'seed'], { value: 'required', consumer: 'noop', prefix: true, commands: ALL_COMMANDS });
+define(['cert', 'lock', 'log-level', 'seed'], { value: 'required', consumer: 'noop', prefix: true, commands: ALL_COMMANDS });
+define(['import-map', 'request-timeout', 'jsr-cache-ttl', 'jsx-pragma', 'jsx-fragment-pragma'],
+    { value: 'required', consumer: 'runtime', prefix: true, commands: RUNTIMES });
+define(['enable-inline-sourcemap'], { consumer: 'runtime', prefix: true, commands: RUNTIMES });
 // Task consumes config; other commands accept the Deno compatibility spelling.
 define(['config'], { value: 'required', consumer: 'command', prefix: true, commands: ALL_COMMANDS });
 
 for (const [name, shortNames] of [
     ['reload', ['-r']], ['silent', ['-q']], ['allow-all', ['-A']],
     ['print', ['-p']], ['out', ['-o']], ['conditions', ['-C']],
-    ['help', ['-h']], ['version', ['-v']],
+    ['jobs', ['-j']], ['help', ['-h']], ['version', ['-v']],
 ] as const) registry.get(name)!.aliases = shortNames;
 registry.get('cache-dir')!.commands = [...RUNTIMES, 'setup', 'exec'];
 
