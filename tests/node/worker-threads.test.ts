@@ -345,6 +345,96 @@ Deno.test({ name: 'worker_threads: Worker postMessage transfer detaches source A
     }
 });
 
+Deno.test({ name: 'worker_threads: large ArrayBuffer transfer detaches synchronously and round-trips bytes', timeout: 15000 }, async () => {
+    const src = `
+        const { parentPort } = require('node:worker_threads');
+        parentPort.on('message', ({ buffer }) => {
+            const bytes = new Uint8Array(buffer);
+            const length = bytes.length;
+            const first = bytes[0];
+            const middle = bytes[length >>> 1];
+            const last = bytes[length - 1];
+            parentPort.postMessage({ buffer, length, first, middle, last }, [buffer]);
+            parentPort.postMessage({ workerDetached: buffer.byteLength });
+        });
+    `;
+    const size = 8 * 1024 * 1024;
+    const buffer = new ArrayBuffer(size);
+    const bytes = new Uint8Array(buffer);
+    bytes[0] = 17;
+    bytes[size >>> 1] = 93;
+    bytes[size - 1] = 241;
+    const worker = new Worker(src, { eval: true });
+    try {
+        const messages = new Promise<any[]>((resolve, reject) => {
+            const out: any[] = [];
+            worker.on('message', (value) => {
+                out.push(value);
+                if (out.length === 2) resolve(out);
+            });
+            worker.once('error', reject);
+        });
+        worker.postMessage({ buffer }, [buffer]);
+        strictEqual(buffer.byteLength, 0, 'the sender must detach before postMessage returns');
+
+        const [received, detached] = await messages;
+        ok(received.buffer instanceof ArrayBuffer);
+        strictEqual(received.buffer.byteLength, size);
+        strictEqual(received.length, size);
+        strictEqual(received.first, 17);
+        strictEqual(received.middle, 93);
+        strictEqual(received.last, 241);
+        strictEqual(detached.workerDetached, 0, 'the worker must detach before its postMessage returns');
+    } finally {
+        await worker.terminate();
+    }
+});
+
+Deno.test({ name: 'worker_threads: transfer preserves shared view backing across multiple ArrayBuffers', timeout: 10000 }, async () => {
+    const src = `
+        const { parentPort } = require('node:worker_threads');
+        parentPort.on('message', ({ first, overlap, direct, second }) => {
+            parentPort.postMessage({
+                firstSharesOverlap: first.buffer === overlap.buffer,
+                firstSharesDirect: first.buffer === direct,
+                buffersDiffer: first.buffer !== second.buffer,
+                firstOffset: first.byteOffset,
+                overlapOffset: overlap.byteOffset,
+                secondOffset: second.byteOffset,
+                overlapValue: overlap[1],
+                secondValue: second[2],
+            });
+        });
+    `;
+    const firstBuffer = new ArrayBuffer(32);
+    const secondBuffer = new ArrayBuffer(24);
+    const first = new Uint8Array(firstBuffer, 2, 12);
+    const overlap = new Uint8Array(firstBuffer, 6, 8);
+    const second = new Uint16Array(secondBuffer, 4, 4);
+    overlap[1] = 123;
+    second[2] = 0x4567;
+    const worker = new Worker(src, { eval: true });
+    try {
+        const reply: any = await new Promise((resolve, reject) => {
+            worker.once('message', resolve);
+            worker.once('error', reject);
+            worker.postMessage({ first, overlap, direct: firstBuffer, second }, [firstBuffer, secondBuffer]);
+            strictEqual(firstBuffer.byteLength, 0);
+            strictEqual(secondBuffer.byteLength, 0);
+        });
+        ok(reply.firstSharesOverlap);
+        ok(reply.firstSharesDirect);
+        ok(reply.buffersDiffer);
+        strictEqual(reply.firstOffset, 2);
+        strictEqual(reply.overlapOffset, 6);
+        strictEqual(reply.secondOffset, 4);
+        strictEqual(reply.overlapValue, 123);
+        strictEqual(reply.secondValue, 0x4567);
+    } finally {
+        await worker.terminate();
+    }
+});
+
 Deno.test({ name: 'worker_threads: Worker postMessage duplicate transfer throws before detach', timeout: 10000 }, async () => {
     const src = `
         const { parentPort } = require('node:worker_threads');
@@ -357,6 +447,68 @@ Deno.test({ name: 'worker_threads: Worker postMessage duplicate transfer throws 
         try { worker.postMessage({ buffer }, [buffer, buffer]); } catch { threw = true; }
         ok(threw, 'duplicate transfer list entries must throw');
         strictEqual(buffer.byteLength, 4);
+    } finally {
+        await worker.terminate();
+    }
+});
+
+Deno.test({ name: 'worker_threads: invalid transfer list is atomic and leaves the pipe usable', timeout: 10000 }, async () => {
+    const src = `
+        const { parentPort } = require('node:worker_threads');
+        parentPort.on('message', (value) => parentPort.postMessage(value));
+    `;
+    const worker = new Worker(src, { eval: true });
+    try {
+        const buffer = new ArrayBuffer(8);
+        new Uint8Array(buffer)[3] = 77;
+        let errorName: unknown;
+        try {
+            worker.postMessage({ buffer }, [buffer, {}]);
+        } catch (error) {
+            errorName = error && typeof error === 'object' ? Reflect.get(error, 'name') : undefined;
+        }
+        strictEqual(errorName, 'DataCloneError');
+        strictEqual(buffer.byteLength, 8, 'validation failure must not detach an earlier transfer entry');
+        strictEqual(new Uint8Array(buffer)[3], 77);
+
+        const reply: any = await new Promise((resolve, reject) => {
+            worker.once('message', resolve);
+            worker.once('error', reject);
+            worker.postMessage({ tag: 'after-invalid-transfer' });
+        });
+        strictEqual(reply.tag, 'after-invalid-transfer');
+    } finally {
+        await worker.terminate();
+    }
+});
+
+Deno.test({ name: 'worker_threads: serialization failure does not detach transfers or poison the pipe', timeout: 10000 }, async () => {
+    const src = `
+        const { parentPort } = require('node:worker_threads');
+        parentPort.on('message', (value) => parentPort.postMessage(value));
+    `;
+    const worker = new Worker(src, { eval: true });
+    try {
+        const buffer = new ArrayBuffer(8);
+        new Uint8Array(buffer)[5] = 109;
+        let errorName: unknown;
+        try {
+            // The serializer sees the transferable before reaching the function.
+            // A later failure must roll the whole operation back without detaching it.
+            worker.postMessage({ buffer, notCloneable() {} }, [buffer]);
+        } catch (error) {
+            errorName = error && typeof error === 'object' ? Reflect.get(error, 'name') : undefined;
+        }
+        strictEqual(errorName, 'DataCloneError');
+        strictEqual(buffer.byteLength, 8);
+        strictEqual(new Uint8Array(buffer)[5], 109);
+
+        const reply: any = await new Promise((resolve, reject) => {
+            worker.once('message', resolve);
+            worker.once('error', reject);
+            worker.postMessage({ tag: 'after-serialization-error' });
+        });
+        strictEqual(reply.tag, 'after-serialization-error');
     } finally {
         await worker.terminate();
     }
@@ -557,6 +709,37 @@ Deno.test({ name: 'worker_threads: parentPort postMessage transfer detaches work
         strictEqual(received[1], 22);
         strictEqual(received.buffer.byteLength, 8);
         strictEqual(messages[1].afterDetach, 0);
+    } finally {
+        await worker.terminate();
+    }
+});
+
+Deno.test({ name: 'worker_threads: parentPort transfer failure is atomic inside the worker', timeout: 10000 }, async () => {
+    const src = `
+        const { parentPort } = require('node:worker_threads');
+        const buffer = new ArrayBuffer(8);
+        new Uint8Array(buffer)[4] = 61;
+        let errorName;
+        try {
+            parentPort.postMessage({ buffer, notCloneable() {} }, [buffer]);
+        } catch (error) {
+            errorName = error && error.name;
+        }
+        parentPort.postMessage({
+            errorName,
+            byteLength: buffer.byteLength,
+            preserved: new Uint8Array(buffer)[4],
+        });
+    `;
+    const worker = new Worker(src, { eval: true });
+    try {
+        const result: any = await new Promise((resolve, reject) => {
+            worker.once('message', resolve);
+            worker.once('error', reject);
+        });
+        strictEqual(result.errorName, 'DataCloneError');
+        strictEqual(result.byteLength, 8);
+        strictEqual(result.preserved, 61);
     } finally {
         await worker.terminate();
     }
@@ -810,6 +993,94 @@ Deno.test({ name: 'worker_threads: workerData transferList detaches source Array
         strictEqual(msg.second, 92);
         strictEqual(msg.bufferLength, 8);
         strictEqual(buffer.byteLength, 0);
+    } finally {
+        await worker.terminate();
+    }
+});
+
+Deno.test({ name: 'worker_threads: large workerData transfer preserves bytes and detaches synchronously', timeout: 15000 }, async () => {
+    const src = `
+        const { parentPort, workerData } = require('node:worker_threads');
+        const bytes = new Uint8Array(workerData.buffer);
+        parentPort.postMessage({
+            length: bytes.length,
+            first: bytes[0],
+            middle: bytes[bytes.length >>> 1],
+            last: bytes[bytes.length - 1],
+        });
+    `;
+    const size = 8 * 1024 * 1024;
+    const buffer = new ArrayBuffer(size);
+    const bytes = new Uint8Array(buffer);
+    bytes[0] = 19;
+    bytes[size >>> 1] = 101;
+    bytes[size - 1] = 227;
+    const worker = new Worker(src, {
+        eval: true,
+        workerData: { buffer },
+        transferList: [buffer],
+    });
+    try {
+        strictEqual(buffer.byteLength, 0, 'workerData transfer must detach before construction returns');
+        const msg: any = await new Promise((resolve, reject) => {
+            worker.once('message', resolve);
+            worker.once('error', reject);
+        });
+        strictEqual(msg.length, size);
+        strictEqual(msg.first, 19);
+        strictEqual(msg.middle, 101);
+        strictEqual(msg.last, 227);
+    } finally {
+        await worker.terminate();
+    }
+});
+
+Deno.test({ name: 'worker_threads: failed workerData serialization leaves transfer attached', timeout: 10000 }, () => {
+    const buffer = new ArrayBuffer(8);
+    new Uint8Array(buffer)[2] = 47;
+    let errorName: unknown;
+    try {
+        new Worker('setInterval(() => {}, 1000);', {
+            eval: true,
+            workerData: { buffer, notCloneable() {} },
+            transferList: [buffer],
+        });
+    } catch (error) {
+        errorName = error && typeof error === 'object' ? Reflect.get(error, 'name') : undefined;
+    }
+    strictEqual(errorName, 'DataCloneError');
+    strictEqual(buffer.byteLength, 8);
+    strictEqual(new Uint8Array(buffer)[2], 47);
+});
+
+Deno.test({
+    name: 'worker_threads: native transfer throughput diagnostic',
+    ignore: Deno.env.get('CNO_WORKER_TRANSFER_DIAGNOSTIC') !== '1',
+    timeout: 60000,
+}, async () => {
+    const src = `
+        const { parentPort } = require('node:worker_threads');
+        parentPort.on('message', (buffer) => parentPort.postMessage(buffer, [buffer]));
+    `;
+    const rounds = 16;
+    const size = 16 * 1024 * 1024;
+    const worker = new Worker(src, { eval: true });
+    try {
+        let buffer = new ArrayBuffer(size);
+        new Uint8Array(buffer)[size - 1] = 211;
+        const started = performance.now();
+        for (let round = 0; round < rounds; round++) {
+            buffer = await new Promise<ArrayBuffer>((resolve, reject) => {
+                worker.once('message', resolve);
+                worker.once('error', reject);
+                worker.postMessage(buffer, [buffer]);
+            });
+            strictEqual(buffer.byteLength, size);
+        }
+        const elapsedMs = performance.now() - started;
+        strictEqual(new Uint8Array(buffer)[size - 1], 211);
+        const movedMiB = (rounds * size * 2) / (1024 * 1024);
+        console.log(`worker transfer diagnostic: ${movedMiB} MiB in ${elapsedMs.toFixed(1)} ms (${(movedMiB * 1000 / elapsedMs).toFixed(1)} MiB/s)`);
     } finally {
         await worker.terminate();
     }
