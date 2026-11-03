@@ -1,4 +1,5 @@
-import { joinPaths, normalizePath, isAbsolute, cwd, toPosixPath, isWindows } from '../../cts/src/api';
+import { cwd, isAbsolute, joinPaths, normalizePath, toPosixPath } from '../../cts/src/utils/path';
+import { isWindows } from '../../cts/src/utils/platform';
 import { parseArgv, type ParsedCli } from '../cli';
 import { CliExit } from '../command-error';
 import { C } from '../help';
@@ -652,7 +653,6 @@ export async function runTest(
             ? C.green('PASS')
             : C.red('FAIL');
         const ms = C.dim(`${r.duration.toFixed(2)}ms`);
-        // Show path relative to cwd
         const cwdPrefix = cwd() + '/';
         const rel = r.file.startsWith(cwdPrefix) ? r.file.slice(cwdPrefix.length) : r.file;
         console.log(`  ${label}  ${rel}  ${ms}`);

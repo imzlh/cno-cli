@@ -32,7 +32,7 @@ async function compile(revision) {
                         '../../cno/src/webapi/fetch': ['fetchAsync'],
                         '../../cno/src/utils/fs-path': ['ensureDirectorySync'],
                         '../../cno/src/utils/path': ['normalize', 'dirname', 'join'],
-                        '../../cts/src/api': ['log'],
+                        '../../cts/src/utils/log': ['log'],
                         '../env': ['readEnv'],
                     };
                     plugin.onResolve({ filter: /./ }, args => Object.hasOwn(exports, args.path)
@@ -100,7 +100,8 @@ async function fixture(t, revision = REVISION_A, root) {
     const modules = Object.fromEntries(output.outputFiles.map(file => {
         const module = { exports: {} };
         runInNewContext(file.text, {
-            module, exports: module.exports, __setup_host__: host, __test_use__: name => native[name],
+            module, exports: module.exports, __setup_host__: host,
+            __test_use__: name => name === 'evbus' ? { get() {}, set() {} } : native[name],
         });
         return [path.basename(file.path, '.js'), module.exports];
     }));

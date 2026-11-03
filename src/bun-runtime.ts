@@ -1,4 +1,5 @@
 import { dirname, joinPaths, normalizePath, resolvePath } from '../cts/src/utils/path';
+import type { ConfigOptions } from '../cts/src/types';
 import { readEnv } from './env';
 
 /** Files that make a directory a complete packaged Bun payload. */
@@ -38,7 +39,7 @@ function developmentCandidates(executable: string, isFile: (path: string) => boo
  * Locate packaged Bun code with stat calls only; no payload file is read or
  * parsed. Never consults the Bun sources, caches, or the network.
  */
-export function resolveBunDir(): string | undefined {
+function discoverBunDir(): string | undefined {
     const override = readEnv('CNO_BUN_DIR');
     // An explicit, even missing, directory must not silently select another
     // installation. CTS reports a missing payload only when Bun is imported.
@@ -66,4 +67,28 @@ export function resolveBunDir(): string | undefined {
         if (PAYLOAD_FILES.every(name => isFile(joinPaths(candidate, name)))) return resolvePath(candidate);
     }
     return undefined;
+}
+
+// The discovery stats ~6-10 paths; CNO_BUN_DIR is fixed once env files are
+// loaded, so the process-wide result is memoized.
+let discovered: string | undefined;
+let discoveredYet = false;
+
+export function resolveBunDir(): string | undefined {
+    if (!discoveredYet) {
+        discoveredYet = true;
+        discovered = discoverBunDir();
+    }
+    return discovered;
+}
+
+/**
+ * Fill config.bunDir for runtimes the caller is about to create. BunHandler
+ * snapshots cfg.bunDir when the runtime is constructed, so this must precede
+ * createRuntime; a dir arriving through a worker runtime config wins.
+ */
+export function applyBunDir(config: Partial<ConfigOptions>): void {
+    if (config.bunDir !== undefined) return;
+    const dir = resolveBunDir();
+    if (dir !== undefined) config.bunDir = dir;
 }

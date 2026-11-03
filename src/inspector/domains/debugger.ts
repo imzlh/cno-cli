@@ -1,6 +1,7 @@
 /** Debugger CDP domain (worker): breakpoints and the pause/resume state machine. */
 
-import { fileUrlToPath, log, toPosixPath } from '../../../cts/src/api'
+import { log } from '../../../cts/src/utils/log'
+import { fileUrlToPath, toPosixPath } from '../../../cts/src/utils/path'
 import type {
 	CallFrame,
 	DebuggerEvaluateOnCallFrameParams,

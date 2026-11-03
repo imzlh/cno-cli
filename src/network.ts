@@ -194,6 +194,8 @@ export function configureTlsHooks(flags: Record<string, string | boolean>): void
 }
 
 export async function startProxy(): Promise<void> {
+    // Proxy values from env/registry parse through the URL polyfill global.
+    await import('../cno/src/main');
     // The proxy connector pulls in the raw HTTP/TLS stack; only --system-proxy needs it.
     const { createProxyConnector } = await import('../cno/src/utils/proxy');
     // Registry and environment settings must feed both curl and raw clients.

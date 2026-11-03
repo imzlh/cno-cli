@@ -1,4 +1,7 @@
-import { createRuntime, cwd, loadConfigFile } from '../../cts/src/api';
+import { loadConfigFile } from '../../cts/src/config';
+import { createRuntime } from '../../cts/src/runtime/index';
+import { cwd } from '../../cts/src/utils/path';
+import { applyBunDir } from '../bun-runtime';
 import { C } from '../help';
 import { entryAndDir, hasUrlScheme } from '../utils';
 import { CliExit } from '../command-error';
@@ -23,6 +26,7 @@ export async function runCache(
     const cfg = buildCacheConfig(fileCfg, flags, kernel?.config);
     // npm lifecycle scripts (`node postinstall.mjs`) resolve node: against cacheDir/node
     await ensureNodePolyfills(typeof cfg.cacheDir === 'string' ? cfg.cacheDir : undefined);
+    applyBunDir(cfg);
     const runtime = createRuntime(cfg, projectDir);
 
     try {

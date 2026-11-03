@@ -2,7 +2,8 @@
 
 import { PipeKind, WorkerEvent, isWorkerEvent } from '../shared/wire';
 import { isRpcMethod, type RpcMethod } from '../shared/rpc-contract';
-import { errMsg, log } from '../../../cts/src/api';
+import { log } from '../../../cts/src/utils/log';
+import { errMsg } from '../../../cts/src/utils/misc';
 
 type Pipe = CModuleWorker.MessagePipe;
 type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };

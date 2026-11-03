@@ -2,7 +2,7 @@
 
 import { Server, type HttpRequest, type HttpResponse } from '@cnojs/http/server';
 import { createWebSocketFromConnection } from '../../../cno/src/webapi/websocket';
-import { log } from '../../../cts/src/api';
+import { log } from '../../../cts/src/utils/log';
 
 const engine = import.meta.use('engine');
 const nativeCrypto = import.meta.use('crypto');

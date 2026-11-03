@@ -250,10 +250,12 @@ if(CNO_PREBUILT_BUNDLE)
     endforeach()
     message(STATUS "[cno] using host-generated Bun payload: ${_BUN_PAYLOAD_SRC}")
 else()
-set(_BUNDLE_SCRIPT "bundle")
 set(_CLI_BUNDLE    "${CMAKE_CURRENT_SOURCE_DIR}/dist/cno-cli.js")
+set(_BUNDLE_SCRIPT "bundle:js")
+set(_BUN_SCRIPT    "bundle:bun")
 if(CNO_BUNDLE_MINIFY)
-    set(_BUNDLE_SCRIPT "bundle:min")
+    set(_BUNDLE_SCRIPT "bundle:js:min")
+    set(_BUN_SCRIPT    "bundle:bun:min")
     set(_CLI_BUNDLE    "${CMAKE_CURRENT_SOURCE_DIR}/dist/cno-cli.min.js")
 endif()
 
@@ -261,8 +263,9 @@ file(GLOB_RECURSE _CLI_SRCS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.ts"
     "${CMAKE_CURRENT_SOURCE_DIR}/cts/src/*.ts"
     "${CMAKE_CURRENT_SOURCE_DIR}/cno/src/*.ts"
-    "${CMAKE_CURRENT_SOURCE_DIR}/http/src/*.ts"
-    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/*.mjs")
+    "${CMAKE_CURRENT_SOURCE_DIR}/http/src/*.ts")
+file(GLOB_RECURSE _BUN_PAYLOAD_SRCS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/cno/src/*.ts")
 set(_BUN_PAYLOAD_SRC "${CMAKE_CURRENT_SOURCE_DIR}/dist/lib/cno/bun")
 set(_BUN_PAYLOAD_OUTPUTS "")
 foreach(_bun_file IN LISTS _BUN_PAYLOAD_FILES)
@@ -270,17 +273,33 @@ foreach(_bun_file IN LISTS _BUN_PAYLOAD_FILES)
 endforeach()
 set(_CLI_BUNDLE_DEPS
     ${_CLI_SRCS}
+    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/bundle.mjs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/package.json")
+set(_BUN_PAYLOAD_DEPS
+    ${_BUN_PAYLOAD_SRCS}
+    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/bundle-bun.mjs"
     "${CMAKE_CURRENT_SOURCE_DIR}/package.json")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pnpm-lock.yaml")
     list(APPEND _CLI_BUNDLE_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/pnpm-lock.yaml")
+    list(APPEND _BUN_PAYLOAD_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/pnpm-lock.yaml")
 endif()
-# `bundle` / `bundle:min` build the CLI bundle and the Bun payload together.
+# The CLI bundle and the Bun payload are independent artifacts with separate
+# esbuild drivers, so each output gets its own command: a src/** edit must not
+# re-run the payload esbuild, and a bundle-bun.mjs edit must not invalidate the
+# CLI bundle (whose blob step only consumes dist/cno-cli*.js).
 add_custom_command(
-    OUTPUT  "${_CLI_BUNDLE}" ${_BUN_PAYLOAD_OUTPUTS}
+    OUTPUT  "${_CLI_BUNDLE}"
     COMMAND "${PNPM_EXE}" run "${_BUNDLE_SCRIPT}"
     DEPENDS ${_CLI_BUNDLE_DEPS}
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "bundle → ${_CLI_BUNDLE}"
+    VERBATIM)
+add_custom_command(
+    OUTPUT  ${_BUN_PAYLOAD_OUTPUTS}
+    COMMAND "${PNPM_EXE}" run "${_BUN_SCRIPT}"
+    DEPENDS ${_BUN_PAYLOAD_DEPS}
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "bundle bun payload → ${_BUN_PAYLOAD_SRC}"
     VERBATIM)
 endif()
 set(_BUN_PAYLOAD_INPUTS "")

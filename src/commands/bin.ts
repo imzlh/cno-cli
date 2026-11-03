@@ -1,6 +1,8 @@
 // bin.ts — `cno exec <binary>` entry point
 
-import { uname, LockStore, BinResolver } from '../../cts/src/api';
+import { BinResolver } from '../../cts/src/task';
+import { LockStore } from '../../cts/src/lock';
+import { uname } from '../../cts/src/utils/platform';
 import { commandOptionTokensFor, type ParsedCli } from '../cli';
 import { ensureNodePolyfills } from './setup';
 

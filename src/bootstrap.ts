@@ -1,4 +1,6 @@
-import { uname, joinPaths, errMsg } from '../cts/src/api';
+import { joinPaths } from '../cts/src/utils/path';
+import { errMsg } from '../cts/src/utils/misc';
+import { uname } from '../cts/src/utils/platform';
 import { readEnv } from './env';
 
 const fs = import.meta.use('fs');
@@ -11,7 +13,7 @@ const DLEXT  = IS_WIN ? '.dll' : IS_MAC ? '.dylib' : '.so';
 
 function tryFile(path: string): string | null {
     try {
-        if (fs.exists(path) && fs.stat(path).isFile) return path;
+        if (fs.stat(path).isFile) return path;
     } catch {}
     return null;
 }
@@ -45,7 +47,7 @@ export function resolveExtDir(): string | null {
     let firstDirectory: string | null = null;
     for (const c of candidates) {
         try {
-            if (!fs.exists(c) || !fs.stat(c).isDirectory) continue;
+            if (!fs.stat(c).isDirectory) continue;
             firstDirectory ??= c;
             for (const files of Object.values(EXTENSIONS)) {
                 if (files.some((file) => tryFile(joinPaths(c, file)))) return c;

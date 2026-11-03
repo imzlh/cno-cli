@@ -1,5 +1,11 @@
-import { createRuntime, cwd, loadConfigFile, writePack, basename, extname, dirname, joinPaths, resolvePath, isAbsolute, fmtBytes, summarizePackSizes } from '../../cts/src/api';
-import type { PackManifest } from '../../cts/src/api';
+import { loadConfigFile } from '../../cts/src/config';
+import type { PackManifest } from '../../cts/src/pack/format';
+import { summarizePackSizes } from '../../cts/src/pack/size';
+import { writePack } from '../../cts/src/pack/writer';
+import { createRuntime } from '../../cts/src/runtime/index';
+import { basename, cwd, dirname, extname, isAbsolute, joinPaths, resolvePath } from '../../cts/src/utils/path';
+import { fmtBytes } from '../../cts/src/utils/misc';
+import { applyBunDir } from '../bun-runtime';
 import { C } from '../help';
 import { entryAndDir, sourceExtension } from '../utils';
 import { CliExit } from '../command-error';
@@ -100,6 +106,7 @@ export async function runPack(
         throw new CliExit(1);
     }
     const entryLang = explicitExt ?? (extname(entry) === '' ? 'ts' : undefined);
+    applyBunDir(cfg);
     const runtime = createRuntime(cfg, projectDir);
     try {
         const manifest = await writePack(runtime, entry, projectDir, outPath, { entryLang });

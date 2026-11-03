@@ -13,6 +13,7 @@ import {
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 import { buildInstallViewEdges, materializeNodeModules } from '../../cts/src/resolve/linker.ts';
+import { readPkg } from '../../cts/src/resolve/pkg.ts';
 import type { ScanResult } from '../../cts/src/deps.ts';
 import { joinPaths, toPosixPath } from '../../cts/src/utils/path.ts';
 
@@ -384,12 +385,38 @@ Deno.test('cts linker: install view edges are bounded by package.json (no siblin
     }
 });
 
+Deno.test('cts linker: install graph observes manifests changed after resolver caching', () => {
+    const root = makePosixTempDir('linker-fresh-manifest');
+    try {
+        const cacheDir = joinPaths(root, 'cache');
+        const storeRoot = joinPaths(cacheDir, 'npm');
+        const hostDir = seedPkg(cacheDir, 'host', '1.0.0');
+        seedPkg(cacheDir, 'dep', '1.0.0');
+        const edges: Edge[] = [
+            edge('/proj/<entry>', 'host', 'npm:host@1.0.0/index.js', joinPaths(hostDir, 'index.js')),
+        ];
+
+        // Resolver metadata is deliberately long-lived; install graph reads are not.
+        strictEqual(readPkg(hostDir)?.dependencies, undefined);
+        writeFileSync(join(hostDir, 'package.json'), JSON.stringify({
+            name: 'host',
+            version: '1.0.0',
+            dependencies: { dep: '1.0.0' },
+        }));
+
+        const views = buildInstallViewEdges(edges, storeRoot);
+        ok(views.some(view => view.parentName === 'host' && view.depName === 'dep'));
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test('cts linker: materialize source never writes store package node_modules', () => {
     // Structural guard: materialize must only place under projectDir; store
     // soft links remain install-owned (npm.ts linkDependency).
     const src = readFileSync(new URL('../../cts/src/resolve/linker.ts', import.meta.url), 'utf8');
     ok(!src.includes('linkViewEdge'), 'obsolete store-write view linker must stay gone');
-    ok(src.includes('Materialize never writes under the store'), 'store-read-only contract documented');
+    ok(src.includes('never writes the store'), 'store-read-only contract documented');
     ok(src.includes("skipNames: ['node_modules']"), 'hard body copy must skip store node_modules');
     ok(src.includes('materializeHardVirtual'), 'hard path is pnpm-style virtual store');
     ok(src.includes("VIRTUAL_STORE = '.cts'"), 'virtual store lives under project node_modules/.cts');

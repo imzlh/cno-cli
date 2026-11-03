@@ -1,7 +1,10 @@
+// The webapi/fetch graph evaluates at module scope (it Reflect.sets the
+// fetch globals), which on `cno exec` happens before the polyfill bootstrap
+// imports — keep that graph free of bare-global dereferences.
 import { fetchAsync } from '../../cno/src/webapi/fetch';
 import { ensureDirectorySync } from '../../cno/src/utils/fs-path';
 import { normalize, dirname, join } from '../../cno/src/utils/path';
-import { log } from '../../cts/src/api';
+import { log } from '../../cts/src/utils/log';
 import { readEnv } from '../env';
 import { bundledPolyfillRevision, requirePolyfillRevision } from '../polyfill-version';
 

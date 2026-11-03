@@ -247,7 +247,7 @@ Deno.test('structural: require.resolve passes inspect=true and the WHY comment s
         resolverSrc.includes('DO NOT COLLAPSE IT BACK INTO resolve()'),
         'the reasoning comment on resolveForInspection was removed',
     );
-    ok(resolverSrc.includes('inspection never fetches'), 'the one-sentence rule was removed');
+    ok(resolverSrc.includes('must not do network I/O'), 'the one-sentence rule was removed');
 });
 
 Deno.test('structural: log.download goes to stderr, not stdout', () => {

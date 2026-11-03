@@ -1,6 +1,8 @@
 /** Main-thread inspector composition root: wires endpoint, evaluator and hooks. */
 
-import { errMsg, log, type ModuleInfo } from '../../../cts/src/api'
+import { log } from '../../../cts/src/utils/log'
+import { errMsg } from '../../../cts/src/utils/misc'
+import type { ModuleInfo } from '../../../cts/src/types'
 import { type DebugChannelMain, native } from '../shared/native'
 import { MainEndpoint } from '../transport/main-endpoint'
 import { Evaluator } from './evaluator'

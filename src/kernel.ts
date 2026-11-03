@@ -4,7 +4,7 @@ import setArgs, { type Args } from '../cno/src/utils/args';
 import { flagsFromOptions, optionValues, OPTION_REGISTRY, parseNodeOptions, type Flags, type ParsedCli } from './cli';
 import { CliCommandError } from './command-error';
 import { flagsToConfig, publishWorkerRuntimeConfig } from './config';
-import { resolveBunDir } from './bun-runtime';
+import { applyBunDir } from './bun-runtime';
 import { loadEnvFiles, readEnv } from './env';
 import { inspectOptions, type InspectOptions } from './inspector/options';
 
@@ -59,8 +59,6 @@ export async function prepareKernel(
         }
     }
     const config = flagsToConfig(flagsFromOptions(prefixOptions), flagsFromOptions(nodeOptions));
-    const bunDir = resolveBunDir();
-    if (bunDir !== undefined) config.bunDir = bunDir;
     return {
         config,
         inspect: inspectOptions(kernelFlags),
@@ -136,6 +134,10 @@ export async function openKernelRuntime(
         return closePromise;
     };
     try {
+        // Every user-code path funnels through here; the polyfill globals
+        // (URL, fetch, TextEncoder, Deno, node bridge) must exist before the
+        // inspector or the runtime touches them.
+        await import('../cno/src/main');
         const { installInspectorBridge } = kernel.modules;
         if (kernel.inspect) {
             const inspect = kernel.inspect;
@@ -151,6 +153,9 @@ export async function openKernelRuntime(
             await inspector.attach();
         }
         const { createRuntime } = await kernel.runtimeModule();
+        // Deferred here so payload discovery stats never run for commands that
+        // create no runtime (`cno task`, `cno exec`, the `cno test` parent).
+        applyBunDir(config);
         runtime = createRuntime(config, dir);
         const activeRuntime = runtime;
         bridge = installInspectorBridge({

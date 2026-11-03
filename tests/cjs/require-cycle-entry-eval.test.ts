@@ -82,7 +82,7 @@ Deno.test('entry-eval: a self-require during evalTracked throws ERR_REQUIRE_CYCL
     Reflect.set(globalThis, hook, () => {
         ran = true;
         try {
-            loadEsmSync(info, esm, undefined, selfPath);
+            loadEsmSync(info, esm, selfPath);
         } catch (e) {
             caught = e as Error & { code?: string };
         }
@@ -147,7 +147,7 @@ Deno.test('entry-eval: the window closes, so a post-evaluation require still wor
     compiler.evalTracked(mod);
 
     strictEqual(esm.isInFlight(p), false, 'the window must be closed after evalTracked returns');
-    const ns = loadEsmSync(info, esm, undefined, `${dir}/other.cjs`);
+    const ns = loadEsmSync(info, esm, `${dir}/other.cjs`);
     strictEqual(ns.value, 42, 'a require() after evaluation must return the namespace, not throw');
 });
 
@@ -255,7 +255,7 @@ Deno.test('entry-eval: a CJS entry\'s require(esm) still succeeds (A/B control)'
 
     const cjs = new CjsLoader({
         resolveBuiltin: (name) => infoFor(`/builtin/${name}`),
-        loadEsmSync: (info, from) => loadEsmSync(info, esm, undefined, from),
+        loadEsmSync: (info, from) => loadEsmSync(info, esm, from),
         resolveExternal: () => null,
         prepareSource: (code, filePath) => esm.transformer.transformForCjs(code, filePath),
     });
@@ -297,7 +297,7 @@ Deno.test('entry-eval: a require of a different module inside the window still l
     let thrown: Error | null = null;
     Reflect.set(globalThis, hook, () => {
         try {
-            loaded = loadEsmSync(otherInfo, esm, undefined, entryPath).value;
+            loaded = loadEsmSync(otherInfo, esm, entryPath).value;
         } catch (e) {
             thrown = e as Error;
         }

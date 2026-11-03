@@ -23,9 +23,9 @@ import {
 	type ServeRequestInfo,
 	type ServeResponseInfo,
 } from '../../../cno/src/utils/network-hooks'
-import type { ModuleInfo } from '../../../cts/src/api'
-import { getMemoryFile } from '../../../cts/src/api'
-import { fileUrlToPath, toFileUrl, toPosixPath } from '../../../cts/src/api'
+import { getMemoryFile } from '../../../cts/src/utils/memfs'
+import { fileUrlToPath, toFileUrl, toPosixPath } from '../../../cts/src/utils/path'
+import type { ModuleInfo } from '../../../cts/src/types'
 import { native } from '../shared/native'
 import { remapConsoleFrame, type SourceMapLookup } from '../shared/console-utils'
 import { isUserFile } from '../shared/user-files'

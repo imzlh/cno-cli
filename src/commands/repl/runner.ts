@@ -15,7 +15,8 @@ const console = import.meta.use('console');
 const sfs = import.meta.use('fs');
 const error = import.meta.use('error');
 
-// preset some envs
+// Eval'd REPL code sees the raw native console module, not the webapi facade
+// that the inspector console hook patches on globalThis.
 Reflect.set(globalThis, 'console', console);
 
 // ==================== REPL Core ====================
@@ -395,7 +396,6 @@ export class CnoRepl implements LineEditorHost {
             return;
         }
 
-        // Handle directives
         const directive = line.match(/^\.([a-z]+)\s*/)?.[1];
         if (directive) {
             const handled = await this.#handleDirective(directive, line.slice(directive.length + 1));
@@ -405,12 +405,11 @@ export class CnoRepl implements LineEditorHost {
 
         if (!line) return;
 
-        // Accumulate multiline
         if (this.#multilineExpr) {
             line = this.#multilineExpr + '\n' + line;
         }
 
-        // Check for incomplete input.
+        // Colorizer state or open braces mark an expression still in progress.
         // Always colorize from fresh state — `line` is the full accumulated expression,
         // so seeding with accumulated pstate/braceLevel would double-count openers.
         const highlight = this.#colorizer.colorize(line, '', 0);

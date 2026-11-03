@@ -1,7 +1,7 @@
 // Paused execution cannot pump the main event loop. Inspect RPC uses the
 // native channel; control operations also use it while execution is running.
 
-import { log } from '../../../cts/src/api';
+import { log } from '../../../cts/src/utils/log';
 import { isRecord } from '../shared/cdp';
 import type { DebugChannelMain, DebugChannelWorker } from '../shared/native';
 import { ChannelRecv, ChannelReq, ExceptionBreakMode, Step, type StepCode } from '../shared/native';

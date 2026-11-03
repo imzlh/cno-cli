@@ -1,5 +1,7 @@
-import { loadTasks, LockStore, joinPaths, normalizePath, isAbsolute, isWindows, toPosixPath, dirname } from '../../cts/src/api';
-import { runTaskChild, taskShellArgv, taskShellEnv } from '../../cts/src/task';
+import { loadTasks, runTaskChild, taskShellArgv, taskShellEnv } from '../../cts/src/task';
+import { LockStore } from '../../cts/src/lock';
+import { dirname, isAbsolute, joinPaths, normalizePath, toPosixPath } from '../../cts/src/utils/path';
+import { isWindows } from '../../cts/src/utils/platform';
 import { CliCommandError, CliExit } from '../command-error';
 import { C } from '../help';
 
@@ -97,11 +99,18 @@ export async function runTask(
     }
 }
 
-export function taskExists(
+/**
+ * Probe-and-run for the `cno run <task>` fallback: one discovery pass feeds
+ * the match check and the run, instead of taskExists + runTask each paying a
+ * LockStore. Returns false when no task config or no match, so the caller can
+ * fall back to file execution.
+ */
+export async function runTaskIfMatched(
     name: string,
+    rest: string[],
     flags: Record<string, string | boolean> = {},
     kernelArgs: string[] = [],
-): boolean {
+): Promise<boolean> {
     const { invocationCwd, requestedConfigPath, runCwd, startDir } = taskLookup(flags);
     const lockStore = new LockStore(startDir, true);
     try {
@@ -112,7 +121,12 @@ export function taskExists(
             initCwd: invocationCwd,
         });
         if (!result) return false;
-        return result.runner.matchNames(name).length > 0 || result.runner.has(name);
+        const matched = result.runner.matchNames(name);
+        for (const taskName of matched) {
+            const code = await result.runner.run(taskName, rest);
+            if (code !== 0) throw new CliExit(code);
+        }
+        return matched.length > 0;
     } finally {
         lockStore.close();
     }

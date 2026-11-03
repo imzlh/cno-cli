@@ -1,7 +1,7 @@
 /** Console method names to CDP level/type strings, plus the stackTrace shape. */
 
 import type { ConsoleCallFrame } from './wire'
-import { toPosixPath } from '../../../cts/src/api'
+import { toPosixPath } from '../../../cts/src/utils/path'
 
 export interface SourceMapMappingResult {
 	found?: boolean

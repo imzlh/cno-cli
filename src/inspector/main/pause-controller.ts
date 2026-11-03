@@ -1,6 +1,6 @@
 /** The onBreak safepoint handler: builds CDP frames, emits Paused, then blocks. */
 
-import { log } from '../../../cts/src/api'
+import { log } from '../../../cts/src/utils/log'
 import type { CallFrame, PausedEvent, Scope } from '../shared/cdp'
 import { remapConsoleFrameDetailed, type SourceMapLookup } from '../shared/console-utils'
 import { BreakReason, FrameOffset, Step, native, type LocalVariable, type StepCode } from '../shared/native'

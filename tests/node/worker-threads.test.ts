@@ -1,5 +1,5 @@
 import { strictEqual, ok } from 'node:assert';
-import { BroadcastChannel, MessageChannel, MessagePort, Worker, parentPort, isMainThread, resourceLimits, threadId, workerData } from 'node:worker_threads';
+import { BroadcastChannel, MessageChannel, MessagePort, Worker, parentPort, isMainThread, postMessageToThread, resourceLimits, threadId, workerData } from 'node:worker_threads';
 
 const ADD_WASM = new Uint8Array([
     0x00, 0x61, 0x73, 0x6d,
@@ -55,6 +55,48 @@ Deno.test({ name: 'worker_threads: MessagePort echo (reply on same channel)', ti
     port2.close();
 });
 
+Deno.test({ name: 'worker_threads: closed local MessagePort still validates and transfers', timeout: 10000 }, () => {
+    const { port1, port2 } = new MessageChannel();
+    port1.close();
+    try {
+        let threw = false;
+        try {
+            port1.postMessage(Symbol('not cloneable'));
+        } catch (error) {
+            threw = !!error && typeof error === 'object' && Reflect.get(error, 'name') === 'DataCloneError';
+        }
+        ok(threw, 'closed ports must still reject uncloneable payloads');
+
+        const buffer = new ArrayBuffer(4);
+        port1.postMessage({ buffer }, [buffer]);
+        strictEqual(buffer.byteLength, 0, 'closed ports must still commit valid transfers');
+    } finally {
+        port1.close();
+        port2.close();
+    }
+});
+
+Deno.test({ name: 'worker_threads: postMessageToThread rejects clone errors asynchronously', timeout: 10000 }, async () => {
+    const worker = new Worker('setInterval(() => {}, 1000);', { eval: true });
+    try {
+        let promise: Promise<void>;
+        try {
+            promise = postMessageToThread(worker.threadId, Symbol('not cloneable'));
+        } catch (error) {
+            throw new Error(`postMessageToThread threw synchronously: ${String(error)}`);
+        }
+        let rejected = false;
+        try {
+            await promise;
+        } catch (error) {
+            rejected = !!error && typeof error === 'object' && Reflect.get(error, 'name') === 'DataCloneError';
+        }
+        ok(rejected, 'clone errors must reject the returned promise');
+    } finally {
+        await worker.terminate();
+    }
+});
+
 Deno.test({ name: 'worker_threads: Worker ping-pong via parentPort', timeout: 10000 }, async () => {
     const src = `
         const { parentPort } = require('node:worker_threads');
@@ -70,6 +112,49 @@ Deno.test({ name: 'worker_threads: Worker ping-pong via parentPort', timeout: 10
             worker.postMessage('ping');
         });
         strictEqual(reply.echo, 'ping');
+    } finally {
+        await worker.terminate();
+    }
+});
+
+Deno.test({ name: 'worker_threads: pre-ready postMessage queue does not drop bursts', timeout: 15000 }, async () => {
+    const count = 1030;
+    const src = `
+        const { parentPort } = require('node:worker_threads');
+        // Delay listener installation so the native pipe and the JS port both
+        // have to retain the complete startup burst.
+        parentPort.ref();
+        setTimeout(() => {
+            let seen = 0;
+            let expected = 0;
+            parentPort.on('message', (value) => {
+                if (value !== expected) {
+                    parentPort.postMessage({ error: 'message order mismatch' });
+                    return;
+                }
+                seen++;
+                expected++;
+                if (seen === ${count}) parentPort.postMessage({ seen, first: 0, last: value });
+            });
+        }, 50);
+    `;
+    const worker = new Worker(src, { eval: true });
+    try {
+        const received = new Promise<{ seen: number; first: number; last: number }>((resolve, reject) => {
+            worker.once('message', (value: { error?: string; seen?: number; first?: number; last?: number }) => {
+                if (value.error) reject(new Error(value.error));
+                else resolve(value as { seen: number; first: number; last: number });
+            });
+            worker.once('error', reject);
+            worker.once('exit', (code: number) => reject(new Error(`worker exited before draining burst (${code})`)));
+        });
+        // Queue the whole burst synchronously, before the worker can report ready.
+        // A bounded or silently dropping pre-ready queue loses messages past 1024.
+        for (let i = 0; i < count; i++) worker.postMessage(i);
+        const result = await received;
+        strictEqual(result.seen, count);
+        strictEqual(result.first, 0);
+        strictEqual(result.last, count - 1);
     } finally {
         await worker.terminate();
     }

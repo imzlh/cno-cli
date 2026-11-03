@@ -3,7 +3,7 @@
  * `lifecycle` only; `control` methods never reach here.
  */
 
-import { getMemoryFile } from '../../../cts/src/api'
+import { getMemoryFile } from '../../../cts/src/utils/memfs'
 import { FrameOffset, native } from '../shared/native'
 import type { RpcParams } from '../shared/rpc-contract'
 import type { MainEndpoint } from '../transport/main-endpoint'

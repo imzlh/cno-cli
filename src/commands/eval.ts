@@ -1,5 +1,6 @@
-import type { ConfigOptions } from '../../cts/src/api';
-import { joinPaths, loadConfigFile } from '../../cts/src/api';
+import { loadConfigFile } from '../../cts/src/config';
+import type { ConfigOptions } from '../../cts/src/types';
+import { joinPaths } from '../../cts/src/utils/path';
 import { CliCommandError } from '../command-error';
 import { flagsToConfig } from '../config';
 import { publishChannel, CHANNEL_MAIN_SCRIPT } from '../channels';

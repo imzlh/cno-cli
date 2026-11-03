@@ -1,4 +1,4 @@
-import { hasSchemeId, resolvePath } from '../cts/src/api';
+import { hasSchemeId, resolvePath } from '../cts/src/utils/path';
 
 const os = import.meta.use('os');
 const fs = import.meta.use('fs');

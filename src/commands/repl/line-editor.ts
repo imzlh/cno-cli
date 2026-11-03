@@ -195,7 +195,8 @@ export class LineEditor {
     #handleChar(code: number): void {
         const char = String.fromCodePoint(code);
 
-        // Handle paste mode - accumulate everything until we see the end sequence
+        // Bracketed paste: buffer raw bytes until the end marker; content is
+        // inserted verbatim instead of being interpreted as key commands.
         if (this.#escState === 'paste') {
             this.#pasteBuffer += char;
             const pasteEnd = '\x1b[201~';
@@ -237,7 +238,6 @@ export class LineEditor {
             case 'csi':
             case 'osc':
                 this.#escBuffer += char;
-                // Check for paste start sequence \x1b[200~
                 if (this.#escBuffer === '\x1b[200~') {
                     this.#escState = 'paste';
                     this.#inPasteMode = true;

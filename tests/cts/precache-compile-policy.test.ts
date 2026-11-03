@@ -70,16 +70,16 @@ Deno.test('precache policy: isPrecompilePath rejects .node', () => {
     const runtimeSrc = readFileSync(new URL('../../cts/src/runtime/index.ts', import.meta.url), 'utf8');
     const fn = runtimeSrc.indexOf('function isPrecompilePath');
     ok(fn > 0, 'isPrecompilePath defined');
-    // Guard must return false before extension allow-list for ".node".
-    const body = runtimeSrc.slice(fn, fn + 1200);
-    ok(body.includes('return false'), 'has early false returns');
-    // char codes for ".node": 46,110,111,100,101 — keeps the check allocation-free.
-    ok(body.includes('=== 110') && body.includes('=== 111') && body.includes('=== 100') && body.includes('=== 101'),
-        '.node suffix rejected via charCode checks');
-    // .mts/.cts are TS-family runtime sources (not only plain .ts).
-    ok(body.includes('third === 109') && body.includes('third === 99'),
-        '.mts/.cts included in precompile allow-list');
+    // The policy is a pure delegation: the scan allow-list rejects ".node"
+    // (and every unlisted suffix) by fall-through, and type declarations
+    // are excluded explicitly.
+    const body = runtimeSrc.slice(fn, fn + 300);
+    ok(body.includes('isScannablePath'), 'precompile set = scan extension allow-list');
     ok(body.includes('isTypeDecl'), 'type declarations excluded via isTypeDecl');
+    // .mts/.cts are TS-family runtime sources (not only plain .ts).
+    const scanSrc = readFileSync(new URL('../../cts/src/scan.ts', import.meta.url), 'utf8');
+    ok(scanSrc.includes('third === 109') && scanSrc.includes('third === 99'),
+        '.mts/.cts included in precompile allow-list');
 });
 
 /** CJS precompile must strip TS via transformForCjs — workers only ESM-transform. */

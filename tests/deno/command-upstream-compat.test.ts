@@ -20,7 +20,7 @@ Deno.test({ name: 'deno command upstream: non-piped stdio getters throw', timeou
     strictEqual(status.signal, null);
 });
 
-Deno.test({ name: 'deno command upstream: spawned child exposes ChildProcess public shape', timeout: 10000 }, async () => {
+Deno.test({ name: 'deno command upstream: spawned child exposes ChildProcess public shape and kill after status throws', timeout: 10000 }, async () => {
     strictEqual(typeof Deno.ChildProcess, 'function');
     strictEqual(typeof Deno.Process, 'function');
     throws(() => new (Deno.ChildProcess as unknown as new () => Deno.ChildProcess)(), TypeError);
@@ -45,6 +45,9 @@ Deno.test({ name: 'deno command upstream: spawned child exposes ChildProcess pub
     strictEqual(status.success, true);
     strictEqual(status.code, 0);
     strictEqual(status.signal, null);
+
+    // Same exited child proves kill-after-status is rejected.
+    throws(() => child.kill(), /Child process has already terminated/);
 });
 
 Deno.test({ name: 'deno command upstream: piped stdout and stderr stream to completion', timeout: 10000 }, async () => {
@@ -488,17 +491,6 @@ Deno.test({ name: 'deno command upstream: AbortSignal terminates spawned child',
     const status2 = await child2.status;
     strictEqual(status2.success, false);
     ok(status2.code !== 0 || status2.signal !== null);
-});
-
-Deno.test({ name: 'deno command upstream: kill after status throws', timeout: 10000 }, async () => {
-    const child = new Deno.Command(Deno.execPath(), {
-        args: ['eval', 'Deno.exit(0)'],
-        stdout: 'null',
-        stderr: 'null',
-    }).spawn();
-    const status = await child.status;
-    strictEqual(status.success, true);
-    throws(() => child.kill(), /Child process has already terminated/);
 });
 
 Deno.test({ name: 'deno command upstream: output after manually consuming streams returns empty pipes', timeout: 10000 }, async () => {

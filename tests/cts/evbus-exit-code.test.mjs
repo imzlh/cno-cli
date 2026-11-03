@@ -48,7 +48,7 @@ const cliScript = await script(cliSource.replace("await import('./commands/test'
     globalThis.cli = { mainEntry, installRequestExitCodeHandler, requestExitCode, syncExitCode };
 `);
 const runtimeScript = await script(await declarations('../../cts/src/runtime/index.ts', [
-    'REQUEST_EXIT_CODE_NAMESPACE', 'REQUEST_EXIT_CODE_KEY', 'requestFailureExitCode',
+    'CNO_RUNTIME_NAMESPACE', 'REQUEST_EXIT_CODE_KEY', 'requestFailureExitCode',
 ]) + '\n globalThis.requestFailureExitCode = requestFailureExitCode;');
 
 const namespace = 'cno.runtime';

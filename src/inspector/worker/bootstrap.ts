@@ -1,4 +1,4 @@
-import { hasSchemeId, resolvePath, toFileUrl } from '../../../cts/src/api'
+import { hasSchemeId, resolvePath, toFileUrl } from '../../../cts/src/utils/path'
 import { ConsoleDomain } from '../domains/console'
 import { DebuggerDomain } from '../domains/debugger'
 import { FetchDomain } from '../domains/fetch'

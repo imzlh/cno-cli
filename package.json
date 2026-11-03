@@ -8,6 +8,8 @@
     "type-check": "node scripts/prepare-types.mjs && tsc --noEmit",
     "bundle": "node scripts/bundle.mjs release && node scripts/bundle-bun.mjs release",
     "bundle:min": "node scripts/bundle.mjs min && node scripts/bundle-bun.mjs min",
+    "bundle:js": "node scripts/bundle.mjs release",
+    "bundle:js:min": "node scripts/bundle.mjs min",
     "bundle:bun": "node scripts/bundle-bun.mjs release",
     "bundle:bun:min": "node scripts/bundle-bun.mjs min",
     "configure": "cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCNO_RELEASE=ON",

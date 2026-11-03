@@ -4,6 +4,7 @@
 // only the line:column is remapped.
 import { ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
+import { hasEmbeddedSourceMap } from '../../cts/src/source/transform.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
 const GEN_MJS = [
@@ -34,6 +35,13 @@ async function runCli(args: string[], cwd: string): Promise<{ code: number; text
         text: new TextDecoder().decode(output.stdout) + new TextDecoder().decode(output.stderr),
     };
 }
+
+Deno.test('cts sourcemap gate: long final-line annotations are detected', () => {
+    const longUrl = `maps/${'nested/'.repeat(700)}generated.js.map`;
+    ok(longUrl.length > 4096);
+    strictEqual(hasEmbeddedSourceMap(`console.log(1);\n//# sourceMappingURL=${longUrl}`), true);
+    strictEqual(hasEmbeddedSourceMap(`console.log(1);//# sourceMappingURL=${longUrl}`), true);
+});
 
 Deno.test({ name: 'cli: --enable-inline-sourcemap remaps stacks through embedded maps', timeout: 15000 }, async () => {
     await withTempDir('inline-sourcemap', async (dir) => {

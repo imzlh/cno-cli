@@ -2,6 +2,7 @@ import { deepStrictEqual, strictEqual } from 'node:assert';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
+import { writeCachedNpmPackage } from '../_helpers/npm-fixture.ts';
 import { buildCacheConfig, collectSpecifiers } from '../../src/commands/cache-utils.ts';
 import { joinPaths, type ConfigOptions } from '../../cts/src/api/index.ts';
 import { LockStore } from '../../cts/src/lock.ts';
@@ -22,16 +23,10 @@ function prepareLocalSetupSource(root: string): void {
     copyNodeSource(join(Deno.cwd(), 'cno', 'src', 'node'), join(root, 'cno', 'src', 'node'));
 }
 
-function seedCachedPackage(cacheDir: string, name: string, version: string, main = 'index.js'): string {
-    const dir = joinPaths(cacheDir, 'npm', `${name}@${version}`);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, main), 'module.exports = 1;\n');
-    writeFileSync(join(dir, 'package.json'), JSON.stringify({
-        name,
-        version,
-        main,
-    }));
-    return dir;
+// Thin wrapper over the shared fixture helper so the seeded content stays
+// byte-identical to what this file always wrote (package.json carries `main`).
+function seedCachedPackage(cacheDir: string, name: string, version: string, main = 'index.js'): Promise<string> {
+    return writeCachedNpmPackage(cacheDir, name, version, { main }, { [main]: 'module.exports = 1;\n' });
 }
 
 async function runCacheCommand(root: string, cacheDir: string, entries: string[] = []): Promise<{ code: number; output: string }> {
@@ -180,8 +175,8 @@ Deno.test({ name: 'cache command: remote entry targets do not seed project packa
     const root = makePosixTempDir('cache-remote-entry-only');
     try {
         const cacheDir = joinPaths(root, 'cache');
-        seedCachedPackage(cacheDir, 'remote-entry-fixture', '1.0.0');
-        seedCachedPackage(cacheDir, 'project-only-fixture', '1.0.0');
+        await seedCachedPackage(cacheDir, 'remote-entry-fixture', '1.0.0');
+        await seedCachedPackage(cacheDir, 'project-only-fixture', '1.0.0');
         writeFileSync(join(root, 'package.json'), JSON.stringify({
             dependencies: {
                 'project-only-fixture': '1.0.0',

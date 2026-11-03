@@ -1,4 +1,7 @@
-import { loadConfigFile, Transformer, joinPaths, cwd, uname } from '../../../cts/src/api';
+import { loadConfigFile } from '../../../cts/src/config';
+import { Transformer } from '../../../cts/src/source/transform';
+import { cwd, joinPaths } from '../../../cts/src/utils/path';
+import { uname } from '../../../cts/src/utils/platform';
 import { installEventReceiver, PRIORITY_FALLBACK, EV } from '../../../cts/src/runtime/event-mux';
 import { version } from '../../version';
 import { CnoRepl } from './runner';

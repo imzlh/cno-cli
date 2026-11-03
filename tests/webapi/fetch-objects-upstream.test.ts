@@ -72,6 +72,34 @@ Deno.test('webapi fetch upstream: Headers iteration observes live mutations', ()
     single.append('a', '1');
     deepStrictEqual(iterator.next().value, ['b', '2']);
     deepStrictEqual(iterator.next(), { done: true, value: undefined });
+
+    // A set-replace that shrinks the set-cookie list below a mid-run value
+    // index ends the run instead of yielding a non-string entry.
+    const shrink = new Headers([['set-cookie', 'a=1'], ['set-cookie', 'b=2'], ['z', '9']]);
+    const shrinkIt = shrink.entries();
+    deepStrictEqual(shrinkIt.next().value, ['set-cookie', 'a=1']);
+    shrink.set('set-cookie', 'only=1');
+    deepStrictEqual(shrinkIt.next().value, ['z', '9']);
+    deepStrictEqual(shrinkIt.next(), { done: true, value: undefined });
+
+    // Appending to the current cookie run between next() calls stays visible.
+    const grow = new Headers([['set-cookie', 'a=1'], ['z', '9']]);
+    const growIt = grow.entries();
+    deepStrictEqual(growIt.next().value, ['set-cookie', 'a=1']);
+    grow.append('set-cookie', 'b=2');
+    deepStrictEqual(growIt.next().value, ['set-cookie', 'b=2']);
+    deepStrictEqual(growIt.next().value, ['z', '9']);
+    deepStrictEqual(growIt.next(), { done: true, value: undefined });
+
+    // The cursor is a position in the flattened list. Inserting a key before
+    // a partially consumed cookie run therefore makes the first cookie repeat.
+    const insertBeforeCookie = new Headers([['set-cookie', 'a=1'], ['z', '9']]);
+    const insertIt = insertBeforeCookie.entries();
+    deepStrictEqual(insertIt.next().value, ['set-cookie', 'a=1']);
+    insertBeforeCookie.append('a', '0');
+    deepStrictEqual(insertIt.next().value, ['set-cookie', 'a=1']);
+    deepStrictEqual(insertIt.next().value, ['z', '9']);
+    deepStrictEqual(insertIt.next(), { done: true, value: undefined });
 });
 
 Deno.test('webapi fetch upstream: Headers reject malformed names values and init pairs', () => {

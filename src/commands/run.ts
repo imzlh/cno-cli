@@ -1,5 +1,13 @@
-import { createRuntime, loadConfigFile, formatError, extname, resolveFile, BinResolver, errMsg, log, loadPack } from '../../cts/src/api';
-import type { ConfigOptions, ModuleFormat } from '../../cts/src/api';
+import { loadConfigFile } from '../../cts/src/config';
+import { formatError } from '../../cts/src/errors';
+import { loadPack } from '../../cts/src/pack/reader';
+import type { createRuntime } from '../../cts/src/runtime/index';
+import { BinResolver } from '../../cts/src/task';
+import { resolveFile } from '../../cts/src/utils/io';
+import { log } from '../../cts/src/utils/log';
+import { errMsg } from '../../cts/src/utils/misc';
+import { extname } from '../../cts/src/utils/path';
+import type { ConfigOptions, ModuleFormat } from '../../cts/src/types';
 import { dispatchLoadEvent } from '../../cts/src/runtime/event-mux';
 import { entryAndDir, entryUrl, hasUrlScheme, sourceExtension } from '../utils';
 import { CliCommandError } from '../command-error';

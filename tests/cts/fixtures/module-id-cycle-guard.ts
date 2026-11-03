@@ -67,7 +67,7 @@ Deno.test('cts bridge: require() of a mid-evaluation view is refused, not re-lin
         let thrown: unknown;
         esm.trackEvaluation(ref, () => {
             try {
-                loadEsmSync(info, esm, undefined, root);
+                loadEsmSync(info, esm, root);
             } catch (e) {
                 thrown = e;
             }
@@ -79,7 +79,7 @@ Deno.test('cts bridge: require() of a mid-evaluation view is refused, not re-lin
         ok(!esm.isInFlight(ref));
 
         // Once the window closes the same view loads normally.
-        const ns = loadEsmSync(info, esm, undefined, root);
+        const ns = loadEsmSync(info, esm, root);
         strictEqual(ns.default.a, 1);
     } finally {
         esm.clearLoadedModules();

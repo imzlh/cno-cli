@@ -6,44 +6,48 @@ import * as fs from 'node:fs';
 import { decodeUtf8 } from '../_helpers/bytes.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
+// Generic children only need "a process that exits/writes/signals", and booting
+// /bin/sh is nearly free next to a full cno self-spawn. Windows has no /bin/sh,
+// so it keeps the previous cno -e children (second payload).
+function tinyChild(shCode: string, jsCode: string): { cmd: string; args: string[] } {
+    if (Deno.build.os === 'windows') return { cmd: process.execPath, args: ['-e', jsCode] };
+    return { cmd: '/bin/sh', args: ['-c', shCode] };
+}
+
 Deno.test({ name: 'child_process: spawn captures stdout and exit code', timeout: 10000 }, async () => {
-    await withTempDir('child-process', async (dir) => {
-        const script = join(dir, 'target.js');
-        fs.writeFileSync(script, 'process.stdout.write("out"); process.exit(0);\n');
-        const result = await new Promise<{ code: number | null; out: string }>((resolve, reject) => {
-            const child = spawn(process.execPath, [script], { stdio: ['ignore', 'pipe', 'ignore'] });
-            let out = '';
-            child.stdout?.on('data', (d) => (out += decodeUtf8(d)));
-            child.on('error', reject);
-            child.on('exit', (code) => resolve({ code, out }));
-        });
-        strictEqual(result.code, 0);
-        strictEqual(result.out, 'out');
+    const { cmd, args } = tinyChild('printf out', 'process.stdout.write("out"); process.exit(0);');
+    const result = await new Promise<{ code: number | null; out: string }>((resolve, reject) => {
+        const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+        let out = '';
+        child.stdout?.on('data', (d) => (out += decodeUtf8(d)));
+        child.on('error', reject);
+        child.on('exit', (code) => resolve({ code, out }));
     });
+    strictEqual(result.code, 0);
+    strictEqual(result.out, 'out');
 });
 
 Deno.test({ name: 'child_process: spawn non-zero exit code surfaces in callback', timeout: 10000 }, async () => {
-    await withTempDir('child-process', async (dir) => {
-        const script = join(dir, 'target.js');
-        fs.writeFileSync(script, 'process.exit(42);\n');
-        const code = await new Promise<number | null>((resolve, reject) => {
-            const child = spawn(process.execPath, [script]);
-            child.on('error', reject);
-            child.on('exit', (c) => resolve(c));
-        });
-        strictEqual(code, 42);
+    const { cmd, args } = tinyChild('exit 42', 'process.exit(42);');
+    const code = await new Promise<number | null>((resolve, reject) => {
+        const child = spawn(cmd, args);
+        child.on('error', reject);
+        child.on('exit', (c) => resolve(c));
     });
+    strictEqual(code, 42);
 });
 
 Deno.test({ name: 'child_process: spawn with stdio inherit returns null streams', timeout: 10000 }, () => {
-    const child = spawn(process.execPath, ['-e', '0'], { stdio: 'inherit' });
+    const { cmd, args } = tinyChild('exit 0', '0');
+    const child = spawn(cmd, args, { stdio: 'inherit' });
     strictEqual(child.stdout, null);
     strictEqual(child.stderr, null);
     child.kill('SIGKILL');
 });
 
 Deno.test({ name: 'child_process: child.pid is a positive number', timeout: 10000 }, () => {
-    const child = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000);']);
+    const { cmd, args } = tinyChild('sleep 5', 'setInterval(()=>{}, 1000);');
+    const child = spawn(cmd, args);
     ok(typeof child.pid === 'number' && child.pid > 0);
     child.kill('SIGKILL');
 });
@@ -85,8 +89,12 @@ Deno.test({ name: 'child_process: fork inherits process.execArgv when it is not 
 });
 
 Deno.test({ name: 'child_process: exec returns stdout/stderr to callback', timeout: 10000 }, async () => {
+    // exec() already routes through the shell, so no child binary is needed.
+    const command = Deno.build.os === 'windows'
+        ? `${process.execPath} -e "console.log('hello'); console.error('err');"`
+        : `printf 'hello'; printf 'err' >&2`;
     const r = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-        exec(`${process.execPath} -e "console.log('hello'); console.error('err');"`, (err, stdout, stderr) => {
+        exec(command, (err, stdout, stderr) => {
             if (err) reject(err);
             else resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
         });
@@ -98,7 +106,8 @@ Deno.test({ name: 'child_process: exec returns stdout/stderr to callback', timeo
 Deno.test('child_process: exec and execFile validate maxBuffer before spawning', () => {
     for (const invoke of [
         () => exec('echo should-not-start', { maxBuffer: -1 }),
-        () => execFile(process.execPath, ['-e', '0'], { maxBuffer: Number.NaN }),
+        // Validation happens before any spawn, so the child spec is inert.
+        () => execFile('/bin/sh', ['-c', 'exit 0'], { maxBuffer: Number.NaN }),
     ]) {
         throws(invoke, (err: Error & { code?: string }) => {
             strictEqual(err.code, 'ERR_OUT_OF_RANGE');
@@ -109,7 +118,8 @@ Deno.test('child_process: exec and execFile validate maxBuffer before spawning',
 
 Deno.test('child_process: spawn rejects more than one IPC stdio pipe', () => {
     throws(
-        () => spawn(process.execPath, ['-e', '0'], { stdio: ['ignore', 'ipc', 'ipc'] }),
+        // Validation happens before any spawn, so the child spec is inert.
+        () => spawn('/bin/sh', ['-c', 'exit 0'], { stdio: ['ignore', 'ipc', 'ipc'] }),
         (err: Error & { code?: string }) => {
             strictEqual(err.code, 'ERR_IPC_ONE_PIPE');
             strictEqual(err.message, 'Child process can have only one IPC pipe');
@@ -120,7 +130,8 @@ Deno.test('child_process: spawn rejects more than one IPC stdio pipe', () => {
 
 Deno.test({ name: 'child_process: abort after close does not emit a late error', timeout: 10000 }, async () => {
     const controller = new AbortController();
-    const child = spawn(process.execPath, ['-e', '0'], { signal: controller.signal });
+    const { cmd, args } = tinyChild('exit 0', '0');
+    const child = spawn(cmd, args, { signal: controller.signal });
     let abortErrors = 0;
     child.on('error', (err: Error & { code?: string }) => {
         if (err.code === 'ABORT_ERR') abortErrors++;
@@ -132,11 +143,23 @@ Deno.test({ name: 'child_process: abort after close does not emit a late error',
 });
 
 Deno.test({ name: 'child_process: execFile runs a file with args', timeout: 10000 }, async () => {
-    await withTempDir('child-process', async (dir) => {
-        const script = join(dir, 'target.js');
-        fs.writeFileSync(script, 'process.stdout.write(process.argv.slice(2).join(","));\n');
+    await withTempDir('child-process-args', async (dir) => {
+        // The file-with-args shape is the subject, so the child stays a real
+        // script file; sh joins args with the first IFS char.
+        let cmd = '/bin/sh';
+        let script = join(dir, 'args.sh');
+        let argList: string[];
+        if (Deno.build.os === 'windows') {
+            script = join(dir, 'args.js');
+            fs.writeFileSync(script, 'process.stdout.write(process.argv.slice(2).join(","));\n');
+            cmd = process.execPath;
+            argList = [script, 'a', 'b', 'c'];
+        } else {
+            fs.writeFileSync(script, 'IFS=,; printf %s "$*"\n');
+            argList = [script, 'a', 'b', 'c'];
+        }
         const r = await new Promise<string>((resolve, reject) => {
-            execFile(process.execPath, [script, 'a', 'b', 'c'], (err, stdout) => {
+            execFile(cmd, argList, (err, stdout) => {
                 if (err) reject(err); else resolve(stdout);
             });
         });
@@ -145,7 +168,8 @@ Deno.test({ name: 'child_process: execFile runs a file with args', timeout: 1000
 });
 
 Deno.test({ name: 'child_process: spawnSync returns status and stdout', timeout: 10000 }, () => {
-    const r = spawnSync(process.execPath, ['-e', 'process.stdout.write("sync-out"); process.exit(3);']);
+    const { cmd, args } = tinyChild('printf sync-out; exit 3', 'process.stdout.write("sync-out"); process.exit(3);');
+    const r = spawnSync(cmd, args);
     strictEqual(r.status, 3);
     strictEqual(decodeUtf8(r.stdout), 'sync-out');
     strictEqual(r.signal, null);
@@ -157,18 +181,15 @@ Deno.test({ name: 'child_process: spawnSync on missing command errors', timeout:
 });
 
 Deno.test({ name: 'child_process: child.kill sends signal and resolves exit', timeout: 10000 }, async () => {
-    await withTempDir('child-process', async (dir) => {
-        const script = join(dir, 'target.js');
-        fs.writeFileSync(script, 'setInterval(()=>{}, 1000);\n');
-        const code = await new Promise<number | null>((resolve, reject) => {
-            const child = spawn(process.execPath, [script]);
-            child.on('error', reject);
-            child.on('exit', (c) => resolve(c));
-            setTimeout(() => child.kill('SIGTERM'), 100);
-        });
-        // SIGTERM default action is termination; code may be null with signal set.
-        ok(code !== 0, 'killed child must exit non-zero or via signal');
+    const { cmd, args } = tinyChild('sleep 5', 'setInterval(()=>{}, 1000);');
+    const code = await new Promise<number | null>((resolve, reject) => {
+        const child = spawn(cmd, args);
+        child.on('error', reject);
+        child.on('exit', (c) => resolve(c));
+        setTimeout(() => child.kill('SIGTERM'), 100);
     });
+    // SIGTERM default action is termination; code may be null with signal set.
+    ok(code !== 0, 'killed child must exit non-zero or via signal');
 });
 
 Deno.test({ name: 'child_process: child.on("error") emits on spawn failure', timeout: 10000 }, async () => {
@@ -182,8 +203,9 @@ Deno.test({ name: 'child_process: child.on("error") emits on spawn failure', tim
 
 Deno.test({ name: 'child_process: execFile respects cwd option', timeout: 10000 }, async () => {
     await withTempDir('child-process-cwd', async (dir) => {
+        const { cmd, args } = tinyChild('printf %s "$(pwd)"', 'process.stdout.write(process.cwd())');
         const out = await new Promise<string>((resolve, reject) => {
-            execFile(process.execPath, ['-e', 'process.stdout.write(process.cwd())'], { cwd: dir }, (err, stdout) => {
+            execFile(cmd, args, { cwd: dir }, (err, stdout) => {
                 if (err) reject(err);
                 else resolve(stdout);
             });
@@ -276,12 +298,17 @@ Deno.test({ name: 'child_process: spawnSync accepts options as second argument a
 });
 
 Deno.test({ name: 'child_process: spawnSync with encoding returns string stdout', timeout: 10000 }, () => {
-    const r = spawnSync(process.execPath, ['-e', 'process.stdout.write("text-out")'], { encoding: 'utf8' });
+    const { cmd, args } = tinyChild('printf text-out', 'process.stdout.write("text-out")');
+    const r = spawnSync(cmd, args, { encoding: 'utf8' });
     strictEqual(r.stdout, 'text-out');
 });
 
 Deno.test({ name: 'child_process: spawnSync stdio array undefined defaults to pipe', timeout: 10000 }, () => {
-    const r = spawnSync(process.execPath, ['-e', 'process.stdout.write("hello"); process.stderr.write("world");'], {
+    const { cmd, args } = tinyChild(
+        'printf hello; printf world >&2',
+        'process.stdout.write("hello"); process.stderr.write("world");',
+    );
+    const r = spawnSync(cmd, args, {
         stdio: [undefined, undefined, undefined],
         env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
         encoding: 'utf8',
@@ -292,8 +319,12 @@ Deno.test({ name: 'child_process: spawnSync stdio array undefined defaults to pi
 });
 
 Deno.test({ name: 'child_process: spawnSync writes input to child stdin', timeout: 10000 }, () => {
-    const script = 'process.stdin.on("data", chunk => process.stdout.write(chunk));';
-    const r = spawnSync(process.execPath, ['-e', script], {
+    // `cat` echoes whatever the parent pipes, which is all this subject needs.
+    const { cmd, args } = tinyChild(
+        'cat',
+        'process.stdin.on("data", chunk => process.stdout.write(chunk));',
+    );
+    const r = spawnSync(cmd, args, {
         input: 'sync-input',
         encoding: 'utf8',
     });
@@ -302,14 +333,14 @@ Deno.test({ name: 'child_process: spawnSync writes input to child stdin', timeou
 
     const bytes = Buffer.from('view-input');
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const fromView = spawnSync(process.execPath, ['-e', script], {
+    const fromView = spawnSync(cmd, args, {
         input: view,
         encoding: 'utf8',
     });
     strictEqual(fromView.status, 0);
     strictEqual(fromView.stdout, 'view-input');
 
-    throws(() => spawnSync(process.execPath, ['-e', script], { input: {} as never }), TypeError);
+    throws(() => spawnSync(cmd, args, { input: {} as never }), TypeError);
 });
 
 Deno.test({ name: 'child_process upstream: process.execPath handles Node CLI eval print and warning flags', timeout: 10000 }, () => {
@@ -344,8 +375,9 @@ Deno.test({ name: 'child_process upstream: process.execPath handles Node CLI eva
 
 Deno.test({ name: 'child_process: spawn emits spawn before stdio and exit events', timeout: 10000 }, async () => {
     const events: string[] = [];
+    const { cmd, args } = tinyChild('printf ok', 'process.stdout.write("ok")');
     await new Promise<void>((resolve, reject) => {
-        const child = spawn(process.execPath, ['-e', 'process.stdout.write("ok")'], {
+        const child = spawn(cmd, args, {
             stdio: ['ignore', 'pipe', 'pipe'],
         });
         child.on('spawn', () => events.push('spawn'));
@@ -367,73 +399,62 @@ Deno.test({ name: 'child_process: spawn emits spawn before stdio and exit events
 });
 
 Deno.test({ name: 'child_process: execFile supports encoding buffer', timeout: 10000 }, async () => {
-    await withTempDir('child-process-buffer', async (dir) => {
-        const script = join(dir, 'buffer-output.js');
-        fs.writeFileSync(script, 'process.stdout.write("Hello World!\\n");\n');
-        const stdout = await new Promise<Buffer>((resolve, reject) => {
-            execFile(process.execPath, [script], { encoding: 'buffer' }, (err, out) => {
-                if (err) reject(err);
-                else resolve(out as Buffer);
-            });
+    const { cmd, args } = tinyChild("printf 'Hello World!\\n'", 'process.stdout.write("Hello World!\\n");');
+    const stdout = await new Promise<Buffer>((resolve, reject) => {
+        execFile(cmd, args, { encoding: 'buffer' }, (err, out) => {
+            if (err) reject(err);
+            else resolve(out as Buffer);
         });
-        ok(Buffer.isBuffer(stdout));
-        strictEqual(stdout.toString('utf8'), 'Hello World!\n');
     });
+    ok(Buffer.isBuffer(stdout));
+    strictEqual(stdout.toString('utf8'), 'Hello World!\n');
 });
 
 Deno.test({ name: 'child_process: execFile enforces stdout maxBuffer before callback', timeout: 10000 }, async () => {
-    await withTempDir('child-process-max-buffer', async (dir) => {
-        const script = join(dir, 'stdout-output.js');
-        fs.writeFileSync(script, 'process.stdout.write("yikes!\\n");\n');
-        const result = await new Promise<{ err: Error & { code?: string } | null; stdout: Buffer }>((resolve) => {
-            execFile(process.execPath, [script], {
-                encoding: 'buffer',
-                maxBuffer: 3,
-                env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
-            }, (err, stdout) => {
-                resolve({ err: err as Error & { code?: string } | null, stdout: stdout as Buffer });
-            });
+    const { cmd, args } = tinyChild("printf 'yikes!\\n'", 'process.stdout.write("yikes!\\n");');
+    const result = await new Promise<{ err: Error & { code?: string } | null; stdout: Buffer }>((resolve) => {
+        execFile(cmd, args, {
+            encoding: 'buffer',
+            maxBuffer: 3,
+        }, (err, stdout) => {
+            resolve({ err: err as Error & { code?: string } | null, stdout: stdout as Buffer });
         });
-        ok(result.err);
-        strictEqual(result.err?.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
-        strictEqual(result.err?.message, 'stdout maxBuffer length exceeded');
-        ok(Buffer.isBuffer(result.stdout));
-        strictEqual(result.stdout.toString('utf8'), 'yik');
     });
+    ok(result.err);
+    strictEqual(result.err?.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+    strictEqual(result.err?.message, 'stdout maxBuffer length exceeded');
+    ok(Buffer.isBuffer(result.stdout));
+    strictEqual(result.stdout.toString('utf8'), 'yik');
 });
 
 Deno.test({ name: 'child_process: execFile maxBuffer preserves decoded Unicode text', timeout: 10000 }, async () => {
+    // Octal escapes: /bin/sh printf predates \x support.
+    const { cmd, args } = tinyChild(
+        "printf '\\342\\202\\254\\342\\202\\254'",
+        'process.stdout.write(String.fromCharCode(0x20ac, 0x20ac))',
+    );
     const result = await new Promise<{ err: Error & { code?: string } | null; stdout: string }>((resolve) => {
-        execFile(
-            process.execPath,
-            ['-e', 'process.stdout.write(String.fromCharCode(0x20ac, 0x20ac))'],
-            { maxBuffer: 4 },
-            (err, stdout) => resolve({ err: err as Error & { code?: string } | null, stdout: stdout as string }),
-        );
+        execFile(cmd, args, { maxBuffer: 4 }, (err, stdout) => resolve({ err: err as Error & { code?: string } | null, stdout: stdout as string }));
     });
     strictEqual(result.err?.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
     strictEqual(result.stdout, String.fromCharCode(0x20ac, 0x20ac));
 });
 
 Deno.test({ name: 'child_process upstream: execFile enforces stderr maxBuffer before callback', timeout: 10000 }, async () => {
-    await withTempDir('child-process-max-buffer-stderr', async (dir) => {
-        const script = join(dir, 'stderr-output.js');
-        fs.writeFileSync(script, 'process.stderr.write("yikes!\\n");\n');
-        const result = await new Promise<{ err: Error & { code?: string } | null; stderr: Buffer }>((resolve) => {
-            execFile(process.execPath, [script], {
-                encoding: 'buffer',
-                maxBuffer: 3,
-                env: { ...process.env, CTS_DISABLE_CACHE: 'true' },
-            }, (err, _stdout, stderr) => {
-                resolve({ err: err as Error & { code?: string } | null, stderr: stderr as Buffer });
-            });
+    const { cmd, args } = tinyChild("printf 'yikes!\\n' >&2", 'process.stderr.write("yikes!\\n");');
+    const result = await new Promise<{ err: Error & { code?: string } | null; stderr: Buffer }>((resolve) => {
+        execFile(cmd, args, {
+            encoding: 'buffer',
+            maxBuffer: 3,
+        }, (err, _stdout, stderr) => {
+            resolve({ err: err as Error & { code?: string } | null, stderr: stderr as Buffer });
         });
-        ok(result.err);
-        strictEqual(result.err?.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
-        strictEqual(result.err?.message, 'stderr maxBuffer length exceeded');
-        ok(Buffer.isBuffer(result.stderr));
-        strictEqual(result.stderr.toString('utf8'), 'yik');
     });
+    ok(result.err);
+    strictEqual(result.err?.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+    strictEqual(result.err?.message, 'stderr maxBuffer length exceeded');
+    ok(Buffer.isBuffer(result.stderr));
+    strictEqual(result.stderr.toString('utf8'), 'yik');
 });
 
 Deno.test({
@@ -766,14 +787,19 @@ Deno.test({ name: 'child_process: execFile error decoration matches Node per fai
     ok(Reflect.has(missing, 'cmd'), 'spawn error must carry cmd');
 
     const exited = await new Promise<NodeJS.ErrnoException>((resolve) => {
-        execFile(process.execPath, ['-e', 'process.exit(7)'], (err) => resolve(err as NodeJS.ErrnoException));
+        const { cmd, args } = tinyChild('exit 7', 'process.exit(7)');
+        execFile(cmd, args, (err) => resolve(err as NodeJS.ErrnoException));
     });
     strictEqual(exited.code as unknown as number, 7);
     strictEqual(Reflect.get(exited, 'killed'), false);
     strictEqual(Reflect.get(exited, 'signal'), null);
 
     const overflow = await new Promise<NodeJS.ErrnoException>((resolve) => {
-        execFile(process.execPath, ['-e', 'process.stdout.write("x".repeat(5000))'], { maxBuffer: 10 }, (err) => resolve(err as NodeJS.ErrnoException));
+        const { cmd, args } = tinyChild(
+            "head -c 5000 /dev/zero | tr '\\0' x",
+            'process.stdout.write("x".repeat(5000))',
+        );
+        execFile(cmd, args, { maxBuffer: 10 }, (err) => resolve(err as NodeJS.ErrnoException));
     });
     strictEqual(overflow.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
     strictEqual(Reflect.has(overflow, 'killed'), false, 'maxBuffer error must not carry killed');
@@ -785,8 +811,9 @@ Deno.test({ name: 'child_process: execFile error decoration matches Node per fai
 // self-referencing `error` key — and a plain non-zero exit has no `error` key at all.
 Deno.test({ name: 'child_process: execFileSync/execSync error carries the spawnSync result shape', timeout: 20000 }, () => {
     let nonZero: NodeJS.ErrnoException | undefined;
+    const { cmd, args } = tinyChild('exit 3', 'process.exit(3)');
     try {
-        execFileSync(process.execPath, ['-e', 'process.exit(3)'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+        execFileSync(cmd, args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (err) {
         nonZero = err as NodeJS.ErrnoException;
     }

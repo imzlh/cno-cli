@@ -1,5 +1,5 @@
-import { importMapFromFile, parseSize } from '../cts/src/api';
-import type { ConfigOptions } from '../cts/src/api';
+import { importMapFromFile, parseSize } from '../cts/src/config';
+import type { ConfigOptions } from '../cts/src/types';
 import { publishChannel, CHANNEL_WORKER_RUNTIME_CONFIG } from './channels';
 import { flagsFromOptions, tokenizeOptions, type Flags } from './cli';
 import { readEnv } from './env';

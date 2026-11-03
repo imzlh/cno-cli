@@ -1,6 +1,7 @@
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
 import { decodeUtf8 } from '../_helpers/bytes.ts';
+import { writeCachedNpmMeta, writeCachedNpmPackage } from '../_helpers/npm-fixture.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
 async function runCno(args: string[], cwd?: string, env?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -53,42 +54,6 @@ const ADD_WASM = new Uint8Array([
     0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00,
     0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b,
 ]);
-
-async function writeCachedNpmPackage(
-    cacheDir: string,
-    name: string,
-    version: string,
-    pkg: Record<string, unknown>,
-    files: Record<string, string>,
-): Promise<string> {
-    const slash = name.indexOf('/');
-    const dir = name.startsWith('@') && slash !== -1
-        ? join(cacheDir, 'npm', name.slice(0, slash), `${name.slice(slash + 1)}@${version}`)
-        : join(cacheDir, 'npm', `${name}@${version}`);
-    await Deno.mkdir(dir, { recursive: true });
-    await Deno.writeTextFile(join(dir, 'package.json'), JSON.stringify({ name, version, ...pkg }));
-    for (const [path, text] of Object.entries(files)) {
-        const file = join(dir, path);
-        await Deno.mkdir(join(file, '..'), { recursive: true });
-        await Deno.writeTextFile(file, text);
-    }
-    return dir;
-}
-
-async function writeCachedNpmMeta(
-    cacheDir: string,
-    name: string,
-    versions: Record<string, Record<string, unknown>> = {},
-    tags: Record<string, string> = {},
-): Promise<void> {
-    const dir = join(cacheDir, 'npm', name);
-    await Deno.mkdir(dir, { recursive: true });
-    await Deno.writeTextFile(join(dir, 'meta.json'), JSON.stringify({
-        versions,
-        'dist-tags': tags,
-    }));
-    await Deno.writeTextFile(join(dir, 'meta.json.ts'), String(Date.now()));
-}
 
 Deno.test({ name: 'cli stage: version and help commands exit successfully', timeout: 10000 }, async () => {
     const version = await runCno(['--version']);
@@ -408,10 +373,6 @@ Deno.test({ name: 'cli stage: run covers cts and js-to-ts module interop', timeo
             import { isMod4 } from "./reexport.js";
             console.log(isMod4);
         `);
-        const jsReexport = await runCno(['run', join(root, 'via_js.ts')], root);
-        strictEqual(jsReexport.code, 0, jsReexport.stderr);
-        strictEqual(jsReexport.stdout.trim(), 'true');
-
         await Deno.writeTextFile(join(root, 'print_hello.ts'), `
             export function printHello() {
                 console.log("Hello");
@@ -426,9 +387,22 @@ Deno.test({ name: 'cli stage: run covers cts and js-to-ts module interop', timeo
             printHello();
             console.log("success");
         `);
+        // Both scenarios are plain ESM side-effect printers with disjoint
+        // import chains, so one boot runs them back to back in evaluation order.
+        const esmRunner = join(root, 'esm_interop.ts');
+        await Deno.writeTextFile(esmRunner, `
+            import "./via_js.ts";
+            import "./js_entry.js";
+        `);
+        const esmRun = await runCno(['run', esmRunner], root);
+        strictEqual(esmRun.code, 0, esmRun.stderr);
+        const esmLines = esmRun.stdout.trim().split(/\r?\n/);
+        strictEqual(esmLines[0], 'true', esmRun.stdout);
+        // A .js file as the run entry still dispatches ESM (entry-format pin).
         const jsEntry = await runCno(['run', join(root, 'js_entry.js')], root);
         strictEqual(jsEntry.code, 0, jsEntry.stderr);
-        deepStrictEqual(jsEntry.stdout.trim().split(/\r?\n/), ['Hello', 'success']);
+        deepStrictEqual(esmLines.slice(1), ['Hello', 'success'], esmRun.stdout);
+        deepStrictEqual(jsEntry.stdout.trim().split(/\r?\n/), ['Hello', 'success'], jsEntry.stdout);
 
         const extensionlessJs = join(root, 'extensionless_js');
         await Deno.writeTextFile(extensionlessJs, `
@@ -758,8 +732,11 @@ Deno.test({ name: 'cli stage: run preserves dynamic import TLA and failure cachi
 
 Deno.test({ name: 'cli stage: run covers private fields and weak references', timeout: 15000 }, async () => {
     await withTempDir('cli-run-es-runtime', async (root) => {
-        const privatePresence = join(root, 'private_field_presence.ts');
-        await Deno.writeTextFile(privatePresence, `
+        // Plain language-feature observations with no flags, entry semantics or
+        // module-registry interplay, so all three subjects share one boot and
+        // print one marker line each.
+        const esRuntime = join(root, 'es_runtime.ts');
+        await Deno.writeTextFile(esRuntime, `
             class Person {
                 #name: string;
                 constructor(name: string) {
@@ -773,17 +750,9 @@ Deno.test({ name: 'cli stage: run covers private fields and weak references', ti
                 }
             }
             const a = new Person("alice");
-            const b = new Person("bob");
-            const c = new Person("alice");
-            console.log(a.equals(b));
-            console.log(a.equals(c));
-        `);
-        const presence = await runCno(['run', privatePresence], root);
-        strictEqual(presence.code, 0, presence.stderr);
-        deepStrictEqual(presence.stdout.trim().split(/\r?\n/), ['false', 'true']);
+            console.log(a.equals(new Person("bob")));
+            console.log(a.equals(new Person("alice")));
 
-        const privateFields = join(root, 'es_private_fields.js');
-        await Deno.writeTextFile(privateFields, `
             class Foo {
                 #field = "field";
                 setValue(val) {
@@ -796,18 +765,12 @@ Deno.test({ name: 'cli stage: run covers private fields and weak references', ti
             const bar = new Foo();
             bar.setValue("PRIVATE");
             console.log(bar.getValue());
-        `);
-        const fields = await runCno(['run', privateFields], root);
-        strictEqual(fields.code, 0, fields.stderr);
-        strictEqual(fields.stdout.trim(), 'PRIVATE');
 
-        const weakRef = join(root, 'weakref.ts');
-        await Deno.writeTextFile(weakRef, `
             console.log(typeof WeakRef, typeof FinalizationRegistry);
         `);
-        const weak = await runCno(['run', weakRef], root);
-        strictEqual(weak.code, 0, weak.stderr);
-        strictEqual(weak.stdout.trim(), 'function function');
+        const result = await runCno(['run', esRuntime], root);
+        strictEqual(result.code, 0, result.stderr);
+        deepStrictEqual(result.stdout.trim().split(/\r?\n/), ['false', 'true', 'PRIVATE', 'function function']);
     });
 });
 
@@ -942,6 +905,13 @@ Deno.test({ name: 'cli stage: run handles duplicate dynamic imports and async ca
         strictEqual(parallelRun.code, 0, parallelRun.stderr);
         deepStrictEqual(parallelRun.stdout.trim().split(/\r?\n/), ['mod1 instantiated', 'Hello']);
 
+        // double-await and async-catch are deterministic side-effect printers
+        // with no entry semantics, so they share one boot. Sequential dynamic
+        // imports pin the order: awaiting each import settles its top-level
+        // await before the next module evaluates (a static import would let
+        // async_catch's synchronous body print while double_await's TLA is
+        // still pending). The concurrent-import case above keeps its own
+        // boot: its subject is per-process dynamic-import deduplication.
         const doubleAwait = join(root, 'double_await.ts');
         await Deno.writeTextFile(doubleAwait, `
             const currDirInfo = await Deno.stat(".");
@@ -949,10 +919,6 @@ Deno.test({ name: 'cli stage: run handles duplicate dynamic imports and async ca
             console.log(currDirInfo.isDirectory);
             console.log(parentDirInfo.isFile);
         `);
-        const awaited = await runCno(['run', doubleAwait], root);
-        strictEqual(awaited.code, 0, awaited.stderr);
-        deepStrictEqual(awaited.stdout.trim().split(/\r?\n/), ['true', 'false']);
-
         const asyncCatch = join(root, 'async_catch.ts');
         await Deno.writeTextFile(asyncCatch, `
             function fn(): Promise<never> {
@@ -970,13 +936,20 @@ Deno.test({ name: 'cli stage: run handles duplicate dynamic imports and async ca
             }
             call().catch(() => console.log("outer catch"));
         `);
-        const caught = await runCno(['run', asyncCatch], root);
-        strictEqual(caught.code, 0, caught.stderr);
-        deepStrictEqual(caught.stdout.trim().split(/\r?\n/), [
+        const flowRunner = join(root, 'flow_runner.ts');
+        await Deno.writeTextFile(flowRunner, `
+            await import("./double_await.ts");
+            await import("./async_catch.ts");
+        `);
+        const flow = await runCno(['run', flowRunner], root);
+        strictEqual(flow.code, 0, flow.stderr);
+        const flowLines = flow.stdout.trim().split(/\r?\n/);
+        deepStrictEqual(flowLines.slice(0, 2), ['true', 'false'], flow.stdout);
+        deepStrictEqual(flowLines.slice(2), [
             'before await fn()',
             'catch',
             'after try-catch',
-        ]);
+        ], flow.stdout);
     });
 });
 

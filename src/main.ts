@@ -27,7 +27,6 @@
 // startup path, so keep lazy command modules out of what it can reach.
 import { fatal } from '../cts/src/errors';
 import { LockStore } from '../cts/src/lock';
-import { isParseWorker, runParseWorker } from '../cts/src/parse';
 import type { ConfigOptions } from '../cts/src/types';
 import { cwd, isAbsolute, joinPaths, toPosixPath } from '../cts/src/utils/path';
 import { log } from '../cts/src/utils/log';
@@ -39,6 +38,10 @@ import type { Args } from '../cno/src/utils/args';
 import setArgs, { normalizeArgs } from '../cno/src/utils/args';
 import { disableRawCertVerify } from '../cno/src/utils/http';
 import { resolveObjectURLBytes } from '../cno/src/webapi/url';
+// globalThis.console must exist before the full polyfill bootstrap loads:
+// src/ command and kernel warnings print through the bare global; cts
+// log/fatal go through the native console module.
+import '../cno/src/webapi/console';
 import { registerExtensions } from './bootstrap';
 import { CliExit, commandErrorInfo } from './command-error';
 import { missingFlagValues, optionValues, parseArgv, readArgv, unknownFlags, type ParsedCli } from './cli';
@@ -49,8 +52,6 @@ import { C, showHelp, showVersion } from './help';
 import { configureTlsHooks } from './network';
 import { publishChannel, CHANNEL_BLOB_URL_RESOLVER, CHANNEL_REQUEST_EXIT_CODE } from './channels';
 import type { TestChildMessage } from './commands/test-result-pipe';
-
-import '../cno/src/main';   // main polyfill(cno) entry
 
 publishChannel(CHANNEL_BLOB_URL_RESOLVER, resolveObjectURLBytes);
 const fs = import.meta.use('fs');
@@ -331,8 +332,8 @@ async function dispatch(): Promise<void> {
             return runTask(args, flags, cli.kernelArgs);
         }
         if (cli.cmd === 'run' && !looksLikeFileTarget(file)) {
-            const { runTask, taskExists } = await import('./commands/task');
-            if (taskExists(file, flags, cli.kernelArgs)) return runTask([file, ...args], flags, cli.kernelArgs);
+            const { runTaskIfMatched } = await import('./commands/task');
+            if (await runTaskIfMatched(file, args, flags, cli.kernelArgs)) return;
         }
         return runEntry(file, args, cli.flags, cli.rawArgs, kernel);
     }
@@ -357,6 +358,8 @@ async function runTestChild(
     cli: ParsedCli,
     scriptArgs: string[],
 ): Promise<void> {
+    // `process` below is the Node-bridge global installed by the polyfill.
+    await import('../cno/src/main');
     let message: TestChildMessage;
     // The runtime reports each unhandled rejection with exit code 1 and its event
     // loop drains before the suite can report, so the worker would die without
@@ -408,11 +411,19 @@ async function runTestChild(
 }
 
 async function workerEntry(): Promise<void> {
-    if (isParseWorker()) return runParseWorker();
     const workerData = isRecord(worker.workerData) ? worker.workerData : undefined;
+    const role = workerData?.__cts_role;
+    if (role === 'parse' || role === 'compiler') {
+        // Only parse workers need the transformer/OXC/import-scanner graph.
+        const { runParseWorker } = await import('../cts/src/parse');
+        return runParseWorker();
+    }
 
     // Debug Worker
     if (workerData?.__cno_debug_worker) {
+        // The CDP server parses origins with URL and observes worker errors
+        // through the web event globals; both come from the polyfill bootstrap.
+        await import('../cno/src/main');
         await import('./inspector/worker/bootstrap');
         return;
     }

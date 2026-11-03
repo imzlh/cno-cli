@@ -85,41 +85,19 @@ Deno.test({ name: 'deno test harness: only filters ordinary tests', timeout: 100
     deepStrictEqual(result.order, ['only']);
 });
 
-Deno.test({ name: 'deno test harness: failing tests make __startTest return false', timeout: 10000 }, async () => {
-    const child = await runEval(`
-        Deno.test('failing child', () => {
+Deno.test({ name: 'deno test harness: independent failure shapes report suite failure', timeout: 10000 }, async () => {
+    // Keep each failure shape in its own process. __startTest accumulates
+    // failedTests, so a single suite could otherwise hide a broken failure
+    // path behind whichever error happens to be reported first.
+    const [ordinary, throws, steps, timeout] = await Promise.all([
+        runEval(`
+        Deno.test('ordinary error child', () => {
             throw new Error('boom');
         });
         const passed = await Deno.__startTest('failure-child.ts', 'test');
         console.log('RESULT ' + JSON.stringify({ passed }));
-    `);
-
-    strictEqual(child.code, 0, child.stderr);
-    const result = resultLine(child.stdout);
-    strictEqual(result.passed, false);
-    ok(child.stderr.includes('failing child'));
-});
-
-Deno.test({ name: 'deno test harness: noRun tests are registered but not executed', timeout: 10000 }, async () => {
-    const child = await runEval(`
-        const order = [];
-        Deno.test({ name: 'type-only child', noRun: true, fn() {
-            order.push('noRun executed');
-            throw new Error('noRun should not execute');
-        }});
-        Deno.test('ordinary child', () => order.push('ordinary'));
-        const passed = await Deno.__startTest('no-run-child.ts', 'test');
-        console.log('RESULT ' + JSON.stringify({ passed, order }));
-    `);
-
-    strictEqual(child.code, 0, child.stderr);
-    const result = resultLine(child.stdout);
-    strictEqual(result.passed, true);
-    deepStrictEqual(result.order, ['ordinary']);
-});
-
-Deno.test({ name: 'deno test harness: non-Error and AggregateError throws are collected', timeout: 10000 }, async () => {
-    const child = await runEval(`
+    `),
+        runEval(`
         Deno.test('undefined child', () => { throw undefined; });
         Deno.test('string child', () => { throw 'Hello, world!'; });
         Deno.test('aggregate child', () => {
@@ -127,17 +105,201 @@ Deno.test({ name: 'deno test harness: non-Error and AggregateError throws are co
         });
         const passed = await Deno.__startTest('throw-shapes-child.ts', 'test');
         console.log('RESULT ' + JSON.stringify({ passed }));
+    `),
+        runEval(`
+        const order = [];
+        let retryAttempts = 0;
+        Deno.test({
+            name: 'retry child',
+            retry: 2,
+            fn() {
+                retryAttempts++;
+                order.push('retry:' + retryAttempts);
+                if (retryAttempts < 2) throw new Error('try again');
+            },
+        });
+        Deno.test({
+            name: 'repeat child',
+            repeats: 2,
+            fn(t) {
+                order.push('repeat:' + t.name);
+            },
+        });
+        Deno.test('step result child', async (t) => {
+            const ignored = await t.step({ name: 'ignored step', ignore: true, fn() {
+                order.push('ignored-step-ran');
+            }});
+            order.push('ignored-step:' + ignored);
+            const failed = await t.step('failing step', () => {
+                throw new Error('step boom');
+            });
+            order.push('failed-step:' + failed);
+        });
+        const passed = await Deno.__startTest('retry-repeat-child.ts', 'test');
+        console.log('RESULT ' + JSON.stringify({ passed, order }));
+    `),
+        runEval(`
+        Deno.test({ name: 'timeout child', timeout: 30, fn: () => new Promise(() => {}) });
+        const passed = await Deno.__startTest('timeout-child.ts', 'test');
+        console.log('RESULT ' + JSON.stringify({ passed }));
+    `),
+    ]);
+
+    strictEqual(ordinary.code, 0, ordinary.stderr);
+    strictEqual(resultLine(ordinary.stdout).passed, false);
+    ok(ordinary.stderr.includes('ordinary error child'), ordinary.stderr);
+
+    strictEqual(throws.code, 0, throws.stderr);
+    strictEqual(resultLine(throws.stdout).passed, false);
+    ok(throws.stderr.includes('undefined child'), throws.stderr);
+    ok(throws.stderr.includes('undefined'), throws.stderr);
+    ok(throws.stderr.includes('string child'), throws.stderr);
+    ok(throws.stderr.includes('Hello, world!'), throws.stderr);
+    ok(throws.stderr.includes('aggregate child'), throws.stderr);
+    ok(throws.stderr.includes('AggregateError: Many'), throws.stderr);
+    strictEqual(steps.code, 0, steps.stderr);
+    const stepResult = resultLine(steps.stdout);
+    strictEqual(stepResult.passed, false);
+    deepStrictEqual(stepResult.order, [
+        'retry:1',
+        'retry:2',
+        'repeat:repeat child (1/3)',
+        'repeat:repeat child (2/3)',
+        'repeat:repeat child (3/3)',
+        'ignored-step:false',
+        'failed-step:false',
+    ]);
+    ok(steps.stderr.includes('failing step'), steps.stderr);
+
+    strictEqual(timeout.code, 0, timeout.stderr);
+    strictEqual(resultLine(timeout.stdout).passed, false);
+    ok(timeout.stderr.includes('timeout child'), timeout.stderr);
+});
+
+Deno.test({ name: 'deno test harness: noRun overload invalid-definition and bench overloads in one passing suite', timeout: 10000 }, async () => {
+    // One shared suite for four scenarios that register no hooks, use no only
+    // filter and assert no TestContext origin, so nothing cross-contaminates:
+    // each keeps its own order/errors array and the whole suite passes.
+    const child = await runEval(`
+        const noRunOrder = [];
+        Deno.test({ name: 'type-only child', noRun: true, fn() {
+            noRunOrder.push('noRun executed');
+            throw new Error('noRun should not execute');
+        }});
+        Deno.test('ordinary child', () => noRunOrder.push('ordinary'));
+
+        const overloadOrder = [];
+        function namedChild(t) {
+            overloadOrder.push('function:' + t.name);
+        }
+        Deno.test(namedChild);
+        Deno.test({ name: 'object/options child', ignore: false }, (t) => {
+            overloadOrder.push('object:' + t.name);
+        });
+        Deno.test('three arg ignored child', { ignore: true }, () => {
+            overloadOrder.push('should-not-run');
+        });
+        Deno.test('explicit undefined booleans', { ignore: undefined, only: undefined }, () => {
+            overloadOrder.push('explicit-undefined');
+        });
+        Deno.test.each([{ name: 'alice', count: 2 }, { name: 'bob', count: 3 }])('$name has $count', (item, t) => {
+            overloadOrder.push('each-object:' + t.name + ':' + item.count);
+        });
+        Deno.test.each(['scalar'])('scalar %s', (value, t) => {
+            overloadOrder.push('each-scalar:' + t.name + ':' + value);
+        });
+
+        const errors = [];
+        for (const call of [
+            () => Deno.test(),
+            () => Deno.test('missing fn'),
+            () => Deno.test({ name: 'missing object fn' }),
+            () => Deno.test('', () => {}),
+            () => Deno.test({ name: '', fn() {} }),
+            () => Deno.test(() => {}),
+            () => Deno.test(function named() {}, {}),
+            () => Deno.test({ fn: () => {} }, function named() {}),
+            () => Deno.test('named', { fn() {} }, () => {}),
+            () => Deno.test('named', { name: 'other' }, () => {}),
+            () => Deno.test({}),
+            () => Deno.test({ fn: 'not a function' }),
+            () => Deno.bench('missing bench fn'),
+            () => Deno.bench({ name: 'missing bench object fn' }),
+        ]) {
+            try {
+                call();
+                errors.push('accepted');
+            } catch (error) {
+                errors.push(error instanceof TypeError ? error.message : String(error));
+            }
+        }
+        const sanitizerResult = Deno.test.sanitizer();
+        const invalidOrder = [];
+        Deno.test.ignore(function ignoredByFunction() {
+            invalidOrder.push('ignored-function');
+        });
+
+        const benchOrder = [];
+        function namedBench(b) {
+            benchOrder.push('function:' + b.name);
+        }
+        Deno.bench(namedBench);
+        Deno.bench({ name: 'object options bench', group: 'g' }, (b) => {
+            benchOrder.push('object:' + b.name);
+        });
+        Deno.bench({ permissions: 'inherit' }, function inferredBench(b) {
+            benchOrder.push('inferred:' + b.name);
+        });
+        Deno.bench('three arg ignored bench', { ignore: true }, () => {
+            benchOrder.push('ignored-three-arg');
+        });
+        Deno.bench({ name: 'object ignored bench', ignore: true, fn() {
+            benchOrder.push('ignored-object');
+        }});
+
+        // 'both' runs the shared registry's test section and then its bench
+        // section; none of the scenarios observes the other section.
+        const passed = await Deno.__startTest('batched-child.ts', 'both');
+        console.log('RESULT ' + JSON.stringify({
+            passed, noRunOrder, overloadOrder, errors, sanitizerResult, invalidOrder, benchOrder,
+        }));
     `);
 
     strictEqual(child.code, 0, child.stderr);
     const result = resultLine(child.stdout);
-    strictEqual(result.passed, false);
-    ok(child.stderr.includes('undefined child'), child.stderr);
-    ok(child.stderr.includes('undefined'), child.stderr);
-    ok(child.stderr.includes('string child'), child.stderr);
-    ok(child.stderr.includes('Hello, world!'), child.stderr);
-    ok(child.stderr.includes('aggregate child'), child.stderr);
-    ok(child.stderr.includes('AggregateError: Many'), child.stderr);
+    strictEqual(result.passed, true);
+    deepStrictEqual(result.noRunOrder, ['ordinary']);
+    deepStrictEqual(result.overloadOrder, [
+        'function:namedChild',
+        'object:object/options child',
+        'explicit-undefined',
+        'each-object:alice has 2:2',
+        'each-object:bob has 3:3',
+        'each-scalar:scalar scalar:scalar',
+    ]);
+    deepStrictEqual(result.errors, [
+        'Invalid test definition',
+        'Invalid test definition',
+        "Expected 'fn' field in the first argument to be a test function",
+        "The test name can't be empty",
+        "The test name can't be empty",
+        "The test function must have a name",
+        "Unexpected second argument to Deno.test()",
+        "Unexpected 'fn' field in options, test function is already provided as the second argument",
+        "Unexpected 'fn' field in options, test function is already provided as the third argument",
+        "Unexpected 'name' field in options, test name is already provided as the first argument",
+        "Expected 'fn' field in the first argument to be a test function",
+        "Expected 'fn' field in the first argument to be a test function",
+        'Invalid bench definition',
+        'Invalid bench definition',
+    ]);
+    strictEqual(result.sanitizerResult, undefined);
+    deepStrictEqual(result.invalidOrder, []);
+    deepStrictEqual(result.benchOrder, [
+        'function:namedBench',
+        'object:object options bench',
+        'inferred:inferredBench',
+    ]);
 });
 
 Deno.test({ name: 'deno test harness: failing hooks make __startTest return false', timeout: 10000 }, async () => {
@@ -174,160 +336,12 @@ Deno.test({ name: 'deno test harness: failing hooks make __startTest return fals
     ok(child.stderr.includes('afterAll hook failed'));
 });
 
-Deno.test({ name: 'deno test harness: overloads ignore and each object cases', timeout: 10000 }, async () => {
-    const child = await runEval(`
-        const order = [];
-        function namedChild(t) {
-            order.push('function:' + t.name);
-        }
-        Deno.test(namedChild);
-        Deno.test({ name: 'object/options child', ignore: false }, (t) => {
-            order.push('object:' + t.name);
-        });
-        Deno.test('three arg ignored child', { ignore: true }, () => {
-            order.push('should-not-run');
-        });
-        Deno.test('explicit undefined booleans', { ignore: undefined, only: undefined }, () => {
-            order.push('explicit-undefined');
-        });
-        Deno.test.each([{ name: 'alice', count: 2 }, { name: 'bob', count: 3 }])('$name has $count', (item, t) => {
-            order.push('each-object:' + t.name + ':' + item.count);
-        });
-        Deno.test.each(['scalar'])('scalar %s', (value, t) => {
-            order.push('each-scalar:' + t.name + ':' + value);
-        });
-        const passed = await Deno.__startTest('overloads-child.ts', 'test');
-        console.log('RESULT ' + JSON.stringify({ passed, order }));
-    `);
-
-    strictEqual(child.code, 0, child.stderr);
-    const result = resultLine(child.stdout);
-    strictEqual(result.passed, true);
-    deepStrictEqual(result.order, [
-        'function:namedChild',
-        'object:object/options child',
-        'explicit-undefined',
-        'each-object:alice has 2:2',
-        'each-object:bob has 3:3',
-        'each-scalar:scalar scalar:scalar',
-    ]);
-});
-
-Deno.test({ name: 'deno test harness: retry repeats timeout and failed steps are reflected', timeout: 10000 }, async () => {
-    const child = await runEval(`
-        const order = [];
-        let retryAttempts = 0;
-        Deno.test({
-            name: 'retry child',
-            retry: 2,
-            fn() {
-                retryAttempts++;
-                order.push('retry:' + retryAttempts);
-                if (retryAttempts < 2) throw new Error('try again');
-            },
-        });
-        Deno.test({
-            name: 'repeat child',
-            repeats: 2,
-            fn(t) {
-                order.push('repeat:' + t.name);
-            },
-        });
-        Deno.test('step result child', async (t) => {
-            const ignored = await t.step({ name: 'ignored step', ignore: true, fn() {
-                order.push('ignored-step-ran');
-            }});
-            order.push('ignored-step:' + ignored);
-            const failed = await t.step('failing step', () => {
-                throw new Error('step boom');
-            });
-            order.push('failed-step:' + failed);
-        });
-        Deno.test({ name: 'timeout child', timeout: 30, fn: () => new Promise(() => {}) });
-        const passed = await Deno.__startTest('retry-repeat-child.ts', 'test');
-        console.log('RESULT ' + JSON.stringify({ passed, order }));
-    `);
-
-    strictEqual(child.code, 0, child.stderr);
-    const result = resultLine(child.stdout);
-    strictEqual(result.passed, false);
-    deepStrictEqual(result.order, [
-        'retry:1',
-        'retry:2',
-        'repeat:repeat child (1/3)',
-        'repeat:repeat child (2/3)',
-        'repeat:repeat child (3/3)',
-        'ignored-step:false',
-        'failed-step:false',
-    ]);
-    ok(child.stderr.includes('failing step'));
-    ok(child.stderr.includes('timeout child'));
-});
-
 Deno.test('deno test harness: TestContext.step rejects invalid step definitions', async (t) => {
     await rejects(() => t.step('missing function'), TypeError);
     await rejects(() => t.step('bad function', 'not a function' as unknown as () => void), TypeError);
     await rejects(() => t.step(undefined as unknown as Deno.TestStepDefinition), TypeError);
     await rejects(() => t.step(() => {}), TypeError);
     await rejects(() => t.step({ name: 'missing fn' } as Deno.TestStepDefinition), TypeError);
-});
-
-Deno.test({ name: 'deno test harness: invalid overloads and sanitizer no-op are observable', timeout: 10000 }, async () => {
-    const child = await runEval(`
-        const errors = [];
-        for (const call of [
-            () => Deno.test(),
-            () => Deno.test('missing fn'),
-            () => Deno.test({ name: 'missing object fn' }),
-            () => Deno.test('', () => {}),
-            () => Deno.test({ name: '', fn() {} }),
-            () => Deno.test(() => {}),
-            () => Deno.test(function named() {}, {}),
-            () => Deno.test({ fn: () => {} }, function named() {}),
-            () => Deno.test('named', { fn() {} }, () => {}),
-            () => Deno.test('named', { name: 'other' }, () => {}),
-            () => Deno.test({}),
-            () => Deno.test({ fn: 'not a function' }),
-            () => Deno.bench('missing bench fn'),
-            () => Deno.bench({ name: 'missing bench object fn' }),
-        ]) {
-            try {
-                call();
-                errors.push('accepted');
-            } catch (error) {
-                errors.push(error instanceof TypeError ? error.message : String(error));
-            }
-        }
-        const sanitizerResult = Deno.test.sanitizer();
-        const order = [];
-        Deno.test.ignore(function ignoredByFunction() {
-            order.push('ignored-function');
-        });
-        const passed = await Deno.__startTest('invalid-overload-child.ts', 'test');
-        console.log('RESULT ' + JSON.stringify({ passed, errors, sanitizerResult, order }));
-    `);
-
-    strictEqual(child.code, 0, child.stderr);
-    const result = resultLine(child.stdout);
-    strictEqual(result.passed, true);
-    deepStrictEqual(result.errors, [
-        'Invalid test definition',
-        'Invalid test definition',
-        "Expected 'fn' field in the first argument to be a test function",
-        "The test name can't be empty",
-        "The test name can't be empty",
-        "The test function must have a name",
-        "Unexpected second argument to Deno.test()",
-        "Unexpected 'fn' field in options, test function is already provided as the second argument",
-        "Unexpected 'fn' field in options, test function is already provided as the third argument",
-        "Unexpected 'name' field in options, test name is already provided as the first argument",
-        "Expected 'fn' field in the first argument to be a test function",
-        "Expected 'fn' field in the first argument to be a test function",
-        'Invalid bench definition',
-        'Invalid bench definition',
-    ]);
-    strictEqual(result.sanitizerResult, undefined);
-    deepStrictEqual(result.order, []);
 });
 
 Deno.test({ name: 'deno test harness: TestContext name origin and parent match upstream', timeout: 10000 }, async () => {
@@ -356,9 +370,11 @@ Deno.test({ name: 'deno test harness: TestContext name origin and parent match u
     ]);
 });
 
-Deno.test({ name: 'deno test harness: assertSnapshot creates matches and reports mismatches', timeout: 10000 }, async () => {
+Deno.test({ name: 'deno test harness: assertSnapshot creates matches and paths resolve relative to the test file', timeout: 10000 }, async () => {
+    // One child for both snapshot scenarios: the first uses explicit dirs, so
+    // it is unaffected by the contextName the second needs for path resolution.
     const child = await runEval(`
-        const result = [];
+        const snapshotResult = [];
         Deno.test('snapshot child', async (t) => {
             const dir = Deno.makeTempDirSync({ prefix: 'cno-snapshot-' });
             const nestedDir = dir + '/nested/deep';
@@ -367,32 +383,20 @@ Deno.test({ name: 'deno test harness: assertSnapshot creates matches and reports
                 await t.assertSnapshot({ value: 1 }, { dir: nestedDir, name: 'case' });
                 try {
                     await t.assertSnapshot({ value: 2 }, { dir: nestedDir, name: 'case', msg: 'custom snapshot mismatch' });
-                    result.push('accepted-mismatch');
+                    snapshotResult.push('accepted-mismatch');
                 } catch (error) {
-                    result.push(error.message);
+                    snapshotResult.push(error.message);
                 }
                 const files = [];
                 for await (const entry of Deno.readDir(nestedDir)) files.push(entry.name);
-                result.push(files.length === 1 && files[0].endsWith('.snap') ? 'nested-file' : 'wrong-file');
+                snapshotResult.push(files.length === 1 && files[0].endsWith('.snap') ? 'nested-file' : 'wrong-file');
             } finally {
                 Deno.removeSync(dir, { recursive: true });
             }
         });
-        const passed = await Deno.__startTest('snapshot-child.ts', 'test');
-        console.log('RESULT ' + JSON.stringify({ passed, result }));
-    `);
-
-    strictEqual(child.code, 0, child.stderr);
-    const result = resultLine(child.stdout);
-    strictEqual(result.passed, true);
-    deepStrictEqual(result.result, ['custom snapshot mismatch', 'nested-file']);
-});
-
-Deno.test({ name: 'deno test harness: snapshot dir and path are relative to the test file', timeout: 10000 }, async () => {
-    const child = await runEval(`
         const root = Deno.makeTempDirSync({ prefix: 'cno-snapshot-paths-' });
         const origin = root + '/fixture.ts';
-        const result = [];
+        const pathResult = [];
         try {
             Deno.test('snapshot paths', async (t) => {
                 await t.assertSnapshot('relative dir', { dir: 'nested/deep', name: 'relative-dir' });
@@ -401,15 +405,15 @@ Deno.test({ name: 'deno test harness: snapshot dir and path are relative to the 
                 });
             });
             const passed = await Deno.__startTest(origin, 'test');
-            result.push(Deno.statSync(root + '/nested/deep/fixture.ts.snap').isFile);
-            result.push(Deno.statSync(root + '/custom.snap').isFile);
+            pathResult.push(Deno.statSync(root + '/nested/deep/fixture.ts.snap').isFile);
+            pathResult.push(Deno.statSync(root + '/custom.snap').isFile);
             try {
                 Deno.statSync(root + '/ignored');
-                result.push('dir-used');
+                pathResult.push('dir-used');
             } catch {
-                result.push('dir-ignored');
+                pathResult.push('dir-ignored');
             }
-            console.log('RESULT ' + JSON.stringify({ passed, result }));
+            console.log('RESULT ' + JSON.stringify({ passed, snapshotResult, pathResult }));
         } finally {
             Deno.removeSync(root, { recursive: true });
         }
@@ -418,41 +422,13 @@ Deno.test({ name: 'deno test harness: snapshot dir and path are relative to the 
     strictEqual(child.code, 0, child.stderr);
     const result = resultLine(child.stdout);
     strictEqual(result.passed, true);
-    deepStrictEqual(result.result, [true, true, 'dir-ignored']);
+    deepStrictEqual(result.snapshotResult, ['custom snapshot mismatch', 'nested-file']);
+    deepStrictEqual(result.pathResult, [true, true, 'dir-ignored']);
 });
 
-Deno.test({ name: 'deno bench harness: overload names ignore and only filters are reflected', timeout: 10000 }, async () => {
-    const overloads = await runEval(`
-        const order = [];
-        function namedBench(b) {
-            order.push('function:' + b.name);
-        }
-        Deno.bench(namedBench);
-        Deno.bench({ name: 'object options bench', group: 'g' }, (b) => {
-            order.push('object:' + b.name);
-        });
-        Deno.bench({ permissions: 'inherit' }, function inferredBench(b) {
-            order.push('inferred:' + b.name);
-        });
-        Deno.bench('three arg ignored bench', { ignore: true }, () => {
-            order.push('ignored-three-arg');
-        });
-        Deno.bench({ name: 'object ignored bench', ignore: true, fn() {
-            order.push('ignored-object');
-        }});
-        const passed = await Deno.__startTest('bench-overloads-child.ts', 'bench');
-        console.log('RESULT ' + JSON.stringify({ passed, order }));
-    `);
-
-    strictEqual(overloads.code, 0, overloads.stderr);
-    const overloadResult = resultLine(overloads.stdout);
-    strictEqual(overloadResult.passed, true);
-    deepStrictEqual(overloadResult.order, [
-        'function:namedBench',
-        'object:object options bench',
-        'inferred:inferredBench',
-    ]);
-
+Deno.test({ name: 'deno test harness: bench only filters ordinary benches', timeout: 10000 }, async () => {
+    // The bench-only scenario must stay in its own child: its only filter would
+    // skip every other bench registered in the same suite.
     const only = await runEval(`
         const order = [];
         Deno.bench('ordinary bench', () => order.push('ordinary'));
@@ -687,19 +663,15 @@ for (let i = 0; i < 3; i++) {
 }
 Deno.test.ignore({ name: "test ignore", fn() { throw new Error("unreachable"); } });
 `);
+        const intervalFile = join(root, 'interval.ts');
+        await Deno.writeTextFile(intervalFile, `setInterval(function () {}, 0);`);
+        // Both files pass: one boot runs each as its own child suite, and the
+        // failing finally.ts case above must stay on its own (exit code 1).
         const r2 = await new Deno.Command(Deno.execPath(), {
-            args: ['test', ignoreFile, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
+            args: ['test', ignoreFile, intervalFile, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
         }).output();
         const t2 = new TextDecoder().decode(r2.stdout) + new TextDecoder().decode(r2.stderr);
         strictEqual(r2.code, 0, t2);
         ok(/skip|ignored|PASS/i.test(t2), t2);
-
-        const intervalFile = join(root, 'interval.ts');
-        await Deno.writeTextFile(intervalFile, `setInterval(function () {}, 0);`);
-        const r3 = await new Deno.Command(Deno.execPath(), {
-            args: ['test', intervalFile, '--concurrency=1'], stdout: 'piped', stderr: 'piped',
-        }).output();
-        const t3 = new TextDecoder().decode(r3.stdout) + new TextDecoder().decode(r3.stderr);
-        strictEqual(r3.code, 0, t3);
     });
 });
