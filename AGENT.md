@@ -73,7 +73,7 @@ bridge.
 
 ## Bun Compatibility
 
-Bun compatibility is an optional, file-backed target; it is not part of the
+Bun compatibility follows the Node polyfill model and is not part of the
 ordinary CLI implementation blob.
 
 ```text
@@ -83,21 +83,21 @@ src/main.ts
 
 bun / bun:sqlite
   -> CTS reserved builtin resolution
-  -> <install>/lib/cno/bun/{index,sqlite}.js
+  -> <cacheDir>/bun/{index,sqlite/index}.ts
 ```
 
 - Only `cno/src/bun/_internal/inject.ts` may enter the main bundle. Everything
-  else under `cno/src/bun/` is built by `scripts/bundle-bun.mjs` and staged or
-  installed under `lib/cno/bun`. Ordinary Deno/CNO startup must not read or
-  evaluate the Bun payload.
+  else under `cno/src/bun/` is installed as source by `cno setup`. Ordinary
+  Deno/CNO startup must not read or evaluate the Bun implementation.
 - `bun` and the complete case-insensitive `bun:*` family are reserved before
-  import maps, lockfiles, packs, npm, or network resolution. Currently supported
-  module identities are exactly `bun` and `bun:sqlite`; unknown names fail closed.
+  import maps, lockfiles, packs, npm, or network resolution. Safe `bun:x`
+  identities map first to `<cacheDir>/bun/x.ts`, then to
+  `<cacheDir>/bun/x/index.ts`; missing names fail closed.
 - Preserve native Bun module identity: default ESM import and `require('bun')`
   are `globalThis.Bun`, while the public module namespace has no own `default`
   property and exposes the enumerable Bun object keys as named exports.
-- Packs record canonical Bun edges but never embed payload source. Relocated
-  packs load the payload from the current installation, including in workers.
+- Packs record canonical Bun edges but never embed Bun source. Relocated packs
+  load setup-managed source from the current cache, including in workers.
 - Extend Bun APIs under `cno/src/bun/`; keep CTS changes limited to resolution,
   loading, CJS/ESM identity, packs, and narrow bridge facilities. Do not put Bun
   implementations in the Node builtin registry or add the `bun` export condition
@@ -113,16 +113,15 @@ After Bun boundary or loader changes, rebuild the staged executable and run at
 least:
 
 ```bash
-node scripts/bundle-bun.mjs release
 cmake --build build --target cno -j2
 build/stage/cno test tests/bun/*.test.ts --concurrency=1
 node --test tests/bun/*-unit.test.mjs tests/bun/lazy-global-unit.test.mjs \
-  tests/cts/bun-runtime.test.mjs tests/cts/bun-payload-boundary.test.mjs
+  tests/cts/bun-payload-boundary.test.mjs
 pnpm run type-check
 pnpm --dir cts run type-check
 ```
 
-The payload-boundary test is mandatory: a passing API test does not excuse Bun
+The boundary test is mandatory: a passing API test does not excuse Bun
 implementation code leaking into the main blob or a pack.
 
 ## Working Rules
@@ -434,9 +433,10 @@ Node modules must stay within the Node layer unless a shared boundary is
 intentional and documented. Use shared internal helpers when several Node
 modules need identical semantics, but do not duplicate native resource logic.
 
-`cno setup` copies/refreshes `cno/src/node/` into the cache used by the staged
-binary. This is why a Node-only edit can usually be tested with `setup`, while
-Web API, Deno, bootstrap, and CLI edits normally require a rebuild.
+`cno setup` copies/refreshes `cno/src/node/`, `cno/src/bun/`, and their shared
+`cno/src/utils/` sources into the cache used by the staged binary. This is why a
+Node/Bun-only edit can usually be tested with `setup`, while Web API, Deno,
+bootstrap, and CLI edits normally require a rebuild.
 
 ## evbus: Runtime Event Bus
 
@@ -531,7 +531,7 @@ registers extensions, dispatches commands, and installs process cleanup.
 | `task [name]` | `src/commands/task.ts` | Deno/package task execution |
 | `cache [file]` | `src/commands/cache.ts` | dependency scan and lock persistence |
 | `pack <file>` | `src/commands/pack.ts` | create `.jspack` container |
-| `setup` | `src/commands/setup.ts` | install Node polyfills into cache |
+| `setup` | `src/commands/setup.ts` | install Node, Bun, and shared polyfill sources into cache |
 | `exec <bin>` | `src/commands/bin.ts` | resolve and spawn package binaries |
 
 The first non-flag token determines command versus implicit run. Once the
@@ -625,7 +625,7 @@ Use the layer table below:
 
 | Changed area | Usual validation update |
 | --- | --- |
-| `cno/src/node/` only, excluding bootstrap internals | run `build/stage/cno setup` |
+| `cno/src/node/`, `cno/src/bun/`, or `cno/src/utils/` only, excluding bootstrap internals | run `build/stage/cno setup` |
 | `src/`, `cts/`, Web API, Deno API, CNO bootstrap | rebuild staged binary |
 | `circu.js/` native code or declarations | rebuild; run native and affected API tests |
 | `http/` | rebuild/bundle as required; run HTTP and affected compatibility tests |

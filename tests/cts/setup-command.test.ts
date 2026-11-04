@@ -4,7 +4,22 @@ import { join } from 'node:path';
 import { decodeUtf8 } from '../_helpers/bytes.ts';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 
-Deno.test('setup: staged command installs local node polyfills without transaction artifacts', async () => {
+function assertOnlyTypeScriptSources(root: string, allowMarker = false): void {
+    const visit = (dir: string): void => {
+        for (const name of readdirSync(dir)) {
+            const file = join(dir, name);
+            if (statSync(file).isDirectory()) {
+                visit(file);
+                continue;
+            }
+            if (allowMarker && name === '.cno-setup-ready' && file === join(root, name)) continue;
+            ok(name.endsWith('.ts'), `setup destination contains non-source payload: ${file}`);
+        }
+    };
+    visit(root);
+}
+
+Deno.test('setup: staged command installs local Node and Bun sources without transaction artifacts', async () => {
     const root = makePosixTempDir('setup-command');
     const cacheDir = join(root, 'cache');
     const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
@@ -21,7 +36,14 @@ Deno.test('setup: staged command installs local node polyfills without transacti
 
         strictEqual(output.code, 0, stderr);
         ok(stdout.includes('Node polyfills ready at:'), stdout);
+        ok(stdout.includes('Bun polyfills ready at:'), stdout);
         ok(existsSync(join(cacheDir, 'node', 'fs', 'index.ts')));
+        ok(existsSync(join(cacheDir, 'bun', 'index.ts')));
+        ok(existsSync(join(cacheDir, 'bun', 'sqlite', 'index.ts')));
+        ok(existsSync(join(cacheDir, 'utils', 'path.ts')));
+        assertOnlyTypeScriptSources(join(cacheDir, 'node'), true);
+        assertOnlyTypeScriptSources(join(cacheDir, 'bun'));
+        assertOnlyTypeScriptSources(join(cacheDir, 'utils'));
         strictEqual(
             readdirSync(join(cacheDir, 'node')).some(name => name.includes('.tmp-') || name.includes('.old-')),
             false,
@@ -62,6 +84,43 @@ Deno.test('setup: staged command does not replace a destination directory', asyn
             readdirSync(join(cacheDir, 'node', 'fs')).some(name => name.includes('index.ts.old-')),
             false,
         );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('setup: rejects symlinks in managed cache destinations', async () => {
+    const root = makePosixTempDir('setup-destination-symlink');
+    const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+    const outside = join(root, 'outside');
+
+    try {
+        mkdirSync(outside, { recursive: true });
+        for (const [name, prepare] of [
+            ['root', (cache: string) => symlinkSync(outside, join(cache, 'node'), 'junction')],
+            ['nested', (cache: string) => {
+                mkdirSync(join(cache, 'node'), { recursive: true });
+                symlinkSync(outside, join(cache, 'node', 'fs'), 'junction');
+            }],
+            ['file', (cache: string) => {
+                mkdirSync(join(cache, 'node', 'fs'), { recursive: true });
+                symlinkSync(join(outside, 'index.ts'), join(cache, 'node', 'fs', 'index.ts'), 'file');
+            }],
+        ] as const) {
+            const cache = join(root, `cache-${name}`);
+            mkdirSync(cache, { recursive: true });
+            try {
+                prepare(cache);
+            } catch {
+                // Symlink creation may be unavailable under the host policy.
+                return;
+            }
+            const result = await new Deno.Command(execPath, {
+                args: ['setup', `--cache-dir=${cache}`], cwd: Deno.cwd(), stdout: 'piped', stderr: 'piped',
+            }).output();
+            ok(result.code !== 0, `${name} symlink must be rejected`);
+            strictEqual(existsSync(join(outside, 'index.ts')), false);
+        }
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -120,6 +179,8 @@ Deno.test('setup: a failed refresh clears completion state so a later setup retr
     const root = makePosixTempDir('setup-retry');
     const cacheDir = join(root, 'cache');
     const nodeSrc = join(root, 'cno', 'src', 'node');
+    const bunSrc = join(root, 'cno', 'src', 'bun');
+    const utilsSrc = join(root, 'cno', 'src', 'utils');
     const entry = join(root, 'entry.ts');
     const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
 
@@ -128,6 +189,11 @@ Deno.test('setup: a failed refresh clears completion state so a later setup retr
         mkdirSync(join(nodeSrc, 'z'), { recursive: true });
         writeFileSync(join(nodeSrc, 'fs', 'index.ts'), 'export const fsReady = true;\n');
         writeFileSync(join(nodeSrc, 'z', 'index.ts'), 'export const zReady = true;\n');
+        mkdirSync(join(bunSrc, 'sqlite'), { recursive: true });
+        writeFileSync(join(bunSrc, 'index.ts'), 'export default {};\n');
+        writeFileSync(join(bunSrc, 'sqlite', 'index.ts'), 'export default class Database {}\n');
+        mkdirSync(utilsSrc, { recursive: true });
+        writeFileSync(join(utilsSrc, 'path.ts'), 'export {};\n');
         writeFileSync(entry, 'export {};\n');
 
         const initial = await new Deno.Command(execPath, {
@@ -164,11 +230,18 @@ Deno.test('setup: skips directory symlink loops in a local source tree', async (
     const root = makePosixTempDir('setup-symlink-loop');
     const cacheDir = join(root, 'cache');
     const nodeSrc = join(root, 'cno', 'src', 'node');
+    const bunSrc = join(root, 'cno', 'src', 'bun');
+    const utilsSrc = join(root, 'cno', 'src', 'utils');
     const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
 
     try {
         mkdirSync(join(nodeSrc, 'fs'), { recursive: true });
         writeFileSync(join(nodeSrc, 'fs', 'index.ts'), 'export const fsReady = true;\n');
+        mkdirSync(join(bunSrc, 'sqlite'), { recursive: true });
+        writeFileSync(join(bunSrc, 'index.ts'), 'export default {};\n');
+        writeFileSync(join(bunSrc, 'sqlite', 'index.ts'), 'export default class Database {}\n');
+        mkdirSync(utilsSrc, { recursive: true });
+        writeFileSync(join(utilsSrc, 'path.ts'), 'export {};\n');
         try {
             symlinkSync(nodeSrc, join(nodeSrc, 'loop'), 'junction');
         } catch {

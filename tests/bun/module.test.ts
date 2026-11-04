@@ -47,6 +47,22 @@ function outputOf(result: CommandResult): string {
     return `${result.stdout}\n${result.stderr}`;
 }
 
+function copyPolyfillSource(src: string, dst: string): void {
+    Deno.mkdirSync(dst, { recursive: true });
+    for (const entry of Deno.readDirSync(src)) {
+        const from = join(src, entry.name);
+        const to = join(dst, entry.name);
+        if (entry.isDirectory) copyPolyfillSource(from, to);
+        else if (entry.isFile && entry.name.endsWith('.ts')) Deno.copyFileSync(from, to);
+    }
+}
+
+function prepareCache(cacheDir: string): void {
+    for (const name of ['node', 'bun', 'utils']) {
+        copyPolyfillSource(join(Deno.cwd(), 'cno', 'src', name), join(cacheDir, name));
+    }
+}
+
 function jsonLine(result: CommandResult, prefix: string): Record<string, unknown> {
     const line = result.stdout.split(/\r?\n/).find((value) => value.startsWith(prefix));
     ok(line, `missing ${prefix} line in:\n${outputOf(result)}`);
@@ -220,6 +236,7 @@ Deno.test({ name: 'bun module: static, dynamic, and CJS views share API identity
         `);
 
         const cacheDir = join(root, 'cache');
+        prepareCache(cacheDir);
         const result = await runCno([
             'run',
             '--cached-only',
@@ -288,6 +305,7 @@ Deno.test({ name: 'bun module: unknown bun:* imports fail closed without npm or 
         await Deno.writeTextFile(staticEntry, `import ${JSON.stringify(specifier)};\n`);
 
         const cacheDir = join(root, 'cache-caught');
+        prepareCache(cacheDir);
         const caughtResult = await runCno([
             'run',
             `--cache-dir=${cacheDir}`,
@@ -306,6 +324,7 @@ Deno.test({ name: 'bun module: unknown bun:* imports fail closed without npm or 
         ok(!outputOf(caughtResult).includes('npm package'), outputOf(caughtResult));
 
         const staticCache = join(root, 'cache-static');
+        prepareCache(staticCache);
         const staticResult = await runCno([
             'run',
             `--cache-dir=${staticCache}`,

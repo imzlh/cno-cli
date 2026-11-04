@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -11,8 +11,8 @@ const revision = process.env.CNO_POLYFILL_REVISION
     || execFileSync('git', ['-C', join(root, 'cno'), 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 const slash = (path) => path.replaceAll('\\', '/');
 
-// The main bundle may contain exactly the Bun injector (plus the CTS bridge it
-// shares with the Node injector). Everything else under cno/src/bun is payload.
+// The main bundle may contain exactly the Bun injector. Implementations are
+// installed as TypeScript by `cno setup` and transformed on demand by CTS.
 test('embedded CLI bundle contains only the Bun injector', () => {
     const directory = mkdtempSync(join(tmpdir(), 'cno-bun-boundary-'));
     const outfile = join(directory, 'cno-cli.min.js');
@@ -30,34 +30,52 @@ test('embedded CLI bundle contains only the Bun injector', () => {
     assert.ok(inputs.includes('cno/src/node/_internal/cts-bridge.ts'));
 
     const text = readFileSync(outfile, 'utf8');
-    for (const marker of ['cno/src/bun', 'bun/sqlite', 'BunFile', 'randomUUIDv7', 'CryptoHasher']) {
+    // Setup necessarily names source-tree paths; implementation-only symbols
+    // are the reliable output boundary once setup owns Bun installation.
+    for (const marker of ['BunFile', 'randomUUIDv7', 'CryptoHasher']) {
         assert.ok(!text.includes(marker), `main bundle contains Bun implementation marker: ${marker}`);
     }
 });
 
-test('Bun payload bundles are self-contained ESM files', async () => {
-    const { buildBunPayload } = await import(pathToFileURL(join(root, 'scripts/bundle-bun.mjs')).href);
-    const outdir = mkdtempSync(join(tmpdir(), 'cno-bun-payload-'));
-    const result = await buildBunPayload({ mode: 'min', outdir });
-    const inputs = Object.keys(result.metafile.inputs).map(slash);
-    for (const forbidden of ['cno/src/bun/_internal/', 'cno/src/webapi/formdata.ts', 'cno/src/main.ts']) {
-        assert.ok(!inputs.some((input) => input.includes(forbidden)), `payload contains global bootstrap input: ${forbidden}`);
+test('release verification rejects stale Bun payloads in tar and zip archives', t => {
+    const directory = mkdtempSync(join(tmpdir(), 'cno-release-archives-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const stage = join(directory, 'stage');
+    const artifacts = join(directory, 'artifacts');
+    mkdirSync(join(stage, 'ext'), { recursive: true });
+    mkdirSync(join(stage, 'lib'), { recursive: true });
+    mkdirSync(artifacts);
+    for (const file of ['cno', 'cno.exe', 'ext/oxc.so', 'ext/oxc.dylib', 'ext/oxc.dll', 'lib/example.so']) {
+        writeFileSync(join(stage, file), 'fixture');
     }
-    assert.deepEqual(readdirSync(outdir).sort(), ['index.js', 'sqlite.js']);
-    for (const name of ['index.js', 'sqlite.js']) {
-        const text = readFileSync(join(outdir, name), 'utf8');
-        assert.ok(!/^\s*import\s/m.test(text), `${name} has a static import`);
-        assert.ok(!/\bimport\(/.test(text.replace(/"[^"]*"|'[^']*'/g, '')), `${name} has a dynamic import`);
-        assert.ok(!text.includes('/cno/src/'), `${name} references checkout sources`);
+    const tar = join(directory, 'clean.tar.gz');
+    const zip = join(directory, 'clean.zip');
+    execFileSync('tar', ['-czf', tar, '-C', stage, '.']);
+    execFileSync('zip', ['-qr', zip, '.'], { cwd: stage });
+    for (const target of ['x86_64', 'i386', 'arm64', 'armv7', 'armv6']) {
+        for (const prefix of ['cno-linux-', 'cno-linux-minimal-']) copyFileSync(tar, join(artifacts, `${prefix}${target}.tar.gz`));
     }
-});
+    for (const target of ['x86_64', 'i386', 'arm64', 'armv7', 'armv6', 'mips', 'mipsel', 'mips64', 'riscv64', 'armv5']) {
+        for (const prefix of ['cno-linux-musl-', 'cno-linux-musl-dynamic-']) copyFileSync(tar, join(artifacts, `${prefix}${target}.tar.gz`));
+    }
+    for (const target of ['x86_64', 'arm64']) copyFileSync(tar, join(artifacts, `cno-macos-${target}.tar.gz`));
+    for (const target of ['x64', 'arm64']) copyFileSync(zip, join(artifacts, `cno-windows-${target}.zip`));
+    const verify = () => spawnSync('sh', [join(root, 'scripts/ci/verify-release-artifacts.sh'), artifacts], { encoding: 'utf8' });
+    let result = verify();
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
 
-test('CMake stages and installs the Bun payload without runtime fallbacks', () => {
-    const cmake = readFileSync(join(root, 'CMakeLists.txt'), 'utf8');
-    assert.match(cmake, /_STAGE_DIR\}\/lib\/cno\/bun/);
-    assert.match(cmake, /DESTINATION "\$\{CMAKE_INSTALL_LIBDIR\}\/cno\/bun"/);
-    assert.match(cmake, /CNO_PREBUILT_BUN_DIR/);
-    // Payload files are never inputs to cjsc.
-    assert.doesNotMatch(cmake, /cjsc[^\n]*lib\/cno\/bun/);
-    assert.doesNotMatch(cmake, /file\(DOWNLOAD|FetchContent|git clone/i);
+    mkdirSync(join(stage, 'lib/cno/bun'), { recursive: true });
+    writeFileSync(join(stage, 'lib/cno/bun/index.js'), 'stale');
+    const badTar = join(artifacts, 'cno-linux-x86_64.tar.gz');
+    execFileSync('tar', ['-czf', badTar, '-C', stage, '.']);
+    result = verify();
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /contains a stale Bun payload under lib\/cno\/bun/);
+    copyFileSync(tar, badTar);
+    const badZip = join(artifacts, 'cno-windows-x64.zip');
+    execFileSync('zip', ['-qr', badZip, 'lib/cno/bun'], { cwd: stage });
+    result = verify();
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /contains a stale Bun payload under lib\/cno\/bun/);
 });

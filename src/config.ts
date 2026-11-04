@@ -6,7 +6,7 @@ import { readEnv } from './env';
 
 const MIN_USABLE_STACK_SIZE = 512 * 1024;
 
-const WORKER_RUNTIME_STRING_KEYS = ['cacheDir', 'lockDir', 'polyfill', 'bunDir', 'baseUrl', 'jsxPragma', 'jsxFragmentPragma'] as const satisfies readonly (keyof ConfigOptions)[];
+const WORKER_RUNTIME_STRING_KEYS = ['cacheDir', 'lockDir', 'polyfill', 'baseUrl', 'jsxPragma', 'jsxFragmentPragma'] as const satisfies readonly (keyof ConfigOptions)[];
 const WORKER_RUNTIME_BOOLEAN_KEYS = [
     'enableHttp', 'enableJsr', 'enableNode', 'enableCache', 'cachedOnly',
     'enableOxc', 'enableInlineSourceMap', 'frozen', 'disableLock', 'ignoreScripts', 'silent',

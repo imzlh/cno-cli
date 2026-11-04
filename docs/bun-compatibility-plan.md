@@ -61,7 +61,7 @@ implemented. Do not invent an upstream URL or publish anything.
 | Component | Responsibility |
 | --- | --- |
 | `cno/src/bun/_internal/inject.ts` | Tiny embedded bootstrap that installs only the lazy `globalThis.Bun` getter |
-| `cno/src/bun/` (excluding `_internal`) | Bun-facing payload built and installed separately from the CLI blob |
+| `cno/src/bun/` (excluding `_internal`) | Bun-facing TypeScript installed by `cno setup` and loaded on demand |
 | `@types/bun` | Upstream API declarations; not a runtime support guarantee |
 | `src/` | CLI composition/bootstrap and host adapters, if needed |
 | `cts/` | Small loader integration only; no Bun API implementation |
@@ -70,17 +70,20 @@ implemented. Do not invent an upstream URL or publish anything.
 | `tests/bun/` | Public behavior and integration regression coverage |
 
 The Bun implementation must not enter the embedded CLI bundle. The main blob
-contains only `_internal/inject.ts`, whose lazy getter asks the current realm's
-CTS bridge for the canonical `bun` module on first access. Self-contained
-file-backed payloads are staged and installed under `lib/cno/bun`; ordinary
-Deno/CNO startup neither reads nor evaluates them. Missing payloads therefore
-fail only when Bun is requested, without a network or source-checkout fallback.
+contains only `_internal/inject.ts`; its lazy getter currently calls the realm's
+`require('bun:index')`, which CTS normalizes to the canonical `bun` module. Raw
+sources are installed under `<cacheDir>/bun`; ordinary Deno/CNO startup neither
+reads nor evaluates them. Missing sources fail only when Bun is requested. The
+bootstrap/retry and multi-realm contract remains under review; do not infer it
+from this resolver alias.
 
 CTS reserves the complete `bun` / `bun:*` family before import maps, lockfiles,
-npm, packs, or network resolution. It maps only the supported canonical names
-to installed payload files while retaining `bun` and `bun:sqlite` as module
-identities. Do not hide Bun implementations in the Node builtin registry or
-make package resolution prefer the `bun` export condition globally.
+npm, packs, or network resolution. `bun` maps to `<cacheDir>/bun/index.ts`;
+`bun:index` is an alias for that same file and canonical identity. Other safe
+`bun:x` names map first to `<cacheDir>/bun/x.ts`, then to
+`<cacheDir>/bun/x/index.ts`, while retaining canonical `bun:x` identity. Do not
+hide Bun implementations in the Node builtin registry or make package
+resolution prefer the `bun` export condition globally.
 
 Do not rewrite import strings with regexes or bypass canonical module identity.
 The bare builtin `bun` must not trigger npm resolution; unknown `bun:*` modules
@@ -93,7 +96,7 @@ paths. Preserve existing Node builtin names and `--no-node` behavior.
 
 1. Create the `cno/src/bun/` component and integrate only its lazy bootstrap
    after the existing Web/Deno/Node prerequisites are available. Build all
-   implementation modules as separately staged, self-contained payload files.
+   implementation modules as setup-managed TypeScript sources.
 2. Install one `globalThis.Bun` object per JS context. Make the supported named
    exports and default export from `bun` refer to the same implementation.
    Support static/dynamic ESM import and the existing synchronous CJS bridge.
@@ -128,11 +131,11 @@ paths. Preserve existing Node builtin names and `--no-node` behavior.
    relocated/offline `.jspack` execution for the initial builtin. Runtime-provided
    modules must not acquire a dependency on the original checkout or be copied
    inconsistently into every pack. Include OXC and `--no-oxc` smoke paths.
-7. Wire declarations, root type-check inputs, bundle/build dependencies, and the
-   normal CI/test discovery path. A clean standalone installation includes the
-   payload beside the binary and never downloads it at runtime. Check that
-   incremental CMake rebuilds notice edits under the new directory and that the
-   CLI-bundle metafile contains no Bun implementation input.
+7. Wire declarations, root type-check inputs, setup/install dependencies, and
+   the normal CI/test discovery path. A clean standalone installation obtains
+   the revision-pinned raw sources through `cno setup`; runtime loading does not
+   download or precompile them. Check that the CLI-bundle metafile contains no
+   Bun implementation input.
 
 If a shared primitive cannot support an advertised behavior faithfully, reduce
 and document that overload instead of adding a broad native rewrite. The M1
@@ -195,8 +198,8 @@ code, command renaming, CLI impersonation, or broad README/website redesign.
 - [x] Hand the plan to Luna (`shareai/gpt-5.6-luna`).
 - [x] Install upstream `@types/bun` 1.4.4 and pass root type-check.
 - [x] Prepare a Bun 1.4.4 oracle and a shared differential fixture.
-- [x] Implement the M1 code slice: lazy global injection, separate file-backed
-  builtin payloads, lifecycle globals, file/write, HTTP-only serve,
+- [x] Implement the M1 code slice: lazy global injection, setup-managed builtin
+  sources, lifecycle globals, file/write, HTTP-only serve,
   cache/frozen/pack/worker integration, and focused tests. `bun:sqlite` was also
   started as an explicitly partial M2 slice.
 - [x] Finish the unified rebuilt-binary test pass: 35/35 Bun test files,
@@ -204,5 +207,5 @@ code, command renaming, CLI impersonation, or broad README/website redesign.
   executable; root and CTS type-checks plus the release bundle also pass.
 - [x] Add the supported/partial/unsupported matrix and examples in
   `cno/src/bun/README.md`.
-- [x] Parent review and focused commits for the cno payload, CTS loader, and
+- [x] Parent review and focused commits for the cno source tree, CTS loader, and
   root build/runtime integration.

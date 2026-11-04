@@ -19,6 +19,10 @@ check_archive() {
             exit 1
         fi
     done
+    if printf '%s\n' "$entries" | sed 's|^\./||' | grep -E '^lib/cno/bun(/|$)' >/dev/null; then
+        printf '%s contains a stale Bun payload under lib/cno/bun\n' "$archive" >&2
+        exit 1
+    fi
     if [ "$shared" = true ] && ! printf '%s\n' "$entries" | sed 's|^\./||' | \
             grep -E '^lib/[^/]+\.so(\.[^/]+)*$' >/dev/null; then
         printf '%s is missing bundled shared dependencies in lib/\n' "$archive" >&2

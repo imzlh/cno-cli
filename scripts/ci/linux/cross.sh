@@ -148,6 +148,12 @@ if [[ $big_endian == 1 ]]; then
     cmake --build "$build" --target cjsc --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
 fi
 cmake --build "$build" --target cno --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
+# CMake no longer stages Bun JavaScript payloads. Fail closed instead of
+# packaging a stale directory left by an older build in the same stage tree.
+if [[ -e "$build/stage/lib/cno/bun" || -L "$build/stage/lib/cno/bun" ]]; then
+    printf 'Refusing to package stale Bun payload: %s\n' "$build/stage/lib/cno/bun" >&2
+    exit 1
+fi
 
 binary="$build/stage/cno"
 "$triple-strip" "$binary"

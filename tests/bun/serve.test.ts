@@ -125,6 +125,64 @@ Deno.test('bun: serve rejects unsupported transport and routing options', () => 
     }
 });
 
+Deno.test({ name: 'bun: serve reload replaces handlers atomically without rebinding', timeout: 5000 }, async () => {
+    let fetchThis: unknown;
+    let errorThis: unknown;
+    const server = start({
+        hostname: '127.0.0.1',
+        port: 0,
+        fetch() { return new Response('original'); },
+    });
+    const port = server.port;
+    const url = server.url.href;
+    const reload = (options: unknown) => server.reload(options as Parameters<typeof server.reload>[0]);
+
+    try {
+        strictEqual(await (await fetch(url)).text(), 'original');
+        strictEqual(reload({}), server);
+        strictEqual(await (await fetch(url)).text(), 'original');
+        strictEqual(reload({
+            hostname: 'ignored.invalid', port: 1,
+            fetch(_request: Request, current: typeof server) {
+                fetchThis = this;
+                strictEqual(current, server);
+                throw new Error('new-fetch');
+            },
+            error(error: Error) {
+                errorThis = this;
+                return new Response(`new-error:${error.message}`, { status: 418 });
+            },
+        }), server);
+        strictEqual(server.port, port);
+        strictEqual(server.hostname, '127.0.0.1');
+        strictEqual(server.url.href, url);
+        let response = await fetch(url);
+        strictEqual(response.status, 418);
+        strictEqual(await response.text(), 'new-error:new-fetch');
+        strictEqual(fetchThis, server);
+        strictEqual(errorThis, server);
+
+        strictEqual(reload({ error: undefined }), server);
+        strictEqual(reload({ fetch: null, error: null }), server);
+        throws(() => reload({ fetch: 42, error: () => new Response('wrong') }), TypeError);
+        throws(() => reload({ fetch: () => new Response('wrong'), error: 42 }), TypeError);
+        throws(() => reload({ fetch: () => new Response('wrong'), port: -1 }), { code: 'ERR_OUT_OF_RANGE' });
+        let portReads = 0;
+        strictEqual(reload({ get port() { portReads++; return 1; } }), server);
+        strictEqual(portReads, 1);
+        throws(() => reload({ routes: {} }), /unsupported option "routes"/);
+        response = await fetch(url);
+        strictEqual(response.status, 418);
+        strictEqual(await response.text(), 'new-error:new-fetch');
+
+        strictEqual(reload({ fetch: () => new Response('replacement') }), server);
+        strictEqual(await (await fetch(url)).text(), 'replacement');
+    } finally {
+        await server.stop();
+    }
+    strictEqual(reload({}), server);
+});
+
 Deno.test({ name: 'bun: stop is graceful and does not claim force-close support', timeout: 5000 }, async () => {
     const started = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();

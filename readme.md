@@ -51,7 +51,8 @@ Keep the included `ext/` directory, and `lib/` when present, next to the `cno`
 executable. Some release variants use files from those directories at runtime.
 Add the extracted directory to `PATH` if you want to call `cno` from anywhere.
 
-Check the installation and prepare the Node.js compatibility files:
+Check the installation and prepare the raw TypeScript compatibility sources for
+Node.js, Bun, and shared utilities:
 
 ```sh
 cno --version
@@ -176,7 +177,7 @@ cno task dev
 | `cno cache [file]` | Prepare dependencies and update `cts.lock` |
 | `cno exec <bin> [args...]` | Run an npm package binary, similar to `pnpx` |
 | `cno pack <file>` | Package an entry and its dependencies as `.jspack` |
-| `cno setup` | Install or refresh Node.js compatibility files |
+| `cno setup` | Install or refresh raw TypeScript sources for Node.js, Bun, and shared utilities |
 
 Useful options include:
 

@@ -9,18 +9,20 @@ import { LockStore } from '../../cts/src/lock.ts';
 
 const decoder = new TextDecoder();
 
-function copyNodeSource(src: string, dst: string): void {
+function copyPolyfillSource(src: string, dst: string): void {
     mkdirSync(dst, { recursive: true });
     for (const entry of Deno.readDirSync(src)) {
         const srcPath = join(src, entry.name);
         const dstPath = join(dst, entry.name);
-        if (entry.isDirectory) copyNodeSource(srcPath, dstPath);
+        if (entry.isDirectory) copyPolyfillSource(srcPath, dstPath);
         else if (entry.isFile && entry.name.endsWith('.ts')) writeFileSync(dstPath, readFileSync(srcPath));
     }
 }
 
 function prepareLocalSetupSource(root: string): void {
-    copyNodeSource(join(Deno.cwd(), 'cno', 'src', 'node'), join(root, 'cno', 'src', 'node'));
+    for (const name of ['node', 'bun', 'utils']) {
+        copyPolyfillSource(join(Deno.cwd(), 'cno', 'src', name), join(root, 'cno', 'src', name));
+    }
 }
 
 // Thin wrapper over the shared fixture helper so the seeded content stays

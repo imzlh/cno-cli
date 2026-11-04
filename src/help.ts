@@ -38,7 +38,7 @@ ${C.bold('COMMANDS')}
   ${C.cyan('cache')}  ${C.cyan('<file>')}                  Pre-download deps and write lock
   ${C.cyan('pack')}   ${C.cyan('<file>')} [-o ${C.dim('<out.jspack>')}]     Pack an entry and its deps into a portable ${C.cyan('.jspack')} container
   ${C.cyan('repl')}                           Start an interactive TypeScript REPL
-  ${C.cyan('setup')}                          Install Node polyfills from the checkout or this CLI's pinned revision
+  ${C.cyan('setup')}                          Install raw Node/Bun/shared TypeScript sources from the checkout or pinned revision
   ${C.cyan('test')}   [paths…]                Run test files matching ${C.cyan('[._]test.[jt]sx?')}
 
   ${C.dim(`If the first argument is a file path, ${C.cyan('cno run')} is implied.`)}

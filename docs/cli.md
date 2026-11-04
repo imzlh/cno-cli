@@ -42,7 +42,7 @@ the main process, test children, and workers share the same exit boundary.
 | `task [name]` | `src/commands/task.ts` | Runs deno/package task definitions |
 | `cache [file]` | `src/commands/cache.ts` | Resolves graph and writes lock |
 | `pack <file>` | `src/commands/pack.ts` | Writes a self-contained `.jspack` module container |
-| `setup` | `src/commands/setup.ts` | Installs Node builtin polyfills into cache |
+| `setup` | `src/commands/setup.ts` | Installs raw Node, Bun, and shared TypeScript sources into cache |
 | `exec <bin>` | `src/commands/bin.ts` | Resolves and spawns npm/package binaries |
 
 `serve` evaluates the entry module, reads its default export, and starts
@@ -285,17 +285,28 @@ with `cno cache`.
 
 ## Setup Command
 
-`cno setup` installs Node builtin polyfill `.ts` files to:
+`cno setup` installs raw TypeScript sources for Node builtins, Bun builtins, and
+shared utilities to:
 
 ```text
 <cacheDir>/node
+<cacheDir>/bun
+<cacheDir>/utils
 ```
 
-It prefers a local checkout source such as `cno/src/node`. If no local source is
-found, it can fetch files from GitHub.
+It prefers local checkout sources such as `cno/src/node`, `cno/src/bun`, and
+`cno/src/utils`. If no local source is found, it can fetch these files from
+GitHub. Setup does not precompile Bun sources; CTS transforms and caches raw
+TypeScript as it is loaded.
 
-After editing only `cno/src/node/`, running setup is usually enough to refresh
-the staged runtime cache.
+The bare `bun` specifier and `bun:index` resolve to `<cacheDir>/bun/index.ts`.
+For `bun:x`, CTS first checks `<cacheDir>/bun/x.ts`, then
+`<cacheDir>/bun/x/index.ts`. Supported names are resolved as builtins before
+import maps, npm, or network lookup; other `bun:*` names are reserved and may
+fail as unknown builtins.
+
+After editing only the staged polyfill sources, running setup is usually enough
+to refresh the runtime cache.
 
 ## Test Command
 

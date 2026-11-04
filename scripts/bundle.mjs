@@ -73,11 +73,10 @@ const common = {
     keepNames:          true,
     metafile:           true,
     plugins: [{
-        name: 'no-embedded-bun-payload',
+        name: 'no-embedded-bun-implementation',
         setup(builder) {
             // The injector is the only Bun file the CLI bundle may contain. It
-            // resolves the real implementation at runtime from the staged
-            // lib/cno/bun payload (see scripts/bundle-bun.mjs).
+            // resolves setup-installed TypeScript through CTS on first access.
             builder.onLoad({ filter: /[/\\]cno[/\\]src[/\\]bun[/\\]/ }, ({ path }) => {
                 if (resolve(path) === BUN_INJECTOR) return null;
                 return { errors: [{ text: `Bun implementation cannot enter the embedded CLI bundle: ${path}` }] };

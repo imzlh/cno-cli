@@ -296,9 +296,10 @@ Common root options:
 `CNO_EMBED_EXT_H2` requires nghttp2. `CNO_EMBED_EXT_QUIC` requires the quicly
 submodule and OpenSSL.
 
-## Setup After Node Polyfill Changes
+## Setup After Node Or Bun Polyfill Changes
 
-If only `cno/src/node/` changed, refresh the staged Node polyfill cache:
+If only `cno/src/node/`, `cno/src/bun/`, or shared `cno/src/utils/` changed,
+refresh the staged source cache:
 
 ```sh
 build/stage/cno setup
@@ -306,10 +307,12 @@ build/stage/cno setup
 
 Broader changes usually need a rebuild.
 
-Outside a checkout, `cno setup` fetches Node polyfills at the exact cno submodule
-commit embedded when the CLI was bundled. It refreshes an installed cache when
-that bundled revision changes. To deliberately install another immutable
-revision (including when running inside a checkout), use:
+`cno setup` installs raw TypeScript under `<cacheDir>/node`, `<cacheDir>/bun`,
+and `<cacheDir>/utils`; CTS transforms it on demand. There is no build-time Bun
+payload. Outside a checkout, setup fetches these sources at the exact cno
+submodule commit embedded when the CLI was bundled. It refreshes an installed
+cache when that bundled revision changes. To deliberately install another
+immutable revision (including when running inside a checkout), use:
 
 ```sh
 cno setup --polyfill-revision=<full-40-character-commit-sha>

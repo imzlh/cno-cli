@@ -120,23 +120,37 @@ Buffer
 It also attaches an internal `__cno` object to the native `http` module for
 Node HTTP server integration.
 
-## Node Polyfill Installation
+## Polyfill Installation
 
-CTS resolves `node:` builtins from:
+CTS resolves Node builtins from:
 
 ```text
 <cacheDir>/node
 ```
 
-`cno setup` populates that directory. In a development checkout, it copies from
-local `cno/src/node` when available:
+`cno setup` also populates the Bun and shared utility source trees:
+
+```text
+<cacheDir>/bun
+<cacheDir>/utils
+```
+
+It copies raw `.ts` files from local `cno/src/node`, `cno/src/bun`, and
+`cno/src/utils` when available:
 
 ```sh
 build/stage/cno setup
 ```
 
-If no local source is found, setup can fetch source files from the upstream
-GitHub path.
+If no local source is found, setup can fetch these source files from the
+upstream GitHub path. Setup does not precompile Bun sources; CTS transforms and
+caches them on demand.
+
+The bare `bun` specifier and `bun:index` both use `<cacheDir>/bun/index.ts`.
+For `bun:x`, resolution checks `<cacheDir>/bun/x.ts` first and then
+`<cacheDir>/bun/x/index.ts`. Supported Bun builtins are resolved before import
+maps, npm, or network lookup; unknown `bun:*` names remain reserved and can
+fail as unknown builtins.
 
 ## CNO Namespace
 

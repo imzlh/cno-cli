@@ -53,6 +53,22 @@ function outputOf(result: CommandResult): string {
     return `${result.stdout}\n${result.stderr}`;
 }
 
+function copyPolyfillSource(src: string, dst: string): void {
+    Deno.mkdirSync(dst, { recursive: true });
+    for (const entry of Deno.readDirSync(src)) {
+        const from = join(src, entry.name);
+        const to = join(dst, entry.name);
+        if (entry.isDirectory) copyPolyfillSource(from, to);
+        else if (entry.isFile && entry.name.endsWith('.ts')) Deno.copyFileSync(from, to);
+    }
+}
+
+function prepareCache(cacheDir: string): void {
+    for (const name of ['node', 'bun', 'utils']) {
+        copyPolyfillSource(join(Deno.cwd(), 'cno', 'src', name), join(cacheDir, name));
+    }
+}
+
 function jsonLine(result: CommandResult, prefix: string): Record<string, unknown> {
     const line = result.stdout.split(/\r?\n/).find((value) => value.startsWith(prefix));
     ok(line, `missing ${prefix} line in:\n${outputOf(result)}`);
@@ -69,6 +85,7 @@ async function runBunProbe(
     cacheDir: string,
     options: string[],
 ): Promise<Record<string, unknown>> {
+    prepareCache(cacheDir);
     const result = await runCno([
         'run',
         `--cache-dir=${cacheDir}`,
@@ -141,6 +158,7 @@ Deno.test({ name: 'bun cli: run accepts an absolute env file and observes lifecy
 Deno.test({ name: 'bun cli: eval loads the builtin after environment setup and supports print', timeout: 30000 }, async () => {
     await withTempDir('bun-cli-eval', async (root) => {
         const cacheDir = join(root, 'cache-eval');
+        prepareCache(cacheDir);
         const code = `
             import Bun, { env, sleep } from 'bun';
             const started = Date.now();
@@ -170,9 +188,11 @@ Deno.test({ name: 'bun cli: eval loads the builtin after environment setup and s
         ok(normalizedPath(probe.main).includes('<eval>'), String(probe.main));
         strictEqual(probe.delayed, true);
 
+        const printCache = join(root, 'cache-print');
+        prepareCache(printCache);
         const printed = await runCno([
             'eval',
-            `--cache-dir=${join(root, 'cache-print')}`,
+            `--cache-dir=${printCache}`,
             '--cached-only',
             '--no-http',
             '--no-jsr',
@@ -181,7 +201,7 @@ Deno.test({ name: 'bun cli: eval loads the builtin after environment setup and s
             '--no-oxc',
             '-p',
             '!Object.hasOwn(await import("bun"), "default")',
-        ], root, join(root, 'cache-print'));
+        ], root, printCache);
         strictEqual(printed.code, 0, outputOf(printed));
         strictEqual(printed.stdout.trim(), 'true');
     });
@@ -214,6 +234,7 @@ Deno.test({ name: 'bun cli: bare bun works offline with --no-node while node bui
         `);
 
         const cacheDir = join(root, 'cache');
+        prepareCache(cacheDir);
         const result = await runCno([
             'run',
             '--cached-only',

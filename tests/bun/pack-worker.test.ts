@@ -53,18 +53,26 @@ function jsonLine(result: CommandResult, prefix: string): Record<string, unknown
     return JSON.parse(line.slice(prefix.length)) as Record<string, unknown>;
 }
 
-function copyNodeSource(src: string, dst: string): void {
+function copyPolyfillSource(src: string, dst: string): void {
     Deno.mkdirSync(dst, { recursive: true });
     for (const entry of Deno.readDirSync(src)) {
         const from = join(src, entry.name);
         const to = join(dst, entry.name);
-        if (entry.isDirectory) copyNodeSource(from, to);
+        if (entry.isDirectory) copyPolyfillSource(from, to);
         else if (entry.isFile && entry.name.endsWith('.ts')) Deno.copyFileSync(from, to);
     }
 }
 
 function prepareLocalSetupSource(root: string): void {
-    copyNodeSource(join(Deno.cwd(), 'cno', 'src', 'node'), join(root, 'cno', 'src', 'node'));
+    for (const name of ['node', 'bun', 'utils']) {
+        copyPolyfillSource(join(Deno.cwd(), 'cno', 'src', name), join(root, 'cno', 'src', name));
+    }
+}
+
+function prepareCache(cacheDir: string): void {
+    for (const name of ['node', 'bun', 'utils']) {
+        copyPolyfillSource(join(Deno.cwd(), 'cno', 'src', name), join(cacheDir, name));
+    }
 }
 
 Deno.test({ name: 'bun cli: cache, precache, and frozen runs keep bun out of the lock boundary', timeout: 90000 }, async () => {
@@ -80,6 +88,7 @@ Deno.test({ name: 'bun cli: cache, precache, and frozen runs keep bun out of the
         `);
 
         const cacheDir = join(root, 'cache');
+        prepareCache(cacheDir);
         const cached = await runCno([
             'cache',
             '--silent',
@@ -112,6 +121,8 @@ Deno.test({ name: 'bun cli: cache, precache, and frozen runs keep bun out of the
         strictEqual(frozenProbe.marker, 'CACHE_DEP_OK');
         strictEqual(frozenProbe.identity, true);
 
+        const precacheCache = join(root, 'cache-precache');
+        prepareCache(precacheCache);
         const precache = await runCno([
             'run',
             '--precache',
@@ -120,10 +131,10 @@ Deno.test({ name: 'bun cli: cache, precache, and frozen runs keep bun out of the
             '--no-jsr',
             '--no-node',
             '--no-oxc',
-            `--cache-dir=${join(root, 'cache-precache')}`,
+            `--cache-dir=${precacheCache}`,
             `--lock-dir=${join(root, 'lock-precache')}`,
             entry,
-        ], root, join(root, 'cache-precache'));
+        ], root, precacheCache);
         strictEqual(precache.code, 0, outputOf(precache));
         strictEqual(jsonLine(precache, 'BUN_CACHE:').identity, true);
 
@@ -157,6 +168,8 @@ Deno.test({ name: 'bun cli: a relocated offline jspack runs without the source c
         const relocated = join(root, 'relocated');
         const projectCache = join(root, 'pack-cache');
         const offlineCache = join(root, 'offline-cache');
+        prepareCache(projectCache);
+        prepareCache(offlineCache);
         Deno.mkdirSync(project, { recursive: true });
         Deno.mkdirSync(relocated, { recursive: true });
         await Deno.writeTextFile(join(project, 'payload.ts'), `export const marker = 'PACK_BUN_OK';\n`);
@@ -212,7 +225,11 @@ Deno.test({ name: 'bun cli: a relocated offline jspack runs without the source c
             '--no-lock',
             '--no-oxc',
             relocatedPack,
-        ], relocated, join(root, 'offline-cache-second-run'));
+        ], relocated, (() => {
+            const cache = join(root, 'offline-cache-second-run');
+            prepareCache(cache);
+            return cache;
+        })());
         strictEqual(secondRun.code, 0, outputOf(secondRun));
         const secondProbe = jsonLine(secondRun, 'BUN_PACK:');
         strictEqual(secondProbe.marker, 'PACK_BUN_OK');
@@ -229,7 +246,7 @@ Deno.test({ name: 'bun cli: worker contexts install an independent Bun object an
         const worker = join(root, 'worker.ts');
         const entry = join(root, 'entry.ts');
         await Deno.writeTextFile(worker, `
-            import Bun, { argv, env, main, sleep } from 'bun';
+            import Bun, { argv, env, main, sleep, fetch as bunFetch, isMainThread } from 'bun';
             import { parentPort } from 'node:worker_threads';
             const marker = '__cno_bun_worker_marker';
             Reflect.set(Bun, marker, true);
@@ -237,6 +254,9 @@ Deno.test({ name: 'bun cli: worker contexts install an independent Bun object an
             await sleep(2);
             parentPort!.postMessage({
                 global: Bun === globalThis.Bun,
+                threadAndFetch: !isMainThread && isMainThread === Bun.isMainThread
+                    && bunFetch === Bun.fetch && bunFetch !== globalThis.fetch
+                    && dynamic.fetch === Bun.fetch && dynamic.isMainThread === Bun.isMainThread,
                 staticNamed: argv === Bun.argv && env === Bun.env && main === Bun.main && sleep === Bun.sleep,
                 dynamicDefaultAbsent: !Object.hasOwn(dynamic, 'default'),
                 dynamicNamed: dynamic.argv === Bun.argv && dynamic.env === Bun.env
@@ -246,7 +266,7 @@ Deno.test({ name: 'bun cli: worker contexts install an independent Bun object an
             });
         `);
         await Deno.writeTextFile(entry, `
-            import Bun from 'bun';
+            import Bun, { fetch as bunFetch, isMainThread } from 'bun';
             import { Worker } from 'node:worker_threads';
 
             const child = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
@@ -264,6 +284,8 @@ Deno.test({ name: 'bun cli: worker contexts install an independent Bun object an
             await child.terminate();
             console.log('BUN_WORKER:' + JSON.stringify({
                 main: Bun === globalThis.Bun,
+                threadAndFetch: isMainThread && isMainThread === Bun.isMainThread
+                    && bunFetch === Bun.fetch && bunFetch !== globalThis.fetch,
                 mainMarker: Reflect.get(Bun, '__cno_bun_worker_marker') === undefined,
                 worker: message,
             }));
@@ -282,9 +304,10 @@ Deno.test({ name: 'bun cli: worker contexts install an independent Bun object an
         strictEqual(result.code, 0, outputOf(result));
         const probe = jsonLine(result, 'BUN_WORKER:');
         strictEqual(probe.main, true);
+        strictEqual(probe.threadAndFetch, true);
         strictEqual(probe.mainMarker, true);
         const workerProbe = probe.worker as Record<string, unknown>;
-        for (const key of ['global', 'staticNamed', 'dynamicDefaultAbsent', 'dynamicNamed', 'workerMarker']) {
+        for (const key of ['global', 'staticNamed', 'dynamicDefaultAbsent', 'dynamicNamed', 'workerMarker', 'threadAndFetch']) {
             strictEqual(workerProbe[key], true, key);
         }
         ok(String(workerProbe.main).replaceAll('\\', '/').endsWith('/worker.ts'), String(workerProbe.main));
@@ -296,7 +319,7 @@ Deno.test({ name: 'bun cli: Web Worker contexts load bun without Node compatibil
         const worker = join(root, 'worker.ts');
         const entry = join(root, 'entry.ts');
         await Deno.writeTextFile(worker, `
-            import Bun, { argv, env, main, sleep } from 'bun';
+            import Bun, { argv, env, main, sleep, fetch as bunFetch, isMainThread } from 'bun';
             const marker = '__cno_bun_web_worker_marker';
             Reflect.set(Bun, marker, true);
             const dynamic = await import('bun');
@@ -305,6 +328,9 @@ Deno.test({ name: 'bun cli: Web Worker contexts load bun without Node compatibil
             self.onmessage = () => {
                 self.postMessage({
                     global: Bun === globalThis.Bun,
+                    threadAndFetch: !isMainThread && isMainThread === Bun.isMainThread
+                        && bunFetch === Bun.fetch && bunFetch !== globalThis.fetch
+                        && dynamic.fetch === Bun.fetch && dynamic.isMainThread === Bun.isMainThread,
                     staticNamed: argv === Bun.argv && env === Bun.env
                         && main === Bun.main && sleep === Bun.sleep,
                     dynamicDefaultAbsent: !Object.hasOwn(dynamic, 'default'),
@@ -316,7 +342,7 @@ Deno.test({ name: 'bun cli: Web Worker contexts load bun without Node compatibil
             };
         `);
         await Deno.writeTextFile(entry, `
-            import Bun from 'bun';
+            import Bun, { fetch as bunFetch, isMainThread } from 'bun';
 
             const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
             const message = await new Promise((resolve, reject) => {
@@ -338,12 +364,15 @@ Deno.test({ name: 'bun cli: Web Worker contexts load bun without Node compatibil
             worker.terminate();
             console.log('BUN_WEB_WORKER:' + JSON.stringify({
                 main: Bun === globalThis.Bun,
+                threadAndFetch: isMainThread && isMainThread === Bun.isMainThread
+                    && bunFetch === Bun.fetch && bunFetch !== globalThis.fetch,
                 mainMarker: Reflect.get(Bun, '__cno_bun_web_worker_marker') === undefined,
                 worker: message,
             }));
         `);
 
         const cacheDir = join(root, 'cache');
+        prepareCache(cacheDir);
         const result = await runCno([
             'run',
             '--cached-only',
@@ -358,9 +387,10 @@ Deno.test({ name: 'bun cli: Web Worker contexts load bun without Node compatibil
         strictEqual(result.code, 0, outputOf(result));
         const probe = jsonLine(result, 'BUN_WEB_WORKER:');
         strictEqual(probe.main, true);
+        strictEqual(probe.threadAndFetch, true);
         strictEqual(probe.mainMarker, true);
         const workerProbe = probe.worker as Record<string, unknown>;
-        for (const key of ['global', 'staticNamed', 'dynamicDefaultAbsent', 'dynamicNamed', 'workerMarker']) {
+        for (const key of ['global', 'staticNamed', 'dynamicDefaultAbsent', 'dynamicNamed', 'workerMarker', 'threadAndFetch']) {
             strictEqual(workerProbe[key], true, key);
         }
         ok(String(workerProbe.main).replaceAll('\\', '/').endsWith('/worker.ts'), String(workerProbe.main));
