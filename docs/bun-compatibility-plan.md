@@ -244,3 +244,39 @@ code, command renaming, CLI impersonation, or broad README/website redesign.
   is 42/45 with only the three timing-class files (cli, module, pack-worker)
   failing, as documented. Root and CTS type-checks pass; boundary lane
   unchanged from HEAD.
+- [ ] Fourth pass (2026-11-05, implementation complete; consolidated serial
+  verification in progress): `Bun.serve({ routes })` now supports bounded
+  exact-path handlers, static `Response` values, method maps, routes-only
+  servers, fallback, and atomic route-table reload. Static response snapshots
+  are eagerly read, limited to 16 MiB/16,384 chunks per response and a
+  process-wide 32 MiB cache budget (including reload overlap); unused tables
+  release snapshots, and static `HEAD` responses avoid a body copy. Response
+  streams are copied in bounded 64 KiB chunks, and response/table finalizers
+  release retained snapshot state after consumption, cancellation, reload, or
+  garbage collection. Parameters,
+  wildcards, directory/BunFile/HTML routes, TLS, and WebSockets remain outside
+  the subset. `Bun.write(path, Request)` now uses the existing staged stream
+  path, handles bodyless requests as truncation, and rejects used or locked
+  bodies; Request stream writes to fixed stdio handles remain unsupported.
+  Added `Bun.unsafe.memoryFootprint()` as a Linux-only, best-effort
+  `/proc/self/smaps_rollup` PSS reader returning `undefined` on unsupported or
+  malformed hosts. `Bun.unsafe.arrayBufferToString()` now provides a copying
+  ASCII `ArrayBuffer`/`Uint8Array` path and a copying `Uint16Array` path;
+  non-ASCII byte input and unsupported views are rejected. `Bun.shrink()` is a
+  best-effort engine collection request. `Bun.isStandaloneExecutable` and
+  `Bun.embeddedFiles` are truthful frozen feature-detection values (`false`
+  and an empty list) because cno does not produce Bun compile artifacts.
+  `Bun.color` now accepts numeric typed-array and StringLike inputs, supports
+  deterministic foreground ANSI-256 output (`ansi-256`, `ansi_256`, `ansi256`),
+  and rejects malformed/non-finite CSS functional input; ANSI-16 and automatic
+  ANSI remain unsupported.
+  `ArrayBufferSink` restores cross-realm binary brand checks without silently
+  coercing arbitrary array-like inputs, and `Bun.dns` exposes stable Bun flag
+  values for the host DNS bridge. Focused coverage was added for routes,
+  Request writes, unsafe, ANSI-256/StringLike/typed-array parser cases,
+  standalone feature detection, and sink/DNS edges. The earlier ten-case Node
+  route-unit lane passed before the later aggregate-budget, 64 KiB stream-copy,
+  and finalizer work; the updated route-budget lane and all newly added focused
+  lanes still require serial reruns. `cno` type-check, staged runtime tests,
+  and the payload-boundary lane also remain required, so this checkbox stays
+  open until the maintainer's final verification.
