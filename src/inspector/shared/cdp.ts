@@ -1,5 +1,9 @@
 /** CDP value shapes that cross the wire. */
 
+import { isRecord } from '../../../cts/src/utils/misc';
+
+export { isRecord };
+
 /** CDP RemoteObject `type` tag. */
 export type RemoteObjectType =
 	| 'object' | 'function' | 'undefined' | 'string' | 'number' | 'boolean' | 'symbol' | 'bigint';
@@ -18,10 +22,6 @@ export interface CDPMessage {
 	result?: unknown;
 	error?: { code: number; message: string };
 	sessionId?: string;
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Parse a JSON CDP frame and copy only fields with the expected wire shape. */
@@ -250,4 +250,32 @@ export interface FetchFailRequestParams {
 }
 export interface FetchContinueResponseParams {
 	requestId: string
+}
+
+/** CDP RemoteObject number shape, including the unserializable specials. */
+export function serializeNumber(value: number): RemoteObject {
+	if (Number.isNaN(value)) return { type: 'number', unserializableValue: 'NaN', description: 'NaN' }
+	if (value === Infinity) return { type: 'number', unserializableValue: 'Infinity', description: 'Infinity' }
+	if (value === -Infinity) return { type: 'number', unserializableValue: '-Infinity', description: '-Infinity' }
+	if (Object.is(value, -0)) return { type: 'number', unserializableValue: '-0', description: '0' }
+	return { type: 'number', value, description: String(value) }
+}
+
+export function safeString(v: unknown): string {
+	try {
+		return String(v)
+	} catch {
+		return '<unprintable>'
+	}
+}
+
+type InspectableFunction = object & { name?: string }
+
+export function safeFnString(fn: InspectableFunction): string {
+	try {
+		const s = Function.prototype.toString.call(fn)
+		return s.length > 200 ? s.slice(0, 200) + '…' : s
+	} catch {
+		return `function ${fn.name || ''}() { … }`
+	}
 }

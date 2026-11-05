@@ -1,3 +1,4 @@
+import { isRecord } from '../../cts/src/utils/misc';
 import { joinPaths, stripJsonc } from '../../cts/src/utils';
 import type { ConfigOptions } from '../../cts/src/types';
 import { flagsToConfig } from '../config';
@@ -7,9 +8,6 @@ const engine = import.meta.use('engine');
 
 type JsonObject = Record<string, unknown>;
 
-function isRecord(value: unknown): value is JsonObject {
-    return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function readJsonObject(path: string): JsonObject | null {
     try {

@@ -6,6 +6,7 @@ import { ensureDirectorySync } from '../../cno/src/utils/fs-path';
 import { normalize, resolvePath, pathParents, dirname, join } from '../../cno/src/utils/path';
 import { log } from '../../cts/src/utils/log';
 import { readEnv } from '../env';
+import { isRecord } from '../../cts/src/utils/misc';
 import { bundledPolyfillRevision, requirePolyfillRevision } from '../polyfill-version';
 
 const os = import.meta.use('os');
@@ -142,9 +143,6 @@ function clearSourceBytecode(path: string): void {
     unlinkIfPresent(path + '.jsc.mt');
 }
 
-function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
-    return value !== null && typeof value === 'object';
-}
 
 function parseGitHubTreeResponse(raw: string): GitHubTreeResponse {
     const parsed: unknown = JSON.parse(raw);

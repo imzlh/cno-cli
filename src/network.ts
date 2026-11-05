@@ -51,7 +51,7 @@ function parseProxyUrl(raw: string, defaultType: ProxyType = 'http'): Omit<Proxy
  * is read first, as curl prefers it.
  */
 function envNoProxy(): string | null {
-    return readEnv('no_proxy') ?? readEnv('NO_PROXY');
+    return readEnv('no_proxy') ?? readEnv('NO_PROXY') ?? null;
 }
 
 /**
@@ -60,7 +60,7 @@ function envNoProxy(): string | null {
  */
 function readEnvConfigs(): EnvProxyConfigs | null {
     const noProxy = envNoProxy();
-    const all = readEnv('all_proxy') ?? readEnv('ALL_PROXY');
+    const all = readEnv('all_proxy') ?? readEnv('ALL_PROXY') ?? null;
     const http = readEnv('http_proxy') ?? readEnv('HTTP_PROXY') ?? all;
     const https = readEnv('https_proxy') ?? readEnv('HTTPS_PROXY') ?? all;
     const specified = { http: http !== null, https: https !== null };

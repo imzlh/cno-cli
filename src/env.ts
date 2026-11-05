@@ -1,17 +1,11 @@
 import { hasSchemeId, resolvePath } from '../cts/src/utils/path';
+import { readEnv } from '../cts/src/utils/env';
+
+export { readEnv };
 
 const os = import.meta.use('os');
 const fs = import.meta.use('fs');
 const engine = import.meta.use('engine');
-
-/** Read an environment variable without turning an unset value into an exception. */
-export function readEnv(name: string): string | null {
-    try {
-        return os.getenv(name) ?? null;
-    } catch {
-        return null;
-    }
-}
 export type EnvWarn = (message: string) => void;
 
 function resolveEnvFilePath(path: string): string {

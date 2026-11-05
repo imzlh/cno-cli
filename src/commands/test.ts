@@ -5,6 +5,7 @@ import { CliExit } from '../command-error';
 import { C } from '../help';
 import { readTestChildResult, type TestChildMessage } from './test-result-pipe';
 import { readEnv } from '../env';
+import { isRecord } from '../../cts/src/utils/misc';
 
 const os = import.meta.use('os');
 const console = import.meta.use('console');
@@ -350,9 +351,6 @@ interface TestResult {
     failedTests:  FailedTest[];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
 
 function failureText(error: unknown): string {
     if (typeof error === 'string') return error;

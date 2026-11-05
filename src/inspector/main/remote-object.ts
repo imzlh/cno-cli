@@ -13,6 +13,7 @@ import type {
 
 const MAX_PREVIEW_PROPS = 5;
 const MAX_STR = 100;
+import { serializeNumber, safeFnString, safeString } from '../shared/cdp';
 type InspectableFunction = object & { name?: string };
 const MAX_PROPS = 500; // cap getProperties to avoid oversized WS frames
 
@@ -159,30 +160,8 @@ export class Serializer {
 type PropertyDescriptorRaw = TypedPropertyDescriptor<unknown> & { value?: unknown; writable?: boolean };
 
 // ── helpers ─────────────────────────────────────────────────────
-function serializeNumber(value: number): RemoteObject {
-	if (Number.isNaN(value)) return { type: 'number', unserializableValue: 'NaN', description: 'NaN' };
-	if (value === Infinity)  return { type: 'number', unserializableValue: 'Infinity', description: 'Infinity' };
-	if (value === -Infinity) return { type: 'number', unserializableValue: '-Infinity', description: '-Infinity' };
-	if (Object.is(value, -0)) return { type: 'number', unserializableValue: '-0', description: '0' };
-	return { type: 'number', value, description: String(value) };
-}
 
-function safeString(v: unknown): string {
-	try {
-		return String(v);
-	} catch {
-		return '<unprintable>';
-	}
-}
 
-function safeFnString(fn: InspectableFunction): string {
-	try {
-		const s = Function.prototype.toString.call(fn);
-		return s.length > 200 ? s.slice(0, 200) + '…' : s;
-	} catch {
-		return `function ${fn.name || ''}() { … }`;
-	}
-}
 
 function objectSubtype(value: unknown): RemoteObjectSubtype | undefined {
 	if (Array.isArray(value)) return 'array';

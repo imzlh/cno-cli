@@ -124,3 +124,18 @@
   .cjs 文件不走该重写。
 - 修复：测试 worker 改用 ESM（.mjs / eval ESM）。给用户侧代码写文档时
   注意：`import.meta.*` 只能出现在模块源，不能出现在裸 CJS。
+
+### 14. inspector 启动解码 ~130KiB：拆分方案已调查，待 circu.js 发版窗口（2026-11-06）
+- 现状：esbuild 单 chunk 内联全部动态 import，cjsc 单 blob 自 attach；
+  `circu.js/src/vm.c` 一次 `JS_ReadObject` 全量反序列化，CMakeLists 注明
+  启动成本被 blob 解码主导。inspector 主线程图+worker 图每次启动都解码，
+  但仅 --inspect 会话需要。
+- 调查结论（方案 B，最小可行）：debug worker 由 C 直接 eval 第二 blob
+  （新 entry = polyfill + worker bootstrap）。仓内改动小（bundle.mjs 双
+  entry + CMakeLists 第二条 cjsc 命令 + 新 entry 文件），但绕不开 circu.js：
+  `mod_worker.c:1268` 硬编码 worker 跑同一 blob、`binary.c` 单一 blob 符号、
+  无第二 blob 装载机制——需要一次 circu.js 发版 + 子模块指针更新 + 6 CI
+  目标回归。
+- 方案 C（splitting:true 全量拆）不推荐：运行时无内嵌 chunk 注册表，
+  需在 modules.c 新增子系统，风险远超收益。
+- 前置动作：落地前先带 `CNO_BUNDLE_METAFILE=1` 构建实测两个图的精确字节。

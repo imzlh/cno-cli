@@ -83,9 +83,9 @@ export class Inspector {
 	}
 
 	async attach(): Promise<void> {
-		const state = this.state ?? 'idle'
+		const state = this.state
 		if (state !== 'idle') throw new Error(`Inspector is already ${state}`)
-		const generation = (this.generation ?? 0) + 1
+		const generation = this.generation + 1
 		this.generation = generation
 		this.state = 'attaching'
 		this.stoppingWorker = false
@@ -240,7 +240,7 @@ export class Inspector {
 
 	waitForConnection(timeoutMs?: number): Promise<void> {
 		if (this.connected) return Promise.resolve()
-		if ((this.state ?? 'idle') === 'stopping') return Promise.reject(new Error('Inspector is stopping'))
+		if (this.state === 'stopping') return Promise.reject(new Error('Inspector is stopping'))
 		return new Promise<void>((resolve, reject) => {
 			let timeout: ReturnType<typeof timers.setTimeout> | null = null
 			const waiter = {
@@ -266,7 +266,7 @@ export class Inspector {
 
 	waitForDebugger(): Promise<void> {
 		if (this.runtimeReady) return Promise.resolve()
-		if ((this.state ?? 'idle') === 'stopping') return Promise.reject(new Error('Inspector is stopping'))
+		if (this.state === 'stopping') return Promise.reject(new Error('Inspector is stopping'))
 		if (!this.connected && this.disconnectError) return Promise.reject(this.disconnectError)
 		return new Promise<void>((resolve, reject) => {
 			this.runtimeReadyWaiters.add({ resolve, reject })
@@ -279,7 +279,7 @@ export class Inspector {
 	}
 
 	async detach(): Promise<void> {
-		const state = this.state ?? 'idle'
+		const state = this.state
 		if (state === 'idle') {
 			this.rejectWaiters(new Error('Inspector stopped before the requested state was reached'))
 			return
@@ -289,10 +289,10 @@ export class Inspector {
 	}
 
 	/**
-	 * Synchronous force-stop for Ctrl+X path.
+	 * Synchronous force-stop for the Ctrl-C/TTY shutdown path.
 	 */
 	forceStop(): void {
-		const state = this.state ?? 'idle'
+		const state = this.state
 		if (state === 'idle') {
 			this.rejectWaiters(new Error('Inspector stopped before the requested state was reached'))
 			return
@@ -332,7 +332,7 @@ export class Inspector {
 	}
 
 	private isCurrentSession(generation: number, debugWorker: CModuleWorker.Worker | null): boolean {
-		const state = this.state ?? 'idle'
+		const state = this.state
 		return this.generation === generation
 			&& this.worker === debugWorker
 			&& (state !== 'idle' || debugWorker !== null)

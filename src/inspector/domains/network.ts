@@ -25,6 +25,7 @@ import {
 const engine = import.meta.use('engine');
 const nativeCrypto = import.meta.use('crypto');
 const curl = import.meta.use('curl');
+const algorithm = import.meta.use('algorithm');
 const http = import.meta.use('http');
 const os = import.meta.use('os');
 
@@ -1240,10 +1241,9 @@ export class NetworkDomain extends Domain {
 	}
 
 	private connectionId(conn: FetchConnection): number {
-		const s = `${conn.remoteIPAddress ?? ''}:${conn.remotePort ?? 0}`
-		let h = 0
-		for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0
-		return h >>> 0
+		// CDP connection ids are numeric; native FNV-1a over the remote endpoint
+		// keeps them deterministic without a hand-rolled hash loop.
+		return algorithm.fnv1a32(engine.encodeString(`${conn.remoteIPAddress ?? ''}:${conn.remotePort ?? 0}`))
 	}
 
 	private securityState(url: string, sslVerifyResult?: number): string {

@@ -1,5 +1,6 @@
 import { importMapFromFile, parseSize } from '../cts/src/config';
 import type { ConfigOptions } from '../cts/src/types';
+import { isRecord } from '../cts/src/utils/misc';
 import { publishChannel, CHANNEL_WORKER_RUNTIME_CONFIG } from './channels';
 import { flagsFromOptions, tokenizeOptions, type Flags } from './cli';
 import { readEnv } from './env';
@@ -134,9 +135,6 @@ export function publishWorkerRuntimeConfig(cfg: Partial<ConfigOptions>): void {
     publishChannel(CHANNEL_WORKER_RUNTIME_CONFIG, workerConfig);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function stringRecord(value: unknown): Record<string, string> | undefined {
     if (!isRecord(value)) return undefined;

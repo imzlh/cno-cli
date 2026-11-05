@@ -2,6 +2,7 @@
 
 import { FrameOffset, native } from '../shared/native'
 import { containsAwait } from '../domains/side-effect'
+import { safeFnString, safeString, serializeNumber } from '../shared/cdp'
 import type {
 	CompileScriptResponse,
 	EvaluateResponse,
@@ -14,7 +15,6 @@ import type { RpcParams } from '../shared/rpc-contract'
 import type { Serializer } from './remote-object'
 
 type InspectorCallable = ((...args: unknown[]) => unknown) & { name?: string }
-type InspectableFunction = object & { name?: string }
 
 const engine = import.meta.use('engine')
 const nativeConsole = import.meta.use('console')
@@ -393,13 +393,6 @@ export class Evaluator {
 	}
 }
 
-function serializeNumber(value: number): RemoteObject {
-	if (Number.isNaN(value)) return { type: 'number', unserializableValue: 'NaN', description: 'NaN' }
-	if (value === Infinity) return { type: 'number', unserializableValue: 'Infinity', description: 'Infinity' }
-	if (value === -Infinity) return { type: 'number', unserializableValue: '-Infinity', description: '-Infinity' }
-	if (Object.is(value, -0)) return { type: 'number', unserializableValue: '-0', description: '0' }
-	return { type: 'number', value, description: String(value) }
-}
 
 function jsonSafeValue(value: unknown): unknown {
 	// Path-scoped, not visit-scoped: a value reachable twice via different
@@ -431,22 +424,7 @@ function jsonSafeValue(value: unknown): unknown {
 	return convert(value)
 }
 
-function safeString(v: unknown): string {
-	try {
-		return String(v)
-	} catch {
-		return '<unprintable>'
-	}
-}
 
-function safeFnString(fn: InspectableFunction): string {
-	try {
-		const s = Function.prototype.toString.call(fn)
-		return s.length > 200 ? s.slice(0, 200) + '...' : s
-	} catch {
-		return `function ${fn.name || ''}() { ... }`
-	}
-}
 
 function compileError(e: unknown): ExceptionDetails {
 	const rawMessage = e && (typeof e === 'object' || typeof e === 'function') ? Reflect.get(e, 'message') : undefined

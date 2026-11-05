@@ -30,7 +30,7 @@ import { LockStore } from '../cts/src/lock';
 import type { ConfigOptions } from '../cts/src/types';
 import { cwd, isAbsolute, joinPaths, toPosixPath } from '../cts/src/utils/path';
 import { log } from '../cts/src/utils/log';
-import { errMsg } from '../cts/src/utils/misc';
+import { errMsg, isRecord } from '../cts/src/utils/misc';
 import { EV, installEventReceiver, PRIORITY_FALLBACK } from '../cts/src/runtime/event-mux';
 import { resources as processResources } from '../cts/src/runtime/resources';
 
@@ -85,9 +85,6 @@ function isEvalEntry(entry: string): boolean {
     return entry.startsWith('eval:');
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return (typeof value === 'object' || typeof value === 'function') && value !== null;
-}
 
 function isNodeWorkerData(value: unknown): value is Record<string, unknown> {
     return isRecord(value) && '__node_workerData' in value;
@@ -461,10 +458,10 @@ const TEST_CHILD_ENV_NAME = '__CNO_TEST_CHILD';
 
 async function mainEntry(): Promise<void> {
     const testInvocation = readEnv(TEST_CHILD_ENV_NAME);
-    if (testInvocation !== null) os.unsetenv(TEST_CHILD_ENV_NAME);
+    if (testInvocation !== undefined) os.unsetenv(TEST_CHILD_ENV_NAME);
 
     if (worker.isWorker) return workerEntry();
-    if (testInvocation !== null) {
+    if (testInvocation !== undefined) {
         const { parseTestChildArgs } = await import('./commands/test');
         const invocation = parseTestChildArgs(os.args.slice(2), testInvocation);
         // A test worker reports every rejection (see below), so its exit code

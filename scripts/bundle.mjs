@@ -60,6 +60,28 @@ const SYMBOL_BANNER = {
         '__cno_register__=globalThis[Symbol.for("cjs.internal.register")];',
 };
 
+// Every cno build keeps isFlowEnabled/isFlowTransformEnabled false, so the
+// sucrase flow parser plugin and FlowTransformer are statically dead (~47K
+// unmin / ~21K min). Stub both files out instead of editing vendored code.
+// Stub bodies throw so re-enabling flow fails loudly instead of silently
+// producing broken output.
+const SUCRASE_FLOW_STUB_FILTER =
+    /[/\\]cts[/\\]deps[/\\]sucrase[/\\]src[/\\](parser[/\\]plugins[/\\]flow|transformers[/\\]FlowTransformer)\.ts$/;
+const SUCRASE_FLOW_NAMES = [
+    'flowAfterParseClassSuper', 'flowAfterParseVarHead', 'flowParseArrow',
+    'flowParseAssignableListItemTypes', 'flowParseExportDeclaration', 'flowParseExportStar',
+    'flowParseFunctionBodyAndFinish', 'flowParseIdentifierStatement', 'flowParseImportSpecifier',
+    'flowParseMaybeAssign', 'flowParseSubscript', 'flowParseSubscripts',
+    'flowParseTypeAnnotation', 'flowParseTypeParameterDeclaration', 'flowParseVariance',
+    'flowShouldDisallowExportDefaultSpecifier', 'flowShouldParseExportDeclaration',
+    'flowShouldParseExportStar', 'flowStartParseAsyncArrowFromCallExpression',
+    'flowStartParseFunctionParams', 'flowStartParseImportSpecifiers', 'flowStartParseNewArguments',
+    'flowStartParseObjPropValue', 'flowTryParseExportDefaultExpression', 'flowTryParseStatement',
+];
+const SUCRASE_FLOW_STUB =
+    SUCRASE_FLOW_NAMES.map((name) => `export function ${name}() { throw new Error('flow transform disabled in this build'); }`).join('\n') +
+    '\nexport default class FlowTransformer {}\n';
+
 /**
  * @type { import('esbuild').BuildOptions }
  */
@@ -81,6 +103,14 @@ const common = {
                 if (resolve(path) === BUN_INJECTOR) return null;
                 return { errors: [{ text: `Bun implementation cannot enter the embedded CLI bundle: ${path}` }] };
             });
+        },
+    }, {
+        name: 'stub-disabled-sucrase-flow',
+        setup(builder) {
+            builder.onLoad({ filter: SUCRASE_FLOW_STUB_FILTER }, () => ({
+                contents: SUCRASE_FLOW_STUB,
+                loader: 'js',
+            }));
         },
     }],
 };

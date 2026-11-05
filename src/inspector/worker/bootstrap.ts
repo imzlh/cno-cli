@@ -1,4 +1,5 @@
 import { hasSchemeId, resolvePath, toFileUrl } from '../../../cts/src/utils/path'
+import { isRecord } from '../../../cts/src/utils/misc'
 import { ConsoleDomain } from '../domains/console'
 import { DebuggerDomain } from '../domains/debugger'
 import { FetchDomain } from '../domains/fetch'
@@ -30,9 +31,6 @@ type WorkerErrorReport = {
 	phase?: string
 }
 
-function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
-	return (typeof value === 'object' || typeof value === 'function') && value !== null
-}
 
 function isDebugWorkerData(value: unknown): value is DebugWorkerData {
 	return isRecord(value)
