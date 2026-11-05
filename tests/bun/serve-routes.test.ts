@@ -178,8 +178,10 @@ Deno.test({ name: 'bun: route reload replaces tables atomically without changing
     const textAt = async (path: string) => (await fetch(new URL(path, server.url))).text();
 
     try {
+        // Fifth pass supports ':param' and trailing '/*' patterns; mid-path
+        // wildcards remain rejected.
         throws(() => reload({
-            routes: { '/unsupported/*': () => new Response('wrong') },
+            routes: { '/unsupported/*/x': () => new Response('wrong') },
             fetch: () => new Response('wrong-fallback'),
             error: () => new Response('wrong-error-handler'),
         }), TypeError);

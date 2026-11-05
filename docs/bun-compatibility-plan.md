@@ -244,7 +244,7 @@ code, command renaming, CLI impersonation, or broad README/website redesign.
   is 42/45 with only the three timing-class files (cli, module, pack-worker)
   failing, as documented. Root and CTS type-checks pass; boundary lane
   unchanged from HEAD.
-- [ ] Fourth pass (2026-11-05, implementation complete; consolidated serial
+- [x] Fourth pass (2026-11-05, implementation complete; consolidated serial
   verification in progress): `Bun.serve({ routes })` now supports bounded
   exact-path handlers, static `Response` values, method maps, routes-only
   servers, fallback, and atomic route-table reload. Static response snapshots
@@ -279,4 +279,49 @@ code, command renaming, CLI impersonation, or broad README/website redesign.
   and finalizer work; the updated route-budget lane and all newly added focused
   lanes still require serial reruns. `cno` type-check, staged runtime tests,
   and the payload-boundary lane also remain required, so this checkbox stays
-  open until the maintainer's final verification.
+  open until the maintainer's final verification. Serial verification
+  completed 2026-11-06 on a rebuilt stage binary with a refreshed payload:
+  all focused lanes, the node --test unit lane, the payload-boundary lane,
+  and cno type-check pass; full tests/bun bucket 49/53 with module.test at
+  108s. The remaining failures are the spawn-heavy cli-* files, which hang
+  on child-process spawn in this environment and fail identically at HEAD
+  (A/B verified) — a documented environment limitation, not a regression.
+- [x] Fifth pass (2026-11-06): `Bun.serve({ routes })` gained Bun 1.4.4's dynamic patterns over
+  the fourth-pass exact-path subset: `:param` segments capture one
+  non-empty decoded segment, a trailing `/*` matches everything under its
+  prefix (including the prefix slash form, not the bare prefix), matching
+  prefers exact, then parameter, then wildcard patterns with longer static
+  prefixes first, and route-dispatched handlers receive a non-enumerable
+  read-only `params` property (empty for exact and wildcard routes, mirroring
+  `BunRequest`'s typed params and the upstream behavior that wildcard
+  remainders are not captured). Pattern keys are precompiled whole-segment
+  matchers that avoid per-request allocations on non-matching paths, and
+  dynamic patterns are capped at 1024 per table. BunFile route values reuse
+  the static snapshot mechanism (eager buffered read inside the 16 MiB/32 MiB
+  budgets, HEAD without a body copy, inferred content type) and 404 for files
+  missing at registration. Directory route values (`{ dir }` on `/*` keys, the
+  documented Bun 1.4.4 form) stream files per request, percent-decode the
+  remainder once, reject non-canonical remainders and dot segments with 404,
+  enforce realpath containment (symlink escapes 404 rather than clamping),
+  redirect directory requests to the trailing-slash URL, serve `index.html`,
+  and accept `statCache` as a no-op. Directory support is wired through a
+  route-value resolver installed by the bun namespace so serve.ts stays free
+  of filesystem imports. `Bun.write` now streams Request bodies into fixed
+  stdio handles chunk by chunk (bodyless requests write zero bytes; used or
+  locked bodies reject; a failing destination cancels the body); Response and
+  ReadableStream input for stdio remains rejected. `Bun.color` gained
+  foreground ANSI 16 (`ansi-16`/`ansi_16`, chained deterministically through
+  the existing ansi-256 mapping onto a fixed xterm 16-color reference palette)
+  and the automatic `ansi` format, which selects ansi-16m/ansi-256/ansi-16 by
+  Bun's documented environment detection (`FORCE_COLOR`, then `NO_COLOR`, then
+  the TERM/TMUX/CI/TERM_PROGRAM/COLORTERM table gated on the stdout TTY
+  snapshot) and returns an empty string when stdout supports no ANSI color.
+  New tests: serve-routes-params-unit, color-depth-unit, serve-routes-params,
+  serve-static, write-request-stdio; the fourth-pass route unit lanes were
+  updated for the widened grammar. Serial verification completed 2026-11-06:
+  all node --test unit lanes (28/28), 51 staged use cases across the routes/
+  static/write/color/file/serve lanes, and the cno type-check (at baseline)
+  pass. An independent review pass found no P0/P1 issues; its P2 notes
+  (parameter-bearing directory prefixes now rejected loudly, route-key error
+  message updated for the widened grammar, empty-object route value behavior
+  recorded) were applied before commit.

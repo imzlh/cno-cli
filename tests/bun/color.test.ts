@@ -87,9 +87,32 @@ Deno.test('bun: color ANSI256 ignores alpha without enabling unsupported termina
     strictEqual(color('rgba(255, 0, 0, 0.5)', 'ansi-256'), '\x1b[38;5;196m');
     strictEqual(color('transparent', 'ansi-256'), '\x1b[38;5;16m');
     strictEqual(color('invalid-color', 'ansi-256'), null);
-    for (const format of ['ansi-16', 'ansi_16', 'ansi']) {
-        throws(() => color('red', format), /not implemented/);
+    // Lab output remains unimplemented; unknown formats are rejected outright.
+    throws(() => color('red', 'lab'), /not implemented/);
+    for (const format of ['ansi-4', 'ansi-8', 'ansi-32']) {
+        throws(() => color('red', format), TypeError);
     }
+});
+
+Deno.test('bun: color ANSI16 approximates through the 256 palette', () => {
+    for (const format of ['ansi-16', 'ansi_16']) {
+        strictEqual(color('red', format), '\x1b[91m', format);
+        strictEqual(color('black', format), '\x1b[30m', format);
+        strictEqual(color('white', format), '\x1b[97m', format);
+        strictEqual(color('teal', format), '\x1b[36m', format);
+        strictEqual(color('#5f87af', format), '\x1b[90m', format);
+        strictEqual(color([95, 135, 175], format), '\x1b[90m', format);
+    }
+    strictEqual(color('#ff000000', 'ansi-16'), '\x1b[91m');
+    strictEqual(color('rgba(255, 0, 0, 0.5)', 'ansi-16'), '\x1b[91m');
+    strictEqual(color('invalid-color', 'ansi-16'), null);
+});
+
+Deno.test('bun: color "ansi" defers to the stdout depth and is empty without color support', () => {
+    // This file imports the pure color module directly, so the namespace's
+    // stdout provider is absent and Bun's no-ANSI contract returns ''.
+    strictEqual(color('red', 'ansi'), '');
+    strictEqual(color('nonsense', 'ansi'), null);
 });
 
 Deno.test('bun: color rejects missing channels and malformed alpha separators', () => {

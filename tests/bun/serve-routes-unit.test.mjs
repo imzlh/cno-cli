@@ -219,7 +219,10 @@ test('serve routes: invalid configuration neither binds nor consumes static resp
         null, [], 42, new Map(), new Date(),
         { '/good': source, relative: () => new Response() },
         ...[
-            '/a?b', '/a#b', '/:id', '/any*', '/raw space', '/\u96EA',
+            // Fifth pass moved ":" parameters and trailing "*" wildcards into
+            // the supported grammar; these shapes remain unsupported.
+            '/a?b', '/a#b', '/any*', '/a/*/b', '/users/:id/*nope', '/a:b', '/a:*b', '/:id/:id', '/a/:',
+            '/raw space', '/\u96EA',
             '/a/./b', '/a/../b', '/a/%2e/b', '/a/%2E%2E/b', '/a\\b',
             '/%', '/%2', '/%G0', '/%zz',
             '/a\nb', '/a\rb', '/a\tb', '/a\u0000b', '/a\u007Fb',
