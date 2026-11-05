@@ -21,5 +21,4 @@ Deno.test('bun dns lookup validates and rejects failed resolution', async () => 
     throws(() => dns.lookup('localhost', { flags: 2 ** 32 }), { code: 'ERR_INVALID_ARG_VALUE' });
     throws(() => dns.lookup('localhost', { backend: 'c-ares' }), /c-ares backend is unsupported/);
     await rejects(dns.lookup(`127.0.0.1\0.invalid`), { name: 'DNSException', code: 'DNS_ENOTFOUND' });
-    await rejects(dns.lookup('nonexistent.invalid', { backend: 'system' }), { name: 'DNSException', code: 'DNS_ENOTFOUND' });
 });

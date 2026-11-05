@@ -115,9 +115,9 @@ Deno.test({ name: 'bun: serve routes handler errors through error and keeps serv
     }
 });
 
-Deno.test('bun: serve rejects unsupported transport and routing options', () => {
+Deno.test('bun: serve rejects unsupported transport and development options', () => {
     const fetch = () => new Response('unused');
-    for (const option of ['websocket', 'tls', 'routes', 'development', 'reload']) {
+    for (const option of ['websocket', 'tls', 'development', 'reload']) {
         throws(
             () => serve({ fetch, [option]: {} } as Parameters<typeof serve>[0]),
             new RegExp(`unsupported option "${option}"`),
@@ -170,7 +170,7 @@ Deno.test({ name: 'bun: serve reload replaces handlers atomically without rebind
         let portReads = 0;
         strictEqual(reload({ get port() { portReads++; return 1; } }), server);
         strictEqual(portReads, 1);
-        throws(() => reload({ routes: {} }), /unsupported option "routes"/);
+        throws(() => reload({ routes: null }), /routes must be an object/);
         response = await fetch(url);
         strictEqual(response.status, 418);
         strictEqual(await response.text(), 'new-error:new-fetch');
