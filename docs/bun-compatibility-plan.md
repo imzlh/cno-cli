@@ -290,8 +290,9 @@ code, command renaming, CLI impersonation, or broad README/website redesign.
   the fourth-pass exact-path subset: `:param` segments capture one
   non-empty decoded segment, a trailing `/*` matches everything under its
   prefix (including the prefix slash form, not the bare prefix), matching
-  prefers exact, then parameter, then wildcard patterns with longer static
-  prefixes first, and route-dispatched handlers receive a non-enumerable
+  prefers exact, then parameter, then wildcard patterns with more static
+  segments first and registration order breaking ties (upstream's finer
+  ordering remains unverified against a live oracle), and route-dispatched handlers receive a non-enumerable
   read-only `params` property (empty for exact and wildcard routes, mirroring
   `BunRequest`'s typed params and the upstream behavior that wildcard
   remainders are not captured). Pattern keys are precompiled whole-segment

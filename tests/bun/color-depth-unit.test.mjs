@@ -24,21 +24,35 @@ test('color depth: FORCE_COLOR overrides everything, even without a TTY', () => 
     assert.equal(ansiColorDepth({ FORCE_COLOR: '' }, false), 1);
     assert.equal(ansiColorDepth({ FORCE_COLOR: '2' }, false), 2);
     assert.equal(ansiColorDepth({ FORCE_COLOR: '3' }, false), 3);
-    // Values outside 0-2 select truecolor, as in Bun's get_force_color_depth.
+    // Numeric strings parse (leading zeros included) and clamp to 0-3.
+    assert.equal(ansiColorDepth({ FORCE_COLOR: '00' }, false), 0);
+    assert.equal(ansiColorDepth({ FORCE_COLOR: '02' }, false), 2);
+    // Values outside 0-2 clamp to truecolor.
     assert.equal(ansiColorDepth({ FORCE_COLOR: '9' }, false), 3);
+    // Case-insensitive false disables; true/garbage fall back to ANSI 16
+    // (verified against the installed Bun 1.4.4 oracle).
+    assert.equal(ansiColorDepth({ FORCE_COLOR: 'false' }, false), 0);
+    assert.equal(ansiColorDepth({ FORCE_COLOR: 'FALSE' }, false), 0);
+    assert.equal(ansiColorDepth({ FORCE_COLOR: 'TRUE' }, false), 1);
+    assert.equal(ansiColorDepth({ FORCE_COLOR: 'garbage' }, false), 1);
     assert.equal(ansiColorDepth({ FORCE_COLOR: '1', NO_COLOR: '1' }, true), 1);
 });
 
 test('color depth: NO_COLOR disables output before any terminal detection', () => {
     assert.equal(ansiColorDepth({ NO_COLOR: '1' }, true), 0);
     assert.equal(ansiColorDepth({ NO_COLOR: '' }, true), 0);
-    // NO_COLOR=0 is explicitly not a disable request (no-color.org, Bun parity).
+    // Bun's oracle: NO_COLOR=false and NO_COLOR=0 are not disable requests.
     assert.equal(ansiColorDepth({ NO_COLOR: '0', TERM: 'xterm-256color' }, true), 2);
+    assert.equal(ansiColorDepth({ NO_COLOR: 'false', TERM: 'xterm-256color' }, true), 2);
+    assert.equal(ansiColorDepth({ NO_COLOR: 'FALSE' }, true), 0);
 });
 
-test('color depth: TERM-based detection only applies to terminals', () => {
+test('color depth: TERM-based detection answers regardless of stdout TTY', () => {
+    // Bun 1.4.4 oracle: piped stdout with TERM=xterm-256color still gets ANSI
+    // from the automatic format; only enableANSIColors (a different surface)
+    // reflects the startup TTY snapshot.
     assert.equal(ansiColorDepth({}, false), 0);
-    assert.equal(ansiColorDepth({ TERM: 'xterm-256color' }, false), 0);
+    assert.equal(ansiColorDepth({ TERM: 'xterm-256color' }, false), 2);
     assert.equal(ansiColorDepth({ TERM: 'dumb' }, true), 0);
     assert.equal(ansiColorDepth({ TMUX: '/tmp/tmux' }, true), 3);
     assert.equal(ansiColorDepth({ CI: 'true' }, true), 1);

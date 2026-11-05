@@ -101,9 +101,13 @@ Deno.test({ name: 'bun: directory routes reject traversal and non-canonical rema
             for (const path of [
                 '/assets/..%2fsecret.txt',
                 '/assets//secret.txt',
+                '/assets//',
                 '/assets/%2fetc%2fpasswd',
                 '/assets/style.css%2f',
                 '/assets/%zz',
+                // Unreserved-ASCII escapes must not alias literal file names.
+                '/assets/style%2Ecss',
+                '/assets/%73tyle.css',
                 '/assets/escape-link',
                 '/assets/escape-link/x',
             ]) {
@@ -116,6 +120,40 @@ Deno.test({ name: 'bun: directory routes reject traversal and non-canonical rema
             strictEqual(await (await fetch(new URL('/assets/v1.2.txt', server.url))).text(), 'dotted');
             // Internal symlinks stay inside the resolved root and are served.
             strictEqual(await (await fetch(new URL('/assets/internal-link', server.url))).text(), 'body { color: red; }\n');
+        } finally {
+            await server.stop();
+        }
+    });
+});
+
+Deno.test({ name: 'bun: directory routes are shadowed by exact-route exclusions without encoded aliases', timeout: 15000 }, async () => {
+    await withTempDir('bun-serve-dir-exclusion', async root => {
+        const dir = await makeAssetTree(root);
+        const server = serve({
+            hostname: '127.0.0.1',
+            port: 0,
+            routes: {
+                '/assets/index.html': false,
+                '/assets/*': { dir },
+            },
+            fetch: () => new Response('excluded', { status: 403 }),
+        });
+
+        try {
+            // The exact-route exclusion wins for the literal path.
+            const excluded = await fetch(new URL('/assets/index.html', server.url));
+            strictEqual(excluded.status, 403);
+            await excluded.text();
+            // Encoded aliases of the excluded name must not reach the file
+            // through the directory route: the router matches the raw
+            // remainder, so a percent-encoded identity is non-canonical.
+            for (const path of ['/assets/%69ndex.html', '/assets/index%2Ehtml']) {
+                const aliased = await fetch(new URL(path, server.url));
+                strictEqual(aliased.status, 404, path);
+                await aliased.text();
+            }
+            // The directory route still serves its other files.
+            strictEqual(await (await fetch(new URL('/assets/style.css', server.url))).text(), 'body { color: red; }\n');
         } finally {
             await server.stop();
         }
