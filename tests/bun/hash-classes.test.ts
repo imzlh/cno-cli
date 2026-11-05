@@ -1,4 +1,5 @@
 import { deepStrictEqual, notStrictEqual, ok, strictEqual, throws } from 'node:assert';
+import { Buffer } from 'node:buffer';
 import { MD4, MD5, SHA1, SHA224, SHA256, SHA384, SHA512, SHA512_256, sha } from '../../cno/src/bun/crypto/hash-classes.ts';
 import { md4 } from '../../cno/src/bun/crypto/md4.ts';
 import { Blob } from '../../cno/src/webapi/formdata.ts';

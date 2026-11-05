@@ -304,10 +304,15 @@ Deno.test('bun: file and write reject unsupported options and inputs', async () 
             () => write(path, 'x', { unsupported: true } as never),
             /unsupported option "unsupported"/,
         );
-        await rejects(
-            () => write(path, new ReadableStream()),
-            /ReadableStream input is not supported/,
-        );
+        // Bare ReadableStream input streams like Response/Blob bodies.
+        const source = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(new TextEncoder().encode('streamed'));
+                controller.close();
+            },
+        });
+        strictEqual(await write(path, source), 8);
+        strictEqual(await file(path).text(), 'streamed');
         // Bun.file().write accepts unknown options as forward-compatible hints.
         strictEqual(await file(path).write('x', { unsupported: true } as never), 1);
     });

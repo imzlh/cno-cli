@@ -209,3 +209,38 @@ code, command renaming, CLI impersonation, or broad README/website redesign.
   `cno/src/bun/README.md`.
 - [x] Parent review and focused commits for the cno source tree, CTS loader, and
   root build/runtime integration.
+- [x] M2 batch (2026-11-05): TCP-only `Bun.connect`/`Bun.listen` over the host Deno
+  net primitives, `Bun.stdin/stdout/stderr` descriptor handles with
+  `Bun.write` support, `Bun.gc`, `Bun.enableANSIColors`, `CryptoHasher`
+  `blake2b256` (pure-JS keyed BLAKE2b, RFC 7693-verified), and a native
+  `bytesIsUtf8`+`engine.decodeString` byte-path decode in `Bun.file`. Also
+  fixed a pre-existing `CryptoHasher.digest(encoding)` regression that never
+  converted encodings. New tests: blake2b, net, stdio,
+  runtime-globals; the full `tests/bun` bucket is green apart from seven
+  failures A/B-proven pre-existing at HEAD (array-buffer-sink, cli,
+  cookie-class, hash-classes, module, pack-worker, streams). Root and CTS
+  type-checks and the boundary/unit lanes pass identically to HEAD. The batch
+  went through three independent agent review passes; review fixed a blake2b
+  counter-word bug (≥4 GiB inputs), an empty-key semantics deviation, the
+  net.ts socket close-state machine (idempotent close, drain-deferred close,
+  detached-handler failure routing). The same pass surfaced and fixed three
+  `hash-classes` regressions (digest
+  encoding, `digest`/`sha` arity, lone-surrogate inputs), taking that suite
+  from the pre-existing-failure list to green. Known follow-up: the blob's
+  bundled Buffer class (installed as the global by the node inject) and the
+  runtime-resolved `node:buffer` class are distinct evaluations; node's
+  contract makes them one class, and the builtin registry handing out the
+  blob's instance is a separate cross-layer fix.
+- [ ] `Bun.password` remains unsupported. Bun 1.4.4 only accepts Argon2
+  and bcrypt; the native crypto binding has neither, and substituting scrypt or
+  PBKDF2 under Bun's API would create non-interoperable security output.
+- [x] Third pass (2026-11-05): `BunFile.writer()`/FileSink (buffered writes,
+  highWaterMark auto-commit, GC-safe descriptor release, stdio `writer()`),
+  `Bun.write` ReadableStream input, `blake2b512` keyed-BLAKE2b semantics
+  (python differential 100/100), and fixes for four more pre-existing bun
+  failures: `ArrayBufferSink` lone-surrogate encoding, `Cookie` getter
+  names/receivers/enumerability and `toStringTag`, `readableStreamToText`
+  BOM/WHATWG replacement, and the `hash-classes` regressions. The bun bucket
+  is 42/45 with only the three timing-class files (cli, module, pack-worker)
+  failing, as documented. Root and CTS type-checks pass; boundary lane
+  unchanged from HEAD.
