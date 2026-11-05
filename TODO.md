@@ -17,6 +17,12 @@
 - 原因：ALS 传播依赖的 async hook 装载/续接点缺失，属于 async_hooks 域，
   与 evbus 接线无关。
 - 建议：在 promise job 与 uv timer 的续接处补 store 传递。
+- 2026-11-06 复核：确认**必须 C 侧**。实测 await 不经 `Promise.prototype.then`，
+  `engine.promiseHook`（`JS_SetPromiseHook`）的派发走 `JS_EnqueueJob`
+  （circu.js/src/mod_engine.c:88），作为更晚的微任务在续接恢复之后才跑——
+  结构上无法在恢复前设置上下文。需要 circu.js 提供同步 promise hook 或
+  引擎级 per-async-context 槽。诊断与已试并回退的方案记录在
+  tests/node/async-hooks-concurrency.test.ts 头注释，勿再尝试 TS 层修复。
 
 ### 6. 其余 tests/cts、tests/webapi 的预先存在失败（与接线无关，均为进行中的
     Bun/npm/dns 改动引入）
