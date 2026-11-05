@@ -238,6 +238,7 @@ endif()
 file(GLOB_RECURSE _CLI_SRCS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.ts"
     "${CMAKE_CURRENT_SOURCE_DIR}/cts/src/*.ts"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cts/deps/sucrase/src/*.ts"
     "${CMAKE_CURRENT_SOURCE_DIR}/cno/src/*.ts"
     "${CMAKE_CURRENT_SOURCE_DIR}/http/src/*.ts")
 # Bun implementations are installed as TypeScript and transformed on demand,
@@ -248,10 +249,19 @@ list(APPEND _CLI_SRCS
 set(_CLI_BUNDLE_DEPS
     ${_CLI_SRCS}
     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/bundle.mjs"
-    "${CMAKE_CURRENT_SOURCE_DIR}/package.json")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/pnpm-lock.yaml")
-    list(APPEND _CLI_BUNDLE_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/pnpm-lock.yaml")
-endif()
+    "${CMAKE_CURRENT_SOURCE_DIR}/package.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cts/package.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cts/deps/sucrase/package.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cno/package.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/http/package.json")
+# Each package scope can affect resolution or provide its own installed dependencies.
+foreach(_CLI_LOCKFILE IN ITEMS
+        "pnpm-lock.yaml" "cts/pnpm-lock.yaml" "cts/deps/sucrase/pnpm-lock.yaml"
+        "cno/pnpm-lock.yaml" "http/pnpm-lock.yaml")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_CLI_LOCKFILE}")
+        list(APPEND _CLI_BUNDLE_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/${_CLI_LOCKFILE}")
+    endif()
+endforeach()
 add_custom_command(
     OUTPUT  "${_CLI_BUNDLE}"
     COMMAND "${PNPM_EXE}" run "${_BUNDLE_SCRIPT}"
