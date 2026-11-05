@@ -284,7 +284,12 @@ test('serve params: replacement and stop release BunFile snapshot state', { time
     const mock = host(t);
     for (const action of ['reload', 'stop']) {
         let controller;
-        const stream = new ReadableStream({ start(c) { controller = c; } });
+        // The cancel hook makes the trailing assertion real: the pending
+        // response must drain to completion, not get force-cancelled.
+        const stream = new ReadableStream({
+            start(c) { controller = c; },
+            cancel() { cancelled = true; },
+        });
         const source = new Response('unused');
         let cancelled = false;
         const file = {

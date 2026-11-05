@@ -1,4 +1,4 @@
-import { deepStrictEqual, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { serve } from 'bun';
 import { withTempDir } from '../_helpers/temp.ts';
 import { join } from 'node:path';
@@ -224,6 +224,52 @@ Deno.test({ name: 'bun: directory route values are validated and must end in /*'
             const server = serve({ routes: { '/assets/*': options } });
             const response = await fetch(new URL('/assets/data.json', server.url));
             deepStrictEqual(await response.json(), { ok: true });
+            await server.stop();
+        }
+    });
+});
+
+Deno.test({ name: 'bun: directory routes honor conditional GET with 304 responses', timeout: 15000 }, async () => {
+    await withTempDir('bun-serve-dir-conditional', async root => {
+        const dir = await makeAssetTree(root);
+        const server = serve({
+            hostname: '127.0.0.1',
+            port: 0,
+            routes: { '/assets/*': { dir } },
+        });
+
+        try {
+            const fresh = await fetch(new URL('/assets/style.css', server.url));
+            strictEqual(fresh.status, 200);
+            const etag = fresh.headers.get('etag');
+            ok(etag !== null, 'file responses carry an etag');
+            strictEqual(fresh.headers.get('content-length'), String((await fresh.arrayBuffer()).byteLength));
+            const lastModified = fresh.headers.get('last-modified')!;
+
+            // ETag echo (weak and strong forms) yields 304 with no body.
+            for (const value of [etag, `"${etag!.slice(3, -1)}"`]) {
+                const notChanged = await fetch(new URL('/assets/style.css', server.url), {
+                    headers: { 'if-none-match': value },
+                });
+                strictEqual(notChanged.status, 304, value);
+                strictEqual(await notChanged.text(), '', value);
+            }
+            // A stale validator still serves the file.
+            const changed = await fetch(new URL('/assets/style.css', server.url), {
+                headers: { 'if-none-match': 'W/"deadbeef"' },
+            });
+            strictEqual(changed.status, 200);
+
+            // If-Modified-Since at or after the file mtime yields 304.
+            const sinceFresh = await fetch(new URL('/assets/style.css', server.url), {
+                headers: { 'if-modified-since': lastModified },
+            });
+            strictEqual(sinceFresh.status, 304);
+            const sinceOld = await fetch(new URL('/assets/style.css', server.url), {
+                headers: { 'if-modified-since': 'Mon, 01 Jan 1990 00:00:00 GMT' },
+            });
+            strictEqual(sinceOld.status, 200);
+        } finally {
             await server.stop();
         }
     });

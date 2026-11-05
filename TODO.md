@@ -5,14 +5,12 @@
 
 ## 未解决
 
-### 1. cli-stage.test.ts 贴着文件级 60s 预算，负载稍高就整体超时
-- 现象：整文件 71 个测试以 ~0.85s/个均匀推进，无单点挂死；`cno eval` 启动
-  ~0.55s。总耗时 ~60.4s，撞上 test runner 的 `runOne` 60000ms 文件预算，
-  报 "test worker timed out without reporting a result"（后 16 个测试没跑）。
-- 原因：该文件每个用例都 spawn 子进程且预算按文件计；后台负载（如本会话的
-  常驻进程）把它推过线。与接线迁移无关（节奏均匀、单测全部单独通过）。
-- 建议：把文件拆成 2~3 个。runner 已支持 `cno test --timeout=120000` 按次覆盖
-  （`CNO_TEST_CHILD_TIMEOUT_MS` 仍作环境兜底，flag 优先），但拆文件才是根治。
+### 1. cli-stage.test.ts 贴着文件级 60s 预算（2026-11-06 已解决）
+- 拆分为三个主题套件：`cli-stage.test.ts`（basics/modules，6.3s）、
+  `cli-stage-npm.test.ts`（test-cmd + upstream npm，7.8s）、
+  `cli-stage-repl.test.ts`（repl + upstream-run，3.3s）。spawn helpers 移入
+  `tests/_helpers/cli-stage-run.ts`。93 个用例（含嵌套）零丢失。
+- 根治方式：按主题拆文件，避免再依赖 `--timeout` flag。
 
 ### 5. async_hooks 的 AsyncLocalStorage 跨 promise/timer 边界丢失
 - 现象：`tests/node/async-hooks*.test.ts` propagation 用例拿到 `undefined`。
