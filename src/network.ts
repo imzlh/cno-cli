@@ -2,7 +2,6 @@ import { setCurlInitHook as setCnoCurlInitHook, setRawConnectionHook } from '../
 import { type ProxyConfig, type ProxyType } from '../cno/src/utils/proxy';
 import { log } from '../cts/src/utils/log';
 import { setCurlInitHook as setCtsCurlInitHook } from '../cts/src/utils/curl';
-import { errMsg } from '../cts/src/utils/misc';
 import { readEnv } from './env';
 
 const curl  = import.meta.use('curl');

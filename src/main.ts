@@ -43,7 +43,7 @@ import { resolveObjectURLBytes } from '../cno/src/webapi/object-url';
 import '../cno/src/webapi/console';
 import { registerExtensions } from './bootstrap';
 import { CliExit, commandErrorInfo } from './command-error';
-import { missingFlagValues, optionValues, parseArgv, readArgv, unknownFlags, type ParsedCli } from './cli';
+import { missingFlagValues, parseArgv, readArgv, unknownFlags, type ParsedCli } from './cli';
 import { effectiveRuntimeFlags, prepareKernel, type KernelContext } from './kernel';
 import { decodeWorkerRuntimeConfig } from './config';
 import { readEnv } from './env';
