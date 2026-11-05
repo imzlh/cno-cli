@@ -89,8 +89,11 @@ Deno.test('cdp memory: counters include observer references and retained stream 
     serializer.add({ retained: true }, 'memory-test');
     hooks.enableStreamingForRequest('live-fetch', 'fetch');
     hooks.enableStreamingForRequest('live-serve', 'serve');
-    const bodies = Reflect.get(hooks, 'completedFetchBodies') as Map<string, { data: Uint8Array; createdAt: number }>;
-    bodies.set('preview', { data: new Uint8Array(321), createdAt: Date.now() });
+    const bodySources = Reflect.get(hooks, 'bodySources') as Record<'fetch' | 'serve', {
+        completed: Map<string, { data: Uint8Array; createdAt: number }>;
+    }>;
+    bodySources.fetch.completed.set('preview', { data: new Uint8Array(321), createdAt: Date.now() });
+    bodySources.serve.completed.set('preview', { data: new Uint8Array(123), createdAt: Date.now() });
     const sample = handlers.getMemoryUsage!({}) as {
         runtime: string;
         scope: string;
@@ -109,6 +112,9 @@ Deno.test('cdp memory: counters include observer references and retained stream 
     strictEqual(sample.inspector.objectGroupCount, 1);
     strictEqual(sample.inspector.completedFetchBodyCount, 1);
     strictEqual(sample.inspector.completedFetchBodyBytes, 321);
+    strictEqual(sample.inspector.completedServeBodyCount, 1);
+    strictEqual(sample.inspector.completedServeBodyBytes, 123);
+    strictEqual(sample.inspector.completedFetchBodyBytes + sample.inspector.completedServeBodyBytes, 444);
     strictEqual(sample.inspector.liveFetchStreamCount, 1);
     strictEqual(sample.inspector.liveServeStreamCount, 1);
 

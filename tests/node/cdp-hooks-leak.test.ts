@@ -12,20 +12,18 @@ import { Hooks } from '../../src/inspector/main/hooks';
 import type { MainEndpoint } from '../../src/inspector/transport/main-endpoint';
 import type { Serializer } from '../../src/inspector/main/remote-object';
 
+interface BodySourceState {
+    live: Set<string>;
+    dropped: Set<string>;
+    totals: Map<string, number>;
+    buffers: Map<string, { chunks: Uint8Array[]; total: number; createdAt: number }>;
+    completed: Map<string, unknown>;
+    bytes: number;
+}
+
 /** The private shape these tests measure. */
 interface HooksInternals {
-    liveStreamedFetchRequests: Set<string>;
-    liveStreamedServeRequests: Set<string>;
-    droppedFetchBodyRequests: Set<string>;
-    droppedServeBodyRequests: Set<string>;
-    fetchBodyTotals: Map<string, number>;
-    serveBodyTotals: Map<string, number>;
-    fetchBodyBuffers: Map<string, { chunks: Uint8Array[]; total: number; createdAt: number }>;
-    serveBodyBuffers: Map<string, { chunks: Uint8Array[]; total: number; createdAt: number }>;
-    completedFetchBodies: Map<string, unknown>;
-    completedServeBodies: Map<string, unknown>;
-    fetchBodyBufferBytes: number;
-    serveBodyBufferBytes: number;
+    bodySources: { fetch: BodySourceState; serve: BodySourceState };
     streamRegisteredAt: Map<string, number>;
     lastBufferCleanupTime: number;
     cleanupStaleBodyBuffers(): void;
@@ -50,22 +48,22 @@ function runReaper(priv: HooksInternals): void {
 
 Deno.test('hooks: the reaper reclaims live-streamed ids that hold no body buffer', () => {
     // Regression, MEASURED as a real leak before the fix: enableStreamingForRequest
-    // drops the body buffer, and the reaper only iterated fetchBodyBuffers /
-    // serveBodyBuffers, so the id became unreachable. With the Done event lost --
+    // drops the body buffer, and the reaper only iterated fetch/serve buffers,
+    // so the id became unreachable. With the Done event lost --
     // the exact case the reaper exists to cover -- it reclaimed 0 of 500 ids in
     // BOTH side sets. Now tracked by registration timestamp.
     const { hooks, priv } = newHooks();
     for (let i = 0; i < 500; i++) hooks.enableStreamingForRequest(`req-${i}`, 'fetch');
 
-    strictEqual(priv.liveStreamedFetchRequests.size, 500, 'ids were registered');
-    strictEqual(priv.fetchBodyBuffers.size, 0, 'streaming means no buffer is retained');
+    strictEqual(priv.bodySources.fetch.live.size, 500, 'ids were registered');
+    strictEqual(priv.bodySources.fetch.buffers.size, 0, 'streaming means no buffer is retained');
 
     // Age them past the 120 s stale cutoff, then reap.
     for (const id of priv.streamRegisteredAt.keys()) priv.streamRegisteredAt.set(id, Date.now() - 200_000);
     runReaper(priv);
 
-    strictEqual(priv.liveStreamedFetchRequests.size, 0,
-        `reaper must reclaim stale streamed ids, ${priv.liveStreamedFetchRequests.size} left`);
+    strictEqual(priv.bodySources.fetch.live.size, 0,
+        `reaper must reclaim stale streamed ids, ${priv.bodySources.fetch.live.size} left`);
     strictEqual(priv.streamRegisteredAt.size, 0, 'timestamp map must drain too');
 });
 
@@ -73,7 +71,7 @@ Deno.test('hooks: the reaper does not evict a still-fresh streamed id', () => {
     const { hooks, priv } = newHooks();
     hooks.enableStreamingForRequest('fresh', 'fetch');
     runReaper(priv);
-    ok(priv.liveStreamedFetchRequests.has('fresh'), 'a live streaming request must survive the reaper');
+    ok(priv.bodySources.fetch.live.has('fresh'), 'a live streaming request must survive the reaper');
 });
 
 Deno.test('hooks: enableStreamingForRequest no longer poisons the other source', () => {
@@ -83,13 +81,13 @@ Deno.test('hooks: enableStreamingForRequest no longer poisons the other source',
     // the source (NetworkDomain.reqMeta), so it is now passed over the RPC.
     const { hooks, priv } = newHooks();
     hooks.enableStreamingForRequest('a-fetch-id', 'fetch');
-    ok(priv.liveStreamedFetchRequests.has('a-fetch-id'), 'correct set marked');
-    ok(!priv.liveStreamedServeRequests.has('a-fetch-id'),
+    ok(priv.bodySources.fetch.live.has('a-fetch-id'), 'correct set marked');
+    ok(!priv.bodySources.serve.live.has('a-fetch-id'),
         'a fetch id must NOT be marked live-streamed as a serve request');
 
     hooks.enableStreamingForRequest('a-serve-id', 'serve');
-    ok(priv.liveStreamedServeRequests.has('a-serve-id'), 'correct set marked');
-    ok(!priv.liveStreamedFetchRequests.has('a-serve-id'),
+    ok(priv.bodySources.serve.live.has('a-serve-id'), 'correct set marked');
+    ok(!priv.bodySources.fetch.live.has('a-serve-id'),
         'a serve id must NOT be marked live-streamed as a fetch request');
 });
 
@@ -98,35 +96,35 @@ Deno.test('hooks: an omitted source still works and stays reclaimable', () => {
     // registration timestamp means the reaper can still reclaim it.
     const { hooks, priv } = newHooks();
     hooks.enableStreamingForRequest('unknown-source');
-    ok(priv.liveStreamedFetchRequests.has('unknown-source'));
-    ok(priv.liveStreamedServeRequests.has('unknown-source'));
+    ok(priv.bodySources.fetch.live.has('unknown-source'));
+    ok(priv.bodySources.serve.live.has('unknown-source'));
     priv.streamRegisteredAt.set('unknown-source', Date.now() - 200_000);
     runReaper(priv);
-    strictEqual(priv.liveStreamedFetchRequests.size, 0, 'reclaimed from the fetch set');
-    strictEqual(priv.liveStreamedServeRequests.size, 0, 'reclaimed from the serve set');
+    strictEqual(priv.bodySources.fetch.live.size, 0, 'reclaimed from the fetch set');
+    strictEqual(priv.bodySources.serve.live.size, 0, 'reclaimed from the serve set');
 });
 
 Deno.test('hooks: enabling fetch streaming returns and releases buffered history', () => {
     const { hooks, priv } = newHooks();
     const first = new TextEncoder().encode('alpha-');
     const second = new TextEncoder().encode('beta');
-    priv.fetchBodyBuffers.set('history', {
+    priv.bodySources.fetch.buffers.set('history', {
         chunks: [first, second],
         total: first.byteLength + second.byteLength,
         createdAt: Date.now(),
     });
-    priv.fetchBodyBufferBytes = first.byteLength + second.byteLength;
+    priv.bodySources.fetch.bytes = first.byteLength + second.byteLength;
 
     const buffered = hooks.enableStreamingForRequest('history', 'fetch');
     strictEqual(new TextDecoder().decode(buffered), 'alpha-beta');
-    strictEqual(priv.fetchBodyBuffers.has('history'), false, 'the handed-off bytes must not remain retained');
-    strictEqual(priv.fetchBodyBufferBytes, 0);
-    ok(priv.liveStreamedFetchRequests.has('history'));
+    strictEqual(priv.bodySources.fetch.buffers.has('history'), false, 'the handed-off bytes must not remain retained');
+    strictEqual(priv.bodySources.fetch.bytes, 0);
+    ok(priv.bodySources.fetch.live.has('history'));
 });
 
 Deno.test('hooks: completed truncated history is handed off exactly once', () => {
     const { hooks, priv } = newHooks();
-    priv.completedFetchBodies.set('completed', {
+    priv.bodySources.fetch.completed.set('completed', {
         data: new TextEncoder().encode('prefix'),
         createdAt: Date.now(),
     });
@@ -136,7 +134,7 @@ Deno.test('hooks: completed truncated history is handed off exactly once', () =>
         'prefix',
     );
     strictEqual(hooks.enableStreamingForRequest('completed', 'fetch').byteLength, 0);
-    strictEqual(priv.completedFetchBodies.has('completed'), false);
+    strictEqual(priv.bodySources.fetch.completed.has('completed'), false);
 });
 
 Deno.test('hooks: a double console install still tears down cleanly', () => {
@@ -167,12 +165,12 @@ Deno.test('hooks: side maps are cleared by teardown', () => {
     // detach, which routes to onConnectedChange via the setConnected RPC.
     const { hooks, priv } = newHooks();
     for (let i = 0; i < 100; i++) hooks.enableStreamingForRequest(`d-${i}`, 'fetch');
-    const before = priv.liveStreamedFetchRequests.size;
+    const before = priv.bodySources.fetch.live.size;
     const teardown = (hooks as unknown as { teardown?: () => void }).teardown;
     if (typeof teardown !== 'function') throw new Error('teardown missing');
     teardown.call(hooks);
     strictEqual(before, 100);
-    strictEqual(priv.liveStreamedFetchRequests.size, 0, 'teardown clears the side maps');
+    strictEqual(priv.bodySources.fetch.live.size, 0, 'teardown clears the side maps');
     strictEqual(priv.streamRegisteredAt.size, 0, 'and the timestamp map');
 });
 

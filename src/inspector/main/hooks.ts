@@ -72,6 +72,26 @@ interface BodyBufferState {
 	createdAt: number
 }
 
+interface BodySourceState {
+	buffers: Map<string, BodyBufferState>
+	completed: Map<string, { data: Uint8Array; createdAt: number }>
+	totals: Map<string, number>
+	bytes: number
+	live: Set<string>
+	dropped: Set<string>
+}
+
+function createBodySourceState(): BodySourceState {
+	return {
+		buffers: new Map(),
+		completed: new Map(),
+		totals: new Map(),
+		bytes: 0,
+		live: new Set(),
+		dropped: new Set(),
+	}
+}
+
 type ConsoleMethod = (...args: never[]) => void
 
 export class Hooks {
@@ -80,19 +100,11 @@ export class Hooks {
 	private readonly scriptSourcePaths = new Map<string, string>()
 	// Chunks accumulate here until the Done event, which carries the whole body;
 	// per-chunk pipe writes saturate the socket buffer.
-	private readonly fetchBodyBuffers = new Map<string, BodyBufferState>()
-	private readonly serveBodyBuffers = new Map<string, BodyBufferState>()
-	private readonly completedFetchBodies = new Map<string, { data: Uint8Array; createdAt: number }>()
-	private readonly completedServeBodies = new Map<string, { data: Uint8Array; createdAt: number }>()
-	private readonly fetchBodyTotals = new Map<string, number>()
-	private readonly serveBodyTotals = new Map<string, number>()
-	private fetchBodyBufferBytes = 0
-	private serveBodyBufferBytes = 0
+	private readonly bodySources = {
+		fetch: createBodySourceState(),
+		serve: createBodySourceState(),
+	}
 	private lastBufferCleanupTime = 0
-	private readonly liveStreamedFetchRequests = new Set<string>()
-	private readonly liveStreamedServeRequests = new Set<string>()
-	private readonly droppedFetchBodyRequests = new Set<string>()
-	private readonly droppedServeBodyRequests = new Set<string>()
 	/** Streaming drops the body buffer, so these ids need their own reaper map. */
 	private readonly streamRegisteredAt = new Map<string, number>()
 	private scriptHookInstalled = false
@@ -107,20 +119,20 @@ export class Hooks {
 	memoryUsage() {
 		let completedFetchBodyBytes = 0
 		let completedServeBodyBytes = 0
-		for (const { data } of this.completedFetchBodies.values()) completedFetchBodyBytes += data.byteLength
-		for (const { data } of this.completedServeBodies.values()) completedServeBodyBytes += data.byteLength
+		for (const { data } of this.bodySources.fetch.completed.values()) completedFetchBodyBytes += data.byteLength
+		for (const { data } of this.bodySources.serve.completed.values()) completedServeBodyBytes += data.byteLength
 		return {
 			pendingIntercepts: this.pendingIntercepts.size,
-			fetchBodyBufferCount: this.fetchBodyBuffers.size,
-			fetchBodyBufferBytes: this.fetchBodyBufferBytes,
-			serveBodyBufferCount: this.serveBodyBuffers.size,
-			serveBodyBufferBytes: this.serveBodyBufferBytes,
-			completedFetchBodyCount: this.completedFetchBodies.size,
+			fetchBodyBufferCount: this.bodySources.fetch.buffers.size,
+			fetchBodyBufferBytes: this.bodySources.fetch.bytes,
+			serveBodyBufferCount: this.bodySources.serve.buffers.size,
+			serveBodyBufferBytes: this.bodySources.serve.bytes,
+			completedFetchBodyCount: this.bodySources.fetch.completed.size,
 			completedFetchBodyBytes,
-			completedServeBodyCount: this.completedServeBodies.size,
+			completedServeBodyCount: this.bodySources.serve.completed.size,
 			completedServeBodyBytes,
-			liveFetchStreamCount: this.liveStreamedFetchRequests.size,
-			liveServeStreamCount: this.liveStreamedServeRequests.size,
+			liveFetchStreamCount: this.bodySources.fetch.live.size,
+			liveServeStreamCount: this.bodySources.serve.live.size,
 		}
 	}
 
@@ -243,23 +255,10 @@ export class Hooks {
 				} satisfies NetFetchRes),
 			onData: (i: FetchDataInfo) => {
 				// Buffer on the main thread; flushed with the Done event.
-				this.handleFetchBodyData(i)
+				this.handleBodyData('fetch', i)
 			},
-			onFinished: (i: FetchFinishedInfo) => {
-				// The body is in fetchBodyBuffers normally, or completedFetchBodies
-				// if it was truncated by preview/capacity limits.
-				const buf = this.fetchBodyBuffers.get(i.requestId)
-				const mergedEntry = this.completedFetchBodies.get(i.requestId)
-				this.dropFetchBodyBuffer(i.requestId)
-				this.completedFetchBodies.delete(i.requestId)
-				const totalBytes = this.fetchBodyTotals.get(i.requestId) ?? buf?.total ?? 0
-				this.fetchBodyTotals.delete(i.requestId)
-				this.liveStreamedFetchRequests.delete(i.requestId)
-				this.droppedFetchBodyRequests.delete(i.requestId)
-				this.streamRegisteredAt.delete(i.requestId)
-				this.cleanupStaleBodyBuffers()
-				const body = mergedEntry ? [mergedEntry.data] : buf?.chunks
-				this.safeEmit(WorkerEvent.NetFetch, {
+			onFinished: (i: FetchFinishedInfo) =>
+				this.finishBody({
 					ev: NetFetchKind.Done,
 					source: 'fetch',
 					requestId: i.requestId,
@@ -267,10 +266,7 @@ export class Hooks {
 					success: i.success,
 					errorText: i.errorText,
 					connection: i.connection,
-					body,
-					totalBytes,
-				} satisfies NetFetchDone)
-			},
+				} satisfies NetFetchDone),
 		})
 
 		setServeHook({
@@ -299,32 +295,17 @@ export class Hooks {
 				} satisfies NetServeRes),
 			onData: (i: ServeDataInfo) => {
 				// Buffer body chunks on the main thread — flushed with Done event.
-				this.handleServeBodyData(i)
+				this.handleBodyData('serve', i)
 			},
-			onFinished: (i: ServeFinishedInfo) => {
-				// Flush accumulated body chunks with the Done event.
-				const buf = this.serveBodyBuffers.get(i.requestId)
-				const mergedEntry = this.completedServeBodies.get(i.requestId)
-				this.dropServeBodyBuffer(i.requestId)
-				this.completedServeBodies.delete(i.requestId)
-				const totalBytes = this.serveBodyTotals.get(i.requestId) ?? buf?.total ?? 0
-				this.serveBodyTotals.delete(i.requestId)
-				this.liveStreamedServeRequests.delete(i.requestId)
-				this.droppedServeBodyRequests.delete(i.requestId)
-				this.streamRegisteredAt.delete(i.requestId)
-				this.cleanupStaleBodyBuffers()
-				const body = mergedEntry ? [mergedEntry.data] : buf?.chunks
-				this.safeEmit(WorkerEvent.NetServe, {
+			onFinished: (i: ServeFinishedInfo) =>
+				this.finishBody({
 					ev: NetServeKind.Done,
 					source: 'serve',
 					requestId: i.requestId,
 					timestamp: i.timestamp,
 					success: i.success,
 					errorText: i.errorText,
-					body,
-					totalBytes,
-				} satisfies NetServeDone)
-			},
+				} satisfies NetServeDone),
 		})
 
 		setWebSocketHook({
@@ -425,14 +406,14 @@ export class Hooks {
 		let fetchData: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
 		let serveData: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
 		if (source !== 'serve') {
-			fetchData = this.takeFetchBodyBuffer(requestId)
-			this.liveStreamedFetchRequests.add(requestId)
-			this.droppedFetchBodyRequests.delete(requestId)
+			fetchData = this.takeBodyBuffer(this.bodySources.fetch, requestId)
+			this.bodySources.fetch.live.add(requestId)
+			this.bodySources.fetch.dropped.delete(requestId)
 		}
 		if (source !== 'fetch') {
-			serveData = this.takeServeBodyBuffer(requestId)
-			this.liveStreamedServeRequests.add(requestId)
-			this.droppedServeBodyRequests.delete(requestId)
+			serveData = this.takeBodyBuffer(this.bodySources.serve, requestId)
+			this.bodySources.serve.live.add(requestId)
+			this.bodySources.serve.dropped.delete(requestId)
 		}
 		// Streaming drops the body buffer, so the id is absent from the two maps
 		// the reaper iterates; record it so a lost Done event is still reclaimable.
@@ -573,19 +554,19 @@ export class Hooks {
 		}
 		this.installedBindings.clear()
 		this.scriptSourcePaths.clear()
-		this.fetchBodyBuffers.clear()
-		this.serveBodyBuffers.clear()
-		this.fetchBodyTotals.clear()
-		this.serveBodyTotals.clear()
-		this.fetchBodyBufferBytes = 0
-		this.serveBodyBufferBytes = 0
-		this.liveStreamedFetchRequests.clear()
-		this.liveStreamedServeRequests.clear()
-		this.droppedFetchBodyRequests.clear()
-		this.droppedServeBodyRequests.clear()
+		this.bodySources.fetch.buffers.clear()
+		this.bodySources.serve.buffers.clear()
+		this.bodySources.fetch.totals.clear()
+		this.bodySources.serve.totals.clear()
+		this.bodySources.fetch.bytes = 0
+		this.bodySources.serve.bytes = 0
+		this.bodySources.fetch.live.clear()
+		this.bodySources.serve.live.clear()
+		this.bodySources.fetch.dropped.clear()
+		this.bodySources.serve.dropped.clear()
 		this.streamRegisteredAt.clear()
-		this.completedFetchBodies.clear()
-		this.completedServeBodies.clear()
+		this.bodySources.fetch.completed.clear()
+		this.bodySources.serve.completed.clear()
 		this.scriptHookInstalled = false
 		this.scriptInitHook = null
 		if (this.consoleOriginals) {
@@ -630,130 +611,64 @@ export class Hooks {
 		}
 	}
 
-	private handleFetchBodyData(i: FetchDataInfo): void {
-		const data = this.copyBytes(i.data)
-		this.fetchBodyTotals.set(i.requestId, (this.fetchBodyTotals.get(i.requestId) ?? 0) + i.data.byteLength)
-		if (this.liveStreamedFetchRequests.has(i.requestId)) {
-			this.safeEmit(WorkerEvent.NetFetch, {
-				ev: NetFetchKind.Data,
-				source: 'fetch',
-				requestId: i.requestId,
-				timestamp: i.timestamp,
-				data,
-				byteLength: data.byteLength,
-			})
-			return
+	private handleBodyData(source: 'fetch' | 'serve', i: FetchDataInfo | ServeDataInfo): void {
+		const state = this.bodySources[source]
+		state.totals.set(i.requestId, (state.totals.get(i.requestId) ?? 0) + i.data.byteLength)
+		let data: Uint8Array
+		if (state.live.has(i.requestId)) {
+			data = this.copyBytes(i.data)
+		} else {
+			if (!state.dropped.has(i.requestId)) {
+				let buf = state.buffers.get(i.requestId)
+				if (!buf) {
+					buf = { chunks: [], total: 0, createdAt: Date.now() }
+					state.buffers.set(i.requestId, buf)
+				}
+				if (buf.total + i.data.byteLength > inspectorPreviewBodyBytes) {
+					this.evictOldestBody(state.completed)
+					state.completed.set(i.requestId, { data: this.mergeChunks(buf.chunks), createdAt: Date.now() })
+					state.dropped.add(i.requestId)
+					state.bytes = Math.max(0, state.bytes - buf.total)
+					// Preview truncation keeps a zero-byte placeholder for the 30 s reaper.
+					buf.chunks = []
+					buf.total = 0
+				} else if (this.ensureBodyCapacity(state, i.requestId, i.data.byteLength)) {
+					// Own only bytes that will be retained or forwarded, never a dropped chunk.
+					const copy = this.copyBytes(i.data)
+					buf.chunks.push(copy)
+					buf.total += copy.byteLength
+					state.bytes += copy.byteLength
+					return
+				}
+			}
+			data = new Uint8Array(0)
 		}
-		if (this.droppedFetchBodyRequests.has(i.requestId)) {
-			this.safeEmit(WorkerEvent.NetFetch, {
-				ev: NetFetchKind.Data,
-				source: 'fetch',
-				requestId: i.requestId,
-				timestamp: i.timestamp,
-				data: new Uint8Array(0),
-				byteLength: i.data.byteLength,
-			})
-			return
-		}
-		const buf = this.fetchBodyBuffers.get(i.requestId) ?? (() => {
-			const state: BodyBufferState = { chunks: [], total: 0, createdAt: Date.now() }
-			this.fetchBodyBuffers.set(i.requestId, state)
-			return state
-		})()
-		if (buf.total + i.data.byteLength > inspectorPreviewBodyBytes) {
-			this.evictOldestBody(this.completedFetchBodies)
-			this.completedFetchBodies.set(i.requestId, { data: this.mergeChunks(buf.chunks), createdAt: Date.now() })
-			this.droppedFetchBodyRequests.add(i.requestId)
-			this.fetchBodyBufferBytes = Math.max(0, this.fetchBodyBufferBytes - buf.total)
-			buf.chunks = []
-			buf.total = 0
-			this.safeEmit(WorkerEvent.NetFetch, {
-				ev: NetFetchKind.Data,
-				source: 'fetch',
-				requestId: i.requestId,
-				timestamp: i.timestamp,
-				data: new Uint8Array(0),
-				byteLength: i.data.byteLength,
-			})
-			return
-		}
-		if (!this.ensureFetchBodyCapacity(i.requestId, i.data.byteLength)) {
-			this.safeEmit(WorkerEvent.NetFetch, {
-				ev: NetFetchKind.Data,
-				source: 'fetch',
-				requestId: i.requestId,
-				timestamp: i.timestamp,
-				data: new Uint8Array(0),
-				byteLength: i.data.byteLength,
-			})
-			return
-		}
-		buf.chunks.push(data)
-		buf.total += data.byteLength
-		this.fetchBodyBufferBytes += data.byteLength
+		this.safeEmit(source === 'fetch' ? WorkerEvent.NetFetch : WorkerEvent.NetServe, {
+			ev: source === 'fetch' ? NetFetchKind.Data : NetServeKind.Data,
+			source,
+			requestId: i.requestId,
+			timestamp: i.timestamp,
+			data,
+			byteLength: i.data.byteLength,
+		})
 	}
 
-	private handleServeBodyData(i: ServeDataInfo): void {
-		const data = this.copyBytes(i.data)
-		this.serveBodyTotals.set(i.requestId, (this.serveBodyTotals.get(i.requestId) ?? 0) + i.data.byteLength)
-		if (this.liveStreamedServeRequests.has(i.requestId)) {
-			this.safeEmit(WorkerEvent.NetServe, {
-				ev: NetServeKind.Data,
-				source: 'serve',
-				requestId: i.requestId,
-				timestamp: i.timestamp,
-				data,
-				byteLength: data.byteLength,
-			})
-			return
-		}
-		if (this.droppedServeBodyRequests.has(i.requestId)) {
-			this.safeEmit(WorkerEvent.NetServe, {
-				ev: NetServeKind.Data,
-				source: 'serve',
-				requestId: i.requestId,
-				timestamp: i.timestamp,
-				data: new Uint8Array(0),
-				byteLength: i.data.byteLength,
-			})
-			return
-		}
-		const buf = this.serveBodyBuffers.get(i.requestId) ?? (() => {
-			const state: BodyBufferState = { chunks: [], total: 0, createdAt: Date.now() }
-			this.serveBodyBuffers.set(i.requestId, state)
-			return state
-		})()
-		if (buf.total + i.data.byteLength > inspectorPreviewBodyBytes) {
-			this.evictOldestBody(this.completedServeBodies)
-			this.completedServeBodies.set(i.requestId, { data: this.mergeChunks(buf.chunks), createdAt: Date.now() })
-			this.droppedServeBodyRequests.add(i.requestId)
-			this.serveBodyBufferBytes = Math.max(0, this.serveBodyBufferBytes - buf.total)
-			buf.chunks = []
-			buf.total = 0
-			this.safeEmit(WorkerEvent.NetServe, {
-				ev: NetServeKind.Data,
-				source: 'serve',
-				requestId: i.requestId,
-				timestamp: i.timestamp,
-				data: new Uint8Array(0),
-				byteLength: i.data.byteLength,
-			})
-			return
-		}
-		if (!this.ensureServeBodyCapacity(i.requestId, i.data.byteLength)) {
-			this.safeEmit(WorkerEvent.NetServe, {
-				ev: NetServeKind.Data,
-				source: 'serve',
-				requestId: i.requestId,
-				timestamp: i.timestamp,
-				data: new Uint8Array(0),
-				byteLength: i.data.byteLength,
-			})
-			return
-		}
-		buf.chunks.push(data)
-		buf.total += data.byteLength
-		this.serveBodyBufferBytes += data.byteLength
+	private finishBody(payload: NetFetchDone | NetServeDone): void {
+		const state = this.bodySources[payload.source]
+		const requestId = payload.requestId
+		const buf = state.buffers.get(requestId)
+		const completed = state.completed.get(requestId)
+		this.dropBodyBuffer(state, requestId)
+		state.completed.delete(requestId)
+		const totalBytes = state.totals.get(requestId) ?? buf?.total ?? 0
+		state.totals.delete(requestId)
+		state.live.delete(requestId)
+		state.dropped.delete(requestId)
+		this.streamRegisteredAt.delete(requestId)
+		this.cleanupStaleBodyBuffers()
+		payload.body = completed ? [completed.data] : buf?.chunks
+		payload.totalBytes = totalBytes
+		this.safeEmit(payload.source === 'fetch' ? WorkerEvent.NetFetch : WorkerEvent.NetServe, payload)
 	}
 
 	private maxPendingBodyBytes(): number {
@@ -763,84 +678,46 @@ export class Hooks {
 		return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : maxPendingBodyBytes
 	}
 
-	private dropFetchBodyBuffer(requestId: string): void {
-		const existing = this.fetchBodyBuffers.get(requestId)
+	private dropBodyBuffer(state: BodySourceState, requestId: string): void {
+		const existing = state.buffers.get(requestId)
 		if (!existing) return
-		this.fetchBodyBufferBytes = Math.max(0, this.fetchBodyBufferBytes - existing.total)
-		this.fetchBodyBuffers.delete(requestId)
+		state.bytes = Math.max(0, state.bytes - existing.total)
+		state.buffers.delete(requestId)
 	}
 
-	private dropServeBodyBuffer(requestId: string): void {
-		const existing = this.serveBodyBuffers.get(requestId)
-		if (!existing) return
-		this.serveBodyBufferBytes = Math.max(0, this.serveBodyBufferBytes - existing.total)
-		this.serveBodyBuffers.delete(requestId)
-	}
-
-	private takeFetchBodyBuffer(requestId: string): Uint8Array<ArrayBufferLike> {
-		const completed = this.completedFetchBodies.get(requestId)?.data
-		const active = this.fetchBodyBuffers.get(requestId)
+	private takeBodyBuffer(state: BodySourceState, requestId: string): Uint8Array<ArrayBufferLike> {
+		const completed = state.completed.get(requestId)?.data
+		const active = state.buffers.get(requestId)
 		const chunks = completed ? [completed] : active?.chunks ?? []
-		const data = chunks.length > 0 ? this.copyBytes(this.mergeChunks(chunks)) : new Uint8Array(0)
-		this.completedFetchBodies.delete(requestId)
-		this.dropFetchBodyBuffer(requestId)
+		// A multi-chunk merge already owns its bytes; only the single-chunk path aliases.
+		const data = chunks.length === 1 ? this.copyBytes(chunks[0]) : this.mergeChunks(chunks)
+		state.completed.delete(requestId)
+		this.dropBodyBuffer(state, requestId)
 		return data
 	}
 
-	private takeServeBodyBuffer(requestId: string): Uint8Array<ArrayBufferLike> {
-		const completed = this.completedServeBodies.get(requestId)?.data
-		const active = this.serveBodyBuffers.get(requestId)
-		const chunks = completed ? [completed] : active?.chunks ?? []
-		const data = chunks.length > 0 ? this.copyBytes(this.mergeChunks(chunks)) : new Uint8Array(0)
-		this.completedServeBodies.delete(requestId)
-		this.dropServeBodyBuffer(requestId)
-		return data
-	}
-
-	private dropFetchRequestBody(requestId: string): void {
-		this.droppedFetchBodyRequests.add(requestId)
-		const buf = this.fetchBodyBuffers.get(requestId)
+	private dropRequestBody(state: BodySourceState, requestId: string): void {
+		state.dropped.add(requestId)
+		const buf = state.buffers.get(requestId)
 		if (buf && buf.chunks.length > 0) {
-			this.evictOldestBody(this.completedFetchBodies)
-			this.completedFetchBodies.set(requestId, { data: this.mergeChunks(buf.chunks), createdAt: Date.now() })
+			this.evictOldestBody(state.completed)
+			state.completed.set(requestId, { data: this.mergeChunks(buf.chunks), createdAt: Date.now() })
 		}
-		this.dropFetchBodyBuffer(requestId)
+		this.dropBodyBuffer(state, requestId)
 	}
 
-	private dropServeRequestBody(requestId: string): void {
-		this.droppedServeBodyRequests.add(requestId)
-		const buf = this.serveBodyBuffers.get(requestId)
-		if (buf && buf.chunks.length > 0) {
-			this.evictOldestBody(this.completedServeBodies)
-			this.completedServeBodies.set(requestId, { data: this.mergeChunks(buf.chunks), createdAt: Date.now() })
-		}
-		this.dropServeBodyBuffer(requestId)
-	}
-
-	private ensureFetchBodyCapacity(requestId: string, incomingBytes: number): boolean {
+	private ensureBodyCapacity(state: BodySourceState, requestId: string, incomingBytes: number): boolean {
 		const maxBytes = this.maxPendingBodyBytes()
 		// Never evict requestId itself: the caller already holds its buffer and
 		// would keep appending to an orphaned object, permanently inflating
-		// fetchBodyBufferBytes with bytes no drop path can ever subtract.
-		for (const id of [...this.fetchBodyBuffers.keys()]) {
-			if (this.fetchBodyBufferBytes + incomingBytes <= maxBytes) break
+		// state.bytes with bytes no drop path can ever subtract.
+		for (const id of state.buffers.keys()) {
+			if (state.bytes + incomingBytes <= maxBytes) break
 			if (id === requestId) continue
-			this.dropFetchRequestBody(id)
+			this.dropRequestBody(state, id)
 		}
-		if (this.fetchBodyBufferBytes + incomingBytes <= maxBytes) return true
-		this.dropFetchRequestBody(requestId)
-		return false
-	}
-
-	private ensureServeBodyCapacity(requestId: string, incomingBytes: number): boolean {
-		const maxBytes = this.maxPendingBodyBytes()
-		for (const id of [...this.serveBodyBuffers.keys()]) {
-			if (this.serveBodyBufferBytes + incomingBytes <= maxBytes) break
-			if (id === requestId) continue
-			this.dropServeRequestBody(id)
-		}
-		if (this.serveBodyBufferBytes + incomingBytes <= maxBytes) return true
-		this.dropServeRequestBody(requestId)
+		if (state.bytes + incomingBytes <= maxBytes) return true
+		this.dropRequestBody(state, requestId)
 		return false
 	}
 
@@ -851,41 +728,42 @@ export class Hooks {
 		this.lastBufferCleanupTime = now
 		const staleCutoff = now - 120_000
 		const truncCutoff = now - 30_000
-		for (const [id, buf] of this.fetchBodyBuffers) {
+		for (const [id, buf] of this.bodySources.fetch.buffers) {
 			if (buf.createdAt < staleCutoff || (buf.total === 0 && buf.createdAt < truncCutoff)) {
-				this.fetchBodyBufferBytes = Math.max(0, this.fetchBodyBufferBytes - buf.total)
-				this.fetchBodyBuffers.delete(id)
-				this.fetchBodyTotals.delete(id)
-				this.liveStreamedFetchRequests.delete(id)
-				this.droppedFetchBodyRequests.delete(id)
+				this.bodySources.fetch.bytes = Math.max(0, this.bodySources.fetch.bytes - buf.total)
+				this.bodySources.fetch.buffers.delete(id)
+				this.bodySources.fetch.totals.delete(id)
+				this.bodySources.fetch.live.delete(id)
+				this.bodySources.fetch.dropped.delete(id)
 			}
 		}
-		for (const [id, buf] of this.serveBodyBuffers) {
+		for (const [id, buf] of this.bodySources.serve.buffers) {
 			if (buf.createdAt < staleCutoff || (buf.total === 0 && buf.createdAt < truncCutoff)) {
-				this.serveBodyBufferBytes = Math.max(0, this.serveBodyBufferBytes - buf.total)
-				this.serveBodyBuffers.delete(id)
-				this.serveBodyTotals.delete(id)
-				this.liveStreamedServeRequests.delete(id)
-				this.droppedServeBodyRequests.delete(id)
+				this.bodySources.serve.bytes = Math.max(0, this.bodySources.serve.bytes - buf.total)
+				this.bodySources.serve.buffers.delete(id)
+				this.bodySources.serve.totals.delete(id)
+				this.bodySources.serve.live.delete(id)
+				this.bodySources.serve.dropped.delete(id)
 			}
 		}
 		// Live-streamed ids hold no body buffer, so the loops above never see them;
 		// sweep them by registration timestamp or a lost Done event pins them.
 		for (const [id, at] of this.streamRegisteredAt) {
 			if (at >= staleCutoff) continue
-			if (this.fetchBodyBuffers.has(id) || this.serveBodyBuffers.has(id)) continue
+			if (this.bodySources.fetch.buffers.has(id) || this.bodySources.serve.buffers.has(id)) continue
 			this.streamRegisteredAt.delete(id)
-			this.liveStreamedFetchRequests.delete(id)
-			this.liveStreamedServeRequests.delete(id)
-			this.droppedFetchBodyRequests.delete(id)
-			this.droppedServeBodyRequests.delete(id)
-			this.fetchBodyTotals.delete(id)
-			this.serveBodyTotals.delete(id)
+			this.bodySources.fetch.live.delete(id)
+			this.bodySources.serve.live.delete(id)
+			this.bodySources.fetch.dropped.delete(id)
+			this.bodySources.serve.dropped.delete(id)
+			this.bodySources.fetch.totals.delete(id)
+			this.bodySources.serve.totals.delete(id)
 		}
-		for (const [id, entry] of this.completedFetchBodies) {			if (entry.createdAt < staleCutoff) this.completedFetchBodies.delete(id)
+		for (const [id, entry] of this.bodySources.fetch.completed) {
+			if (entry.createdAt < staleCutoff) this.bodySources.fetch.completed.delete(id)
 		}
-		for (const [id, entry] of this.completedServeBodies) {
-			if (entry.createdAt < staleCutoff) this.completedServeBodies.delete(id)
+		for (const [id, entry] of this.bodySources.serve.completed) {
+			if (entry.createdAt < staleCutoff) this.bodySources.serve.completed.delete(id)
 		}
 	}
 
