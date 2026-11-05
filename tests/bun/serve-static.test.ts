@@ -254,6 +254,16 @@ Deno.test({ name: 'bun: directory routes honor conditional GET with 304 response
                 strictEqual(notChanged.status, 304, value);
                 strictEqual(await notChanged.text(), '', value);
             }
+            // Commas inside a quoted opaque tag must not read as separators:
+            // a tag containing a literal '*' is not the wildcard.
+            const opaque = await fetch(new URL('/assets/style.css', server.url), {
+                headers: { 'if-none-match': '"foo,*,bar"' },
+            });
+            strictEqual(opaque.status, 200, 'quoted comma is not a wildcard');
+            const opaqueWeak = await fetch(new URL('/assets/style.css', server.url), {
+                headers: { 'if-none-match': `${etag}, "foo,*,bar"` },
+            });
+            strictEqual(opaqueWeak.status, 304, 'quoted comma still splits around the weak echo');
             // A stale validator still serves the file.
             const changed = await fetch(new URL('/assets/style.css', server.url), {
                 headers: { 'if-none-match': 'W/"deadbeef"' },
