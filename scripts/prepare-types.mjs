@@ -9,6 +9,8 @@ const version = '2.9.0';
 const sha256 = 'bea783df0dc2556b40b3aa8644788400904b4f56e7c45ff112279bfe94faa5bf';
 const source = `https://github.com/denoland/deno/releases/download/v${version}/lib.deno.d.ts`;
 const destination = fileURLToPath(new URL('../node_modules/.cache/cno-types/lib.deno.d.ts', import.meta.url));
+const nodeTypes = fileURLToPath(new URL('../node_modules/@types/node/index.d.ts', import.meta.url));
+const nodeTypesOutput = fileURLToPath(new URL('../node_modules/.cache/cno-types/node/index.d.ts', import.meta.url));
 
 function checksum(contents) {
     return createHash('sha256').update(contents).digest('hex');
@@ -35,4 +37,29 @@ async function prepareTypes() {
     console.log(`Prepared Deno ${version} types`);
 }
 
-await prepareTypes();
+async function prepareNodeTypes() {
+    const contents = await readFile(nodeTypes, 'utf8');
+    const webGlobals = /^\/\/\/ <reference path="web-globals\/[^"]+"\s*\/>\s*$/gm;
+    if (!webGlobals.test(contents)) {
+        throw new Error('Unexpected @types/node layout: no web-globals references found');
+    }
+
+    const filtered = contents.replace(webGlobals, '').replace(
+        /^(\/\/\/ <reference path=")([^"\r\n]+)("\s*\/>)\s*$/gm,
+        '$1../../../@types/node/$2$3',
+    );
+    await mkdir(dirname(nodeTypesOutput), { recursive: true });
+    await writeIfChanged(nodeTypesOutput, filtered);
+}
+
+async function writeIfChanged(path, contents) {
+    let previous;
+    try {
+        previous = await readFile(path, 'utf8');
+    } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+    }
+    if (previous !== contents) await writeFile(path, contents);
+}
+
+await Promise.all([prepareTypes(), prepareNodeTypes()]);

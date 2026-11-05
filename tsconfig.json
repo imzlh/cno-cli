@@ -11,9 +11,10 @@
         "moduleResolution": "bundler",
         "resolveJsonModule": true,
         "allowSyntheticDefaultImports": true,
-        // Empty typeRoots: do not auto-load all @types/* (DOM/node globals clash
-        // with cno webapi polyfills). Node ambients come from include below.
-        "typeRoots": [],
+        // Load the filtered official Node declarations prepared by the type script;
+        // their Web globals are excluded because cno provides those APIs.
+        "typeRoots": ["./node_modules/.cache/cno-types"],
+        "types": ["node"],
         "lib": [
             "esnext",
         ],
