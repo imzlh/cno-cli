@@ -36,6 +36,18 @@ async function fixture(entry, globals) {
 
 async function bridgeFixture(t, { holdAttach = false } = {}) {
     const instances = [];
+    const values = new Map();
+    const evbus = {
+        get(namespace, key) {
+            return values.get(`${namespace}:${key}`);
+        },
+        set(namespace, key, value) {
+            values.set(`${namespace}:${key}`, value);
+        },
+        delete(namespace, key) {
+            values.delete(`${namespace}:${key}`);
+        },
+    };
     class Inspector {
         inspectorUrl = '';
         detached = false;
@@ -57,7 +69,10 @@ async function bridgeFixture(t, { holdAttach = false } = {}) {
             this.cancelAttach?.(new Error('attach cancelled'));
         }
     }
-    const { installInspectorBridge } = await fixture('src/inspector/bridge.ts', { __test_inspector__: Inspector });
+    const { installInspectorBridge } = await fixture('src/inspector/bridge.ts', {
+        __test_inspector__: Inspector,
+        __test_use__: name => name === 'evbus' ? evbus : undefined,
+    });
     const bridge = installInspectorBridge({ entryFile: 'fixture.ts' });
     t.after(() => bridge.dispose());
     return { bridge, instances };
