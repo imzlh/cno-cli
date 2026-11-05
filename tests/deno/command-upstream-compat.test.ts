@@ -226,11 +226,13 @@ Deno.test({ name: 'deno command upstream: output honors non-piped stdio before r
 });
 
 Deno.test('deno command upstream: invalid stdio variants throw before spawning', async () => {
+    // The single validation point in pipe() names the offending field.
     for (const key of ['stdin', 'stdout', 'stderr'] as const) {
         const options = { args: ['eval', ''], [key]: 'bad' } as Deno.CommandOptions;
-        throws(() => new Deno.Command(Deno.execPath(), options).spawn(), /unknown variant `bad`/);
-        throws(() => new Deno.Command(Deno.execPath(), options).output(), /unknown variant `bad`/);
-        throws(() => new Deno.Command(Deno.execPath(), options).outputSync(), /unknown variant `bad`/);
+        const message = new RegExp(`unknown variant \`${key}: bad\``);
+        throws(() => new Deno.Command(Deno.execPath(), options).spawn(), message);
+        throws(() => new Deno.Command(Deno.execPath(), options).output(), message);
+        throws(() => new Deno.Command(Deno.execPath(), options).outputSync(), message);
     }
 });
 

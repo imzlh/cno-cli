@@ -19,131 +19,88 @@ const result = await build({
 });
 const source = result.outputFiles[0].text;
 
-// The injector discovers CTS through the `cts.internal` evbus channel only.
-// An explicit `native` owns every lookup; the default publishes `bridge` there.
-function realm(bridge, native) {
-    const holder = { bridge };
-    const use = native ?? (name => {
-        if (name === 'evbus') {
-            return {
-                get: (namespace, key) =>
-                    namespace === 'cts.internal' && key === 'bridge' ? holder.bridge : undefined,
-                set() { throw new Error('injector must not publish a bridge'); },
-            };
-        }
-        return undefined;
-    });
-    const context = { __test_use__: use };
+// The injector owns the lazy `Bun` global outright: it resolves
+// `bun:index` through the ambient CJS require (CTS-backed in the embedded
+// runtime), swaps the accessor for a sealed data descriptor on success,
+// and keeps the accessor retryable when the load fails.
+function realm(requireImpl) {
+    const context = { require: requireImpl };
     runInNewContext(source, context);
     return context;
 }
 
-test('bootstrap dependency graph contains only the injector and CTS bridge accessor', () => {
+test('bootstrap dependency graph contains only the injector', () => {
     assert.deepEqual(Object.keys(result.metafile.inputs).sort(), [
         'cno/src/bun/_internal/inject.ts',
-        'cno/src/node/_internal/cts-bridge.ts',
     ]);
 });
 
-test('global Bun lazily loads the canonical builtin once and preserves its identity', () => {
+test('global Bun lazily loads bun:index once and seals the descriptor', () => {
     const bun = {};
-    const calls = [];
-    const context = realm({
-        mkRequire(parent) {
-            calls.push(parent);
-            return id => { calls.push(id); return bun; };
-        },
-    });
-    assert.deepEqual(calls, []);
+    const ids = [];
+    const context = realm(id => { ids.push(id); return bun; });
+    assert.deepEqual(ids, []);
     const lazy = Object.getOwnPropertyDescriptor(context, 'Bun');
     assert.equal(typeof lazy.get, 'function');
     assert.equal(lazy.set, undefined);
     assert.equal(lazy.configurable, true);
     assert.equal(lazy.enumerable, true);
-    assert.equal(Reflect.set(context, 'Bun', {}), false);
-    assert.deepEqual(calls, []);
     assert.equal(context.Bun, bun);
+    assert.deepEqual(ids, ['bun:index']);
     assert.equal(context.Bun, bun);
-    assert.deepEqual(calls, ['<bun-global>', 'bun']);
+    assert.deepEqual(ids, ['bun:index']);
     assert.deepEqual(Object.getOwnPropertyDescriptor(context, 'Bun'), {
         value: bun, writable: false, configurable: false, enumerable: true,
     });
     assert.equal(Reflect.set(context, 'Bun', {}), false);
     assert.equal(Reflect.deleteProperty(context, 'Bun'), false);
-    runInNewContext(source, context);
-    assert.equal(context.Bun, bun);
-    assert.equal(calls.length, 2);
 });
 
-test('access before ModuleCompiler is ready fails synchronously and remains retryable', () => {
-    const holder = { bridge: undefined };
-    const context = {
-        __test_use__: name => {
-            if (name === 'evbus') {
-                return {
-                    get: (namespace, key) =>
-                        namespace === 'cts.internal' && key === 'bridge' ? holder.bridge : undefined,
-                    set() { throw new Error('injector must not publish a bridge'); },
-                };
-            }
-            return () => undefined;
-        },
-    };
-    runInNewContext(source, context);
-    assert.throws(() => context.Bun, { code: 'ERR_CTS_BRIDGE_UNAVAILABLE' });
-    holder.bridge = {};
-    assert.throws(() => context.Bun, { code: 'ERR_CTS_BRIDGE_UNAVAILABLE' });
+test('recursive access during initialization surfaces the reentry guard', () => {
     const bun = {};
-    holder.bridge.mkRequire = () => id => {
-        assert.equal(id, 'bun');
-        return bun;
-    };
+    let impl = () => context.Bun;
+    const context = realm(() => impl());
+    assert.throws(() => context.Bun, { code: 'ERR_BUN_GLOBAL_INITIALIZING' });
+    // The accessor survives the reentry and the next access retries.
+    assert.equal(typeof Object.getOwnPropertyDescriptor(context, 'Bun').get, 'function');
+    impl = () => bun;
     assert.equal(context.Bun, bun);
 });
 
-test('load failures and recursive global access never cache a partial Bun value', () => {
+test('load failures stay retryable and never cache a partial Bun value', () => {
     const failure = new Error('builtin unavailable');
-    const bridge = { mkRequire: () => () => { throw failure; } };
-    const context = realm(bridge);
+    let impl = () => { throw failure; };
+    const context = realm(id => impl(id));
     assert.throws(() => context.Bun, error => error === failure);
     assert.equal(typeof Object.getOwnPropertyDescriptor(context, 'Bun').get, 'function');
-    bridge.mkRequire = () => () => context.Bun;
-    assert.throws(() => context.Bun, { code: 'ERR_BUN_GLOBAL_INITIALIZING' });
     const bun = {};
-    bridge.mkRequire = () => () => bun;
+    impl = () => bun;
+    assert.equal(context.Bun, bun);
     assert.equal(context.Bun, bun);
 });
 
-test('the registry bridge is looked up at access time independently in each realm', () => {
-    function workerRealm() {
-        let bridge;
-        const context = realm(undefined, name => {
-            assert.equal(name, 'evbus');
-            return {
-                get(namespace, key) {
-                    assert.equal(namespace, 'cts.internal');
-                    assert.equal(key, 'bridge');
-                    return bridge;
-                },
-                set() { throw new Error('injector must not publish a bridge'); },
-            };
-        });
-        const bun = {};
-        bridge = { mkRequire: () => () => bun };
-        return { context, bun };
-    }
-    const first = workerRealm();
-    const second = workerRealm();
-    assert.equal(first.context.Bun, first.bun);
-    assert.equal(second.context.Bun, second.bun);
-    assert.notEqual(first.context.Bun, second.context.Bun);
+test('each realm resolves bun:index independently through its own require', () => {
+    const firstBun = {};
+    const secondBun = {};
+    const first = realm(() => firstBun);
+    const second = realm(() => secondBun);
+    assert.equal(first.Bun, firstBun);
+    assert.equal(second.Bun, secondBun);
+    assert.notEqual(first.Bun, second.Bun);
 });
 
-test('existing own Bun descriptors are preserved without invoking their getters', () => {
-    const getter = () => { throw new Error('must not inspect a preexisting Bun'); };
-    const context = { __test_use__: () => undefined };
-    Object.defineProperty(context, 'Bun', { get: getter, configurable: false });
-    runInNewContext(source, context);
-    assert.equal(Object.getOwnPropertyDescriptor(context, 'Bun').get, getter);
-    assert.equal(Object.getOwnPropertyDescriptor(context, 'Bun').configurable, false);
+test('the injector takes over an existing configurable Bun and rejects frozen ones', () => {
+    const getter = () => { throw new Error('stale getter'); };
+    // A configurable preexisting descriptor is replaced by the accessor.
+    const takeover = { require: () => ({}) };
+    Object.defineProperty(takeover, 'Bun', { get: getter, configurable: true });
+    runInNewContext(source, takeover);
+    assert.notEqual(Object.getOwnPropertyDescriptor(takeover, 'Bun').get, getter);
+    // A non-configurable preexisting descriptor makes the takeover throw at
+    // bootstrap instead of silently leaving a half-installed injector.
+    const frozen = { require: () => ({}) };
+    Object.defineProperty(frozen, 'Bun', { get: getter, configurable: false });
+    // The TypeError comes from the vm realm, so match by shape not prototype.
+    assert.throws(() => runInNewContext(source, frozen), { name: 'TypeError', message: /Cannot redefine property: Bun/ });
+    assert.equal(Object.getOwnPropertyDescriptor(frozen, 'Bun').get, getter);
 });
