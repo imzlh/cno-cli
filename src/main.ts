@@ -36,8 +36,7 @@ import { resources as processResources } from '../cts/src/runtime/resources';
 
 import type { Args } from '../cno/src/utils/args';
 import setArgs, { normalizeArgs } from '../cno/src/utils/args';
-import { disableRawCertVerify } from '../cno/src/utils/http';
-import { resolveObjectURLBytes } from '../cno/src/webapi/url';
+import { resolveObjectURLBytes } from '../cno/src/webapi/object-url';
 // globalThis.console must exist before the full polyfill bootstrap loads:
 // src/ command and kernel warnings print through the bare global; cts
 // log/fatal go through the native console module.
@@ -49,7 +48,6 @@ import { effectiveRuntimeFlags, prepareKernel, type KernelContext } from './kern
 import { decodeWorkerRuntimeConfig } from './config';
 import { readEnv } from './env';
 import { C, showHelp, showVersion } from './help';
-import { configureTlsHooks } from './network';
 import { publishChannel, CHANNEL_BLOB_URL_RESOLVER, CHANNEL_REQUEST_EXIT_CODE } from './channels';
 import type { TestChildMessage } from './commands/test-result-pipe';
 
@@ -215,15 +213,19 @@ function validateInvocation(cli: ParsedCli): void {
     }
 }
 
-// The proxy connector (and its HTTP/TLS stack) loads only for --system-proxy.
+// Network policy stays off the startup path unless a flag needs it.
 let networkModule: typeof import('./network') | null = null;
 
 async function applyNetworkFlags(flags: Record<string, string | boolean>): Promise<void> {
-    configureTlsHooks(flags);
-    // Raw TLS verification is separate from the fetch-side hooks above.
-    if (flags['skip-cert-verify']) disableRawCertVerify();
-    if (!flags['system-proxy']) return;
+    if (!flags['system-proxy'] && !flags['skip-cert-verify']) return;
     const network = networkModule ??= await import('./network');
+    network.configureTlsHooks(flags);
+    // Raw TLS verification is separate from the fetch-side hooks above.
+    if (flags['skip-cert-verify']) {
+        const { disableRawCertVerify } = await import('../cno/src/utils/http');
+        disableRawCertVerify();
+    }
+    if (!flags['system-proxy']) return;
     try {
         await network.startProxy();
     } catch (e) {
