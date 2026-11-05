@@ -284,3 +284,60 @@ Deno.test({ name: 'bun: directory routes honor conditional GET with 304 response
         }
     });
 });
+
+Deno.test({ name: 'bun: directory routes serve single ranges with 206 and 416', timeout: 15000 }, async () => {
+    await withTempDir('bun-serve-dir-range', async root => {
+        const dir = await makeAssetTree(root);
+        const server = serve({
+            hostname: '127.0.0.1',
+            port: 0,
+            routes: { '/assets/*': { dir } },
+        });
+
+        try {
+            const url = new URL('/assets/data.json', server.url);
+            const full = await fetch(url);
+            const bytes = new Uint8Array(await full.arrayBuffer());
+            const etag = full.headers.get('etag')!;
+            strictEqual(bytes.length > 8, true, 'fixture must span several chunks of range math');
+
+            // Mid-file window.
+            const mid = await fetch(url, { headers: { range: 'bytes=4-9' } });
+            strictEqual(mid.status, 206);
+            strictEqual(mid.headers.get('content-range'), `bytes 4-9/${bytes.length}`);
+            strictEqual(mid.headers.get('content-length'), '6');
+            deepStrictEqual(new Uint8Array(await mid.arrayBuffer()), bytes.slice(4, 10));
+
+            // Open-ended and suffix forms.
+            const tail = await fetch(url, { headers: { range: 'bytes=-6' } });
+            strictEqual(tail.status, 206);
+            deepStrictEqual(new Uint8Array(await tail.arrayBuffer()), bytes.slice(-6));
+            const from5 = await fetch(url, { headers: { range: 'bytes=5-' } });
+            strictEqual(from5.status, 206);
+            deepStrictEqual(new Uint8Array(await from5.arrayBuffer()), bytes.slice(5));
+
+            // End clamps to the file size; suffix longer than the file serves it all.
+            const clamped = await fetch(url, { headers: { range: `bytes=${bytes.length - 2}-99999` } });
+            strictEqual(clamped.status, 206);
+            deepStrictEqual(new Uint8Array(await clamped.arrayBuffer()), bytes.slice(-2));
+
+            // Unsatisfiable → 416 with the wildcard content-range.
+            const tooFar = await fetch(url, { headers: { range: `bytes=${bytes.length + 10}-` } });
+            strictEqual(tooFar.status, 416);
+            strictEqual(tooFar.headers.get('content-range'), `bytes */${bytes.length}`);
+
+            // Multi-range and non-byte units fall back to the full body.
+            const multi = await fetch(url, { headers: { range: 'bytes=0-1,4-5' } });
+            strictEqual(multi.status, 200);
+            deepStrictEqual(new Uint8Array(await multi.arrayBuffer()), bytes);
+            const weirdUnit = await fetch(url, { headers: { range: 'items=0-1' } });
+            strictEqual(weirdUnit.status, 200);
+
+            // Conditional GET still wins over Range.
+            const conditional = await fetch(url, { headers: { range: 'bytes=0-1', 'if-none-match': etag } });
+            strictEqual(conditional.status, 304);
+        } finally {
+            await server.stop();
+        }
+    });
+});

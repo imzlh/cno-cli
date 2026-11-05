@@ -326,3 +326,17 @@ code, command renaming, CLI impersonation, or broad README/website redesign.
   (parameter-bearing directory prefixes now rejected loudly, route-key error
   message updated for the widened grammar, empty-object route value behavior
   recorded) were applied before commit.
+  Post-commit hardening (2026-11-06, codex rounds two and three + this
+  session): static file responses gained content-length (only for trusted
+  sizes; procfs-style zero-size files keep EOF framing), conditional GET
+  (If-None-Match with quote-aware validator splitting / If-Modified-Since →
+  304), and single byte ranges (206 with content-range, unsatisfiable →
+  416, multi-range and non-byte units → full body, upstream cancelled once
+  the window is emitted); the color depth table was rewritten against the
+  installed Bun 1.4.4 oracle (FORCE_COLOR numeric parse and clamping,
+  NO_COLOR=false/0 enabled, TERM table without a stdout-TTY gate);
+  serve-static rejects percent-encoded aliases of literal filenames and
+  `//`; route params are own data properties (a ':__proto__' pattern keeps
+  its capture); urlpattern (+ its ~18 KB vendor polyfill) defers behind
+  first access like WebSocket, with urlpattern.ts importing the vendor
+  class directly so the module cannot recurse through the accessor.
