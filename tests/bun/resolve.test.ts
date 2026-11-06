@@ -5,15 +5,15 @@ import { resolve, resolveSync } from '../../cno/src/bun/resolve.ts';
 Deno.test('Bun resolve wrapper passes a directory as a synthetic importer and returns the bridge result', async () => {
     const bridge = getCtsBridge()!;
     const previous = bridge.resolveEsmForInspection;
-    const calls: string[][] = [];
-    bridge.resolveEsmForInspection = (spec: string, parent: string) => {
-        calls.push([spec, parent]);
+    const calls: Array<[string, string, boolean]> = [];
+    bridge.resolveEsmForInspection = (spec: string, parent: string, esm: boolean) => {
+        calls.push([spec, parent, esm]);
         return 'node:fs';
     };
     try {
         strictEqual(resolveSync('fs', '/tmp/project'), 'node:fs');
         strictEqual(await resolve('fs', '/tmp/project'), 'node:fs');
-        deepStrictEqual(calls, [['fs', '/tmp/project/__bun_resolve__.js'], ['fs', '/tmp/project/__bun_resolve__.js']]);
+        deepStrictEqual(calls, [['fs', '/tmp/project/__bun_resolve__.js', true], ['fs', '/tmp/project/__bun_resolve__.js', true]]);
         throws(() => Reflect.apply(resolveSync, undefined, []), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE', message: 'Expected a specifier and a from path' });
         throws(() => Reflect.apply(resolveSync, undefined, [undefined]), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE', message: 'specifier must be a string' });
         throws(() => Reflect.apply(resolveSync, undefined, ['fs']), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE', message: 'Expected a from path' });
@@ -25,6 +25,11 @@ Deno.test('Bun resolve wrapper passes a directory as a synthetic importer and re
         strictEqual(resolveSync('fs', '/tmp/project', false), 'node:fs');
         strictEqual(resolveSync('fs', '/tmp/project', true), 'node:fs');
         strictEqual(resolveSync(1, 2), 'node:fs');
+        deepStrictEqual(calls.slice(-3).map(([spec, , mode]) => [spec, mode]), [
+            ['fs', false],
+            ['fs', true],
+            ['1', true],
+        ]);
         throws(() => resolveSync(Symbol('fs'), '/tmp/project'), { name: 'TypeError', message: 'Cannot convert a symbol to a string' });
         const coercions: string[] = [];
         throws(() => resolveSync({ [Symbol.toPrimitive]: () => Symbol('fs') }, '/tmp/project'), {
