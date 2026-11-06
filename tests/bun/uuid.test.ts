@@ -23,9 +23,17 @@ Deno.test('bun: UUIDv7 is ordered within a timestamp including counter rollover'
 });
 
 Deno.test('bun: UUIDv7 rejects invalid encoding and timestamps', () => {
-    throws(() => randomUUIDv7('invalid' as 'hex'), TypeError);
+    throws(() => randomUUIDv7('invalid' as 'hex'), { name: 'TypeError', code: 'ERR_UNKNOWN_ENCODING' });
+    strictEqual(Buffer.isBuffer(randomUUIDv7('BUFFER' as 'buffer', 0)), true);
+    ok(/^00000000-0000-7/.test(randomUUIDv7('HEX' as 'hex', 0)));
+    ok(/^00000000-0000-7/.test((randomUUIDv7 as any)({}, 0)));
+    throws(() => (randomUUIDv7 as any)(null), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE' });
+    throws(() => (randomUUIDv7 as any)('hex', null), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE' });
+    throws(() => (randomUUIDv7 as any)('hex', 1.5), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE' });
     for (const time of [-1, NaN, Infinity, 2 ** 48, 1.5]) {
-        throws(() => randomUUIDv7('hex', time), RangeError);
+        throws(() => randomUUIDv7('hex', time), time === 1.5
+            ? { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE' }
+            : { name: 'RangeError', code: 'ERR_OUT_OF_RANGE' });
     }
-    throws(() => randomUUIDv7('hex', new Date(NaN)), RangeError);
+    throws(() => randomUUIDv7('hex', new Date(NaN)), { name: 'RangeError', code: 'ERR_OUT_OF_RANGE' });
 });
