@@ -6,10 +6,12 @@ Deno.test('bun: stripANSI removes CSI, OSC hyperlinks, and keeps plain text', ()
     strictEqual(stripANSI('\x1b]8;;https://example.com\x07link\x1b]8;;\x07'), 'link');
     strictEqual(stripANSI('\x1b]8;;u\x1b\\link\x1b]8;;\x1b\\'), 'link');
     strictEqual(stripANSI('\x9b31mx\x9b0m'), 'x');
-    strictEqual(stripANSI('a\x1b'), 'a\x1b');
-    strictEqual(stripANSI('\x1b]8;;unterminated'), '\x1b]8;;unterminated');
+    strictEqual(stripANSI('a\x1b'), 'a');
+    strictEqual(stripANSI('a\x1b[31'), 'a');
+    strictEqual(stripANSI('a\x1b]8;;unterminated'), 'a');
     strictEqual(stripANSI('plain café'), 'plain café');
-    throws(() => stripANSI(1 as unknown as string), TypeError);
+    strictEqual(stripANSI(1 as unknown as string), '1');
+    throws(() => stripANSI(Symbol('x') as unknown as string), TypeError);
 });
 
 Deno.test('bun: stringWidth counts terminal cells', () => {
@@ -25,9 +27,11 @@ Deno.test('bun: stringWidth counts terminal cells', () => {
     strictEqual(stringWidth('a\x07b'), 2);
     strictEqual(stringWidth('①'), 1);
     strictEqual(stringWidth('①', { ambiguousIsNarrow: false }), 2);
+    strictEqual(stringWidth('①', null as unknown as {}), 1);
     strictEqual(stringWidth('#️⃣'), 2);
     deepStrictEqual(stringWidth(''), 0);
-    throws(() => stringWidth(1 as unknown as string), TypeError);
+    strictEqual(stringWidth(null as unknown as string), 4);
+    throws(() => stringWidth(Symbol('x') as unknown as string), TypeError);
 });
 
 Deno.test('bun: stringWidth groups grapheme clusters by default', () => {
@@ -56,5 +60,6 @@ Deno.test('bun: stringWidth perCodePoint measures each code point', () => {
     strictEqual(stringWidth('\x1b[31mabc\x1b[0m', { ...opt, countAnsiEscapeCodes: true }), 10);
     strictEqual(stringWidth('\x1b[31mabc\x1b[0m', opt), 3);
     strictEqual(stringWidth('', opt), 0);
-    throws(() => stringWidth(1 as unknown as string, opt), TypeError);
+    strictEqual(stringWidth(true as unknown as string, opt), 4);
+    throws(() => stringWidth(Symbol('x') as unknown as string, opt), TypeError);
 });
