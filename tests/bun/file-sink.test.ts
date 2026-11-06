@@ -1,11 +1,23 @@
 import { rejects, strictEqual, throws } from 'node:assert';
 import Bun, { stderr, stdin, stdout } from 'bun';
-import { withTempDir } from '../_helpers/temp.ts';
 import { join } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+const fixtureRoot = fileURLToPath(new URL('../../build/bun-polyfill-VFyMWN5X/agent-filesink-r2/tmp/', import.meta.url));
+mkdirSync(fixtureRoot, { recursive: true });
+
+async function withFileSinkFixture<T>(prefix: string, fn: (dir: string) => T | Promise<T>): Promise<T> {
+    const dir = mkdtempSync(join(fixtureRoot, `${prefix}-`));
+    try {
+        return await fn(dir);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+}
 
 Deno.test({ name: 'bun.file.writer: buffered writes flush through end()', timeout: 10000 }, async () => {
-    await withTempDir('file-sink', (dir) => {
+    await withFileSinkFixture('file-sink', (dir) => {
         const path = join(dir, 'sink.txt');
         const sink = Bun.file(path).writer();
         strictEqual(sink.write('hello '), 6);
@@ -16,13 +28,15 @@ Deno.test({ name: 'bun.file.writer: buffered writes flush through end()', timeou
         strictEqual(sink.write('rld'), 3);
         strictEqual(sink.end(), 3);
         strictEqual(readFileSync(path, 'utf8'), 'hello world');
-        throws(() => sink.write('late'), /already closed/);
+        throws(() => sink.write(null as never), TypeError);
+        strictEqual(sink.write('late'), true);
+        strictEqual(sink.flush(), true);
         strictEqual(sink.end(), 0);
     });
 });
 
 Deno.test({ name: 'bun.file.writer: highWaterMark is an advisory hint and options are validated', timeout: 10000 }, async () => {
-    await withTempDir('file-sink-hwm', (dir) => {
+    await withFileSinkFixture('file-sink-hwm', (dir) => {
         const path = join(dir, 'eager.txt');
         const sink = Bun.file(path).writer({ highWaterMark: 4 });
         sink.write('abc');
@@ -41,7 +55,7 @@ Deno.test({ name: 'bun.file.writer: highWaterMark is an advisory hint and option
 });
 
 Deno.test({ name: 'bun.file.writer: overwrites without truncation and end(error) flushes pending data', timeout: 10000 }, async () => {
-    await withTempDir('file-sink-trunc', async (dir) => {
+    await withFileSinkFixture('file-sink-trunc', async (dir) => {
         const path = join(dir, 'trunc.txt');
         await Bun.write(path, 'previous content');
         const sink = Bun.file(path).writer();
@@ -64,7 +78,7 @@ Deno.test({ name: 'bun.file.writer: overwrites without truncation and end(error)
 });
 
 Deno.test({ name: 'bun.file.writer: rejects Blob chunks and creates the target eagerly', timeout: 10000 }, async () => {
-    await withTempDir('file-sink-inputs', (dir) => {
+    await withFileSinkFixture('file-sink-inputs', (dir) => {
         const path = join(dir, 'created.txt');
         const sink = Bun.file(path).writer();
         strictEqual(existsSync(path), true);
@@ -79,8 +93,39 @@ Deno.test({ name: 'bun.file.writer: rejects Blob chunks and creates the target e
     });
 });
 
+Deno.test({ name: 'bun.file.writer: built-in shape and receiver brands', timeout: 10000 }, async () => {
+    await withFileSinkFixture('file-sink-shape', (dir) => {
+        const sink = Bun.file(join(dir, 'shape.txt')).writer();
+        const prototype = Object.getPrototypeOf(sink) as Record<string, Function>;
+        strictEqual(Object.prototype.toString.call(sink), '[object FileSink]');
+        strictEqual(sink.constructor.name, 'FileSink');
+
+        for (const [name, length] of [['start', 1], ['write', 1], ['flush', 1], ['end', 0]] as const) {
+            const descriptor = Object.getOwnPropertyDescriptor(prototype, name)!;
+            strictEqual(descriptor.enumerable, true);
+            strictEqual(descriptor.writable, false);
+            strictEqual(descriptor.configurable, false);
+            strictEqual(descriptor.value.length, length);
+            throws(() => Reflect.apply(descriptor.value, {}, name === 'write' ? ['x'] : []), {
+                name: 'TypeError',
+                message: 'Expected FileSink',
+                code: 'ERR_INVALID_THIS',
+            });
+        }
+
+        throws(() => new (sink.constructor as new () => object)(), {
+            name: 'TypeError',
+            message: 'Illegal constructor',
+            code: 'ERR_ILLEGAL_CONSTRUCTOR',
+        });
+        strictEqual(Reflect.apply(prototype.ref, null, []), undefined);
+        strictEqual(Reflect.apply(prototype.unref, {}, []), undefined);
+        strictEqual(sink.end(), 0);
+    });
+});
+
 Deno.test({ name: 'bun.write accepts a ReadableStream body', timeout: 10000 }, async () => {
-    await withTempDir('write-stream', async (dir) => {
+    await withFileSinkFixture('write-stream', async (dir) => {
         const path = join(dir, 'streamed.txt');
         const source = new ReadableStream<Uint8Array>({
             start(controller) {
