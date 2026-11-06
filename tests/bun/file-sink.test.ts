@@ -21,15 +21,17 @@ Deno.test({ name: 'bun.file.writer: buffered writes flush through end()', timeou
     });
 });
 
-Deno.test({ name: 'bun.file.writer: highWaterMark commits eagerly and options are validated', timeout: 10000 }, async () => {
+Deno.test({ name: 'bun.file.writer: highWaterMark is an advisory hint and options are validated', timeout: 10000 }, async () => {
     await withTempDir('file-sink-hwm', (dir) => {
         const path = join(dir, 'eager.txt');
         const sink = Bun.file(path).writer({ highWaterMark: 4 });
-        sink.write('abc'); // below the mark: still buffered
+        sink.write('abc');
         strictEqual(readFileSync(path, 'utf8'), '');
-        sink.write('d'); // reaches the mark: committed
+        sink.write('d');
+        strictEqual(readFileSync(path, 'utf8'), '');
+        strictEqual(sink.flush(), 4);
         strictEqual(readFileSync(path, 'utf8'), 'abcd');
-        sink.end();
+        strictEqual(sink.end(), 0);
         throws(() => Bun.file(path).writer('x' as never), TypeError);
         const permissive = Bun.file(join(dir, 'permissive.txt')).writer({ highWaterMark: -1 });
         permissive.start('ignored' as never);
@@ -94,10 +96,9 @@ Deno.test({ name: 'bun.write accepts a ReadableStream body', timeout: 10000 }, a
 
 Deno.test({ name: 'bun.stdio.writer: incremental writes over the fixed descriptor', timeout: 5000 }, async () => {
     const sink = stdout.writer({ highWaterMark: 4 });
-    // Both writes cross the mark, so each commits eagerly.
     strictEqual(sink.write('sink'), 4);
     strictEqual(sink.write('-probe'), 6);
-    strictEqual(sink.flush(), 0); // nothing left buffered
+    strictEqual(sink.flush(), 10);
     strictEqual(sink.end(), 0); // the fd stays open
     strictEqual(sink.end(), 0);
     throws(() => stdin.writer(), /not writable/);

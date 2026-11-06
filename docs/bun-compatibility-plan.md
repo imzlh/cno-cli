@@ -235,7 +235,7 @@ code, command renaming, CLI impersonation, or broad README/website redesign.
   and bcrypt; the native crypto binding has neither, and substituting scrypt or
   PBKDF2 under Bun's API would create non-interoperable security output.
 - [x] Third pass (2026-11-05): `BunFile.writer()`/FileSink (buffered writes,
-  highWaterMark auto-commit, GC-safe descriptor release, stdio `writer()`),
+  advisory highWaterMark, GC-safe descriptor release, stdio `writer()`),
   `Bun.write` ReadableStream input, `blake2b512` keyed-BLAKE2b semantics
   (python differential 100/100), and fixes for four more pre-existing bun
   failures: `ArrayBufferSink` lone-surrogate encoding, `Cookie` getter
