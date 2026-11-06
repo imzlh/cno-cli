@@ -1,6 +1,17 @@
 import { deepStrictEqual, strictEqual, throws } from 'node:assert';
 import { JSON5 } from '../../cno/src/bun/utils/json5.ts';
 
+Deno.test('bun: JSON5 methods match Bun call shape', () => {
+    strictEqual(JSON5.parse.name, 'parse');
+    strictEqual(JSON5.parse.length, 1);
+    strictEqual(Object.hasOwn(JSON5.parse, 'prototype'), false);
+    throws(() => Reflect.construct(JSON5.parse, ['1']), TypeError);
+    strictEqual(JSON5.stringify.name, 'stringify');
+    strictEqual(JSON5.stringify.length, 3);
+    strictEqual(Object.hasOwn(JSON5.stringify, 'prototype'), false);
+    throws(() => Reflect.construct(JSON5.stringify, [1]), TypeError);
+});
+
 Deno.test('bun: JSON5 parses JSON5 syntax and raw byte views', () => {
     const source = `/* comment */ {unquoted: 'hello\\\nworld', hex: -0x10, numbers: [+1, .5, 1., Infinity, -Infinity, NaN,], escaped: '\\x41\\u0042\\v', // comment
     nested: {true: null,},}`;
