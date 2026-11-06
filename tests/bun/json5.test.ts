@@ -44,7 +44,13 @@ Deno.test('bun: JSON5 handles object keys, byte offsets and control characters',
     strictEqual(object.a, 2);
     const bytes = new TextEncoder().encode('x-0x10x');
     strictEqual(JSON5.parse(new DataView(bytes.buffer, 1, 5)), -16);
+    if (typeof SharedArrayBuffer !== 'undefined') {
+        const shared = new SharedArrayBuffer(2);
+        new Uint8Array(shared).set([0x34, 0x32]);
+        strictEqual(JSON5.parse(shared), 42);
+    }
     strictEqual(JSON5.stringify('\x7f'), "'\\x7f'");
+    strictEqual(JSON5.stringify({ '𝒜': 1, α: 2 }), "{'𝒜':1,α:2}");
     for (const source of ['0x', '1e+', '00', '{a:1,,}', '[,1]', '"\\u123"', '"\\01"']) {
         throws(() => JSON5.parse(source), SyntaxError, source);
     }
@@ -56,6 +62,13 @@ Deno.test('bun: JSON5.stringify identifies boxed values without consulting toStr
     strictEqual(JSON5.stringify({ a: 1, [Symbol.toStringTag]: 'BigInt' }), '{a:1}');
     strictEqual(JSON5.stringify(Object.assign(new String('a'), { valueOf: () => 'b' })), "'a'");
     strictEqual(JSON5.stringify(Object.assign(new Boolean(false), { valueOf: () => true })), 'false');
+    strictEqual(JSON5.stringify({ a: 1 }, null, Object.assign(new String('xy'), {
+        valueOf() { throw new Error('must not be called'); },
+    })), '{\nxya: 1,\n}');
+    strictEqual(JSON5.stringify({ a: 1 }, null, Object.assign(new String('xy'), {
+        toString() { return 'zz'; },
+    })), '{\nzza: 1,\n}');
+    strictEqual(JSON5.stringify({ a: 1 }, null, new Proxy(new String('xy'), {})), '{a:1}');
     strictEqual(JSON5.stringify(Object.create(Number.prototype)), '{}');
     throws(() => JSON5.stringify(Object(1n)), /cannot serialize BigInt/);
 });
