@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync, accessSync, constants } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
@@ -41,9 +40,11 @@ runInNewContext(source, {
 const { which } = module.exports;
 
 const posix = process.platform !== 'win32';
+const fixtureRoot = fileURLToPath(new URL('../../build/bun-polyfill-VFyMWN5X/agent-which/tmp/', import.meta.url));
+mkdirSync(fixtureRoot, { recursive: true });
 
 function fixture() {
-    const root = mkdtempSync(join(tmpdir(), 'which-unit-'));
+    const root = mkdtempSync(join(fixtureRoot, 'which-unit-'));
     const bin = join(root, 'bin');
     mkdirSync(bin);
     return { root, bin, cleanup: () => rmSync(root, { recursive: true, force: true }) };
@@ -142,6 +143,51 @@ test('which validates its command argument', () => {
         name: 'TypeError',
         message: 'Cannot convert a symbol to a string',
     });
+});
+
+test('which has the Bun function shape', () => {
+    assert.equal(which.name, 'which');
+    assert.equal(which.length, 1);
+    assert.equal(Object.hasOwn(which, 'prototype'), false);
+    assert.throws(() => Reflect.construct(which, ['missing']), TypeError);
+});
+
+test('which reads and converts option fields once in Bun order', () => {
+    const log = [];
+    const command = {
+        [Symbol.toPrimitive](hint) {
+            log.push(`command:${hint}`);
+            return '';
+        },
+    };
+    const options = new Proxy({
+        PATH: {
+            [Symbol.toPrimitive](hint) {
+                log.push(`PATH:${hint}`);
+                return '';
+            },
+        },
+        cwd: {
+            [Symbol.toPrimitive](hint) {
+                log.push(`cwd:${hint}`);
+                return '.';
+            },
+        },
+    }, {
+        get(target, property, receiver) {
+            log.push(`get:${String(property)}`);
+            return Reflect.get(target, property, receiver);
+        },
+    });
+
+    assert.equal(which(command, options), null);
+    assert.deepEqual(log, [
+        'command:string',
+        'get:PATH',
+        'PATH:string',
+        'get:cwd',
+        'cwd:string',
+    ]);
 });
 
 test('which ignores primitive options and stringifies option fields', { skip: !posix }, () => {
