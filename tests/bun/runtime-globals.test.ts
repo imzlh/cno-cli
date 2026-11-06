@@ -10,7 +10,10 @@ Deno.test({ name: 'bun: gc and enableANSIColors globals', timeout: 5000 }, () =>
     strictEqual(Bun.shrink, shrink);
     strictEqual(globalThis.Bun.shrink, shrink);
     shrink();
-    throws(() => Bun.gc('yes' as never), TypeError);
+    // Bun 1.4.4 ignores the runtime value of the advisory force argument.
+    Bun.gc('yes' as never);
+    Bun.gc(Symbol('force') as never);
+    Reflect.apply(Bun.gc, Bun, [true, false]);
     Bun.gc(false);
 
     strictEqual(typeof Bun.enableANSIColors, 'boolean');
