@@ -3,8 +3,9 @@ import Bun, { stderr, stdin, stdout } from 'bun';
 import { join } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 
-const fixtureRoot = fileURLToPath(new URL('../../build/bun-polyfill-VFyMWN5X/agent-filesink-r2/tmp/', import.meta.url));
+const fixtureRoot = fileURLToPath(new URL('../../build/bun-polyfill-VFyMWN5X/filesink-r5/tmp/', import.meta.url));
 mkdirSync(fixtureRoot, { recursive: true });
 
 async function withFileSinkFixture<T>(prefix: string, fn: (dir: string) => T | Promise<T>): Promise<T> {
@@ -90,6 +91,63 @@ Deno.test({ name: 'bun.file.writer: rejects Blob chunks and creates the target e
         strictEqual(sink.write(new DataView(new Uint8Array([1, 2]).buffer)), 2);
         strictEqual(sink.end(null as never), 2);
         strictEqual(readFileSync(path).toString('hex'), '0102');
+    });
+});
+
+Deno.test({ name: 'bun.file.writer: binary chunks use cross-realm brands and intrinsic view slots', timeout: 10000 }, async () => {
+    await withFileSinkFixture('file-sink-binary', (dir) => {
+        const foreign = runInNewContext(`(() => {
+            const buffer = new ArrayBuffer(8);
+            new Uint8Array(buffer).set([10, 11, 12, 13, 14, 15, 16, 17]);
+            const typed = new Uint16Array(buffer, 2, 2);
+            const data = new DataView(buffer, 5, 2);
+            const result = { buffer, typed, data };
+            if (typeof SharedArrayBuffer === 'function') {
+                const shared = new SharedArrayBuffer(4);
+                new Uint8Array(shared).set([21, 22, 23, 24]);
+                result.shared = shared;
+                result.sharedView = new Uint8Array(shared, 1, 2);
+            }
+            for (const value of Object.values(result)) {
+                for (const property of ['buffer', 'byteOffset', 'byteLength']) {
+                    Object.defineProperty(value, property, {
+                        configurable: true,
+                        get() { throw new Error('shadowed ' + property + ' getter ran'); },
+                    });
+                }
+            }
+            return result;
+        })()`);
+
+        const path = join(dir, 'binary.bin');
+        const sink = Bun.file(path).writer();
+        strictEqual(sink.write(foreign.buffer), 8);
+        strictEqual(sink.write(foreign.typed), 4);
+        strictEqual(sink.write(foreign.data), 2);
+        const expected = [10, 11, 12, 13, 14, 15, 16, 17, 12, 13, 14, 15, 15, 16];
+        if (foreign.shared) {
+            strictEqual(sink.write(foreign.shared), 4);
+            strictEqual(sink.write(foreign.sharedView), 2);
+            expected.push(21, 22, 23, 24, 22, 23);
+        }
+
+        const detached = new ArrayBuffer(4);
+        const detachedTyped = new Uint8Array(detached, 1, 2);
+        const detachedData = new DataView(detached, 1, 2);
+        structuredClone(detached, { transfer: [detached] });
+        strictEqual(sink.write(detached), 0);
+        strictEqual(sink.write(detachedTyped), 0);
+        strictEqual(sink.write(detachedData), 0);
+
+        for (const value of [new Proxy(foreign.buffer, {}), new Proxy(foreign.typed, {})]) {
+            throws(() => sink.write(value), {
+                name: 'TypeError',
+                message: 'write() expects a string, ArrayBufferView, or ArrayBuffer',
+                code: 'ERR_INVALID_ARG_TYPE',
+            });
+        }
+        strictEqual(sink.end(), expected.length);
+        strictEqual(readFileSync(path).toString('hex'), Buffer.from(expected).toString('hex'));
     });
 });
 
