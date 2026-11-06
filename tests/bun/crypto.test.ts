@@ -30,6 +30,23 @@ Deno.test('bun: CryptoHasher handles HMAC, input views, and output buffers', () 
 Deno.test('bun: CryptoHasher validates algorithms and outputs', () => {
     throws(() => new CryptoHasher('unknown'), TypeError);
     throws(
+        () => new CryptoHasher(''),
+        (error: unknown) => error instanceof TypeError && error.message === 'Invalid algorithm name' && code('ERR_INVALID_ARG_TYPE')(error),
+    );
+    for (const algorithm of ['', 'unknown']) {
+        throws(
+            () => new CryptoHasher(algorithm, 5 as never),
+            (error: unknown) => error instanceof TypeError && error.message === 'hmacKey must be a string, ArrayBuffer or ArrayBufferView' && code('ERR_INVALID_ARG_TYPE')(error),
+        );
+    }
+    throws(
+        () => new CryptoHasher('unknown', 'key'),
+        (error: unknown) => error instanceof TypeError
+            && error.message === "algorithm must be one of 'blake2b256', 'blake2b512', 'blake2s256', 'md4', 'md5', 'ripemd160', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512', 'sha512-224', 'sha512-256', 'sha3-224', 'sha3-256', 'sha3-384', 'sha3-512', 'shake128' or 'shake256'"
+            && code('ERR_INVALID_ARG_TYPE')(error),
+    );
+    strictEqual(new CryptoHasher('SHA512-256').algorithm, 'sha512-256');
+    throws(
         () => new CryptoHasher('shake128', 'key'),
         (error: unknown) => {
             const name = Object.getOwnPropertyDescriptor(error as object, 'name');
