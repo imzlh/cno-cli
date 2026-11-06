@@ -6,7 +6,26 @@ test('nanoseconds has Bun function shape', () => {
     assert.equal(nanoseconds.name, 'nanoseconds');
     assert.equal(nanoseconds.length, 0);
     assert.equal(Object.hasOwn(nanoseconds, 'prototype'), false);
+    assert.deepEqual(Object.getOwnPropertyDescriptor(nanoseconds, 'name'), {
+        value: 'nanoseconds', writable: false, enumerable: false, configurable: true,
+    });
+    assert.deepEqual(Object.getOwnPropertyDescriptor(nanoseconds, 'length'), {
+        value: 0, writable: false, enumerable: false, configurable: true,
+    });
     assert.throws(() => Reflect.construct(nanoseconds, []), TypeError);
+});
+
+test('nanoseconds ignores its receiver and arguments', () => {
+    const poison = new Proxy(Object.create(null), {
+        get() { assert.fail('argument was read'); },
+        getPrototypeOf() { assert.fail('argument prototype was read'); },
+    });
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+
+    const first = nanoseconds(poison, Symbol('ignored'), 1n);
+    const second = Reflect.apply(nanoseconds, revoked.proxy, [poison]);
+    assert.ok(second >= first);
 });
 
 test('nanoseconds returns a non-negative integer', () => {
@@ -61,5 +80,23 @@ test('nanoseconds ignores later performance overrides', () => {
         if (nowDescriptor) Object.defineProperty(originalPerformance, 'now', nowDescriptor);
         else Reflect.deleteProperty(originalPerformance, 'now');
         Object.defineProperty(globalThis, 'performance', performanceDescriptor);
+    }
+});
+
+test('nanoseconds ignores later Math.floor overrides', () => {
+    const originalFloor = Math.floor;
+    let calls = 0;
+
+    try {
+        const first = nanoseconds();
+        Math.floor = () => {
+            calls++;
+            throw new Error('patched Math.floor called');
+        };
+        const second = nanoseconds();
+        assert.equal(calls, 0);
+        assert.ok(second >= first);
+    } finally {
+        Math.floor = originalFloor;
     }
 });
