@@ -65,6 +65,41 @@ Deno.test('bun: indexOfLine uses binary brands and intrinsic view metadata', () 
     }
 });
 
+Deno.test('bun: indexOfLine uses intrinsic search and refreshes detached windows', () => {
+    const originalIndexOf = Uint8Array.prototype.indexOf;
+    Object.defineProperty(Uint8Array.prototype, 'indexOf', {
+        configurable: true,
+        writable: true,
+        value() { throw new Error('poisoned indexOf'); },
+    });
+    try {
+        strictEqual(indexOfLine(new Uint8Array([97, 10, 98])), 1);
+        strictEqual(indexOfLine(new Uint8Array([97, 10, 98]).buffer), 1);
+    } finally {
+        Object.defineProperty(Uint8Array.prototype, 'indexOf', {
+            configurable: true,
+            writable: true,
+            value: originalIndexOf,
+        });
+    }
+
+    for (const makeView of [
+        (buffer: ArrayBuffer) => buffer,
+        (buffer: ArrayBuffer) => new Uint8Array(buffer),
+        (buffer: ArrayBuffer) => new DataView(buffer),
+    ]) {
+        const buffer = new ArrayBuffer(3);
+        new Uint8Array(buffer).set([97, 10, 98]);
+        const view = makeView(buffer);
+        strictEqual(indexOfLine(view, {
+            valueOf() {
+                structuredClone(buffer, { transfer: [buffer] });
+                return 0;
+            },
+        } as unknown as number), -1);
+    }
+});
+
 Deno.test('bun: indexOfLine matches detached, coercion, and function metadata', () => {
     const raw = new ArrayBuffer(4);
     const typed = new Uint8Array(raw);

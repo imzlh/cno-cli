@@ -88,6 +88,53 @@ test('indexOfLine ignores shadowed ArrayBufferView metadata', () => {
     assert.equal(indexOfLine(view), 2);
 });
 
+test('indexOfLine uses intrinsic search and refreshes the window after offset coercion', () => {
+    const originalIndexOf = Uint8Array.prototype.indexOf;
+    Object.defineProperty(Uint8Array.prototype, 'indexOf', {
+        configurable: true,
+        writable: true,
+        value() { throw new Error('poisoned indexOf'); },
+    });
+    try {
+        assert.equal(indexOfLine(new Uint8Array([97, 10, 98])), 1);
+        assert.equal(indexOfLine(new Uint8Array([97, 10, 98]).buffer), 1);
+    } finally {
+        Object.defineProperty(Uint8Array.prototype, 'indexOf', {
+            configurable: true,
+            writable: true,
+            value: originalIndexOf,
+        });
+    }
+
+    for (const makeView of [
+        (buffer) => buffer,
+        (buffer) => new Uint8Array(buffer),
+        (buffer) => new DataView(buffer),
+    ]) {
+        const buffer = new ArrayBuffer(3);
+        new Uint8Array(buffer).set([97, 10, 98]);
+        const view = makeView(buffer);
+        assert.equal(indexOfLine(view, {
+            valueOf() {
+                structuredClone(buffer, { transfer: [buffer] });
+                return 0;
+            },
+        }), -1);
+    }
+
+    if (typeof ArrayBuffer.prototype.resize === 'function') {
+        const buffer = new ArrayBuffer(6, { maxByteLength: 8 });
+        new Uint8Array(buffer).set([97, 10, 98, 99, 10, 100]);
+        const tracking = new Uint8Array(buffer, 1);
+        assert.equal(indexOfLine(tracking, {
+            valueOf() {
+                buffer.resize(4);
+                return 0;
+            },
+        }), 0);
+    }
+});
+
 test('indexOfLine treats detached buffers and views as empty', () => {
     const raw = new ArrayBuffer(4);
     const typed = new Uint8Array(raw);
