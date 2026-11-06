@@ -41,7 +41,7 @@ Deno.test('bun Glob: lexical matching and validation', () => {
     throws(() => new Glob(new Proxy(new String('*.ts'), {}) as unknown as string), TypeError);
 });
 
-Deno.test('bun Glob: constructor and match shape, brands and string extraction', () => {
+Deno.test('bun Glob: constructor and method shape, brands and string extraction', () => {
     strictEqual(Glob.name, 'Glob');
     strictEqual(Glob.length, 1);
     strictEqual(Glob.prototype.match.name, 'match');
@@ -52,6 +52,16 @@ Deno.test('bun Glob: constructor and match shape, brands and string extraction',
         enumerable: true,
         configurable: false,
     });
+    for (const method of ['scan', 'scanSync'] as const) {
+        strictEqual(Glob.prototype[method].name, '');
+        strictEqual(Glob.prototype[method].length, 1);
+        deepStrictEqual(Object.getOwnPropertyDescriptor(Glob.prototype, method), {
+            value: Glob.prototype[method],
+            writable: true,
+            enumerable: true,
+            configurable: true,
+        });
+    }
 
     const glob = new Glob('*');
     strictEqual(Object.prototype.toString.call(glob), '[object Glob]');
@@ -60,6 +70,17 @@ Deno.test('bun Glob: constructor and match shape, brands and string extraction',
     throws(() => Reflect.apply(Glob.prototype.match, {}, [null]), invalidThis);
     throws(() => Reflect.apply(Glob.prototype.match, Glob.prototype, ['a']), invalidThis);
     throws(() => Reflect.apply(Glob.prototype.match, new Proxy(glob, {}), ['a']), invalidThis);
+    for (const method of [Glob.prototype.scan, Glob.prototype.scanSync]) {
+        const reads: string[] = [];
+        const options = new Proxy({}, {
+            get(_target, property) {
+                reads.push(String(property));
+                throw new Error('option getter');
+            },
+        });
+        throws(() => Reflect.apply(method, {}, [options]), TypeError);
+        deepStrictEqual(reads, []);
+    }
 
     class GlobSubclass extends Glob {}
     strictEqual(new GlobSubclass('*').match('a'), true);
