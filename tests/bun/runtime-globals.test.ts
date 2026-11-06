@@ -15,6 +15,10 @@ Deno.test({ name: 'bun: gc and enableANSIColors globals', timeout: 5000 }, () =>
     Bun.gc(Symbol('force') as never);
     Reflect.apply(Bun.gc, Bun, [true, false]);
     Bun.gc(false);
+    strictEqual(Bun.gc.name, 'gc');
+    strictEqual(Bun.gc.length, 1);
+    strictEqual(Object.hasOwn(Bun.gc, 'prototype'), false);
+    throws(() => Reflect.construct(Bun.gc as never, []), TypeError);
 
     strictEqual(typeof Bun.enableANSIColors, 'boolean');
     // The value is a non-writable snapshot of stdout's terminal status, not a
