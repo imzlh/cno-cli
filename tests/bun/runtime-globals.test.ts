@@ -35,3 +35,16 @@ Deno.test('bun: standalone feature detection remains truthful for cno executable
         ok(descriptor && 'value' in descriptor && descriptor.writable === false, name);
     }
 });
+
+Deno.test('bun: sleep validates non-Date inputs synchronously', async () => {
+    for (const value of [undefined, null, true, '1', 1n, Symbol('x'), {}, new Number(1)]) {
+        throws(() => Bun.sleep(value as never), {
+            name: 'TypeError',
+            message: 'sleep expects a number (milliseconds)',
+        });
+    }
+    await Bun.sleep(NaN);
+    await Bun.sleep(-1);
+    await Bun.sleep(new Date(0));
+    await Bun.sleep(new Date(NaN));
+});
