@@ -66,6 +66,28 @@ Deno.test('bun: compression consumes only the selected ArrayBufferView bytes', (
     );
 });
 
+Deno.test('bun: compression accepts shared buffers and rejects forged buffer shapes', () => {
+    const rawShared = new SharedArrayBuffer(5);
+    new Uint8Array(rawShared).set([104, 101, 108, 108, 111]);
+    const shared = new SharedArrayBuffer(9);
+    new Uint8Array(shared).set([0xee, 0xee, 104, 101, 108, 108, 111, 0xee, 0xee]);
+    strictEqual(decoder.decode(gunzipSync(gzipSync(rawShared as unknown as ArrayBuffer))), 'hello');
+    strictEqual(decoder.decode(gunzipSync(gzipSync(new Uint8Array(shared, 2, 5)))), 'hello');
+    strictEqual(
+        decoder.decode(gunzipSync(gzipSync(new DataView(shared, 2, 5) as unknown as Uint8Array))),
+        'hello',
+    );
+
+    for (const fake of [
+        { [Symbol.toStringTag]: 'ArrayBuffer' },
+        { [Symbol.toStringTag]: 'SharedArrayBuffer' },
+        { buffer: new ArrayBuffer(1), byteOffset: 0, byteLength: 1 },
+    ]) {
+        throws(() => gzipSync(fake as never), (error: Error & { code?: string }) =>
+            error.name === 'TypeError' && error.code === 'ERR_INVALID_ARG_TYPE');
+    }
+});
+
 Deno.test('bun: compression levels, memory level, and strategy reach zlib', () => {
     const input = 'compressible '.repeat(200);
     const stored = gzipSync(input, { level: 0 });
@@ -97,6 +119,14 @@ Deno.test('bun: compression validates options with Bun-compatible errors', () =>
     invalid(() => gzipSync('x', null as never), 'TypeError', 'ERR_INVALID_ARG_TYPE');
     invalid(() => gzipSync('x', { memLevel: 0 } as never), 'RangeError', 'ERR_OUT_OF_RANGE');
     invalid(() => gzipSync('x', { memLevel: 1.5 } as never), 'RangeError', 'ERR_OUT_OF_RANGE');
+    strictEqual(
+        invalid(() => gzipSync('x', { memLevel: false } as never), 'TypeError', 'ERR_INVALID_ARG_TYPE').message,
+        'The "ZlibCompressionOptions.memLevel" property must be of type number. Received type boolean (false)',
+    );
+    strictEqual(
+        invalid(() => gzipSync('x', { strategy: 1n } as never), 'TypeError', 'ERR_INVALID_ARG_TYPE').message,
+        'The "ZlibCompressionOptions.strategy" property must be of type number. Received type bigint (1n)',
+    );
     invalid(() => deflateSync('x', { strategy: 5 } as never), 'RangeError', 'ERR_OUT_OF_RANGE');
     invalid(
         () => gzipSync('x', { library: 'libdeflate', memLevel: 0 } as never),
