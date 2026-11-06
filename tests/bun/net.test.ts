@@ -50,7 +50,8 @@ Deno.test({ name: 'bun.net: echo between Bun.listen and Bun.connect', timeout: 1
                     received.push(decode(chunk));
                     if (received.length === 1) _socket.end();
                 },
-                close() {
+                close(sock) {
+                    strictEqual(sock.readyState, -1);
                     closed = true;
                 },
             },
@@ -58,7 +59,7 @@ Deno.test({ name: 'bun.net: echo between Bun.listen and Bun.connect', timeout: 1
         await until(() => closed, 'client close');
         deepStrictEqual(received, ['ping']);
         ok(opened >= 1);
-        strictEqual(socket.readyState, 0);
+        strictEqual(socket.readyState, -1);
         strictEqual(socket.write('after close'), -1);
     } finally {
         listener.stop();
@@ -193,7 +194,7 @@ Deno.test({ name: 'bun.net: shutdown(true) terminates the connection (documented
         });
         await until(() => echoed, 'echo received');
         socket.shutdown(true);
-        await until(() => socket.readyState === 0, 'socket closed');
+        await until(() => socket.readyState === -1, 'socket closed');
         strictEqual(socket.write('after shutdown(true)'), -1);
     } finally {
         listener.stop();
@@ -223,7 +224,7 @@ Deno.test({ name: 'bun.net: stop(true) terminates active connections', timeout: 
     strictEqual(client.readyState, 1);
     listener.stop(true);
     await until(() => serverClosed, 'client close after stop(true)');
-    strictEqual(client.readyState, 0);
+    strictEqual(client.readyState, -1);
 });
 
 Deno.test({ name: 'bun.net: reload replaces handlers for later connections', timeout: 10000 }, async () => {
