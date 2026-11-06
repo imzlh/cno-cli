@@ -12,7 +12,8 @@ test('semver ordering handles prerelease, build, and partial versions', () => {
     assert.equal(order('1.2', '1.2.99'), 1);
     assert.equal(order('*', '999.999.999'), 1);
     assert.equal(order('1.2.3-01', '1.2.3-1'), 0);
-    assert.throws(() => order('not a version', '1.0.0'));
+    assert.throws(() => order('not a version', '1.0.0'), /Invalid SemVer: not a version\n/);
+    assert.throws(() => order(Symbol('version'), '1.0.0'), TypeError);
     assert.equal(order({ toString: () => '1.0.0' }, '1.0.0'), 0);
 });
 
@@ -27,13 +28,16 @@ test('semver ranges handle common npm range forms and prereleases', () => {
         ['1.2.9', '<=1.2', true], ['1.3.0', '<=1.2', false],
         ['1.4.9', '1.2 - 1.4', true], ['1.5.0', '1.2 - 1.4', false],
         ['2.0.0', '>=1 <2 || >=2.0.0', true],
+        ['1.5.0', '>=1,<2', true], ['2.0.0', '>=1,<2', false],
         ['1.2.3-alpha', '*', false], ['1.2.3-alpha.2', '>=1.2.3-alpha <2', true],
         ['1.3.0-alpha', '>=1.2.3-alpha <2', false],
         ['1.2.3-01', '1.2.3-1', false], ['1.2.3-01', '>=1.2.3-1', true],
         ['01.2.3+build', '1.2.3', true], ['invalid', '*', false],
-        ['1.0.0', 'not a range', false], ['1.0.0', '', true],
+        ['1.0.0', 'not a range', true], ['1.0.0-alpha', 'not a range', false],
+        ['1.0.0', null, true], ['1.0.0', '', true],
     ];
     for (const [version, range, expected] of cases) {
         assert.equal(satisfies(version, range), expected, `${version} satisfies ${range}`);
     }
+    assert.throws(() => satisfies('1.2.3', Symbol('range')), TypeError);
 });

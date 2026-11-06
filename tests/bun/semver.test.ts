@@ -17,7 +17,8 @@ Deno.test('bun: semver orders versions and prerelease identifiers', () => {
         strictEqual(order(left, right), expected, `${left} vs ${right}`);
         strictEqual(order(right, left), -expected || 0, `${right} vs ${left}`);
     }
-    throws(() => order('invalid', '1.0.0'));
+    throws(() => order('invalid', '1.0.0'), /Invalid SemVer: invalid\n/);
+    throws(() => order(Symbol('version'), '1.0.0'), TypeError);
 });
 
 Deno.test('bun: semver range alternatives distinguish wildcards from empty branches', () => {
@@ -38,9 +39,15 @@ Deno.test('bun: semver range alternatives distinguish wildcards from empty branc
         ['1.3.0-a', '^1.2.3-a', false],
         ['1.3.0', '>1.2', true],
         ['1.2.9', '>1.2', false],
+        ['1.5.0', '>=1,<2', true],
+        ['2.0.0', '>=1,<2', false],
         ['invalid', '*', false],
+        ['1.2.3', 'not a range', true],
+        ['1.2.3-a', 'not a range', false],
+        ['1.2.3', null as unknown as string, true],
     ];
     for (const [version, range, expected] of cases) {
         strictEqual(satisfies(version, range), expected, `${version} satisfies ${range}`);
     }
+    throws(() => satisfies('1.2.3', Symbol('range')), TypeError);
 });
