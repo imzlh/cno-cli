@@ -25,6 +25,113 @@ Deno.test('bun: CookieMap rejects malformed pair-array init', () => {
     throws(() => new CookieMap(42 as unknown as string), TypeError);
 });
 
+Deno.test('bun: CookieMap decodes header values once with tolerant UTF-8', () => {
+    const cases = [
+        ['a%20b', 'a b'],
+        ['%E4%BD%A0%E5%A5%BD', '\u4f60\u597d'],
+        ['%F0%9F%98%80', '\ud83d\ude00'],
+        ['a+b', 'a+b'],
+        ['%2520', '%20'],
+        ['%00', '\0'],
+        ['%EF%BB%BFabc', '\ufeffabc'],
+        ['%', '\ufffd'],
+        ['%A', '\ufffdA'],
+        ['%G1', '\ufffd'],
+        ['%1G', '\ufffd'],
+        ['%A%41', '\ufffd41'],
+        ['%FF', '\ufffd'],
+        ['%E2%82', '\ufffd'],
+        ['%E2%82%FF', '\ufffd\ufffd'],
+        ['%C0%80', '\ufffd'],
+        ['%E0%80%80', '\ufffd'],
+        ['%ED%A0%80', '\ufffd'],
+        ['%F4%90%80%80', '\ufffd'],
+        ['%E1%80%41', '\ufffdA'],
+        ['%80%80', '\ufffd\ufffd'],
+        ['a%20\u00e9%21', 'a \u00e9!'],
+        ['%\u00e9', '\ufffd'],
+        ['x\ud800', 'x\ud800'],
+        ['x\ud800%20', 'x\ufffd '],
+    ];
+    for (const [encoded, decoded] of cases) {
+        const map = new CookieMap(`q=${encoded}; after=ok`);
+        strictEqual(map.get('q'), decoded, encoded);
+        strictEqual(map.get('after'), 'ok', encoded);
+    }
+    strictEqual(new CookieMap('%61=%62').get('%61'), 'b');
+    strictEqual(new CookieMap([['q', '%20']]).get('q'), '%20');
+    strictEqual(new CookieMap({ q: '%20' }).get('q'), '%20');
+    const map = new CookieMap();
+    map.set('q', '%20');
+    strictEqual(map.get('q'), '%20');
+});
+
+Deno.test('bun: CookieMap preserves initial duplicates and reads the first value', () => {
+    for (const init of ['a=1; b=2; a=3', [['a', '1'], ['b', '2'], ['a', '3']]]) {
+        const map = new CookieMap(init);
+        strictEqual(map.size, 3);
+        strictEqual(map.get('a'), '1');
+        strictEqual(map.has('a'), true);
+        deepStrictEqual([...map], [['a', '1'], ['b', '2'], ['a', '3']]);
+        deepStrictEqual([...map.keys()], ['a', 'b', 'a']);
+        deepStrictEqual([...map.values()], ['1', '2', '3']);
+        deepStrictEqual(map.toJSON(), { a: '1', b: '2' });
+        deepStrictEqual(map.toSetCookieHeaders(), []);
+        const seen: [string, string][] = [];
+        map.forEach((value, name, self) => {
+            strictEqual(self, map);
+            seen.push([name, value]);
+        });
+        deepStrictEqual(seen, [...map]);
+        map.set('a', 'updated');
+        strictEqual(map.size, 2);
+        strictEqual(map.get('a'), 'updated');
+        deepStrictEqual([...map], [['a', 'updated'], ['b', '2']]);
+        deepStrictEqual(map.toSetCookieHeaders(), ['a=updated; Path=/; SameSite=Lax']);
+    }
+    const special = new CookieMap('__proto__=first; __proto__=second; constructor=value');
+    deepStrictEqual(special.toJSON(), JSON.parse('{"__proto__":"first","constructor":"value"}'));
+});
+
+Deno.test('bun: CookieMap set merges and delete removes all matching duplicates', () => {
+    const source = 'before=x; a=1; between=y; a=2; after=z';
+    const updated = new CookieMap(source);
+    updated.set('a', 'new');
+    strictEqual(updated.size, 4);
+    strictEqual(updated.get('a'), 'new');
+    deepStrictEqual([...updated].filter(([name]) => name === 'a'), [['a', 'new']]);
+    deepStrictEqual([...updated].filter(([name]) => name !== 'a'), [['before', 'x'], ['between', 'y'], ['after', 'z']]);
+    const deleted = new CookieMap(source);
+    deleted.delete('a');
+    strictEqual(deleted.size, 3);
+    strictEqual(deleted.get('a'), null);
+    strictEqual(deleted.has('a'), false);
+    deepStrictEqual([...deleted], [['before', 'x'], ['between', 'y'], ['after', 'z']]);
+    deepStrictEqual(deleted.toJSON(), { before: 'x', between: 'y', after: 'z' });
+    deepStrictEqual(deleted.toSetCookieHeaders(), ['a=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax']);
+    deleted.set('a', 'restored');
+    strictEqual(deleted.size, 4);
+    strictEqual(deleted.get('a'), 'restored');
+    strictEqual([...deleted].filter(([name]) => name === 'a').length, 1);
+});
+
+Deno.test('bun: CookieMap emits changed headers in last-touch order', () => {
+    const map = new CookieMap('untouched=yes');
+    map.set('a', '1');
+    map.set('b', '2');
+    map.set('a', '3');
+    deepStrictEqual(map.toSetCookieHeaders(), [
+        'b=2; Path=/; SameSite=Lax',
+        'a=3; Path=/; SameSite=Lax',
+    ]);
+    map.delete('b');
+    map.set('a', '4');
+    deepStrictEqual(map.toSetCookieHeaders(), [
+        'b=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax',
+        'a=4; Path=/; SameSite=Lax',
+    ]);
+});
+
 Deno.test('bun: CookieMap get/has/set/delete and last-write-wins', () => {
     const map = new CookieMap('a=1');
     strictEqual(map.get('missing'), null);
@@ -84,6 +191,29 @@ Deno.test('bun: CookieMap serializes expires as an HTTP date and empty path omit
         'n=v; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax',
     ]);
     throws(() => map.set('bad', 'v', { expires: 'not a date' }), RangeError);
+});
+
+Deno.test('bun: CookieMap numeric expires uses Unix seconds', () => {
+    const cases = [
+        [1, 'Thu, 01 Jan 1970 00:00:01 GMT'],
+        [1000, 'Thu, 01 Jan 1970 00:16:40 GMT'],
+        [-1, 'Wed, 31 Dec 1969 23:59:59 GMT'],
+        [1.5, 'Thu, 01 Jan 1970 00:00:01 GMT'],
+        [-1.5, 'Wed, 31 Dec 1969 23:59:58 GMT'],
+        [1893553445, 'Wed, 02 Jan 2030 03:04:05 GMT'],
+        [new Date(1000), 'Thu, 01 Jan 1970 00:00:01 GMT'],
+        ['2030-01-02T03:04:05Z', 'Wed, 02 Jan 2030 03:04:05 GMT'],
+    ] as const;
+    for (const [expires, expected] of cases) {
+        const map = new CookieMap();
+        map.set('q', 'v', { expires });
+        deepStrictEqual(map.toSetCookieHeaders(), [`q=v; Path=/; Expires=${expected}; SameSite=Lax`]);
+    }
+    for (const expires of [NaN, Infinity, -Infinity]) {
+        const map = new CookieMap();
+        throws(() => map.set('q', 'v', { expires }), RangeError);
+        strictEqual(map.size, 0);
+    }
 });
 
 Deno.test('bun: CookieMap delete emits an expiring Set-Cookie header', () => {
