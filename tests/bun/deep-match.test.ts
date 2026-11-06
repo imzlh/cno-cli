@@ -61,6 +61,22 @@ Deno.test('bun: deepMatch handles cycles without recursing forever', () => {
     const chain: { self?: unknown; x: number } = { x: 1 };
     chain.self = { x: 1, self: { x: 2 } };
     strictEqual(deepMatch(a, chain), true);
+
+    const first: Record<string, unknown> = { x: 1 };
+    const second: Record<string, unknown> = { x: 2 };
+    first.self = second;
+    second.self = first;
+    strictEqual(deepMatch(first, { x: 1, self: { x: 3 } }), false);
+    strictEqual(deepMatch(first, { x: 1, self: { x: 2, self: { x: 1, self: { x: 3 } } } }), true);
+
+    const left: Record<string, unknown> = { x: 1 };
+    const right: Record<string, unknown> = { x: 1 };
+    left.self = left;
+    right.self = right;
+    strictEqual(deepMatch({ left, right }, {
+        left: { x: 1, self: { x: 1, self: {} } },
+        right: { x: 1, self: { x: 2 } },
+    }), false);
 });
 
 Deno.test('bun: deepMatch ignores prototypes and compares inherited enumerable properties', () => {
