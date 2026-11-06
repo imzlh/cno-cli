@@ -122,6 +122,25 @@ Deno.test('bun: hash input and seed coercion', () => {
         throws(() => hashFn(null), invalidInput);
         throws(() => hashFn(undefined), invalidInput);
     }
+    let invalidError: unknown;
+    try {
+        hash(null as never);
+    } catch (error) {
+        invalidError = error;
+    }
+    strictEqual(invalidError instanceof TypeError, true);
+    const codedError = invalidError as TypeError & { code: string };
+    strictEqual(codedError.code, 'ERR_INVALID_ARG_TYPE');
+    strictEqual(Object.hasOwn(codedError, 'code'), false);
+    strictEqual(Object.prototype.propertyIsEnumerable.call(codedError, 'code'), false);
+    strictEqual(String(codedError),
+        'TypeError [ERR_INVALID_ARG_TYPE]: data must be a string, ArrayBuffer, ArrayBufferView or Blob');
+    deepStrictEqual(Object.getOwnPropertyDescriptor(Object.getPrototypeOf(codedError), 'code'), {
+        configurable: true,
+        enumerable: true,
+        value: 'ERR_INVALID_ARG_TYPE',
+        writable: true,
+    });
     strictEqual(fn(123), fn('123'));
     strictEqual(fn({ toString: () => 'abc' }), fn('abc'));
     throws(() => fn(Symbol('x')), TypeError);
