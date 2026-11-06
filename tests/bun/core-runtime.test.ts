@@ -1,4 +1,4 @@
-import { strictEqual, throws } from 'node:assert';
+import { rejects, strictEqual, throws } from 'node:assert';
 import Bun, { fetch as bunFetch, isMainThread, serve } from 'bun';
 
 Deno.test({ name: 'bun: fetch and isMainThread share the main runtime namespace', timeout: 5000 }, async () => {
@@ -9,8 +9,10 @@ Deno.test({ name: 'bun: fetch and isMainThread share the main runtime namespace'
     strictEqual(bunFetch === globalThis.fetch, false);
     strictEqual(bunFetch.name, 'fetch');
     strictEqual(bunFetch.length, 1);
-    throws(
-        () => bunFetch('http://127.0.0.1/', { proxy: false } as BunFetchRequestInit),
+    strictEqual(Object.hasOwn(bunFetch, 'prototype'), false);
+    throws(() => Reflect.construct(bunFetch as never, []), TypeError);
+    await rejects(
+        bunFetch('http://127.0.0.1/', { proxy: false } as BunFetchRequestInit),
         /unsupported Bun-specific option "proxy"/,
     );
 
@@ -23,8 +25,18 @@ Deno.test({ name: 'bun: fetch and isMainThread share the main runtime namespace'
 
     const server = serve({ port: 0, fetch: request => new Response(new URL(request.url).pathname) });
     try {
-        const response = await bunFetch(new URL('/bun-fetch', server.url));
-        strictEqual(await response.text(), '/bun-fetch');
+        for (const init of [undefined, false, 1, 'ignored', 1n, Symbol('ignored')]) {
+            const response = await bunFetch(new URL('/bun-fetch', server.url), init as never);
+            strictEqual(await response.text(), '/bun-fetch');
+        }
+
+        const getterError = new Error('proxy getter failed');
+        const init = Object.defineProperty({}, 'proxy', {
+            get() {
+                throw getterError;
+            },
+        });
+        await rejects(bunFetch(server.url, init), error => error === getterError);
     } finally {
         await server.stop();
     }
