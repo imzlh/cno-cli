@@ -210,6 +210,25 @@ Deno.test('bun:sqlite safeIntegers coerces setters and rejects finalized stateme
     }
 });
 
+Deno.test('bun:sqlite iterate defers finalized-state errors until iteration begins', () => {
+    const db = new Database(':memory:');
+    const statement = db.prepare('SELECT 1 AS value');
+    statement.finalize();
+
+    const finalizedIterator = statement.iterate();
+    throws(() => finalizedIterator.next(), /Statement has finalized/);
+    deepStrictEqual(finalizedIterator.next(), { done: true, value: undefined });
+    db.close();
+
+    const closedDb = new Database(':memory:');
+    const closedStatement = closedDb.query('SELECT 1 AS value');
+    closedDb.close();
+
+    const closedIterator = closedStatement.iterate();
+    throws(() => closedIterator.next(), /Database has closed/);
+    deepStrictEqual(closedIterator.next(), { done: true, value: undefined });
+});
+
 Deno.test('bun:sqlite transactions commit, roll back, and nest with savepoints', () => {
     const db = new Database(':memory:');
     try {
