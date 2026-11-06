@@ -1,4 +1,5 @@
 import { strictEqual, throws } from 'node:assert';
+import { runInNewContext } from 'node:vm';
 import { inspectTable } from '../../cno/src/bun/inspect.ts';
 
 Deno.test('bun: inspect.table formats mixed rows and selected columns', () => {
@@ -63,4 +64,64 @@ Deno.test('bun: inspect.table aligns Unicode display widths', () => {
     strictEqual(inspectTable([{ 'é': '中', emoji: '👩‍💻', comb: 'é' }]),
         '┌───┬────┬───────┬──────┐\n│   │ é  │ emoji │ comb │\n├───┼────┼───────┼──────┤\n' +
         '│ 0 │ 中 │ 👩‍💻  │ é    │\n└───┴────┴───────┴──────┘\n');
+});
+
+Deno.test('bun: inspect.table formats common builtins in cells', () => {
+    strictEqual(inspectTable([{
+        date: new Date('2020-01-02T03:04:05.000Z'),
+        regexp: /x/g,
+        map: new Map([['x', 1]]),
+        bytes: new Uint8Array([1, 2]),
+    }]),
+    '┌───┬──────────────────────────┬────────┬───────────────────┬────────────────────────┐\n' +
+    '│   │ date                     │ regexp │ map               │ bytes                  │\n' +
+    '├───┼──────────────────────────┼────────┼───────────────────┼────────────────────────┤\n' +
+    '│ 0 │ 2020-01-02T03:04:05.000Z │ /x/g   │ Map(1) { "x": 1 } │ Uint8Array(2) [ 1, 2 ] │\n' +
+    '└───┴──────────────────────────┴────────┴───────────────────┴────────────────────────┘\n');
+});
+
+Deno.test('bun: inspect.table discovers proxy columns once', () => {
+    const events: string[] = [];
+    const row = new Proxy({ a: 1 }, {
+        ownKeys(target) {
+            events.push('ownKeys');
+            return Reflect.ownKeys(target);
+        },
+        getOwnPropertyDescriptor(target, key) {
+            events.push(`descriptor:${String(key)}`);
+            return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+        get(target, key, receiver) {
+            events.push(`get:${String(key)}`);
+            return Reflect.get(target, key, receiver);
+        },
+    });
+    strictEqual(inspectTable([row]),
+        '┌───┬───┐\n│   │ a │\n├───┼───┤\n│ 0 │ 1 │\n└───┴───┘\n');
+    strictEqual(events.join(','), 'ownKeys,descriptor:a,get:a');
+});
+
+Deno.test('bun: inspect.table formats cross-realm builtins and excludes inherited selected columns', () => {
+    const row = runInNewContext(`({
+        date: new Date('2020-01-02T03:04:05.000Z'),
+        map: new Map([['x', 1]]),
+        set: new Set([1]),
+        bytes: new Uint8Array([1, 2]),
+    })`) as object;
+    strictEqual(inspectTable([row]),
+        '┌───┬──────────────────────────┬───────────────────┬──────────────┬────────────────────────┐\n' +
+        '│   │ date                     │ map               │ set          │ bytes                  │\n' +
+        '├───┼──────────────────────────┼───────────────────┼──────────────┼────────────────────────┤\n' +
+        '│ 0 │ 2020-01-02T03:04:05.000Z │ Map(1) { "x": 1 } │ Set(1) { 1 } │ Uint8Array(2) [ 1, 2 ] │\n' +
+        '└───┴──────────────────────────┴───────────────────┴──────────────┴────────────────────────┘\n');
+
+    const inherited = Object.create({ inherited: 1 });
+    Object.defineProperty(inherited, 'hidden', { value: 2 });
+    inherited.own = 3;
+    strictEqual(inspectTable([inherited], ['inherited', 'hidden', 'own']),
+        '┌───┬───────────┬────────┬─────┐\n' +
+        '│   │ inherited │ hidden │ own │\n' +
+        '├───┼───────────┼────────┼─────┤\n' +
+        '│ 0 │           │ 2      │ 3   │\n' +
+        '└───┴───────────┴────────┴─────┘\n');
 });
