@@ -15,6 +15,89 @@ Deno.test('bun: ANSI text helpers have native function shapes', () => {
     }
 });
 
+Deno.test('bun: ANSI slicing and wrapping snapshot arguments in native order', () => {
+    const sliceLog: string[] = [];
+    const primitive = (name: string, value: unknown) => ({
+        [Symbol.toPrimitive](hint: string) {
+            sliceLog.push(`${name}:${hint}`);
+            return value;
+        },
+    });
+    const sliceOptions = new Proxy({ ellipsis: '', ambiguousIsNarrow: true }, {
+        get(target, property, receiver) {
+            sliceLog.push(`get:${String(property)}`);
+            return Reflect.get(target, property, receiver);
+        },
+    });
+    strictEqual(sliceAnsi(
+        primitive('input', 'abcd') as unknown as string,
+        primitive('start', 1) as unknown as number,
+        primitive('end', 3) as unknown as number,
+        sliceOptions,
+    ), 'bc');
+    deepStrictEqual(sliceLog, [
+        'input:string', 'start:number', 'end:number',
+        'get:ellipsis', 'get:ambiguousIsNarrow',
+    ]);
+
+    const errorLog: string[] = [];
+    const badStart = {
+        [Symbol.toPrimitive](hint: string) {
+            errorLog.push(`start:${hint}`);
+            return Symbol('start');
+        },
+    };
+    const unreadOptions = new Proxy({}, {
+        get(_target, property) {
+            errorLog.push(`get:${String(property)}`);
+            throw new Error('options getter must not run');
+        },
+    });
+    throws(() => sliceAnsi('abcd', badStart as unknown as number, 3, unreadOptions), TypeError);
+    deepStrictEqual(errorLog, ['start:number']);
+
+    const wrapLog: string[] = [];
+    const columns = {
+        [Symbol.toPrimitive](hint: string) {
+            wrapLog.push(`columns:${hint}`);
+            return 0;
+        },
+    };
+    const wrapOptions = new Proxy({ hard: true, wordWrap: false, trim: false, ambiguousIsNarrow: true }, {
+        get(target, property, receiver) {
+            wrapLog.push(`get:${String(property)}`);
+            return Reflect.get(target, property, receiver);
+        },
+    });
+    strictEqual(wrapAnsi('abcd', columns as unknown as number, wrapOptions), 'abcd');
+    deepStrictEqual(wrapLog, [
+        'columns:number', 'get:hard', 'get:wordWrap', 'get:trim', 'get:ambiguousIsNarrow',
+    ]);
+
+    const functionLog: string[] = [];
+    const functionOptions = () => {};
+    Object.defineProperties(functionOptions, {
+        ellipsis: { get: () => { functionLog.push('get:ellipsis'); return '!'; } },
+        hard: { get: () => { functionLog.push('get:hard'); return true; } },
+        wordWrap: { get: () => { functionLog.push('get:wordWrap'); return undefined; } },
+        trim: { get: () => { functionLog.push('get:trim'); return undefined; } },
+        ambiguousIsNarrow: { get: () => { functionLog.push('get:ambiguousIsNarrow'); return true; } },
+    });
+    strictEqual(sliceAnsi('abc', 0, 2, functionOptions as unknown as {}), 'a!');
+    deepStrictEqual(functionLog, ['get:ellipsis', 'get:ambiguousIsNarrow']);
+    functionLog.length = 0;
+    strictEqual(wrapAnsi('abc', 2, functionOptions as unknown as {}), 'ab\nc');
+    deepStrictEqual(functionLog, ['get:hard', 'get:wordWrap', 'get:trim', 'get:ambiguousIsNarrow']);
+    strictEqual(sliceAnsi('abcd', 1, 3, null as unknown as {}), 'bc');
+    strictEqual(sliceAnsi('abcd', 1, 3, Symbol('options') as unknown as {}), 'bc');
+    strictEqual(wrapAnsi('abcd', 2, null as unknown as {}), 'abcd');
+    strictEqual(wrapAnsi('abcd', 2, Symbol('options') as unknown as {}), 'abcd');
+
+    strictEqual(stringWidth('', unreadOptions), 0);
+    strictEqual(sliceAnsi('', Symbol('start') as unknown as number, Symbol('end') as unknown as number, unreadOptions), '');
+    strictEqual(wrapAnsi('', Symbol('columns') as unknown as number, unreadOptions), '');
+});
+
 Deno.test('bun: stripANSI removes CSI, OSC hyperlinks, and keeps plain text', () => {
     strictEqual(stripANSI('\x1b[31mred\x1b[0m'), 'red');
     strictEqual(stripANSI('\x1b]8;;https://example.com\x07link\x1b]8;;\x07'), 'link');
