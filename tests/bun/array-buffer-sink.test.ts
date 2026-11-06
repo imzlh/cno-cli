@@ -89,6 +89,17 @@ test('bun: ArrayBufferSink write() copies its input immediately', () => {
     assert.deepEqual(bytes(sink.end()), [1, 2, 3, 255, 255, 255]);
 });
 
+test('bun: ArrayBufferSink reads the intrinsic view window without invoking shadowed accessors', () => {
+    const source = new Uint8Array([10, 11, 12, 13]);
+    const view = new Uint8Array(source.buffer, 1, 2);
+    for (const property of ['buffer', 'byteOffset', 'byteLength']) {
+        Object.defineProperty(view, property, { get() { throw new Error(`shadowed ${property}`); } });
+    }
+    const sink = started();
+    assert.equal(sink.write(view), 2);
+    assert.deepEqual(bytes(sink.end()), [11, 12]);
+});
+
 test('bun: ArrayBufferSink write() rejects unsupported chunks with TypeError', () => {
     const sink = started();
     for (const value of [undefined, null, 1, true, {}, [1, 2], Symbol('x'), 1n, new Blob(['a'])]) {
@@ -243,6 +254,32 @@ test('bun: ArrayBufferSink instances are independent and methods reject foreign 
     for (const method of ['start', 'write', 'flush', 'end'] as const) {
         assert.throws(() => (ArrayBufferSink.prototype[method] as (...args: unknown[]) => unknown).call({}, 'x'), TypeError, method);
     }
+
+    const poisoned = new Uint8Array(1);
+    const inputError = new Error('input accessor must not run');
+    Object.defineProperty(poisoned, 'buffer', { get() { throw inputError; } });
+    assert.throws(
+        () => ArrayBufferSink.prototype.write.call({} as ArrayBufferSink, poisoned),
+        (error: unknown) => error instanceof TypeError && error !== inputError,
+        'write brands its receiver before inspecting a valid binary input',
+    );
+});
+
+test('bun: ArrayBufferSink exposes Bun-compatible method and tag descriptors', () => {
+    assert.equal(Object.prototype.toString.call(started()), '[object ArrayBufferSink]');
+    assert.equal(ArrayBufferSink.prototype.flush.length, 1);
+    for (const method of ['start', 'write', 'flush', 'end'] as const) {
+        const descriptor = Object.getOwnPropertyDescriptor(ArrayBufferSink.prototype, method)!;
+        assert.equal(descriptor.enumerable, true, method);
+        assert.equal(descriptor.writable, false, method);
+        assert.equal(descriptor.configurable, false, method);
+    }
+    assert.deepEqual(Object.getOwnPropertyDescriptor(ArrayBufferSink.prototype, Symbol.toStringTag), {
+        value: 'ArrayBufferSink',
+        writable: false,
+        enumerable: false,
+        configurable: true,
+    });
 });
 
 test('bun: ArrayBufferSink start() is atomic against throwing getters', () => {

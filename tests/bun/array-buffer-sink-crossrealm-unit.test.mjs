@@ -35,11 +35,16 @@ test('ArrayBufferSink accepts cross-realm buffers and preserves a view byte wind
     const foreign = runInNewContext(`(() => {
         const buffer = new ArrayBuffer(8);
         new Uint8Array(buffer).set([10, 11, 12, 13, 14, 15, 16, 17]);
-        return {
-            buffer,
-            typed: new Uint16Array(buffer, 2, 2),
-            data: new DataView(buffer, 5, 2),
-        };
+        const typed = new Uint16Array(buffer, 2, 2);
+        const data = new DataView(buffer, 5, 2);
+        for (const view of [typed, data]) {
+            for (const property of ['buffer', 'byteOffset', 'byteLength']) {
+                Object.defineProperty(view, property, {
+                    get() { throw new Error('shadowed ' + property); },
+                });
+            }
+        }
+        return { buffer, typed, data };
     })()`);
     assert.equal(foreign.buffer instanceof ArrayBuffer, false);
     assert.equal(ArrayBuffer.isView(foreign.typed), true);
@@ -50,6 +55,20 @@ test('ArrayBufferSink accepts cross-realm buffers and preserves a view byte wind
     assert.equal(sink.write(foreign.typed), 4);
     assert.equal(sink.write(foreign.data), 2);
     assert.deepEqual(sinkBytes(sink), [10, 11, 12, 13, 14, 15, 16, 17, 12, 13, 14, 15, 15, 16]);
+});
+
+test('ArrayBufferSink treats detached buffers and views as empty writes', () => {
+    const buffer = new ArrayBuffer(4);
+    const typed = new Uint8Array(buffer, 1, 2);
+    const data = new DataView(buffer, 1, 2);
+    structuredClone(buffer, { transfer: [buffer] });
+
+    const sink = new ArrayBufferSink();
+    assert.equal(sink.write(buffer), 0);
+    assert.equal(sink.write(typed), 0);
+    assert.equal(sink.write(data), 0);
+    assert.equal(sink.write('ok'), 2);
+    assert.deepEqual(sinkBytes(sink), [111, 107]);
 });
 
 test('ArrayBufferSink accepts cross-realm SharedArrayBuffer inputs when available', t => {
