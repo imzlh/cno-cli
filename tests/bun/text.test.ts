@@ -1,5 +1,19 @@
 import { deepStrictEqual, strictEqual, throws } from 'node:assert';
-import { stringWidth, stripANSI } from '../../cno/src/bun/utils/text.ts';
+import { sliceAnsi, stringWidth, stripANSI, wrapAnsi } from '../../cno/src/bun/utils/text.ts';
+
+Deno.test('bun: ANSI text helpers have native function shapes', () => {
+    for (const [fn, name, length] of [
+        [stripANSI, 'stripANSI', 1],
+        [stringWidth, 'stringWidth', 2],
+        [sliceAnsi, 'sliceAnsi', 5],
+        [wrapAnsi, 'wrapAnsi', 3],
+    ] as const) {
+        strictEqual(fn.name, name);
+        strictEqual(fn.length, length);
+        strictEqual(Object.hasOwn(fn, 'prototype'), false);
+        throws(() => Reflect.construct(fn as never, []), TypeError);
+    }
+});
 
 Deno.test('bun: stripANSI removes CSI, OSC hyperlinks, and keeps plain text', () => {
     strictEqual(stripANSI('\x1b[31mred\x1b[0m'), 'red');
