@@ -37,15 +37,28 @@ nums = [+1, -0, 0b101, 0o77, 1_000, 1.25e+2, inf, -inf, nan]`;
     deepStrictEqual(parsed.nums, [1, -0, 5, 63, 1000, 125, Infinity, -Infinity, NaN]);
     deepStrictEqual(TOML.parse(new TextEncoder().encode('a=1').buffer), { a: 1 });
     deepStrictEqual(TOML.parse(new DataView(new TextEncoder().encode('a=1').buffer)), { a: 1 });
+    deepStrictEqual(TOML.parse(new Uint8Array([0xff, 97, 61, 49, 0xff]).subarray(1, 4)), { a: 1 });
+    for (const bytes of [new Uint8Array([0xff]), new Uint8Array([0xc0, 0xaf])]) {
+        throws(() => TOML.parse(bytes), SyntaxError);
+    }
+    if (typeof SharedArrayBuffer === 'function') {
+        const shared = new SharedArrayBuffer(3);
+        new Uint8Array(shared).set([97, 61, 49]);
+        deepStrictEqual(TOML.parse(shared), { a: 1 });
+        deepStrictEqual(TOML.parse(new Uint8Array(shared)), { a: 1 });
+    }
+    strictEqual(TOML.parse('value = "\ud800"').value, '\ufffd');
+    strictEqual(TOML.stringify({ '\udc00': '\ud800' }), '"\ufffd" = "\ufffd"\n');
 });
 
 denoTest('dates and times use Temporal values', () => {
-    const value = TOML.parse('date=1979-05-27\ntime=07:32:00.123456789123\nlocal=1979-05-27 07:32:00\noffset=1979-05-27T07:32:00+01:00');
+    const value = TOML.parse('date=1979-05-27\ntime=07:32:00.123456789123\nlocal=1979-05-27 07:32:00\noffset=1979-05-27T07:32:00.123456789+01:00');
     strictEqual(value.date.toString(), '1979-05-27');
     strictEqual(value.time.toString(), '07:32:00.123456789');
     strictEqual(value.local.toString(), '1979-05-27T07:32:00');
-    strictEqual(value.offset.toString(), '1979-05-27T06:32:00Z');
-    strictEqual(TOML.stringify(value), 'date = 1979-05-27\ntime = 07:32:00.123456789\nlocal = 1979-05-27T07:32:00\noffset = 1979-05-27T06:32:00Z\n');
+    strictEqual(value.offset.toString(), '1979-05-27T06:32:00.123456789Z');
+    strictEqual(TOML.parse('time=07:32:00.120000000').time.toString(), '07:32:00.12');
+    strictEqual(TOML.stringify(value), 'date = 1979-05-27\ntime = 07:32:00.123456789\nlocal = 1979-05-27T07:32:00\noffset = 1979-05-27T06:32:00.123456789Z\n');
 });
 
 denoTest('invalid documents and table redefinitions', () => {
