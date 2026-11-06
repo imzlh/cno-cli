@@ -35,6 +35,38 @@ Deno.test('bun Glob: lexical matching and validation', () => {
     }
     throws(() => new Glob(1 as unknown as string), TypeError);
     throws(() => new Glob('*').match(null as unknown as string), TypeError);
+    strictEqual(new Glob(new String('*.ts') as unknown as string).match(new String('a.ts') as unknown as string), true);
+    throws(() => new Glob(new Proxy(new String('*.ts'), {}) as unknown as string), TypeError);
+});
+
+Deno.test('bun Glob: scan option coercion and eager validation', async () => {
+    await withTempDir('bun-glob-options', async root => {
+        Deno.mkdirSync(join(root, 'dir'));
+        Deno.writeTextFileSync(join(root, 'file'), 'x');
+        Deno.writeTextFileSync(join(root, '.dot'), 'x');
+
+        const glob = new Glob('*');
+        deepStrictEqual(sorted(glob.scanSync(new String(root) as unknown as string)), ['file']);
+        deepStrictEqual(sorted(glob.scanSync({ cwd: new String(root) as unknown as string })), ['file']);
+        deepStrictEqual(sorted(glob.scanSync({ cwd: root, onlyFiles: null as unknown as boolean })), ['file']);
+        deepStrictEqual(sorted(glob.scanSync({ cwd: root, onlyFiles: false })), ['dir', 'file']);
+        deepStrictEqual(sorted(glob.scanSync({ cwd: root, dot: Symbol('truthy') as unknown as boolean })), ['.dot', 'file']);
+
+        const reads: string[] = [];
+        const options = new Proxy({}, {
+            get(_target, property) {
+                reads.push(String(property));
+                return property === 'cwd' ? root : undefined;
+            },
+        });
+        glob.scanSync(options as GlobScanOptions).next();
+        deepStrictEqual(reads, ['onlyFiles', 'throwErrorOnBrokenSymlink', 'followSymlinks', 'absolute', 'cwd', 'dot']);
+
+        throws(() => glob.scanSync(1 as unknown as GlobScanOptions), /GlobScanOptions must be an object/);
+        throws(() => glob.scanSync({ get cwd(): string { throw new Error('cwd getter'); } }), /cwd getter/);
+        throws(() => glob.scan({ get onlyFiles(): boolean { throw new Error('onlyFiles getter'); } }), /onlyFiles getter/);
+        await rejects(async () => { for await (const _ of glob.scan({ cwd: join(root, 'missing') })) { /* consume */ } });
+    });
 });
 
 Deno.test('bun Glob: scan options, paths, depth and iterator parity', async () => {
