@@ -163,6 +163,19 @@ Deno.test('bun Glob: scan options, paths, depth and iterator parity', async () =
     });
 });
 
+Deno.test('bun Glob: scan preserves escaped literal metacharacters', async () => {
+    await withTempDir('bun-glob-escaped-literals', async root => {
+        Deno.mkdirSync(join(root, 'dir*'));
+        for (const name of ['file*.ts', 'file?.ts', 'file1.ts', '[draft].ts', 'dir*/inside.ts']) {
+            Deno.writeTextFileSync(join(root, name), 'x');
+        }
+        await scanBoth('file\\*.ts', { cwd: root }, ['file*.ts']);
+        await scanBoth('file\\?.ts', { cwd: root }, ['file?.ts']);
+        await scanBoth('\\[draft\\].ts', { cwd: root }, ['[draft].ts']);
+        await scanBoth('dir\\*/inside.ts', { cwd: root }, ['dir*/inside.ts']);
+    });
+});
+
 Deno.test('bun Glob: symlink traversal and cycle protection', async () => {
     await withTempDir('bun-glob-links', async root => {
         Deno.mkdirSync(join(root, 'dir'));
