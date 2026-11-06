@@ -26,6 +26,21 @@ Deno.test('bun: concatArrayBuffers honors offsets and length limits', () => {
     strictEqual((concatArrayBuffers as unknown as (chunks: typeof chunks, max: number, bytes: object) => Uint8Array)(chunks, 2, {}).constructor, Uint8Array);
 });
 
+Deno.test('bun: concatArrayBuffers requires a non-proxy Array container', () => {
+    const bytes = new Uint8Array([1, 2]);
+    const call = concatArrayBuffers as unknown as (buffers: unknown) => ArrayBuffer;
+    for (const value of [{}, { 0: bytes, length: 1 }, { map: () => [bytes] }, new Set([bytes])]) {
+        throws(() => call(value), { name: 'TypeError', message: 'Argument must be an array' });
+    }
+    throws(() => call(new Proxy([bytes], {})), { name: 'TypeError', message: 'Argument must be an array' });
+
+    const subclass = new (class extends Array<Uint8Array> {})(bytes);
+    deepStrictEqual([...new Uint8Array(concatArrayBuffers(subclass))], [1, 2]);
+    const shadowed = [bytes];
+    Object.defineProperty(shadowed, 'map', { get() { throw new Error('shadowed map getter ran'); } });
+    deepStrictEqual([...new Uint8Array(concatArrayBuffers(shadowed))], [1, 2]);
+});
+
 Deno.test('bun: stream helper function shapes match Bun', () => {
     const helpers = {
         concatArrayBuffers,
