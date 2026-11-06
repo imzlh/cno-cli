@@ -19,9 +19,35 @@ Deno.test('Bun resolve wrapper passes a directory as a synthetic importer and re
         throws(() => Reflect.apply(resolveSync, undefined, ['fs']), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE', message: 'Expected a from path' });
         await rejects(Reflect.apply(resolve, undefined, ['fs']), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE' });
         throws(() => resolveSync('fs', '/tmp/project', null as unknown as boolean), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE', message: 'esm must be a boolean' });
+        throws(() => Reflect.apply(resolveSync, undefined, ['fs', '/tmp/project', undefined]), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE', message: 'esm must be a boolean' });
+        throws(() => Reflect.apply(resolveSync, undefined, [null, '/tmp/project', 'bad']), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE', message: 'specifier must be a string' });
+        throws(() => Reflect.apply(resolveSync, undefined, ['fs', null, 'bad']), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE', message: 'from must be a string' });
         strictEqual(resolveSync('fs', '/tmp/project', false), 'node:fs');
         strictEqual(resolveSync('fs', '/tmp/project', true), 'node:fs');
         strictEqual(resolveSync(1, 2), 'node:fs');
+        throws(() => resolveSync(Symbol('fs'), '/tmp/project'), { name: 'TypeError', message: 'Cannot convert a symbol to a string' });
+        const coercions: string[] = [];
+        throws(() => resolveSync({ [Symbol.toPrimitive]: () => Symbol('fs') }, '/tmp/project'), {
+            name: 'TypeError',
+            message: 'Cannot convert a symbol to a string',
+        });
+        throws(() => resolveSync({ toString: () => { coercions.push('specifier'); return 'fs'; } }, Symbol('/tmp/project')), {
+            name: 'TypeError',
+            message: 'Cannot convert a symbol to a string',
+        });
+        deepStrictEqual(coercions, ['specifier']);
+        bridge.resolveEsmForInspection = () => { throw Object.assign(new Error('invalid'), { code: 'ERR_INVALID_MODULE_SPECIFIER' }); };
+        throws(() => resolveSync('', '/tmp'), {
+            name: 'ResolveMessage',
+            code: 'ERR_MODULE_NOT_FOUND',
+            message: "Cannot find module '' imported from /tmp",
+        });
+        bridge.resolveEsmForInspection = () => { throw Object.assign(new Error('missing'), { code: 'ERR_UNKNOWN_BUILTIN_MODULE' }); };
+        throws(() => resolveSync('node:not-a-builtin', '/tmp'), {
+            name: 'ResolveMessage',
+            code: 'ERR_UNKNOWN_BUILTIN_MODULE',
+            message: 'No such built-in module: node:not-a-builtin',
+        });
         bridge.resolveEsmForInspection = () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); };
         throws(() => resolveSync('./missing', '/tmp'), { name: 'ResolveMessage', code: 'ERR_MODULE_NOT_FOUND' });
         await rejects(resolve('./missing', '/tmp'), { name: 'ResolveMessage', code: 'ERR_MODULE_NOT_FOUND' });
