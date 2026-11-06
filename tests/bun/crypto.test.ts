@@ -16,6 +16,28 @@ Deno.test('bun: CryptoHasher hashes, copies, and resets', () => {
     strictEqual(CryptoHasher.hash('sha256', 'abc', 'hex'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
 });
 
+Deno.test('bun: CryptoHasher supports MD4 hashes and HMAC keys', () => {
+    strictEqual(CryptoHasher.algorithms.includes('md4'), true);
+    strictEqual(CryptoHasher.hash('MD4', 'abc', 'hex'), 'a448017aaf21d8525fc10ae87aa6729d');
+
+    const hasher = new CryptoHasher('md4').update('a');
+    strictEqual(hasher.algorithm, 'md4');
+    strictEqual(hasher.byteLength, 16);
+    strictEqual(hasher.copy().update('bc').digest('hex'), 'a448017aaf21d8525fc10ae87aa6729d');
+    strictEqual(hasher.digest('hex'), 'bde52cb31de33e46245e05fbdbd6fb24');
+    strictEqual(hasher.digest('hex'), '31d6cfe0d16ae931b73c59d7e0c089c0');
+
+    const key = new Uint8Array([9, 107, 101, 121, 9]).subarray(1, 4);
+    const keyed = new CryptoHasher('md4', key).update('abc');
+    key.fill(0);
+    strictEqual(keyed.digest('hex'), '32c43d6d6eda7f1e464711473b956b68');
+    strictEqual(new CryptoHasher('md4', '').update('abc').digest('hex'), '98444df21715fe461af8e4f8d5eaa5cf');
+    strictEqual(
+        new CryptoHasher('md4', new Uint8Array(65).fill(0x61)).update('abc').digest('hex'),
+        'a4f6fadf1bd1f1f0e6b76a2fa86477fe',
+    );
+});
+
 Deno.test('bun: CryptoHasher handles HMAC, input views, and output buffers', () => {
     const input = new Uint8Array([0, 97, 98, 99, 0]).subarray(1, 4);
     const h = new CryptoHasher('sha256', 'key').update(input);
