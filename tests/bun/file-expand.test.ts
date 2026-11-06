@@ -87,3 +87,52 @@ Deno.test('bun: file Blob methods expose Bun metadata and preserve Blob receiver
     throws(() => Reflect.apply(prototype.slice, new Proxy(blob, {}), [0, 1]), TypeError);
     throws(() => Reflect.apply(prototype.stream, new Proxy(blob, {}), []), TypeError);
 });
+
+Deno.test('bun: file metadata and exists preserve Blob receiver brands and descriptors', async () => {
+    const target = file(new URL(import.meta.url));
+    const prototype = Object.getPrototypeOf(target);
+    const name = Object.getOwnPropertyDescriptor(prototype, 'name')!;
+    const lastModified = Object.getOwnPropertyDescriptor(prototype, 'lastModified')!;
+    const exists = Object.getOwnPropertyDescriptor(prototype, 'exists')!;
+
+    for (const property of [
+        'name', 'type', 'size', 'lastModified',
+        'slice', 'stream', 'bytes', 'arrayBuffer', 'text', 'json',
+        'exists', 'stat', 'unlink', 'delete', 'write', 'writer',
+    ]) {
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, property)!;
+        strictEqual(descriptor.enumerable, true, property);
+        strictEqual(descriptor.configurable, false, property);
+        if ('value' in descriptor) strictEqual(descriptor.writable, true, property);
+    }
+
+    deepStrictEqual(
+        { get: name.get?.name, set: name.set?.name },
+        { get: 'get name', set: 'set name' },
+    );
+    deepStrictEqual(
+        { get: lastModified.get?.name, set: lastModified.set },
+        { get: 'get lastModified', set: undefined },
+    );
+    deepStrictEqual(
+        { name: exists.value.name, length: exists.value.length, constructible: Object.hasOwn(exists.value, 'prototype') },
+        { name: 'exists', length: 0, constructible: false },
+    );
+
+    const blob = new Blob(['value']);
+    const webFile = new File(['value'], 'value.txt', { lastModified: 1234 });
+    strictEqual(Reflect.apply(name.get!, blob, []), undefined);
+    strictEqual(Reflect.apply(lastModified.get!, blob, []), 2 ** 52 - 1);
+    strictEqual(await Reflect.apply(exists.value, blob, []), true);
+    strictEqual(Reflect.apply(name.get!, webFile, []), 'value.txt');
+    strictEqual(Reflect.apply(lastModified.get!, webFile, []), 1234);
+    strictEqual(await Reflect.apply(exists.value, webFile, []), true);
+    Reflect.apply(name.set!, blob, ['renamed.txt']);
+    strictEqual(Reflect.apply(name.get!, blob, []), 'renamed.txt');
+
+    for (const receiver of [Object.create(Blob.prototype), new Proxy(blob, {}), {}]) {
+        throws(() => Reflect.apply(name.get!, receiver, []), TypeError);
+        throws(() => Reflect.apply(lastModified.get!, receiver, []), TypeError);
+        throws(() => Reflect.apply(exists.value, receiver, []), TypeError);
+    }
+});
