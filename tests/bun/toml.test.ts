@@ -57,6 +57,82 @@ nums = [+1, -0, 0b101, 0o77, 1_000, 1.25e+2, inf, -inf, nan]`;
     strictEqual(TOML.stringify({ '\udc00': '\ud800' }), '"\ufffd" = "\ufffd"\n');
 });
 
+denoTest('byte inputs use intrinsic windows and empty invalidated views', () => {
+    const encoder = new TextEncoder();
+    const backing = encoder.encode('xxa=1yy').buffer;
+    for (const view of [new Uint8Array(backing, 2, 3), new DataView(backing, 2, 3)]) {
+        for (const key of ['buffer', 'byteOffset', 'byteLength']) {
+            Object.defineProperty(view, key, {
+                configurable: true,
+                get() { throw new Error(`shadowed ${key} getter ran`); },
+            });
+        }
+        deepStrictEqual(TOML.parse(view), { a: 1 });
+    }
+
+    const raw = encoder.encode('a=1').buffer;
+    Object.defineProperty(raw, 'byteLength', {
+        configurable: true,
+        get() { throw new Error('shadowed byteLength getter ran'); },
+    });
+    deepStrictEqual(TOML.parse(raw), { a: 1 });
+
+    if (typeof SharedArrayBuffer === 'function') {
+        const shared = new SharedArrayBuffer(3);
+        new Uint8Array(shared).set(encoder.encode('a=1'));
+        const view = new DataView(shared);
+        for (const key of ['buffer', 'byteOffset', 'byteLength']) {
+            Object.defineProperty(view, key, {
+                configurable: true,
+                get() { throw new Error(`shadowed ${key} getter ran`); },
+            });
+        }
+        Object.defineProperty(shared, 'byteLength', {
+            configurable: true,
+            get() { throw new Error('shadowed byteLength getter ran'); },
+        });
+        deepStrictEqual(TOML.parse(view), { a: 1 });
+        deepStrictEqual(TOML.parse(shared), { a: 1 });
+    }
+
+    for (const makeInput of [
+        (buffer: ArrayBuffer): ArrayBuffer | ArrayBufferView => buffer,
+        (buffer: ArrayBuffer): ArrayBuffer | ArrayBufferView => new Uint8Array(buffer),
+        (buffer: ArrayBuffer): ArrayBuffer | ArrayBufferView => new DataView(buffer),
+    ]) {
+        const buffer = encoder.encode('a=1').buffer;
+        const input = makeInput(buffer);
+        structuredClone(buffer, { transfer: [buffer] });
+        deepStrictEqual(TOML.parse(input), {});
+    }
+
+    if (typeof ArrayBuffer.prototype.resize === 'function') {
+        for (const makeView of [
+            (buffer: ArrayBuffer): ArrayBufferView => new Uint8Array(buffer, 2, 3),
+            (buffer: ArrayBuffer): ArrayBufferView => new Uint8Array(buffer, 2),
+            (buffer: ArrayBuffer): ArrayBufferView => new DataView(buffer, 2, 3),
+            (buffer: ArrayBuffer): ArrayBufferView => new DataView(buffer, 2),
+        ]) {
+            const buffer = new ArrayBuffer(7, { maxByteLength: 14 });
+            new Uint8Array(buffer).set(encoder.encode('xxa=1yy'));
+            const view = makeView(buffer);
+            buffer.resize(1);
+            deepStrictEqual(TOML.parse(view), {});
+        }
+    }
+
+    throws(() => TOML.parse(new Proxy(new Uint8Array(backing, 2, 3), {})), TypeError);
+    throws(() => TOML.parse(new Proxy(new DataView(backing, 2, 3), {})), SyntaxError);
+    throws(() => TOML.parse(new Proxy(encoder.encode('a=1').buffer, {})), SyntaxError);
+    const coercible = new Proxy(new Uint8Array(backing, 2, 3), {
+        get(target, key, receiver) {
+            if (key === Symbol.toPrimitive) return () => 'proxy=2';
+            return Reflect.get(target, key, receiver);
+        },
+    });
+    deepStrictEqual(TOML.parse(coercible), { proxy: 2 });
+});
+
 denoTest('dates and times use Temporal values', () => {
     const value = TOML.parse('date=1979-05-27\ntime=07:32:00.123456789123\nlocal=1979-05-27 07:32:00\noffset=1979-05-27T07:32:00.123456789+01:00');
     strictEqual(value.date.toString(), '1979-05-27');
