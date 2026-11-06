@@ -97,6 +97,7 @@ Deno.test('bun: JSONL.parseChunk start and end select a window and keep offsets 
     deepStrictEqual(parseJSONLChunk('1\n2\n', 0, -1), { values: [1, 2], read: 3, done: true, error: null });
     deepStrictEqual(parseJSONLChunk('1\n2\n', 0, NaN), { values: [1, 2], read: 3, done: true, error: null });
     deepStrictEqual(parseJSONLChunk('1\n2\n', 0, 2.5), { values: [1], read: 1, done: true, error: null });
+    strictEqual(Object.is(parseJSONLChunk('1\n2\n', 0, -0).read, -0), false);
 });
 
 Deno.test('bun: JSONL.parseChunk reads byte input with byte offsets', () => {
@@ -200,6 +201,17 @@ Deno.test('bun: JSONL literal and nested incomplete values stay pending until th
     strictEqual(parseJSONLChunk('[1,]\n').error instanceof SyntaxError, true);
     strictEqual(parseJSONLChunk('{"a":1,}\n').error instanceof SyntaxError, true);
     strictEqual(parseJSONLChunk('[1,x,]').error instanceof SyntaxError, true);
+});
+
+Deno.test('bun: JSONL classifies number-shaped tokens at nested EOF boundaries', () => {
+    for (const source of ['{1.', '{-1', '[1 2.', '{"a":1 2.']) {
+        deepStrictEqual(parseJSONLChunk(source), { values: [], read: 0, done: false, error: null }, source);
+        deepStrictEqual(parseJSONLChunk(enc(source)), { values: [], read: 0, done: false, error: null }, source);
+    }
+    for (const source of ['{01', '{1e', '{truex', '{nullx', '[1 2e', '{"a":1 2e', '[1e+']) {
+        strictEqual(parseJSONLChunk(source).error instanceof SyntaxError, true, source);
+        strictEqual(parseJSONLChunk(enc(source)).error instanceof SyntaxError, true, source);
+    }
 });
 
 Deno.test('bun: JSONL single-byte EOF classification matches the oracle', () => {
