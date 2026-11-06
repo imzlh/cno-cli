@@ -35,6 +35,33 @@ Deno.test('bun:sqlite matches Bun constructor and exec alias shape', () => {
     }
 });
 
+Deno.test('bun:sqlite exposes Statement execution methods as own enumerable fields', () => {
+    const db = new Database(':memory:');
+    const statement = db.prepare<{ value: number }>('SELECT ? AS value');
+    const other = db.prepare<{ value: number }>('SELECT ? AS value');
+    const methods = ['get', 'all', 'iterate', 'values', 'raw', 'run'] as const;
+    try {
+        deepStrictEqual(Reflect.ownKeys(statement), methods);
+        deepStrictEqual(Object.keys(statement), methods);
+        for (const method of methods) {
+            deepStrictEqual(Object.getOwnPropertyDescriptor(statement, method), {
+                value: statement[method],
+                writable: true,
+                enumerable: true,
+                configurable: true,
+            });
+            strictEqual(Object.getOwnPropertyDescriptor(Statement.prototype, method), undefined);
+            strictEqual(statement[method], other[method]);
+        }
+
+        deepStrictEqual(statement.get.call(other, 7), { value: 7 });
+    } finally {
+        statement.finalize();
+        other.finalize();
+        db.close();
+    }
+});
+
 Deno.test('bun:sqlite runs statements and preserves binding types', () => {
     const db = new Database(':memory:');
     try {
