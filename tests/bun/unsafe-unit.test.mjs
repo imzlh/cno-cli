@@ -103,6 +103,20 @@ test('unsafe.arrayBufferToString rejects unsupported inputs', async () => {
     assert.equal(unsafe.arrayBufferToString(spoofed), 'AB');
 });
 
+test('unsafe helpers have Bun function shapes', async () => {
+    const mod = await load('linux', () => bytes('Pss: 1 kB\n'));
+    for (const [fn, name, length] of [
+        [mod.unsafe.arrayBufferToString, 'arrayBufferToString', 1],
+        [mod.unsafe.memoryFootprint, 'memoryFootprint', 0],
+        [mod.shrink, 'shrink', 0],
+    ]) {
+        assert.equal(fn.name, name);
+        assert.equal(fn.length, length);
+        assert.equal(Object.hasOwn(fn, 'prototype'), false);
+        assert.throws(() => Reflect.construct(fn, []), TypeError);
+    }
+});
+
 test('unsafe.shrink requests one best-effort engine collection', async () => {
     const mod = await load('linux', () => bytes('Pss: 1 kB\n'));
     mod.shrink();
