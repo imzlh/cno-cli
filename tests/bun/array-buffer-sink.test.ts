@@ -115,15 +115,15 @@ test('bun: ArrayBufferSink grows across many small and large writes', () => {
     assert.deepEqual(result.subarray(expected.length), large);
 });
 
-test('bun: ArrayBufferSink without stream flush() returns bytes written since the last flush and keeps data', () => {
+test('bun: ArrayBufferSink without stream flush() returns zero and keeps data', () => {
     const sink = started();
     assert.equal(sink.flush(), 0);
     sink.write('abc');
     sink.write('de');
-    assert.equal(sink.flush(), 5);
+    assert.equal(sink.flush(), 0);
     assert.equal(sink.flush(), 0);
     sink.write('f');
-    assert.equal(sink.flush(), 1);
+    assert.equal(sink.flush(), 0);
     // flush() never drains in this mode: end() still returns everything.
     assert.deepEqual(bytes(sink.end()), [97, 98, 99, 100, 101, 102]);
 });
@@ -169,7 +169,7 @@ test('bun: ArrayBufferSink option flags only honor real booleans and non-object 
     for (const options of [undefined, null, 0, 'x', true, [], {}, { asUint8Array: 1, stream: 'yes' }]) {
         const sink = started(options as never);
         sink.write('a');
-        assert.equal(sink.flush(), 1, 'stream stays off');
+        assert.equal(sink.flush(), 0, 'stream stays off');
         assert.ok(sink.end() instanceof ArrayBuffer, 'asUint8Array stays off');
     }
 });
@@ -177,34 +177,60 @@ test('bun: ArrayBufferSink option flags only honor real booleans and non-object 
 test('bun: ArrayBufferSink works before start() with default options', () => {
     const sink = new ArrayBufferSink();
     assert.equal(sink.write('ab'), 2);
-    assert.equal(sink.flush(), 2);
+    assert.equal(sink.flush(), 0);
     assert.deepEqual(bytes(sink.end()), [97, 98]);
 });
 
-test('bun: ArrayBufferSink end resets the sink without closing it', () => {
+test('bun: ArrayBufferSink end() ends non-stream collection until start()', () => {
     const sink = started({ asUint8Array: true });
     sink.write('a');
     assert.deepEqual(bytes(sink.end()), [97]);
     assert.equal(sink.write('b'), 1);
-    assert.equal(sink.flush(), 1);
-    assert.deepEqual(bytes(sink.end()), [98]);
-    assert.equal(asView(sink.end()).length, 0);
-    assert.ok(started().end() instanceof ArrayBuffer);
+    assert.equal(sink.flush(), 0);
+    const repeated = sink.end();
+    assert.ok(repeated instanceof ArrayBuffer);
+    assert.deepEqual(bytes(repeated), []);
+
+    sink.start();
+    sink.write('c');
+    assert.deepEqual(bytes(asView(sink.end())), [99], 'start() reopens and preserves unmodified options');
 });
 
-test('bun: ArrayBufferSink start() resets data and options, and reopens a closed sink', () => {
+test('bun: ArrayBufferSink start() resets data, preserves empty options, and reopens an ended sink', () => {
     const sink = started({ stream: true, asUint8Array: true });
     sink.write('old');
     sink.start();
     sink.write('new');
-    assert.equal(sink.flush(), 3, 'stream and asUint8Array reset to defaults');
-    const result = sink.end();
-    assert.ok(result instanceof ArrayBuffer);
-    assert.deepEqual(bytes(result), [110, 101, 119]);
+    assert.deepEqual(bytes(asView(sink.flush())), [110, 101, 119]);
+    assert.deepEqual(bytes(asView(sink.end())), []);
 
-    sink.start({ asUint8Array: true });
+    sink.start({ asUint8Array: true }); // A typed option resets omitted options to defaults.
     assert.equal(sink.write('again'), 5);
     assert.deepEqual(bytes(sink.end()), [97, 103, 97, 105, 110]);
+});
+
+test('bun: ArrayBufferSink typed start options reset omitted flags while invalid values preserve flags', () => {
+    const sink = started({ stream: true, asUint8Array: true });
+    sink.start({ stream: 'yes', asUint8Array: 1, highWaterMark: '8' } as never);
+    sink.write('a');
+    assert.deepEqual(bytes(asView(sink.flush())), [97], 'invalid option types preserve the configuration');
+
+    sink.start({ highWaterMark: NaN });
+    sink.write('b');
+    assert.equal(sink.flush(), 0, 'a number-valued highWaterMark resets omitted flags');
+    const result = sink.end();
+    assert.ok(result instanceof ArrayBuffer);
+    assert.deepEqual(bytes(result), [98]);
+});
+
+test('bun: ArrayBufferSink streaming writes after end() remain available only to flush()', () => {
+    const sink = started({ stream: true, asUint8Array: true });
+    sink.write('a');
+    assert.deepEqual(bytes(asView(sink.end())), [97]);
+    assert.equal(sink.write('bc'), 2);
+    assert.deepEqual(bytes(sink.end()), [], 'repeated end() is always an empty ArrayBuffer');
+    assert.deepEqual(bytes(asView(sink.flush())), [98, 99]);
+    assert.ok(sink.end() instanceof ArrayBuffer);
 });
 
 test('bun: ArrayBufferSink instances are independent and methods reject foreign receivers', () => {
