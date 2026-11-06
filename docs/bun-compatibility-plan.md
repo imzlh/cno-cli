@@ -262,7 +262,7 @@ code, command renaming, CLI impersonation, or broad README/website redesign.
   `/proc/self/smaps_rollup` PSS reader returning `undefined` on unsupported or
   malformed hosts. `Bun.unsafe.arrayBufferToString()` now provides a copying
   ASCII `ArrayBuffer`/`Uint8Array` path and a copying `Uint16Array` path;
-  non-ASCII byte input and unsupported views are rejected. `Bun.shrink()` is a
+  typed-array input follows Bun's byte/UTF-16 interpretation while DataView is rejected. `Bun.shrink()` is a
   best-effort engine collection request. `Bun.isStandaloneExecutable` and
   `Bun.embeddedFiles` are truthful frozen feature-detection values (`false`
   and an empty list) because cno does not produce Bun compile artifacts.

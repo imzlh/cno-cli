@@ -32,6 +32,9 @@ async function load(
             decodeU16String,
             gc: { run() { gcRuns++; } },
         };
+        if (name === 'algorithm') return {
+            latin1DecodeLoose: value => String.fromCharCode(...value),
+        };
         throw new Error(`unexpected native module: ${name}`);
     };
     const module = await import(`${source}#${moduleNumber++}`);
@@ -85,12 +88,14 @@ test('unsafe.arrayBufferToString decodes ASCII views and UTF-16 views', async ()
     assert.equal(unsafe.arrayBufferToString(new Uint8Array([65, 66, 67])), 'ABC');
     assert.equal(unsafe.arrayBufferToString(new Uint8Array(new Uint8Array([0, 65, 0, 66]).buffer)), '\u0000A\u0000B');
     assert.equal(unsafe.arrayBufferToString(new Uint16Array([0x0041, 0x03a9])), 'A\u03a9');
+    assert.equal(unsafe.arrayBufferToString(new Int16Array([-1, 0x0041])), '\uffffA');
     assert.equal(unsafe.arrayBufferToString(new Uint8Array([66, 67]).buffer), 'BC');
+    assert.equal(unsafe.arrayBufferToString(new Uint8Array([65, 255])), 'A\u00ff');
+    assert.equal(unsafe.arrayBufferToString(new Int8Array([-1, 65])), '\u00ffA');
 });
 
-test('unsafe.arrayBufferToString rejects non-ASCII and unsupported inputs', async () => {
+test('unsafe.arrayBufferToString rejects unsupported inputs', async () => {
     const { unsafe } = await load('linux', () => bytes('Pss: 1 kB\n'));
-    assert.throws(() => unsafe.arrayBufferToString(new Uint8Array([0xc3, 0xa9])), /ASCII/);
     assert.throws(() => unsafe.arrayBufferToString([65, 66]), TypeError);
     assert.throws(() => unsafe.arrayBufferToString(new DataView(new ArrayBuffer(2))), TypeError);
     const spoofed = new Uint8Array([65, 66]);
