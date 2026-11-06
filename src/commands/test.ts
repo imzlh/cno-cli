@@ -102,30 +102,58 @@ function isCnoHostTest(path: string): boolean {
     }
 }
 
-function killChildQuietly(child: { kill(): void }): void {
+type KillableChild = Pick<CModuleProcess.ChildProcess, 'kill'>;
+
+function killChildQuietly(child: KillableChild, signal?: CModuleProcess.Signal): void {
     try {
-        child.kill();
+        child.kill(signal);
     } catch {
         // The child may already have exited after its result pipe closed.
     }
 }
 
-async function settleChild(
-    child: { kill(): void },
+export async function settleChild(
+    child: KillableChild,
     waitPromise: Promise<CModuleProcess.ExitInfo>,
+    delays: readonly [initial: number, term: number, kill: number] = [500, 1000, 1000],
 ): Promise<CModuleProcess.ExitInfo | undefined> {
-    let timer: number | undefined;
     let info: CModuleProcess.ExitInfo | undefined;
-    const exited = await Promise.race([
-        waitPromise.then((value) => { info = value; return true; }, () => true),
-        new Promise<boolean>((resolve) => {
-            timer = timers.setTimeout(() => resolve(false), 500);
-        }),
-    ]);
-    if (timer !== undefined) timers.clearTimeout(timer);
+    const state: { value: 'pending' | 'exited' | 'rejected' } = { value: 'pending' };
+    const waiterSettled = waitPromise.then(
+        value => {
+            info = value;
+            state.value = 'exited';
+        },
+        () => { state.value = 'rejected'; },
+    );
+    const sleep = (ms: number): Promise<void> => new Promise(resolve => timers.setTimeout(resolve, ms));
+    const hasExited = (): boolean => state.value === 'exited';
+    const waitForExit = async (ms: number): Promise<boolean> => {
+        if (hasExited()) return true;
+        if (state.value === 'rejected') {
+            await sleep(ms);
+            return false;
+        }
+        let timer: number | undefined;
+        await Promise.race([
+            waiterSettled,
+            new Promise<void>((resolve) => {
+                timer = timers.setTimeout(resolve, ms);
+            }),
+        ]);
+        if (timer !== undefined) timers.clearTimeout(timer);
+        return hasExited();
+    };
+    // SIGTERM with a short grace, then SIGKILL. If the native waiter is lost,
+    // stop waiting after the final grace rather than hanging the whole suite.
+    const exited = await waitForExit(delays[0]);
     if (exited) return info;
     killChildQuietly(child);
-    return waitPromise.catch(() => undefined);
+    const reaped = await waitForExit(delays[1]);
+    if (reaped) return info;
+    killChildQuietly(child, 'SIGKILL');
+    await waitForExit(delays[2]);
+    return info;
 }
 
 function pathKey(path: string): string {
@@ -381,8 +409,7 @@ function parseFailedTests(value: unknown): FailedTest[] {
 
 function errorText(value: unknown): string | undefined {
     if (value === undefined || value === null) return undefined;
-    if (value instanceof Error) return String(value.stack ?? value.message);
-    return String(value);
+    return failureText(value);
 }
 
 export interface TestInvocation {
@@ -471,7 +498,7 @@ async function runOne(
     const waitPromise = child.wait();
     if (!child.ipc) {
         killChildQuietly(child);
-        await waitPromise.catch(() => {});
+        await settleChild(child, waitPromise);
         return {
             file,
             passed: false,
@@ -501,8 +528,15 @@ async function runOne(
 
         if (outcome.kind === 'timeout') {
             killChildQuietly(child);
-            await settleChild(child, waitPromise);
-            throw new Error(`test worker timed out after ${timeout}ms without reporting a result`);
+            return {
+                file,
+                passed: false,
+                // Cleanup runs in finally; the timeout itself remains the
+                // useful duration rather than signal/reap grace time.
+                duration: performance.now() - start,
+                error: `test worker timed out after ${timeout}ms without reporting a result`,
+                failedTests: [],
+            };
         }
         // A child can exit before already-buffered result bytes are dispatched;
         // give the reader a short grace turn before calling the report missing.

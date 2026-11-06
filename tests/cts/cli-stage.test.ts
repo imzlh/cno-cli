@@ -989,3 +989,28 @@ Deno.test({ name: 'cli stage: run handles concurrent stdio reads and writes', ti
         strictEqual(mixed.stdout.trim().split(/\r?\n/).filter((line) => line === 'Hello').length, 50, mixed.stdout);
     });
 });
+
+Deno.test({ name: 'cli stage: run drains duplex stdio beyond the pipe buffer', timeout: 30000 }, async () => {
+    await withTempDir('cli-stage-duplex', async (root) => {
+        // A child that echoes input while both output pipes stream back: without
+        // concurrent drainage the harness deadlocks once either pipe fills.
+        const echoScript = join(root, 'echo.ts');
+        await Deno.writeTextFile(echoScript, `
+            const buffer = new Uint8Array(65536);
+            let total = 0;
+            for (;;) {
+                const read = await Deno.stdin.read(buffer);
+                if (read === null || read === 0) break;
+                total += read;
+                const chunk = buffer.slice(0, read);
+                await Promise.all([Deno.stdout.write(chunk), Deno.stderr.write(chunk)]);
+            }
+            if (total === 0) throw new Error('empty input');
+        `);
+        const input = '0123456789abcdef'.repeat(64 * 1024); // 1 MiB per pipe.
+        const result = await runCnoWithInput(['run', echoScript], input, root);
+        strictEqual(result.code, 0, result.stderr);
+        strictEqual(result.stdout, input);
+        strictEqual(result.stderr, input);
+    });
+});

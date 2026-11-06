@@ -2,7 +2,7 @@ import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readTestChildResult } from '../../src/commands/test-result-pipe.ts';
-import { collectTests, parseTestChildArgs, shuffleFiles } from '../../src/commands/test.ts';
+import { collectTests, parseTestChildArgs, settleChild, shuffleFiles } from '../../src/commands/test.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
 class FakePipe {
@@ -29,6 +29,14 @@ Deno.test('test runner keeps Node IPC out of the CLI result path', () => {
         const source = readFileSync(new URL(path, import.meta.url), 'utf8');
         ok(!source.includes('cno/src/node/ipc_channel'));
     }
+});
+
+Deno.test('test runner still escalates cleanup when the native waiter rejects', async () => {
+    const signals: Array<CModuleProcess.Signal | undefined> = [];
+    const child = { kill: (signal?: CModuleProcess.Signal) => { signals.push(signal); } };
+    const failure = Promise.reject<CModuleProcess.ExitInfo>(new Error('wait failed'));
+    strictEqual(await settleChild(child, failure, [0, 1, 1]), undefined);
+    deepStrictEqual(signals, [undefined, 'SIGKILL']);
 });
 
 Deno.test('test result pipe reassembles a split JSON frame and waits for EOF', async () => {

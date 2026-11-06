@@ -2,6 +2,7 @@
 // cno binary, so the suites stay split by topic to respect the runner's
 // per-file timeout budget.
 import { decodeUtf8 } from './bytes.ts';
+import { concatChunks } from '../../cno/src/utils/bytes';
 
 export async function runCno(args: string[], cwd?: string, env?: Record<string, string>): Promise<{ code: number; stdout: string; stderr: string }> {
     const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
@@ -34,15 +35,76 @@ export async function runCnoWithInput(args: string[], input: string, cwd?: strin
             CTS_SILENT: 'true',
         },
     }).spawn();
-    const writer = child.stdin.getWriter();
-    await writer.write(new TextEncoder().encode(input));
-    await writer.close();
-    const output = await child.output();
-    return {
-        code: output.code,
-        stdout: decodeUtf8(output.stdout),
-        stderr: decodeUtf8(output.stderr),
+    // Drain stdout/stderr while stdin is still being written: a child that
+    // echoes more than the pipe buffer back before reading its stdin would
+    // otherwise deadlock this harness (write blocks on a full pipe).
+    const stdoutChunks: Uint8Array[] = [];
+    const stderrChunks: Uint8Array[] = [];
+    const drain = async (reader: ReadableStreamDefaultReader<Uint8Array>, sink: Uint8Array[]): Promise<void> => {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            sink.push(value);
+        }
     };
+    const stdoutReader = child.stdout.getReader();
+    const stderrReader = child.stderr.getReader();
+    const drainingOut = drain(stdoutReader, stdoutChunks);
+    const drainingErr = drain(stderrReader, stderrChunks);
+    const writer = child.stdin.getWriter();
+    const inputWork = (async () => {
+        await writer.write(new TextEncoder().encode(input));
+        await writer.close();
+    })();
+    const statusTask = child.status;
+    let ioFinished = false;
+    let eofTimer: number | undefined;
+    const eofGuard = statusTask.then(() => new Promise<never>((_resolve, reject) => {
+        if (ioFinished) return;
+        eofTimer = setTimeout(() => reject(new Error('child exited but stdio did not finish')), 1000);
+    }));
+    try {
+        // Promise.all observes every rejection immediately while still failing
+        // fast. If an uncontrolled descendant inherits an output pipe, the EOF
+        // guard cancels our readers so the harness itself does not hang; this
+        // helper owns and can terminate only the direct child.
+        const [status] = await Promise.race([
+            Promise.all([statusTask, inputWork, drainingOut, drainingErr]),
+            eofGuard,
+        ]);
+        return {
+            code: status.code,
+            stdout: decodeUtf8(concatChunks(stdoutChunks)),
+            stderr: decodeUtf8(concatChunks(stderrChunks)),
+        };
+    } catch (failure) {
+        try { child.kill('SIGKILL'); } catch { /* child may already have exited */ }
+        const cleanup = Promise.allSettled([
+            statusTask,
+            inputWork,
+            drainingOut,
+            drainingErr,
+            Promise.resolve().then(() => stdoutReader.cancel(failure)),
+            Promise.resolve().then(() => stderrReader.cancel(failure)),
+            Promise.resolve().then(() => writer.abort(failure)),
+        ]);
+        let cleanupTimer: number | undefined;
+        try {
+            await Promise.race([
+                cleanup,
+                new Promise<void>(resolve => { cleanupTimer = setTimeout(resolve, 1000); }),
+            ]);
+        } finally {
+            if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
+        }
+        throw failure;
+    } finally {
+        ioFinished = true;
+        if (eofTimer !== undefined) clearTimeout(eofTimer);
+        stdoutReader.releaseLock();
+        stderrReader.releaseLock();
+        writer.releaseLock();
+    }
 }
 
 export const ADD_WASM = new Uint8Array([
