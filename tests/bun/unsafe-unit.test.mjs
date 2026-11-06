@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 
 const result = await build({
     absWorkingDir: fileURLToPath(new URL('../..', import.meta.url)),
@@ -94,10 +95,109 @@ test('unsafe.arrayBufferToString decodes ASCII views and UTF-16 views', async ()
     assert.equal(unsafe.arrayBufferToString(new Int8Array([-1, 65])), '\u00ffA');
 });
 
-test('unsafe.arrayBufferToString rejects unsupported inputs', async () => {
+test('unsafe.arrayBufferToString uses intrinsic slots across realms', async () => {
     const { unsafe } = await load('linux', () => bytes('Pss: 1 kB\n'));
-    assert.throws(() => unsafe.arrayBufferToString([65, 66]), TypeError);
-    assert.throws(() => unsafe.arrayBufferToString(new DataView(new ArrayBuffer(2))), TypeError);
+    const foreign = runInNewContext(`(() => {
+        const arrayBuffer = new Uint8Array([65, 66]).buffer;
+        const uint8 = new Uint8Array([67, 68]);
+        const uint16 = new Uint16Array([0x0041, 0x03a9]);
+        for (const value of [arrayBuffer, uint8, uint16]) {
+            for (const key of ['buffer', 'byteOffset', 'byteLength', Symbol.toStringTag]) {
+                Object.defineProperty(value, key, {
+                    configurable: true,
+                    get() { throw new Error('shadowed ' + String(key)); },
+                });
+            }
+        }
+        const result = { arrayBuffer, uint8, uint16 };
+        if (typeof SharedArrayBuffer === 'function') {
+            const shared = new SharedArrayBuffer(2);
+            new Uint8Array(shared).set([69, 70]);
+            Object.defineProperty(shared, 'byteLength', {
+                get() { throw new Error('shadowed byteLength'); },
+            });
+            result.shared = shared;
+        }
+        return result;
+    })()`);
+
+    assert.equal(foreign.arrayBuffer instanceof ArrayBuffer, false);
+    assert.equal(foreign.uint8 instanceof Uint8Array, false);
+    assert.equal(unsafe.arrayBufferToString(foreign.arrayBuffer), 'AB');
+    assert.equal(unsafe.arrayBufferToString(foreign.uint8), 'CD');
+    assert.equal(unsafe.arrayBufferToString(foreign.uint16), 'A\u03a9');
+    if (foreign.shared) assert.equal(unsafe.arrayBufferToString(foreign.shared), 'EF');
+});
+
+test('unsafe.arrayBufferToString treats detached and out-of-bounds slots as empty', async () => {
+    const { unsafe } = await load('linux', () => bytes('Pss: 1 kB\n'));
+    for (const make of [
+        buffer => buffer,
+        buffer => new Uint8Array(buffer),
+        buffer => new Uint16Array(buffer),
+        buffer => new Int16Array(buffer),
+    ]) {
+        const buffer = new ArrayBuffer(4);
+        const value = make(buffer);
+        structuredClone(buffer, { transfer: [buffer] });
+        assert.equal(unsafe.arrayBufferToString(value), '');
+    }
+
+    if (typeof ArrayBuffer.prototype.resize === 'function') {
+        const buffer = new ArrayBuffer(4, { maxByteLength: 8 });
+        const uint8 = new Uint8Array(buffer, 2, 2);
+        const uint16 = new Uint16Array(buffer, 2, 1);
+        buffer.resize(1);
+        assert.equal(unsafe.arrayBufferToString(uint8), '');
+        assert.equal(unsafe.arrayBufferToString(uint16), '');
+    }
+});
+
+test('unsafe.arrayBufferToString rejects unsupported inputs with Bun coded errors', async () => {
+    const { unsafe } = await load('linux', () => bytes('Pss: 1 kB\n'));
+    let traps = 0;
+    const proxy = new Proxy(new Uint8Array([65]), {
+        get() { traps++; throw new Error('proxy get'); },
+        getPrototypeOf() { traps++; throw new Error('proxy getPrototypeOf'); },
+    });
+    const errors = [undefined, null, [65, 66], new DataView(new ArrayBuffer(2)), proxy].map(value => {
+        try {
+            unsafe.arrayBufferToString(value);
+        } catch (error) {
+            return error;
+        }
+        assert.fail(`accepted ${String(value)}`);
+    });
+
+    const prototype = Object.getPrototypeOf(errors[0]);
+    for (const error of errors) {
+        assert.equal(error instanceof TypeError, true);
+        assert.equal(error.name, 'TypeError');
+        assert.equal(error.message, 'Expected an ArrayBuffer');
+        assert.equal(error.code, 'ERR_INVALID_ARG_TYPE');
+        assert.equal(Object.hasOwn(error, 'code'), false);
+        assert.equal(Object.getPrototypeOf(error), prototype);
+        assert.equal(String(error), 'TypeError [ERR_INVALID_ARG_TYPE]: Expected an ArrayBuffer');
+        assert.equal(Error.prototype.toString.call(error), 'TypeError: Expected an ArrayBuffer');
+        assert.deepEqual(Object.keys(error), []);
+        assert.equal(JSON.stringify(error), '{}');
+    }
+    assert.equal(traps, 0);
+    assert.notEqual(prototype, TypeError.prototype);
+    assert.equal(Object.getPrototypeOf(prototype), TypeError.prototype);
+    assert.deepEqual(Object.getOwnPropertyDescriptor(prototype, 'name'), {
+        configurable: true, enumerable: true, value: 'TypeError', writable: true,
+    });
+    assert.deepEqual(Object.getOwnPropertyDescriptor(prototype, 'code'), {
+        configurable: true, enumerable: true, value: 'ERR_INVALID_ARG_TYPE', writable: true,
+    });
+    assert.deepEqual(Object.getOwnPropertyDescriptor(prototype, 'toString'), {
+        configurable: true, enumerable: true, value: prototype.toString, writable: true,
+    });
+    assert.equal(prototype.toString.name, 'toString');
+    assert.equal(prototype.toString.length, 0);
+    assert.equal(Object.hasOwn(prototype.toString, 'prototype'), false);
+
     const spoofed = new Uint8Array([65, 66]);
     Object.defineProperty(spoofed, Symbol.toStringTag, { value: 'Uint16Array' });
     assert.equal(unsafe.arrayBufferToString(spoofed), 'AB');
