@@ -129,6 +129,14 @@ Deno.test('bun: deepEquals uses internal brands without observing toStringTag', 
     strictEqual(deepEquals(new Map(), { [Symbol.toStringTag]: 'Map' }), false);
 });
 
+Deno.test('bun: deepEquals keeps Date branding after prototype replacement', () => {
+    const date = Object.setPrototypeOf(new Date(1), null);
+    strictEqual(deepEquals(date, new Date(1)), true);
+    strictEqual(deepEquals(date, new Date(2)), false);
+    strictEqual(deepEquals(date, new Date(1), true), true);
+    strictEqual(deepEquals(Object.create(Date.prototype), new Date(1)), false);
+});
+
 Deno.test('bun: deepEquals function values are identity-only', () => {
     const left = function named(value: unknown) { return value; };
     const right = function named(value: unknown) { return value; };
