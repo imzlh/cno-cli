@@ -196,7 +196,7 @@ Deno.test('bun: compression validates options with Bun-compatible errors', () =>
     throws(() => gunzipSync(gzipSync('x'), { strategy: Symbol('strategy') } as never), /convert symbol to number/i);
 });
 
-Deno.test('bun: compression reads and converts option fields in declaration order', () => {
+Deno.test('bun: compression helpers read and convert option fields in declaration order', () => {
     const events: string[] = [];
     gzipSync('x', {
         get windowBits() {
@@ -215,6 +215,33 @@ Deno.test('bun: compression reads and converts option fields in declaration orde
         'get windowBits', 'coerce windowBits', 'get library', 'get level',
         'coerce level', 'get memLevel', 'get strategy',
     ]);
+
+    const decompressionEvents: string[] = [];
+    const numeric = (name: string, value: number) => ({
+        valueOf() { decompressionEvents.push(`coerce ${name}`); return value; },
+    });
+    gunzipSync(gzipSync('x'), {
+        get windowBits() { decompressionEvents.push('get windowBits'); return numeric('windowBits', 31) as never; },
+        get level() { decompressionEvents.push('get level'); return numeric('level', 1) as never; },
+        get memLevel() { decompressionEvents.push('get memLevel'); return numeric('memLevel', 1) as never; },
+        get strategy() { decompressionEvents.push('get strategy'); return numeric('strategy', 1) as never; },
+        get library() { decompressionEvents.push('get library'); return 'zlib'; },
+    });
+    deepStrictEqual(decompressionEvents, [
+        'get windowBits', 'coerce windowBits', 'get level', 'coerce level',
+        'get memLevel', 'coerce memLevel', 'get strategy', 'coerce strategy',
+        'get library',
+    ]);
+
+    const abruptEvents: string[] = [];
+    throws(() => gunzipSync(gzipSync('x'), {
+        get level() {
+            abruptEvents.push('get level');
+            return { valueOf() { abruptEvents.push('coerce level'); throw new Error('level conversion'); } } as never;
+        },
+        get memLevel() { abruptEvents.push('get memLevel'); return 1; },
+    }), /level conversion/);
+    deepStrictEqual(abruptEvents, ['get level', 'coerce level']);
 });
 
 Deno.test('bun: compression rejects invalid input and incomplete streams', () => {
