@@ -99,14 +99,32 @@ Deno.test('bun: hash algorithms match seeded and unseeded vectors', () => {
 
 Deno.test('bun: hash input and seed coercion', () => {
     const fn = hash.xxHash64 as unknown as (data: unknown, seed?: unknown) => bigint;
-    strictEqual(fn(null), fn('null'));
-    strictEqual(fn(undefined), fn('undefined'));
+    for (const name of ['hash', 'wyhash', 'adler32', 'crc32', 'cityHash32', 'cityHash64', 'xxHash32', 'xxHash64', 'murmur32v2', 'murmur64v2', 'murmur32v3']) {
+        const hashFn = name === 'hash' ? hash : (hash as unknown as Record<string, (data: unknown) => number | bigint>)[name];
+        strictEqual(hashFn.length, 1, `${name}.length`);
+        const invalidInput = {
+            name: 'TypeError',
+            code: 'ERR_INVALID_ARG_TYPE',
+            message: 'data must be a string, ArrayBuffer, ArrayBufferView or Blob',
+        };
+        throws(() => hashFn(null), invalidInput);
+        throws(() => hashFn(undefined), invalidInput);
+    }
     strictEqual(fn(123), fn('123'));
     strictEqual(fn({ toString: () => 'abc' }), fn('abc'));
     throws(() => fn(Symbol('x')), TypeError);
-    strictEqual(fn('abc', 1.5), fn('abc'));
-    strictEqual(fn('abc', Infinity), fn('abc'));
+    strictEqual(fn('abc', 1.5), fn('abc', 1n));
+    strictEqual(fn('abc', -1.5), fn('abc', -1n));
+    strictEqual(fn('abc', 2 ** 53), fn('abc', 2n ** 53n));
+    strictEqual(fn('abc', Infinity), fn('abc', (1n << 64n) - 1n));
+    strictEqual(fn('abc', -Infinity), fn('abc'));
     strictEqual(fn('abc', -1n), fn('abc', 0xffff_ffff_ffff_ffffn));
+    strictEqual(fn('abc', (1n << 64n) + 1n), fn('abc', 1n));
+    const fn32 = hash.xxHash32 as unknown as (data: unknown, seed?: unknown) => number;
+    strictEqual(fn32('abc', 2 ** 40 + 3.9), fn32('abc', 3n));
+    strictEqual(fn32('abc', -1.5), fn32('abc', -1n));
+    strictEqual(fn32('abc', Infinity), fn32('abc', (1n << 32n) - 1n));
+    strictEqual(fn32('abc', (1n << 32n) + 1n), fn32('abc', 1n));
     const backing = new Uint8Array([1, 2, 3, 4, 5]);
     strictEqual(fn(new DataView(backing.buffer, 1, 3)), fn(new Uint8Array([2, 3, 4])));
     strictEqual(fn('\ud800'), fn('\ufffd'));
