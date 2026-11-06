@@ -118,3 +118,21 @@ Deno.test('bun: deepEquals unordered collections and recursive mismatch', () => 
     const value = { x: 1 };
     strictEqual(deepEquals([value, value], [{ x: 1 }, { x: 1 }]), true);
 });
+
+Deno.test('bun: deepEquals uses internal brands without observing toStringTag', () => {
+    const tagged = (value: number) => Object.defineProperty({ value }, Symbol.toStringTag, {
+        get() { throw new Error('must not read Symbol.toStringTag'); },
+    });
+    strictEqual(deepEquals(tagged(1), tagged(1)), true);
+    strictEqual(deepEquals(tagged(1), tagged(2)), false);
+    strictEqual(deepEquals(new Date(0), { [Symbol.toStringTag]: 'Date' }), false);
+    strictEqual(deepEquals(new Map(), { [Symbol.toStringTag]: 'Map' }), false);
+});
+
+Deno.test('bun: deepEquals function values are identity-only', () => {
+    const left = function named(value: unknown) { return value; };
+    const right = function named(value: unknown) { return value; };
+    strictEqual(deepEquals(left, left), true);
+    strictEqual(deepEquals(left, right), false);
+    strictEqual(deepEquals({ fn: left }, { fn: right }), false);
+});
