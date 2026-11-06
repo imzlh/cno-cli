@@ -1,4 +1,5 @@
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
+import { runInNewContext } from 'node:vm';
 import { deflateRawSync as nodeDeflateRawSync } from 'node:zlib';
 import {
     deflateSync,
@@ -8,6 +9,15 @@ import {
 } from '../../cno/src/bun/compression/index.ts';
 
 const decoder = new TextDecoder();
+
+Deno.test('bun: compression helper function shape matches Bun', () => {
+    for (const [name, fn] of Object.entries({ gzipSync, gunzipSync, deflateSync, inflateSync })) {
+        strictEqual(fn.name, name);
+        strictEqual(fn.length, 1);
+        strictEqual(Object.hasOwn(fn, 'prototype'), false);
+        throws(() => Reflect.construct(fn, []), TypeError);
+    }
+});
 
 Deno.test('bun: compression helpers round-trip gzip and raw deflate', () => {
     const text = 'Bun compression compatibility payload. '.repeat(64);
@@ -64,6 +74,14 @@ Deno.test('bun: compression consumes only the selected ArrayBufferView bytes', (
         decoder.decode(gunzipSync(new DataView(packedBacking.buffer, 4, packed.byteLength) as unknown as Uint8Array)),
         'view-offset-payload',
     );
+
+    const shadowed = new Uint8Array(backing.buffer, 5, text.byteLength);
+    Object.defineProperties(shadowed, {
+        buffer: { value: new Uint8Array([98, 97, 100]).buffer },
+        byteOffset: { value: 0 },
+        byteLength: { value: 3 },
+    });
+    strictEqual(decoder.decode(gunzipSync(gzipSync(shadowed))), 'view-offset-payload');
 });
 
 Deno.test('bun: compression accepts shared buffers and rejects forged buffer shapes', () => {
@@ -86,6 +104,39 @@ Deno.test('bun: compression accepts shared buffers and rejects forged buffer sha
         throws(() => gzipSync(fake as never), (error: Error & { code?: string }) =>
             error.name === 'TypeError' && error.code === 'ERR_INVALID_ARG_TYPE');
     }
+});
+
+Deno.test('bun: compression accepts cross-realm buffers and view windows', () => {
+    const foreign = runInNewContext(`(() => {
+        const buffer = new ArrayBuffer(7);
+        new Uint8Array(buffer).set([0, 104, 101, 108, 108, 111, 0]);
+        return { buffer, typed: new Uint8Array(buffer, 1, 5), data: new DataView(buffer, 1, 5) };
+    })()`);
+    strictEqual(decoder.decode(gunzipSync(gzipSync(foreign.typed))), 'hello');
+    strictEqual(decoder.decode(gunzipSync(gzipSync(foreign.data as never))), 'hello');
+    strictEqual(gunzipSync(gzipSync(foreign.buffer)).byteLength, 7);
+});
+
+Deno.test('bun: compression captures binary input after option coercion', () => {
+    const backing = new ArrayBuffer(5);
+    new Uint8Array(backing).set([104, 101, 108, 108, 111]);
+    const compressed = gzipSync(new DataView(backing) as unknown as Uint8Array, {
+        get level() {
+            structuredClone(backing, { transfer: [backing] });
+            return 6;
+        },
+    });
+    strictEqual(gunzipSync(compressed).byteLength, 0);
+
+    const shared = new SharedArrayBuffer(5);
+    new Uint8Array(shared).set([104, 101, 108, 108, 111]);
+    const changed = gzipSync(shared as unknown as ArrayBuffer, {
+        get level() {
+            new Uint8Array(shared).set([119, 111, 114, 108, 100]);
+            return 6;
+        },
+    });
+    strictEqual(decoder.decode(gunzipSync(changed)), 'world');
 });
 
 Deno.test('bun: compression levels, memory level, and strategy reach zlib', () => {
@@ -134,6 +185,8 @@ Deno.test('bun: compression validates options with Bun-compatible errors', () =>
         'ERR_OUT_OF_RANGE',
     );
     invalid(() => gzipSync('x', { library: 'unknown' } as never), 'TypeError', 'ERR_INVALID_ARG_TYPE');
+    deepStrictEqual(gzipSync('x', { library: new String('zlib') } as never), gzipSync('x'));
+    deepStrictEqual(gzipSync(new String('x') as never), gzipSync('x'));
     throws(() => gzipSync('x', { level: 10 } as never), /Zlib error: Invalid argument/);
     throws(
         () => gzipSync('x', { library: 'libdeflate', level: 13 } as never),
@@ -141,6 +194,27 @@ Deno.test('bun: compression validates options with Bun-compatible errors', () =>
     );
     throws(() => gzipSync('x', { windowBits: Symbol('bits') } as never), /convert symbol to number/i);
     throws(() => gunzipSync(gzipSync('x'), { strategy: Symbol('strategy') } as never), /convert symbol to number/i);
+});
+
+Deno.test('bun: compression reads and converts option fields in declaration order', () => {
+    const events: string[] = [];
+    gzipSync('x', {
+        get windowBits() {
+            events.push('get windowBits');
+            return { valueOf() { events.push('coerce windowBits'); return 15; } } as never;
+        },
+        get library() { events.push('get library'); return 'zlib'; },
+        get level() {
+            events.push('get level');
+            return { valueOf() { events.push('coerce level'); return 1; } } as never;
+        },
+        get memLevel() { events.push('get memLevel'); return 8; },
+        get strategy() { events.push('get strategy'); return 0; },
+    });
+    deepStrictEqual(events, [
+        'get windowBits', 'coerce windowBits', 'get library', 'get level',
+        'coerce level', 'get memLevel', 'get strategy',
+    ]);
 });
 
 Deno.test('bun: compression rejects invalid input and incomplete streams', () => {
