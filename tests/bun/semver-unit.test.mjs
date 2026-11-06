@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { order, satisfies } from '../../cno/src/bun/semver/index.ts';
+import { bunSemver, order, satisfies } from '../../cno/src/bun/semver/index.ts';
 
 test('semver ordering handles prerelease, build, and partial versions', () => {
     const versions = ['1.0.0-alpha', '1.0.0-alpha.1', '1.0.0-alpha.beta', '1.0.0-beta', '1.0.0-beta.2', '1.0.0-beta.11', '1.0.0-rc.1', '1.0.0'];
@@ -12,9 +12,56 @@ test('semver ordering handles prerelease, build, and partial versions', () => {
     assert.equal(order('1.2', '1.2.99'), 1);
     assert.equal(order('*', '999.999.999'), 1);
     assert.equal(order('1.2.3-01', '1.2.3-1'), 0);
+    assert.equal(order('1.2.3-alpha..2', '1.2.3-alpha..10'), -1);
     assert.throws(() => order('not a version', '1.0.0'), /Invalid SemVer: not a version\n/);
     assert.throws(() => order(Symbol('version'), '1.0.0'), TypeError);
     assert.equal(order({ toString: () => '1.0.0' }, '1.0.0'), 0);
+});
+
+test('semver methods match Bun shape and preserve coercion exceptions', () => {
+    assert.deepEqual(Reflect.ownKeys(bunSemver), ['satisfies', 'order']);
+    for (const [name, fn] of [['satisfies', satisfies], ['order', order]]) {
+        assert.equal(fn.name, name);
+        assert.equal(fn.length, 2);
+        assert.equal(Object.hasOwn(fn, 'prototype'), false);
+        assert.throws(() => Reflect.construct(fn, ['1.0.0', '2.0.0']), TypeError);
+        assert.deepEqual(Object.getOwnPropertyDescriptor(bunSemver, name), {
+            value: fn,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+        });
+    }
+
+    const trace = [];
+    const version = new Proxy({}, {
+        get(_target, key) {
+            trace.push(`version:get:${String(key)}`);
+            if (key === Symbol.toPrimitive) return (hint) => {
+                trace.push(`version:primitive:${hint}`);
+                return 'invalid';
+            };
+        },
+    });
+    const sentinel = { sentinel: true };
+    const range = new Proxy({}, {
+        get(_target, key) {
+            trace.push(`range:get:${String(key)}`);
+            if (key === Symbol.toPrimitive) return () => { throw sentinel; };
+        },
+    });
+    let caught;
+    try {
+        satisfies(version, range);
+    } catch (error) {
+        caught = error;
+    }
+    assert.equal(caught, sentinel);
+    assert.deepEqual(trace, [
+        'version:get:Symbol(Symbol.toPrimitive)',
+        'version:primitive:string',
+        'range:get:Symbol(Symbol.toPrimitive)',
+    ]);
 });
 
 test('semver ranges handle common npm range forms and prereleases', () => {
@@ -31,6 +78,9 @@ test('semver ranges handle common npm range forms and prereleases', () => {
         ['1.5.0', '>=1,<2', true], ['2.0.0', '>=1,<2', false],
         ['1.2.3-alpha', '*', false], ['1.2.3-alpha.2', '>=1.2.3-alpha <2', true],
         ['1.3.0-alpha', '>=1.2.3-alpha <2', false],
+        ['1.2.3-alpha.1', '>1.2.3-alpha <1.2.3', true],
+        ['1.2.4-alpha', '>1.2.3-alpha <2', false],
+        ['1.2.3-alpha..2', '>1.2.3-alpha..1 <1.2.3', true],
         ['1.2.3-01', '1.2.3-1', false], ['1.2.3-01', '>=1.2.3-1', true],
         ['01.2.3+build', '1.2.3', true], ['invalid', '*', false],
         ['1.0.0', 'not a range', true], ['1.0.0-alpha', 'not a range', false],
