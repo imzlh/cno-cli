@@ -4,6 +4,12 @@ import { TOML, parseTOML, stringifyTOML } from '../../cno/src/bun/utils/toml.ts'
 denoTest('exports and document syntax', () => {
     strictEqual(TOML.parse, parseTOML);
     strictEqual(TOML.stringify, stringifyTOML);
+    strictEqual(TOML.parse.name, 'parse');
+    strictEqual(TOML.parse.length, 1);
+    strictEqual(TOML.stringify.name, 'stringify');
+    strictEqual(TOML.stringify.length, 3);
+    throws(() => new (TOML.parse as any)('a=1'), TypeError);
+    throws(() => new (TOML.stringify as any)({ a: 1 }), TypeError);
     deepStrictEqual(TOML.parse('\ufeff# heading\r\nname = "demo"\r\ncount=0xDEAD_BEEF\r\nflag=true'), { name: 'demo', count: 0xdeadbeef, flag: true });
     deepStrictEqual(TOML.parse(`title = 'hello'
 owner.name = "Tom"
@@ -72,6 +78,10 @@ denoTest('stringify sections, arrays, keys and special values', () => {
     strictEqual(TOML.stringify({ name: 'hi', '\x7f': '\x7f', numbers: [1, -0, NaN, Infinity, -Infinity], missing: undefined, nested: { child: { ok: true } }, products: [{ name: 'a' }, { name: 'b' }] }), 'name = "hi"\n"\\u007f" = "\\u007f"\nnumbers = [1, -0.0, nan, inf, -inf]\n\n[nested.child]\nok = true\n\n[[products]]\nname = "a"\n\n[[products]]\nname = "b"\n');
     strictEqual(TOML.stringify({ inline: [{ a: 1 }, 2], empty: {} }), 'inline = [{ a = 1 }, 2]\n\n[empty]\n');
     strictEqual(TOML.stringify(undefined), undefined);
+    strictEqual(TOML.stringify(Symbol()), undefined);
+    strictEqual(TOML.stringify(() => {}), undefined);
+    strictEqual(TOML.stringify({ a: 1 }, null, Symbol()), 'a = 1\n');
+    throws(() => TOML.stringify({ a: 1 }, false), /does not support the replacer/);
     strictEqual(TOML.stringify({}), '');
     for (const value of [null, 1, [], 'x', new Date(), new String('x')]) throws(() => TOML.stringify(value));
     throws(() => TOML.stringify({ x: null }), /cannot represent null/);
