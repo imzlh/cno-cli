@@ -178,7 +178,7 @@ Deno.test('bun: CookieMap toSetCookieHeaders emits only changed cookies with Bun
     });
     deepStrictEqual(map.toSetCookieHeaders(), [
         'session=abc; Path=/; SameSite=Lax',
-        'token=xyz; Domain=example.com; Path=/app; Max-Age=60; Secure; HttpOnly; SameSite=Strict; Partitioned',
+        'token=xyz; Domain=example.com; Path=/app; Max-Age=60; Secure; HttpOnly; Partitioned; SameSite=Strict',
     ]);
 });
 
@@ -239,4 +239,98 @@ Deno.test('bun: CookieMap validates names and values', () => {
     throws(() => map.set('bad-path', 'v', { path: 'x;y' }), TypeError);
     throws(() => map.set('bad-site', 'v', { sameSite: 'invalid' as never }), TypeError);
     strictEqual(map.size, 2);
+});
+
+Deno.test('bun: CookieMap brands methods before touching arguments', () => {
+    const proto = CookieMap.prototype;
+    let coerced = 0;
+    const input = { [Symbol.toPrimitive]() { coerced++; return 'a'; } };
+    for (const [method, args] of [
+        ['get', [input]],
+        ['has', [input]],
+        ['set', [input, input, input]],
+        ['delete', [input, input]],
+        ['forEach', [() => {}]],
+    ] as const) {
+        throws(() => (proto[method] as Function).apply({}, args), {
+            name: 'TypeError',
+            message: `Can only call CookieMap.${method} on instances of CookieMap`,
+            code: 'ERR_INVALID_THIS',
+        });
+    }
+    strictEqual(coerced, 0);
+
+    const map = new CookieMap('a=1');
+    const proxy = new Proxy(map, {});
+    throws(() => CookieMap.prototype.get.call(proxy, 'a'), {
+        name: 'TypeError',
+        message: 'Can only call CookieMap.get on instances of CookieMap',
+        code: 'ERR_INVALID_THIS',
+    });
+    throws(() => CookieMap.prototype.entries.call(Object.create(proto)), {
+        name: 'TypeError',
+        message: 'Can only call CookieMap.entries on instances of CookieMap',
+        code: 'ERR_INVALID_THIS',
+    });
+});
+
+Deno.test('bun: CookieMap exposes Bun prototype and iterator shapes', () => {
+    strictEqual(CookieMap.length, 1);
+    strictEqual(CookieMap.prototype.set.length, 2);
+    strictEqual(CookieMap.prototype.delete.length, 1);
+    strictEqual(CookieMap.prototype.forEach.length, 1);
+    strictEqual(CookieMap.prototype[Symbol.iterator], CookieMap.prototype.entries);
+    for (const method of [
+        'get', 'toSetCookieHeaders', 'has', 'set', 'delete',
+        'entries', 'keys', 'values', 'forEach', 'toJSON',
+    ] as const) {
+        strictEqual(Object.getOwnPropertyDescriptor(CookieMap.prototype, method)?.enumerable, true, method);
+    }
+    const size = Object.getOwnPropertyDescriptor(CookieMap.prototype, 'size')!;
+    strictEqual(size.enumerable, true);
+    strictEqual(size.configurable, false);
+
+    const iterator = new CookieMap('a=1').entries();
+    strictEqual(Object.prototype.toString.call(iterator), '[object CookieMap Iterator]');
+    strictEqual(iterator[Symbol.iterator](), iterator);
+    strictEqual(Object.getOwnPropertyDescriptor(Object.getPrototypeOf(iterator), 'next')?.enumerable, true);
+    throws(() => iterator.next.call(new Proxy(iterator, {})), {
+        name: 'TypeError',
+        message: 'Cannot call next() on a non-Iterator object',
+        code: 'ERR_INVALID_THIS',
+    });
+});
+
+Deno.test('bun: CookieMap follows constructor and method coercion order', () => {
+    const log: string[] = [];
+    const value = (label: string, result: string) => ({
+        [Symbol.toPrimitive](hint: string) {
+            log.push(`${label}:${hint}`);
+            return result;
+        },
+    });
+    const map = new CookieMap([[value('name', 'a'), value('value', '1')]] as unknown as string[][]);
+    deepStrictEqual([...map], [['a', '1']]);
+    deepStrictEqual(log, ['name:string', 'value:string']);
+
+    log.length = 0;
+    map.set({
+        name: value('set-name', 'b') as unknown as string,
+        value: value('set-value', '2') as unknown as string,
+        path: value('path', '/p') as unknown as string,
+        sameSite: value('sameSite', 'strict') as unknown as 'strict',
+    });
+    deepStrictEqual(log, ['set-name:string', 'set-value:string', 'path:string', 'sameSite:string']);
+    deepStrictEqual(map.toSetCookieHeaders(), ['b=2; Path=/p; SameSite=Strict']);
+    throws(() => (map.set as Function)('x'), { name: 'TypeError', message: 'Not enough arguments', code: 'ERR_MISSING_ARGS' });
+    throws(() => (map.set as Function)('x', 'y', 1), { name: 'TypeError', message: 'Options must be an object' });
+});
+
+Deno.test('bun: CookieMap iterators stay live across front insertions and deletions', () => {
+    const map = new CookieMap('a=1; b=2; c=3');
+    const iterator = map.entries();
+    deepStrictEqual(iterator.next(), { value: ['a', '1'], done: false });
+    map.delete('b');
+    map.set('d', '4');
+    deepStrictEqual([...iterator], [['d', '4'], ['a', '1'], ['c', '3']]);
 });
