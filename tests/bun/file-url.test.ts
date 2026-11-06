@@ -1,4 +1,5 @@
 import { strictEqual, throws } from 'node:assert';
+import { runInNewContext } from 'node:vm';
 import { fileURLToPath, pathToFileURL } from '../../cno/src/bun/utils/file-url.ts';
 
 Deno.test('bun: file URLs round-trip paths and escape URL metacharacters', () => {
@@ -15,6 +16,41 @@ Deno.test('bun: file URLs round-trip paths and escape URL metacharacters', () =>
         name: 'TypeError',
         message: 'Cannot convert a symbol to a string',
     });
+});
+
+Deno.test('bun: pathToFileURL coerces once across realms and is not constructable', () => {
+    let calls = 0;
+    const value = {
+        [Symbol.toPrimitive](hint: string) {
+            calls++;
+            strictEqual(hint, 'string');
+            return 'coerced/path';
+        },
+    };
+    strictEqual(pathToFileURL(value as never).pathname.endsWith('/coerced/path'), true);
+    strictEqual(calls, 1);
+
+    const foreignString = runInNewContext('new String("foreign/path")');
+    strictEqual(pathToFileURL(foreignString as never).pathname.endsWith('/foreign/path'), true);
+    throws(() => pathToFileURL(runInNewContext('Object(Symbol("path"))') as never), TypeError);
+
+    strictEqual(pathToFileURL.name, 'pathToFileURL');
+    strictEqual(pathToFileURL.length, 1);
+    strictEqual(Object.hasOwn(pathToFileURL, 'prototype'), false);
+    throws(() => new (pathToFileURL as any)('constructed/path'), TypeError);
+
+    strictEqual(fileURLToPath.name, 'fileURLToPath');
+    strictEqual(fileURLToPath.length, 1);
+    strictEqual(Object.hasOwn(fileURLToPath, 'prototype'), false);
+    throws(() => new (fileURLToPath as any)('file:///constructed/path'), TypeError);
+});
+
+Deno.test('bun: pathToFileURL follows host separator rules', () => {
+    if (Deno.build.os === 'windows') return;
+    const path = 'directory\\..\\file';
+    const url = pathToFileURL(path);
+    strictEqual(url.pathname.endsWith('/directory%5C..%5Cfile'), true);
+    strictEqual(fileURLToPath(url), `${Deno.cwd()}/${path}`);
 });
 
 Deno.test('bun: file URL conversions reject invalid inputs and encoded separators', () => {
