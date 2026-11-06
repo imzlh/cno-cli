@@ -1,4 +1,5 @@
 import { strictEqual, deepStrictEqual, throws, ok } from 'node:assert';
+import { runInNewContext } from 'node:vm';
 import { randomUUIDv5 } from '../../cno/src/bun/uuid/v5.ts';
 
 const namespace = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
@@ -14,15 +15,44 @@ Deno.test('bun: UUIDv5 RFC vector, inputs and encodings', () => {
     strictEqual(randomUUIDv5(name, ns.buffer), expected);
     const output = randomUUIDv5(name, ns, 'buffer');
     strictEqual(output.length, 16);
+    strictEqual(output.byteOffset, 0);
+    strictEqual(output.buffer.byteLength, 16);
     strictEqual(output[6] >> 4, 5);
     strictEqual(output[8] >> 6, 2);
     strictEqual(randomUUIDv5(name, ns, 'base64'), 'Iff43oBRW4mGgAGV73mLag==');
     strictEqual(randomUUIDv5(name, ns, 'base64url'), 'Iff43oBRW4mGgAGV73mLag');
     deepStrictEqual([...output], [...ns.map((_, i) => parseInt(expected.replace(/-/g, '').slice(i * 2, i * 2 + 2), 16))]);
     strictEqual(randomUUIDv5(name, ns, 'ascii'), output.toString('ascii'));
+    strictEqual(randomUUIDv5('x', namespace, 'ucs2'), '\ub105\u016a\uc646\udd56\u6ebd\udfc6\ua1b4\u7a42');
+    strictEqual(randomUUIDv5('x', namespace, 'ucs-2'), randomUUIDv5('x', namespace, 'ucs2'));
+    strictEqual(randomUUIDv5('x', namespace, 'utf16le'), randomUUIDv5('x', namespace, 'ucs2'));
     ok(randomUUIDv5.name === 'randomUUIDv5' && randomUUIDv5.length === 3);
     strictEqual(Object.hasOwn(randomUUIDv5, 'prototype'), false);
     throws(() => new (randomUUIDv5 as any)('x', namespace), TypeError);
+});
+
+Deno.test('bun: UUIDv5 preserves view windows and accepts cross-realm binary values', () => {
+    const foreign = runInNewContext(`(() => {
+        const name = new Uint8Array(19);
+        name.set([119, 119, 119, 46, 119, 105, 100, 103, 101, 116, 115, 46, 99, 111, 109], 2);
+        const namespace = new Uint8Array(20);
+        namespace.set([107, 167, 184, 16, 157, 173, 17, 209, 128, 180, 0, 192, 79, 212, 48, 200], 2);
+        return {
+            name: new DataView(name.buffer, 2, 15),
+            namespace: namespace.subarray(2, 18),
+            namespaceBuffer: namespace.buffer.slice(2, 18),
+            alias: new String('DNS'),
+        };
+    })()`);
+    strictEqual(randomUUIDv5(foreign.name, foreign.namespace), expected);
+    strictEqual(randomUUIDv5('www.widgets.com', foreign.namespaceBuffer), expected);
+    strictEqual(randomUUIDv5('www.widgets.com', foreign.alias), expected);
+
+    const paddedName = new Uint8Array(19);
+    paddedName.set(new TextEncoder().encode('www.widgets.com'), 2);
+    const paddedNamespace = new Uint8Array(20);
+    paddedNamespace.set(Uint8Array.from(namespace.replaceAll('-', '').match(/../g)!, value => parseInt(value, 16)), 2);
+    strictEqual(randomUUIDv5(new DataView(paddedName.buffer, 2, 15), new DataView(paddedNamespace.buffer, 2, 16)), expected);
 });
 
 Deno.test('bun: UUIDv5 predefined namespaces are case insensitive', () => {
