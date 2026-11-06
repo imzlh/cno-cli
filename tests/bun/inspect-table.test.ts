@@ -2,6 +2,12 @@ import { strictEqual, throws } from 'node:assert';
 import { runInNewContext } from 'node:vm';
 import { inspectTable } from '../../cno/src/bun/inspect.ts';
 
+Deno.test('bun: inspect.table exposes Bun-compatible function shape', () => {
+    strictEqual(inspectTable.name, 'table');
+    strictEqual(inspectTable.length, 3);
+    strictEqual(Object.prototype.hasOwnProperty.call(inspectTable, 'prototype'), false);
+});
+
 Deno.test('bun: inspect.table formats mixed rows and selected columns', () => {
     const rows = [{ a: 1, b: 'x' }, { b: 2, c: null }, 5];
     strictEqual(inspectTable(rows),

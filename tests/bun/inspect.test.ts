@@ -53,6 +53,26 @@ Deno.test('bun: inspect calls the nodejs.util.inspect.custom hook', () => {
     strictEqual(inspect({ nested: value }), '{ nested: Custom(7,8) }');
 });
 
+Deno.test('bun: inspect calls custom hooks on functions with the function as receiver', () => {
+    let receiver: unknown;
+    function value() {}
+    Object.defineProperty(value, inspectCustom, {
+        configurable: true,
+        get() {
+            return function () {
+                receiver = this;
+                return 'function-custom';
+            };
+        },
+    });
+    strictEqual(inspect(value), 'function-custom');
+    strictEqual(receiver, value);
+    Object.defineProperty(value, inspectCustom, {
+        value() { throw new RangeError('function-hook-failed'); },
+    });
+    throws(() => inspect(value), /function-hook-failed/);
+});
+
 Deno.test('bun: inspect formats functions and symbol keys', () => {
     function named() {}
     strictEqual(inspect(named), '[Function: named]');
