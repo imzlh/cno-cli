@@ -135,8 +135,27 @@ test('which uses the first matching PATH entry', { skip: !posix }, () => {
 });
 
 test('which validates its command argument', () => {
-    assert.throws(() => which(42), { name: 'TypeError', message: 'Expected command to be a string' });
-    assert.throws(() => which(null), { name: 'TypeError', message: 'Expected command to be a string' });
+    assert.equal(which(null, { PATH: '' }), null);
+    assert.equal(which(42, { PATH: '' }), null);
+    assert.equal(which(new String('sh'), { PATH: '' }), null);
+    assert.throws(() => which(Symbol('command')), {
+        name: 'TypeError',
+        message: 'Cannot convert a symbol to a string',
+    });
+});
+
+test('which ignores primitive options and stringifies option fields', { skip: !posix }, () => {
+    const { root, bin, cleanup } = fixture();
+    try {
+        const tool = join(bin, 'coerced');
+        writeExecutable(tool);
+        assert.equal(which('coerced', null), null);
+        assert.equal(which('coerced', 1), null);
+        assert.equal(which('coerced', { PATH: { toString: () => bin } }), tool);
+        assert.equal(which('./coerced', { cwd: { toString: () => bin } }), tool);
+    } finally {
+        cleanup();
+    }
 });
 
 test('which returns null for a PATH-less lookup of a common command when PATH is empty', { skip: !posix }, () => {
