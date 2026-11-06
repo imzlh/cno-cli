@@ -44,7 +44,7 @@ Deno.test('preserves Bun JSON and prototype descriptor behavior', () => {
         strictEqual(Object.getPrototypeOf(cookie.toJSON()), null);
         strictEqual(Cookie.length, 2);
         const getter = Object.getOwnPropertyDescriptor(Cookie.prototype, 'name')!.get!;
-        strictEqual(getter.name, 'name');
+        strictEqual(getter.name, 'get name');
         throws(() => getter.call({}), { name: 'TypeError', message: 'Can only call Cookie.name on instances of Cookie', code: 'ERR_INVALID_THIS' });
         cookie.serialize = () => 'overridden';
         strictEqual(cookie.toString(), 'a=b; Path=/; SameSite=Lax');
@@ -69,3 +69,30 @@ Deno.test('exposes prototype descriptors and rejects incompatible receivers', ()
         doesNotThrow(() => Cookie.from('a' as string, undefined as never));
         throws(() => Cookie.parse('invalid'), TypeError);
     });
+
+Deno.test('brands setters and methods before coercion or private state access', () => {
+    let coerced = 0;
+    const value = { [Symbol.toPrimitive]() { coerced++; return 'x'; } };
+    for (const property of ['value', 'domain', 'path', 'expires', 'maxAge', 'secure', 'httpOnly', 'sameSite', 'partitioned'] as const) {
+        const setter = Object.getOwnPropertyDescriptor(Cookie.prototype, property)!.set!;
+        throws(() => setter.call({}, value), {
+            name: 'TypeError',
+            message: `Can only call Cookie.${property} on instances of Cookie`,
+            code: 'ERR_INVALID_THIS',
+        });
+    }
+    strictEqual(coerced, 0);
+    for (const property of ['isExpired', 'toString', 'toJSON', 'serialize'] as const) {
+        throws(() => Cookie.prototype[property].call({} as Cookie), {
+            name: 'TypeError',
+            message: `Can only call Cookie.${property} on instances of Cookie`,
+            code: 'ERR_INVALID_THIS',
+        });
+        strictEqual(Object.getOwnPropertyDescriptor(Cookie.prototype, property)?.enumerable, true);
+    }
+    for (const property of ['parse', 'from'] as const) {
+        const descriptor = Object.getOwnPropertyDescriptor(Cookie, property)!;
+        strictEqual(descriptor.enumerable, true);
+        strictEqual(descriptor.configurable, false);
+    }
+});
