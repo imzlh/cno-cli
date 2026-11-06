@@ -1,5 +1,6 @@
 import { deepStrictEqual, rejects, strictEqual, throws } from 'node:assert';
-import { concatArrayBuffers, readableStreamToArrayBuffer, readableStreamToBlob, readableStreamToBytes, readableStreamToFormData, readableStreamToJSON, readableStreamToText } from '../../cno/src/bun/utils/streams.ts';
+import { runInNewContext } from 'node:vm';
+import { concatArrayBuffers, readableStreamToArray, readableStreamToArrayBuffer, readableStreamToBlob, readableStreamToBytes, readableStreamToFormData, readableStreamToJSON, readableStreamToText } from '../../cno/src/bun/utils/streams.ts';
 
 function stream<T>(chunks: T[]): ReadableStream<T> {
     return new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } });
@@ -19,6 +20,45 @@ Deno.test('bun: concatArrayBuffers honors offsets and length limits', () => {
     strictEqual(concatArrayBuffers(chunks, 99).byteLength, 4);
     throws(() => concatArrayBuffers(chunks, -1), RangeError);
     throws(() => concatArrayBuffers(chunks, NaN), RangeError);
+    throws(() => (concatArrayBuffers as unknown as () => ArrayBuffer)(), TypeError);
+    strictEqual((concatArrayBuffers as unknown as (value: undefined) => ArrayBuffer)(undefined).byteLength, 0);
+    strictEqual(concatArrayBuffers(chunks, '1' as unknown as number).byteLength, 4);
+    strictEqual((concatArrayBuffers as unknown as (chunks: typeof chunks, max: number, bytes: object) => Uint8Array)(chunks, 2, {}).constructor, Uint8Array);
+});
+
+Deno.test('bun: stream helper function shapes match Bun', () => {
+    const helpers = {
+        concatArrayBuffers,
+        readableStreamToArray,
+        readableStreamToArrayBuffer,
+        readableStreamToBlob,
+        readableStreamToBytes,
+        readableStreamToText,
+        readableStreamToJSON,
+        readableStreamToFormData,
+    };
+    for (const [name, fn] of Object.entries(helpers)) {
+        strictEqual(fn.name, name);
+        strictEqual(fn.length, name === 'concatArrayBuffers' ? 3 : 1);
+        strictEqual(Object.hasOwn(fn, 'prototype'), false);
+        throws(() => Reflect.construct(fn as never, []), TypeError);
+    }
+});
+
+Deno.test('bun: binary chunks use cross-realm brands and intrinsic view windows', async () => {
+    const foreign = runInNewContext(`(() => {
+        const raw = new Uint8Array([9, 65, 66, 9]);
+        const shared = new SharedArrayBuffer(4);
+        new Uint8Array(shared).set([9, 67, 68, 9]);
+        return { buffer: raw.buffer, typed: raw.subarray(1, 3), data: new DataView(raw.buffer, 1, 2), shared: new Uint8Array(shared, 1, 2) };
+    })()`);
+    deepStrictEqual([...new Uint8Array(concatArrayBuffers([foreign.buffer, foreign.typed, foreign.data, foreign.shared]))], [9, 65, 66, 9, 65, 66, 65, 66, 67, 68]);
+
+    const shadowed = new DataView(new Uint8Array([9, 69, 70, 9]).buffer, 1, 2);
+    for (const key of ['buffer', 'byteOffset', 'byteLength']) {
+        Object.defineProperty(shadowed, key, { get() { throw new Error(`shadowed ${key} getter ran`); } });
+    }
+    deepStrictEqual([...await readableStreamToBytes(stream([foreign.typed, shadowed]))], [65, 66, 69, 70]);
 });
 
 Deno.test('bun: readableStreamToBlob applies Blob part semantics to each chunk', async () => {
@@ -70,6 +110,11 @@ Deno.test('bun: stream errors and locks propagate without leaking the reader', a
     strictEqual(cancelled, true);
     strictEqual((await readableStreamToBytes(closed)).byteLength, 0);
     strictEqual(closed.locked, false);
+
+    const shadowed = stream([new Uint8Array([2])]);
+    Object.defineProperty(shadowed, 'getReader', { value() { throw new Error('shadowed getReader ran'); } });
+    deepStrictEqual([...await readableStreamToBytes(shadowed)], [2]);
+    strictEqual(shadowed.locked, false);
 });
 
 const encode = (value: string) => new TextEncoder().encode(value);
