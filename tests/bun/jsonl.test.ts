@@ -1,4 +1,5 @@
-import { deepStrictEqual, strictEqual, throws } from 'node:assert';
+import { deepStrictEqual, doesNotThrow, strictEqual, throws } from 'node:assert';
+import { runInNewContext } from 'node:vm';
 import { JSONL, parseJSONL, parseJSONLChunk } from '../../cno/src/bun/utils/jsonl.ts';
 
 const enc = (text: string) => new TextEncoder().encode(text);
@@ -18,6 +19,50 @@ Deno.test('bun: JSONL.parse accepts byte input and treats views as raw bytes', (
     deepStrictEqual(JSONL.parse(Buffer.from('[1]\n{"x":2}\n')), [[1], { x: 2 }]);
     const window = new Uint8Array(enc('zz[1]\n').buffer, 2, 4);
     deepStrictEqual(JSONL.parse(window), [[1]]);
+    deepStrictEqual(JSONL.parse(new Uint16Array(enc('zz[2]\n').buffer, 2, 2)), [[2]]);
+});
+
+Deno.test('bun: JSONL uses typed-array brands across realms and ignores shadowed view metadata', () => {
+    const foreign = runInNewContext(`(() => {
+        const bytes = new Uint8Array([120, 120, 91, 51, 93, 10, 121, 121]);
+        return {
+            bytes: bytes.subarray(2, 6),
+            words: new Uint16Array(bytes.buffer, 2, 2),
+            data: new DataView(bytes.buffer, 2, 4),
+            buffer: new Uint8Array([91, 51, 93, 10]).buffer,
+        };
+    })()`);
+    deepStrictEqual(JSONL.parse(foreign.bytes), [[3]]);
+    deepStrictEqual(JSONL.parse(foreign.words), [[3]]);
+    strictEqual(parseJSONLChunk(foreign.data).error instanceof SyntaxError, true);
+    strictEqual(parseJSONLChunk(foreign.buffer).error instanceof SyntaxError, true);
+
+    const bytes = enc('[4]\n');
+    for (const key of ['buffer', 'byteOffset', 'byteLength']) {
+        Object.defineProperty(bytes, key, {
+            configurable: true,
+            get() { throw new Error(`shadowed ${key} getter ran`); },
+        });
+    }
+    deepStrictEqual(JSONL.parse(bytes), [[4]]);
+});
+
+Deno.test('bun: JSONL accepts SharedArrayBuffer-backed typed-array windows only', () => {
+    if (typeof SharedArrayBuffer !== 'function') return;
+    const shared = new SharedArrayBuffer(8);
+    new Uint8Array(shared).set(enc('xx[5]\nyy'));
+    deepStrictEqual(JSONL.parse(new Uint8Array(shared, 2, 4)), [[5]]);
+    deepStrictEqual(JSONL.parse(new Uint16Array(shared, 2, 2)), [[5]]);
+    strictEqual(parseJSONLChunk(shared).error instanceof SyntaxError, true);
+    strictEqual(parseJSONLChunk(new DataView(shared, 2, 4)).error instanceof SyntaxError, true);
+
+    const foreign = runInNewContext(`(() => {
+        const buffer = new SharedArrayBuffer(8);
+        new Uint8Array(buffer).set([120, 120, 91, 54, 93, 10, 121, 121]);
+        return { buffer, bytes: new Uint8Array(buffer, 2, 4) };
+    })()`);
+    deepStrictEqual(JSONL.parse(foreign.bytes), [[6]]);
+    strictEqual(parseJSONLChunk(foreign.buffer).error instanceof SyntaxError, true);
 });
 
 Deno.test('bun: JSONL.parse coerces non-string inputs and rejects null, undefined, DataView, and ArrayBuffer', () => {
@@ -100,6 +145,27 @@ Deno.test('bun: JSONL.parseChunk start and end select a window and keep offsets 
     strictEqual(Object.is(parseJSONLChunk('1\n2\n', 0, -0).read, -0), false);
 });
 
+Deno.test('bun: JSONL.parseChunk applies only primitive numeric offsets without coercion', () => {
+    const source = '0\n1\n2\n';
+    let coercions = 0;
+    const offset = {
+        valueOf() { coercions++; return 2; },
+        [Symbol.toPrimitive]() { coercions++; return 2; },
+    };
+
+    for (const start of [undefined, null, false, true, '2', 2n, Symbol('offset'), offset, new Number(2)]) {
+        deepStrictEqual(parseJSONLChunk(source, start as never).values, [0, 1, 2]);
+    }
+    for (const end of [null, false, true, '4', 4n, Symbol('offset'), offset, new Number(4)]) {
+        deepStrictEqual(parseJSONLChunk(source, 0, end as never).values, [0, 1, 2]);
+    }
+    strictEqual(coercions, 0);
+    deepStrictEqual(parseJSONLChunk(source, 2.9).values, [1, 2]);
+    deepStrictEqual(parseJSONLChunk(source, 0, 4.9).values, [0, 1]);
+    deepStrictEqual(parseJSONLChunk(source, Infinity), { values: [], read: 6, done: true, error: null });
+    deepStrictEqual(parseJSONLChunk(source, 6, 2), { values: [], read: 2, done: true, error: null });
+});
+
 Deno.test('bun: JSONL.parseChunk reads byte input with byte offsets', () => {
     deepStrictEqual(parseJSONLChunk(enc('{"a":1}\n{"b":2}\n')), { values: [{ a: 1 }, { b: 2 }], read: 15, done: true, error: null });
     deepStrictEqual(parseJSONLChunk(enc('{"a":1}\n{"b":2}\n'), 8, 16), { values: [{ b: 2 }], read: 15, done: true, error: null });
@@ -141,6 +207,13 @@ Deno.test('bun: JSONL decodes UTF-8 multibyte text and replaces invalid sequence
     deepStrictEqual(parseJSONLChunk(new Uint8Array([0x22, 0xe4, 0xb8, 0x0a])).error instanceof SyntaxError, true);
     deepStrictEqual(parseJSONLChunk(new Uint8Array([0x80, 0x0a])).error instanceof SyntaxError, true);
     deepStrictEqual(parseJSONLChunk('"中"\n"中"\n{x}\n').read, 7);
+});
+
+Deno.test('bun: JSONL replacement decoding preserves malformed UTF-8 behavior', () => {
+    deepStrictEqual(parseJSONLChunk(new Uint8Array([0x22, 0xff, 0x61, 0x22, 0x0a])).values, ['\uFFFDa']);
+    deepStrictEqual(parseJSONLChunk(new Uint8Array([0x22, 0xc0, 0xaf, 0x22, 0x0a])).values, ['\uFFFD\uFFFD']);
+    deepStrictEqual(parseJSONLChunk(new Uint8Array([0x22, 0xe2, 0x28, 0xa1, 0x22, 0x0a])).values, ['\uFFFD(\uFFFD']);
+    deepStrictEqual(parseJSONLChunk(new Uint8Array([0x22, 0xed, 0xa0, 0x80, 0x22, 0x0a])).values, ['\uFFFD\uFFFD\uFFFD']);
 });
 
 Deno.test('bun: JSONL accepts CR as whitespace but not as a line separator', () => {
@@ -228,4 +301,20 @@ Deno.test('bun: JSONL single-byte EOF classification matches the oracle', () => 
 Deno.test('bun: JSONL parse and parseChunk are exported from the same module as JSONL', () => {
     strictEqual(JSONL.parse, parseJSONL);
     strictEqual(JSONL.parseChunk, parseJSONLChunk);
+});
+
+Deno.test('bun: JSONL public object and functions match the native API shape', () => {
+    deepStrictEqual(Reflect.ownKeys(JSONL), ['parse', 'parseChunk', Symbol.toStringTag]);
+    strictEqual(Object.prototype.toString.call(JSONL), '[object JSONL]');
+    strictEqual(JSONL.parse.name, 'parse');
+    strictEqual(JSONL.parse.length, 1);
+    strictEqual(JSONL.parseChunk.name, 'parseChunk');
+    strictEqual(JSONL.parseChunk.length, 1);
+    strictEqual(Object.hasOwn(JSONL.parse, 'prototype'), false);
+    strictEqual(Object.hasOwn(JSONL.parseChunk, 'prototype'), false);
+    strictEqual(Object.getOwnPropertyDescriptor(JSONL, 'parse')?.configurable, false);
+    strictEqual(Object.getOwnPropertyDescriptor(JSONL, 'parseChunk')?.configurable, false);
+    doesNotThrow(() => JSONL.parse.call(null, '1\n'));
+    throws(() => Reflect.construct(JSONL.parse as never, ['1\n']), TypeError);
+    throws(() => Reflect.construct(JSONL.parseChunk as never, ['1\n']), TypeError);
 });
