@@ -24,8 +24,14 @@ test('allocUnsafe returns independent buffers without pooling', () => {
 });
 
 test('allocUnsafe validates size', () => {
-    assert.throws(() => allocUnsafe(-1), RangeError);
-    assert.throws(() => allocUnsafe(1.5), TypeError);
-    assert.throws(() => allocUnsafe(Number.NaN), TypeError);
-    assert.throws(() => allocUnsafe('8'), TypeError);
+    for (const value of [undefined, null, false, '8', 1n, Symbol('size'), {}, new Number(8)]) {
+        assert.throws(() => allocUnsafe(value), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE' });
+    }
+    for (const value of [Number.NaN, Infinity, -Infinity, -1.5, 0.5]) {
+        assert.throws(() => allocUnsafe(value), { name: 'RangeError', code: 'ERR_OUT_OF_RANGE' });
+    }
+    for (const value of [-1, 0x1_0000_0000, Number.MAX_SAFE_INTEGER]) {
+        assert.throws(() => allocUnsafe(value), { name: 'RangeError', code: 'ERR_OUT_OF_RANGE' });
+    }
+    assert.equal(allocUnsafe(-0).length, 0);
 });
