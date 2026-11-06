@@ -257,6 +257,73 @@ Deno.test({ name: 'bun.net: reload replaces handlers for later connections', tim
     }
 });
 
+Deno.test({ name: 'bun.net: Socket and Listener expose branded prototype surfaces', timeout: 10000 }, async () => {
+    let serverSocket: any;
+    let serverClosed = false;
+    let clientClosed = false;
+    const listener = listen({
+        hostname: '127.0.0.1',
+        port: 0,
+        data: { side: 'listener' },
+        socket: {
+            open(socket) {
+                serverSocket = socket;
+            },
+            data(socket) {
+                listener.stop();
+                strictEqual(socket.listener, listener);
+                strictEqual(socket.write('pong'), 4);
+                strictEqual(socket.end(), 0);
+            },
+            close() {
+                serverClosed = true;
+            },
+        },
+    });
+
+    strictEqual(Object.prototype.toString.call(listener), '[object Listener]');
+    deepStrictEqual(Reflect.ownKeys(listener), []);
+    throws(() => Reflect.apply(listener.stop, {}, []), TypeError);
+    throws(() => Reflect.apply(listener.reload, {}, [{ socket: { data() {} } }]), TypeError);
+
+    const received: string[] = [];
+    const client = await connect({
+        hostname: '127.0.0.1',
+        port: listener.port,
+        socket: {
+            open(socket) {
+                strictEqual(Object.prototype.toString.call(socket), '[object TCPSocket]');
+                deepStrictEqual(Reflect.ownKeys(socket), []);
+                strictEqual(Object.hasOwn(socket, 'listener'), false);
+                strictEqual(socket.listener, undefined);
+                strictEqual('setBinaryType' in socket, false);
+                strictEqual(typeof socket.reload, 'function');
+                throws(() => Reflect.apply(socket.write, {}, ['x']), TypeError);
+                throws(() => Reflect.apply(socket.flush, {}, []), TypeError);
+                socket.reload({
+                    socket: {
+                        data(_socket, chunk) {
+                            received.push(decode(chunk));
+                        },
+                        close() {
+                            clientClosed = true;
+                        },
+                    },
+                });
+                socket.write('ping');
+            },
+            data() {
+                throw new Error('socket.reload did not replace the client data handler');
+            },
+        },
+    });
+
+    await until(() => serverClosed && clientClosed, 'shape connection close');
+    deepStrictEqual(received, ['pong']);
+    strictEqual(serverSocket.write('after close'), -1);
+    strictEqual(client.write('after close'), -1);
+});
+
 Deno.test({ name: 'bun.net: argument and option validation' }, async () => {
     throws(() => listen({ hostname: '127.0.0.1', port: 0, tls: true, socket: {} } as never), /TLS/);
     await rejects(
