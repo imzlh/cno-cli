@@ -21,12 +21,12 @@ Deno.test({ name: 'bun: gc and enableANSIColors globals', timeout: 5000 }, () =>
     throws(() => Reflect.construct(Bun.gc as never, []), TypeError);
 
     strictEqual(typeof Bun.enableANSIColors, 'boolean');
-    // The value is a non-writable snapshot of stdout's terminal status, not a
+    // The value is a replaceable snapshot of stdout's terminal status, not a
     // live getter re-reading the fd on every access.
     const descriptor = Object.getOwnPropertyDescriptor(Bun, 'enableANSIColors');
-    ok(descriptor && 'value' in descriptor && descriptor.writable === false);
+    ok(descriptor && 'value' in descriptor && descriptor.writable === true);
     const shrinkDescriptor = Object.getOwnPropertyDescriptor(Bun, 'shrink');
-    ok(shrinkDescriptor && 'value' in shrinkDescriptor && shrinkDescriptor.writable === false);
+    ok(shrinkDescriptor && 'value' in shrinkDescriptor && shrinkDescriptor.writable === true);
 });
 
 Deno.test('bun: standalone feature detection remains truthful for cno executables', () => {
@@ -37,10 +37,41 @@ Deno.test('bun: standalone feature detection remains truthful for cno executable
     strictEqual(embeddedFiles, Bun.embeddedFiles);
     strictEqual(Bun.embeddedFiles.length, 0);
     ok(Object.isFrozen(Bun.embeddedFiles));
-    for (const name of ['isStandaloneExecutable', 'embeddedFiles'] as const) {
+    const standaloneDescriptor = Object.getOwnPropertyDescriptor(Bun, 'isStandaloneExecutable');
+    ok(standaloneDescriptor && 'value' in standaloneDescriptor && standaloneDescriptor.writable === false);
+    const embeddedDescriptor = Object.getOwnPropertyDescriptor(Bun, 'embeddedFiles');
+    ok(embeddedDescriptor && 'value' in embeddedDescriptor && embeddedDescriptor.writable === true);
+});
+
+Deno.test('bun: namespace slots match Bun descriptors and lifecycle replacement', () => {
+    strictEqual(Object.prototype.toString.call(Bun), '[object Bun]');
+    deepStrictEqual(Object.getOwnPropertyDescriptor(Bun, Symbol.toStringTag), {
+        value: 'Bun',
+        writable: false,
+        enumerable: false,
+        configurable: true,
+    });
+    for (const name of Object.keys(Bun)) {
+        strictEqual(Object.getOwnPropertyDescriptor(Bun, name)?.configurable, false, name);
+    }
+    for (const name of ['fetch', 'isMainThread', 'isStandaloneExecutable', 'Cookie', 'CookieMap', 'dns', 'JSONL', 'semver']) {
         const descriptor = Object.getOwnPropertyDescriptor(Bun, name);
         ok(descriptor && 'value' in descriptor && descriptor.writable === false, name);
     }
+    for (const name of ['stdout', 'gc', 'shrink', 'enableANSIColors', 'embeddedFiles', 'unsafe']) {
+        const descriptor = Object.getOwnPropertyDescriptor(Bun, name);
+        ok(descriptor && 'value' in descriptor && descriptor.writable === true, name);
+    }
+
+    const originalArgv = Bun.argv;
+    const originalMain = Bun.main;
+    const replacementArgv = ['replacement'];
+    Bun.argv = replacementArgv;
+    Bun.main = 'replacement-main';
+    strictEqual(Bun.argv, replacementArgv);
+    strictEqual(Bun.main, 'replacement-main');
+    Bun.argv = originalArgv;
+    Bun.main = originalMain;
 });
 
 Deno.test('bun: sleep validates inputs synchronously and uses Date internal slots', async () => {
