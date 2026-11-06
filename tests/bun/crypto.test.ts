@@ -29,13 +29,63 @@ Deno.test('bun: CryptoHasher handles HMAC, input views, and output buffers', () 
 
 Deno.test('bun: CryptoHasher validates algorithms and outputs', () => {
     throws(() => new CryptoHasher('unknown'), TypeError);
-    throws(() => new CryptoHasher('shake128', 'key'), /HMAC is not supported/);
+    throws(
+        () => new CryptoHasher('shake128', 'key'),
+        (error: unknown) => {
+            const name = Object.getOwnPropertyDescriptor(error as object, 'name');
+            return error instanceof Error
+                && error.constructor === Error
+                && error.name === 'TODOError'
+                && error.message === 'HMAC is not supported for this algorithm yet'
+                && (error as { code?: unknown }).code === undefined
+                && name?.enumerable === true;
+        },
+    );
+    throws(
+        () => new CryptoHasher('shake128', 5 as never),
+        (error: unknown) => error instanceof TypeError && error.message === 'hmacKey must be a string, ArrayBuffer or ArrayBufferView' && code('ERR_INVALID_ARG_TYPE')(error),
+    );
     const h = new CryptoHasher('sha256').update('abc');
     throws(() => h.digest(new Uint8Array(32)), TypeError);
     throws(() => h.digest('invalid'), TypeError);
     throws(() => h.digest(''), TypeError);
     throws(() => h.digest('utf-16le'), TypeError);
     strictEqual(h.digest('hex'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+});
+
+Deno.test('bun: CryptoHasher static hash has its own coercion and output contract', () => {
+    const output = new Uint8Array(40).fill(42);
+    strictEqual(CryptoHasher.hash('sha256', 'abc', output), output);
+    strictEqual(Buffer.from(output.subarray(0, 32)).toString('hex'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    deepStrictEqual(Array.from(output.subarray(32)), Array(8).fill(42));
+    throws(
+        () => CryptoHasher.hash('sha256', 'abc', new Uint8Array(31)),
+        (error: unknown) => error instanceof TypeError && error.message === 'TypedArray must be at least 32 bytes' && code('ERR_INVALID_ARG_TYPE')(error),
+    );
+    throws(
+        () => (CryptoHasher.hash as Function)('sha256', 'abc', null),
+        (error: unknown) => error instanceof TypeError && error.message === 'output must be of type string or ArrayBuffer or ArrayBufferView' && code('ERR_INVALID_ARG_TYPE')(error),
+    );
+    throws(
+        () => (CryptoHasher.hash as Function)(new String('sha256'), 'abc', 'hex'),
+        (error: unknown) => error instanceof TypeError && error.message === 'algorithm must be a string' && code('ERR_INVALID_ARG_TYPE')(error),
+    );
+    throws(
+        () => (CryptoHasher.hash as Function)('unknown', Symbol('input'), 'nope'),
+        (error: unknown) => error instanceof TypeError && error.message === 'input must be a string, ArrayBuffer, ArrayBufferView or Blob' && code('ERR_INVALID_ARG_TYPE')(error),
+    );
+    for (const output of [null, 5, {}]) {
+        throws(
+            () => (CryptoHasher.hash as Function)('unknown', 'abc', output),
+            (error: unknown) => error instanceof TypeError && error.message === 'output must be of type string or ArrayBuffer or ArrayBufferView' && code('ERR_INVALID_ARG_TYPE')(error),
+        );
+    }
+    for (const output of [undefined, 'nope', new Uint8Array(1)]) {
+        throws(
+            () => (CryptoHasher.hash as Function)('unknown', 'abc', output),
+            (error: unknown) => error instanceof TypeError && error.message === 'Unsupported algorithm "unknown"' && code('ERR_INVALID_ARG_TYPE')(error),
+        );
+    }
 });
 
 Deno.test('bun: CryptoHasher accepts views and preserves output offsets', () => {
