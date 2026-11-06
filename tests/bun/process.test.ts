@@ -25,6 +25,15 @@ function assertResourceUsage(usage: BunProcessResourceUsage | undefined): void {
     if (Deno.build.os === 'linux') ok(usage.maxRSS > 0);
 }
 
+Deno.test('bun: spawn functions expose Bun function shape', () => {
+    for (const [fn, name] of [[spawn, 'spawn'], [spawnSync, 'spawnSync']] as const) {
+        strictEqual(fn.name, name);
+        strictEqual(fn.length, 1);
+        strictEqual(Object.hasOwn(fn, 'prototype'), false);
+        throws(() => Reflect.construct(fn, []), TypeError);
+    }
+});
+
 Deno.test({ name: 'bun: spawnSync returns Buffer output and Bun result state', timeout: 10000 }, () => {
     const result = spawnSync(isWindows
         ? ['cmd.exe', '/d', '/s', '/c', 'echo sync-out & exit /b 7']
