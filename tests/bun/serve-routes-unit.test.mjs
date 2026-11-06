@@ -382,3 +382,22 @@ test('serve routes: option getters run once and stopped servers reject new route
     assert.equal(server.stop(), stopped);
     assert.equal(mock.shutdowns, 1);
 });
+
+test('serve routes: reload disposes routes when parsing re-enters stop', async t => {
+    const mock = host(t);
+    const server = serve({ routes: {} });
+    const pending = pendingStatic(t);
+
+    assert.throws(() => server.reload({
+        get routes() {
+            void server.stop();
+            return { '/late': pending.source };
+        },
+    }), /stopp/i);
+
+    // The cloned branch is cancelled instead of retaining its route snapshot.
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(pending.cancellations, 1);
+    assert.equal((await mock.request('/late')).status, 404);
+    assert.equal(mock.shutdowns, 1);
+});

@@ -1,11 +1,7 @@
 // @cno-host: false
 // Run with: node --test tests/webapi/concat-chunks-unit.test.mjs
-// The helpers are exercised in-realm against the real native algorithm
-// module, so this lane needs the cno host (esbuild bundles the source but
-// `import.meta.use` is bound at run time). Kept as a unit lane via the same
-// standalone-bundle trick as blob-buffer-free-unit, with the native bridge
-// stubbed to plain JS concatenation: the copies under test sit in the JS
-// wrapper, not in the native concat.
+// The native bridge is stubbed to plain JS concatenation so Node can exercise
+// the copies and buffer-view decisions made by the JS wrapper.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -32,7 +28,14 @@ const bundled = await build({
 // The bundled source binds `import.meta.use` to __test_use__; provide a tiny
 // in-realm stand-in for the algorithm/engine modules the bytes helpers use.
 const realmEngine = {
-    isArrayBuffer: (value) => value instanceof ArrayBuffer,
+    isArrayBuffer(value) {
+        try {
+            Reflect.apply(Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get, value, []);
+            return true;
+        } catch {
+            return false;
+        }
+    },
 };
 const realmAlgorithm = {
     bytesConcat(chunks) {
@@ -95,4 +98,9 @@ test('arrayBufferBackedBytes: ArrayBuffer-backed views stay views, others copy',
     assert.equal(copied[0], 5);
     copied[0] = 6;
     assert.equal(sabView[0], 5, 'SAB-backed input must be copied');
+
+    const foreign = runInNewContext('new Uint8Array([8, 9])');
+    const foreignView = arrayBufferBackedBytes(foreign);
+    assert.equal(foreignView.buffer, foreign.buffer, 'foreign-realm ArrayBuffer must pass the native-style brand check');
+    assert.deepEqual([...foreignView], [8, 9]);
 });

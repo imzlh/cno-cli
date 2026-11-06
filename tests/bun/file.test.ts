@@ -12,6 +12,27 @@ function stagingFiles(): string[] {
         .sort();
 }
 
+const positiveSizePseudoFile = (() => {
+    if (Deno.build.os !== 'linux') return undefined;
+    for (const path of [
+        '/sys/devices/system/cpu/online',
+        '/sys/devices/system/node/online',
+        '/sys/kernel/mm/lru_gen/enabled',
+        '/sys/kernel/uevent_seqnum',
+    ]) {
+        try {
+            const stat = Deno.statSync(path);
+            const bytes = Deno.readFileSync(path);
+            if (stat.isFile && stat.size > 0 && bytes.byteLength > 1 && bytes.byteLength !== stat.size) {
+                return { path, bytes };
+            }
+        } catch {
+            // Sysfs layout varies by kernel; try the next small candidate.
+        }
+    }
+    return undefined;
+})();
+
 Deno.test({ name: 'bun: file lazily reads paths and local file URLs', timeout: 10000 }, async () => {
     await withTempDir('bun-file-read', async (root) => {
         const path = join(root, 'message.txt');
@@ -136,6 +157,19 @@ Deno.test({
     deepStrictEqual(await source.bytes(), expected);
     deepStrictEqual(await source.slice(1, 12).bytes(), expected.slice(1, 12));
     deepStrictEqual(await source.slice(-5, -1).bytes(), expected.slice(-5, -1));
+    const bytes = Reflect.apply(Reflect.get(source, Symbol.for('cno.blob.bytes')), source, []);
+    deepStrictEqual(bytes, expected);
+});
+
+Deno.test({
+    name: 'bun: positive-size pseudo-files ignore fictional stat lengths',
+    ignore: positiveSizePseudoFile === undefined,
+}, async () => {
+    const { path, bytes: expected } = positiveSizePseudoFile!;
+    const source = file(path);
+    deepStrictEqual(await source.bytes(), expected);
+    deepStrictEqual(await source.slice(1, 3).bytes(), expected.slice(1, 3));
+    deepStrictEqual(await source.slice(-2).bytes(), expected.slice(-2));
     const bytes = Reflect.apply(Reflect.get(source, Symbol.for('cno.blob.bytes')), source, []);
     deepStrictEqual(bytes, expected);
 });

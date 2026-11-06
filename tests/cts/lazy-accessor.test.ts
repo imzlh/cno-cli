@@ -17,6 +17,21 @@ Deno.test('lazy accessors: registering a constructor does not redefine its class
     strictEqual(target.Command, Command);
 });
 
+Deno.test('lazy accessors: fire-and-forget registration starts the shared load', async () => {
+    const target: Record<string, unknown> = {};
+    let loads = 0;
+    class Command {}
+    void defineLazy(target, [{ name: 'Command', kind: 'ctor' }], async () => {
+        loads++;
+        return new Map([['Command', Command]]);
+    });
+    strictEqual(loads, 1);
+    strictEqual(typeof target.Command, 'function');
+    strictEqual(loads, 1);
+    await whenLazy(target, 'Command');
+    strictEqual(target.Command, Command);
+});
+
 Deno.test('lazy accessors: saved constructors and subclasses adopt methods when loading finishes', async () => {
     const target: Record<string, unknown> = {};
     const values = deferredValues();

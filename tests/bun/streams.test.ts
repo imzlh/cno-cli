@@ -22,6 +22,18 @@ Deno.test('bun: stream conversions handle mixed bytes and UTF-8', async () => {
     deepStrictEqual([...await readableStreamToBytes(stream([source.subarray(1, 3)]))], [65, 66]);
     strictEqual(await readableStreamToText(stream([new Uint8Array([0xef, 0xbb]), new Uint8Array([0xbf, 0xc3]), new Uint8Array([0xa9])])), 'é');
     strictEqual(await readableStreamToText(stream([new Uint8Array([0xc3]), 'x', new Uint8Array([0xa9])])), '�x�');
+    deepStrictEqual([...await readableStreamToBytes(stream(['\ud800', '\ud83d', '\ude00']))], [
+        0xef, 0xbf, 0xbd, 0xef, 0xbf, 0xbd, 0xef, 0xbf, 0xbd,
+    ]);
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+    strictEqual(await readableStreamToText(stream(['\ufeffA'])), 'A');
+    strictEqual(await readableStreamToText(stream(['x', bom, new Uint8Array([65])])), 'x\ufeffA');
+    strictEqual(await readableStreamToText(stream([new Uint8Array(), '', bom, new Uint8Array([65])])), 'A');
+    strictEqual(await readableStreamToText(stream([new Uint8Array([0xef]), '', new Uint8Array([0xbb, 0xbf, 0x78])])), 'x');
+    // Bun also strips one BOM from a final string run independently of the
+    // stream-leading BOM rule.
+    strictEqual(await readableStreamToText(stream([bom, '\ufeffA'])), 'A');
+    strictEqual(await readableStreamToText(stream(['\ufeff', bom, 'A'])), '\ufeffA');
     deepStrictEqual(await readableStreamToJSON(stream(['{"a":', new TextEncoder().encode('1}')])), { a: 1 });
     await rejects(readableStreamToJSON(stream(['invalid'])), SyntaxError);
 });

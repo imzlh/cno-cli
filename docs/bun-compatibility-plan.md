@@ -331,12 +331,14 @@ code, command renaming, CLI impersonation, or broad README/website redesign.
   sizes; procfs-style zero-size files keep EOF framing), conditional GET
   (If-None-Match with quote-aware validator splitting / If-Modified-Since →
   304), and single byte ranges (206 with content-range, unsatisfiable →
-  416, multi-range and non-byte units → full body, upstream cancelled once
-  the window is emitted); the color depth table was rewritten against the
+  416, multi-range and non-byte units → full body); the follow-up review
+  replaced the locking TransformStream window with BunFile's bounded slice,
+  fixed malformed/zero-suffix range parsing, and added date-form If-Range;
+  the color depth table was rewritten against the
   installed Bun 1.4.4 oracle (FORCE_COLOR numeric parse and clamping,
   NO_COLOR=false/0 enabled, TERM table without a stdout-TTY gate);
   serve-static rejects percent-encoded aliases of literal filenames and
   `//`; route params are own data properties (a ':__proto__' pattern keeps
-  its capture); urlpattern (+ its ~18 KB vendor polyfill) defers behind
-  first access like WebSocket, with urlpattern.ts importing the vendor
-  class directly so the module cannot recurse through the accessor.
+  its capture). URLPattern stays behind the shared optional-module accessor,
+  and urlpattern.ts imports the vendor class directly so the module cannot
+  recurse through its own accessor.
