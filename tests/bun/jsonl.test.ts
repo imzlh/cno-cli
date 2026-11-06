@@ -190,6 +190,20 @@ Deno.test('bun: JSONL.parseChunk rejects DataView and ArrayBuffer through the er
     throws(() => parseJSONLChunk(undefined as never), TypeError);
 });
 
+Deno.test('bun: JSONL keeps detached DataView rejection separate from detached typed arrays', () => {
+    const dataBuffer = enc('[1]\n').buffer;
+    const dataView = new DataView(dataBuffer);
+    structuredClone(dataBuffer, { transfer: [dataBuffer] });
+    throws(() => JSONL.parse(dataView), SyntaxError);
+    strictEqual(parseJSONLChunk(dataView).error instanceof SyntaxError, true);
+
+    const typedBuffer = enc('[1]\n').buffer;
+    const typedView = new Uint8Array(typedBuffer);
+    structuredClone(typedBuffer, { transfer: [typedBuffer] });
+    throws(() => JSONL.parse(typedView), TypeError);
+    throws(() => parseJSONLChunk(typedView), TypeError);
+});
+
 Deno.test('bun: JSONL.parseChunk applies a UTF-8 byte order mark only at the start of byte input', () => {
     deepStrictEqual(parseJSONLChunk(new Uint8Array([0xef, 0xbb, 0xbf, 0x31, 0x0a])), { values: [1], read: 4, done: true, error: null });
     deepStrictEqual(parseJSONLChunk(new Uint8Array([0xef, 0xbb, 0xbf])), { values: [], read: 3, done: true, error: null });
