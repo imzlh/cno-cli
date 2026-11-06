@@ -23,5 +23,11 @@ Deno.test('bun: file URL conversions reject invalid inputs and encoded separator
     throws(() => fileURLToPath('relative/path'), TypeError);
     throws(() => fileURLToPath(new URL('https://example.com/a')), TypeError);
     throws(() => fileURLToPath('file:///tmp/a%2Fb'), TypeError);
-    throws(() => fileURLToPath(null as unknown as string), TypeError);
+    for (const value of [null, undefined, false, 0, 1n, Symbol('url'), {}, new String('file:///tmp/a')]) {
+        throws(() => fileURLToPath(value as never), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE' });
+    }
+    throws(() => fileURLToPath(new Proxy(new URL('file:///tmp/a'), {})), {
+        name: 'TypeError',
+        code: 'ERR_INVALID_ARG_TYPE',
+    });
 });
