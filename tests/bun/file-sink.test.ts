@@ -2,7 +2,7 @@ import { rejects, strictEqual, throws } from 'node:assert';
 import Bun, { stderr, stdin, stdout } from 'bun';
 import { withTempDir } from '../_helpers/temp.ts';
 import { join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 Deno.test({ name: 'bun.file.writer: buffered writes flush through end()', timeout: 10000 }, async () => {
     await withTempDir('file-sink', (dir) => {
@@ -26,17 +26,19 @@ Deno.test({ name: 'bun.file.writer: highWaterMark commits eagerly and options ar
         const path = join(dir, 'eager.txt');
         const sink = Bun.file(path).writer({ highWaterMark: 4 });
         sink.write('abc'); // below the mark: still buffered
-        throws(() => readFileSync(path, 'utf8'), /ENOENT/);
+        strictEqual(readFileSync(path, 'utf8'), '');
         sink.write('d'); // reaches the mark: committed
         strictEqual(readFileSync(path, 'utf8'), 'abcd');
         sink.end();
-        throws(() => Bun.file(path).writer({ highWaterMark: -1 }), RangeError);
         throws(() => Bun.file(path).writer('x' as never), TypeError);
-        throws(() => sink.start({ highWaterMark: -1 }), RangeError);
+        const permissive = Bun.file(join(dir, 'permissive.txt')).writer({ highWaterMark: -1 });
+        permissive.start('ignored' as never);
+        strictEqual(permissive.write('ok'), 2);
+        strictEqual(permissive.end(), 2);
     });
 });
 
-Deno.test({ name: 'bun.file.writer: overwrites without truncation and end(error) discards pending data', timeout: 10000 }, async () => {
+Deno.test({ name: 'bun.file.writer: overwrites without truncation and end(error) flushes pending data', timeout: 10000 }, async () => {
     await withTempDir('file-sink-trunc', async (dir) => {
         const path = join(dir, 'trunc.txt');
         await Bun.write(path, 'previous content');
@@ -47,14 +49,31 @@ Deno.test({ name: 'bun.file.writer: overwrites without truncation and end(error)
         sink.flush();
         strictEqual(readFileSync(path, 'utf8'), 'newvious content');
 
-        const failing = Bun.file(join(dir, 'error.txt')).writer();
+        const errorPath = join(dir, 'error.txt');
+        const failing = Bun.file(errorPath).writer();
+        strictEqual(existsSync(errorPath), true);
         failing.write('dropped');
         const error = new Error('sink failure');
-        strictEqual(failing.end(error), 0);
+        strictEqual(failing.end(error), 7);
         // Double end is an idempotent no-op, matching the subprocess FileSink.
         strictEqual(failing.end(new Error('again')), 0);
-        // end(error) never opened or flushed: the file does not exist.
-        throws(() => readFileSync(join(dir, 'error.txt'), 'utf8'), /ENOENT/);
+        strictEqual(readFileSync(errorPath, 'utf8'), 'dropped');
+    });
+});
+
+Deno.test({ name: 'bun.file.writer: rejects Blob chunks and creates the target eagerly', timeout: 10000 }, async () => {
+    await withTempDir('file-sink-inputs', (dir) => {
+        const path = join(dir, 'created.txt');
+        const sink = Bun.file(path).writer();
+        strictEqual(existsSync(path), true);
+        strictEqual(readFileSync(path, 'utf8'), '');
+        throws(() => sink.write(new Blob(['not accepted']) as never), {
+            name: 'TypeError',
+            message: 'write() expects a string, ArrayBufferView, or ArrayBuffer',
+        });
+        strictEqual(sink.write(new DataView(new Uint8Array([1, 2]).buffer)), 2);
+        strictEqual(sink.end(null as never), 2);
+        strictEqual(readFileSync(path).toString('hex'), '0102');
     });
 });
 
