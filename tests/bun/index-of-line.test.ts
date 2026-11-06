@@ -1,4 +1,4 @@
-import { strictEqual } from 'node:assert';
+import { strictEqual, throws } from 'node:assert';
 import { indexOfLine } from 'bun';
 
 Deno.test('bun: indexOfLine supports bigint offsets', () => {
@@ -11,6 +11,17 @@ Deno.test('bun: indexOfLine supports bigint offsets', () => {
     strictEqual(indexOfLine(bytes, 3.9), 5);
     strictEqual(indexOfLine(bytes, Infinity), -1);
     strictEqual(indexOfLine(bytes, NaN), 2);
+    strictEqual(indexOfLine(bytes, '3' as unknown as number), 5);
+    strictEqual(indexOfLine(bytes, true as unknown as number), 2);
+    strictEqual(indexOfLine(bytes, { valueOf: () => 3 } as unknown as number), 5);
+    throws(() => indexOfLine(bytes, Symbol('offset') as unknown as number), {
+        name: 'TypeError',
+        message: 'Cannot convert a symbol to a number',
+    });
+    throws(() => indexOfLine(undefined as never), {
+        name: 'TypeError',
+        message: 'buffer must be an ArrayBuffer or ArrayBufferView',
+    });
     if (typeof SharedArrayBuffer !== 'undefined') {
         const shared = new SharedArrayBuffer(bytes.length);
         new Uint8Array(shared).set(bytes);

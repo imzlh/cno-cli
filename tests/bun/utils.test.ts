@@ -2,6 +2,7 @@ import { strictEqual, throws } from 'node:assert';
 import { escapeHTML } from '../../cno/src/bun/utils/escape-html.ts';
 
 Deno.test('bun: escapeHTML escapes HTML metacharacters without double processing', () => {
+    strictEqual(escapeHTML.length, 2);
     strictEqual(escapeHTML(`<&>"'`), '&lt;&amp;&gt;&quot;&#x27;');
     strictEqual(escapeHTML('&amp;'), '&amp;amp;');
     strictEqual(escapeHTML('plain café'), 'plain café');
