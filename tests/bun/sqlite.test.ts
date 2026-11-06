@@ -159,6 +159,30 @@ Deno.test('bun:sqlite safeIntegers controls rows, results, and overflow binding'
     }
 });
 
+Deno.test('bun:sqlite safeIntegers coerces setters and rejects finalized statements', () => {
+    const db = new Database(':memory:');
+    const statement = db.query('SELECT 1 AS value');
+    try {
+        strictEqual(statement.safeIntegers(), false);
+        strictEqual(statement.safeIntegers('enabled' as unknown as boolean), statement);
+        strictEqual(statement.safeIntegers(), true);
+        strictEqual(statement.safeIntegers(0 as unknown as boolean), statement);
+        strictEqual(statement.safeIntegers(), false);
+
+        statement.finalize();
+        throws(() => statement.safeIntegers(), /Statement has finalized/);
+        throws(
+            () => statement.safeIntegers('enabled' as unknown as boolean),
+            /Statement has finalized/,
+        );
+        throws(() => statement.columnTypes, /Statement has finalized/);
+        throws(() => statement.raw(), /Statement has finalized/);
+    } finally {
+        statement.finalize();
+        db.close();
+    }
+});
+
 Deno.test('bun:sqlite transactions commit, roll back, and nest with savepoints', () => {
     const db = new Database(':memory:');
     try {
