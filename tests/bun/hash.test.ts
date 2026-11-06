@@ -1,5 +1,17 @@
-import { strictEqual, throws } from 'node:assert';
+import { deepStrictEqual, strictEqual, throws } from 'node:assert';
+import { runInNewContext } from 'node:vm';
 import hash from '../../cno/src/bun/hash/index.ts';
+
+const hashNames = [
+    'hash', 'wyhash', 'adler32', 'crc32', 'cityHash32', 'cityHash64',
+    'xxHash32', 'xxHash64', 'murmur32v2', 'murmur32v3', 'murmur64v2',
+] as const;
+
+function hashFunction(name: typeof hashNames[number]): (data: unknown, seed?: unknown) => number | bigint {
+    return name === 'hash'
+        ? hash as unknown as (data: unknown, seed?: unknown) => bigint
+        : (hash as unknown as Record<string, (data: unknown, seed?: unknown) => number | bigint>)[name];
+}
 
 // Generated independently with Bun 1.3.14; lengths cover short and block paths.
 const vectors: Record<string, Array<[number, string, string]>> = {
@@ -99,8 +111,8 @@ Deno.test('bun: hash algorithms match seeded and unseeded vectors', () => {
 
 Deno.test('bun: hash input and seed coercion', () => {
     const fn = hash.xxHash64 as unknown as (data: unknown, seed?: unknown) => bigint;
-    for (const name of ['hash', 'wyhash', 'adler32', 'crc32', 'cityHash32', 'cityHash64', 'xxHash32', 'xxHash64', 'murmur32v2', 'murmur64v2', 'murmur32v3']) {
-        const hashFn = name === 'hash' ? hash : (hash as unknown as Record<string, (data: unknown) => number | bigint>)[name];
+    for (const name of hashNames) {
+        const hashFn = hashFunction(name);
         strictEqual(hashFn.length, 1, `${name}.length`);
         const invalidInput = {
             name: 'TypeError',
@@ -129,4 +141,122 @@ Deno.test('bun: hash input and seed coercion', () => {
     strictEqual(fn(new DataView(backing.buffer, 1, 3)), fn(new Uint8Array([2, 3, 4])));
     strictEqual(fn('\ud800'), fn('\ufffd'));
     strictEqual(fn({ toString: () => 'a\ud800b' }), fn('a\ufffdb'));
+});
+
+Deno.test('bun: hash recognizes cross-realm buffers and preserves view windows', () => {
+    const fn = hash.xxHash64 as unknown as (data: unknown) => bigint;
+    const foreign = runInNewContext(`(() => {
+        const buffer = new ArrayBuffer(8);
+        new Uint8Array(buffer).set([10, 11, 12, 23, 34, 15, 16, 17]);
+        const result = {
+            buffer,
+            typed: new Uint16Array(buffer, 2, 2),
+            data: new DataView(buffer, 2, 3),
+        };
+        if (typeof SharedArrayBuffer === 'function') {
+            const shared = new SharedArrayBuffer(5);
+            new Uint8Array(shared).set([90, 12, 23, 34, 91]);
+            result.shared = shared;
+            result.sharedView = new Uint8Array(shared, 1, 3);
+        }
+        return result;
+    })()`);
+
+    strictEqual(fn(foreign.buffer), fn(new Uint8Array([10, 11, 12, 23, 34, 15, 16, 17])));
+    strictEqual(fn(foreign.typed), fn(new Uint8Array([12, 23, 34, 15])));
+    strictEqual(fn(foreign.data), fn(new Uint8Array([12, 23, 34])));
+    if (foreign.shared) {
+        strictEqual(fn(foreign.shared), fn(new Uint8Array([90, 12, 23, 34, 91])));
+        strictEqual(fn(foreign.sharedView), fn(new Uint8Array([12, 23, 34])));
+    }
+});
+
+Deno.test('bun: hash ignores shadowed view metadata and treats detached inputs as empty', () => {
+    const fn = hash.xxHash64 as unknown as (data: unknown) => bigint;
+    const expected = fn(new Uint8Array([12, 23, 34]));
+    const buffer = new Uint8Array([90, 12, 23, 34, 91]).buffer;
+    for (const view of [new Uint8Array(buffer, 1, 3), new DataView(buffer, 1, 3)]) {
+        for (const key of ['buffer', 'byteOffset', 'byteLength']) {
+            Object.defineProperty(view, key, {
+                configurable: true,
+                get() { throw new Error(`shadowed ${key} getter ran`); },
+            });
+        }
+        strictEqual(fn(view), expected);
+    }
+
+    for (const raw of [new ArrayBuffer(3), new SharedArrayBuffer(3)]) {
+        new Uint8Array(raw).set([12, 23, 34]);
+        Object.defineProperty(raw, 'byteLength', {
+            configurable: true,
+            get() { throw new Error('shadowed byteLength getter ran'); },
+        });
+        strictEqual(fn(raw), expected);
+    }
+
+    const detachedBuffer = new ArrayBuffer(4);
+    const detachedTyped = new Uint8Array(detachedBuffer);
+    const dataBuffer = new ArrayBuffer(4);
+    const detachedData = new DataView(dataBuffer);
+    structuredClone(detachedBuffer, { transfer: [detachedBuffer] });
+    structuredClone(dataBuffer, { transfer: [dataBuffer] });
+    const empty = fn(new Uint8Array());
+    strictEqual(fn(detachedBuffer), empty);
+    strictEqual(fn(detachedTyped), empty);
+    strictEqual(fn(detachedData), empty);
+});
+
+Deno.test('bun: hash coerces input before ignoring non-numeric seeds', () => {
+    for (const name of hashNames.filter((name) => name !== 'adler32' && name !== 'cityHash32')) {
+        const events: string[] = [];
+        const data = {
+            [Symbol.toPrimitive](hint: string) {
+                events.push(`data:${hint}`);
+                return 'abc';
+            },
+        };
+        const seed = {
+            get [Symbol.toPrimitive]() {
+                events.push('seed:get');
+                throw new Error('seed coercion ran');
+            },
+            valueOf() {
+                events.push('seed:valueOf');
+                throw new Error('seed coercion ran');
+            },
+        };
+        const fn = hashFunction(name);
+        strictEqual(fn(data, seed), fn('abc'), name);
+        deepStrictEqual(events, ['data:string'], name);
+    }
+});
+
+Deno.test('bun: hash functions expose Bun metadata and are not constructors', () => {
+    for (const name of hashNames) {
+        const fn = hashFunction(name);
+        strictEqual(fn.name, name);
+        strictEqual(fn.length, 1);
+        strictEqual(Object.hasOwn(fn, 'prototype'), false, `${name}.prototype`);
+        deepStrictEqual(Object.getOwnPropertyDescriptor(fn, 'name'), {
+            configurable: true,
+            enumerable: false,
+            value: name,
+            writable: false,
+        });
+        deepStrictEqual(Object.getOwnPropertyDescriptor(fn, 'length'), {
+            configurable: true,
+            enumerable: false,
+            value: 1,
+            writable: false,
+        });
+        throws(() => Reflect.construct(fn, ['abc']), TypeError, name);
+    }
+
+    for (const name of hashNames.slice(1)) {
+        const descriptor = Object.getOwnPropertyDescriptor(hash, name)!;
+        strictEqual(descriptor.value, hashFunction(name));
+        strictEqual(descriptor.configurable, true);
+        strictEqual(descriptor.enumerable, true);
+        strictEqual(descriptor.writable, true);
+    }
 });
