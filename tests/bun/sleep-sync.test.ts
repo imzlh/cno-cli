@@ -2,6 +2,11 @@ import { deepStrictEqual, strictEqual, throws } from 'node:assert';
 import { sleepSync } from '../../cno/src/bun/sleep-sync.ts';
 
 Deno.test('bun: sleepSync validates and truncates its argument', () => {
+    throws(() => Reflect.apply(sleepSync, undefined, []), {
+        name: 'TypeError',
+        message: 'milliseconds must be a number',
+        code: 'ERR_INVALID_ARG_TYPE',
+    });
     for (const value of [undefined, null, true, '1', 1n, Symbol(), {}, new Number(1), new Date(), new Date(NaN)]) {
         throws(() => sleepSync(value as number), {
             name: 'TypeError',
@@ -20,6 +25,19 @@ Deno.test('bun: sleepSync validates and truncates its argument', () => {
             code: 'ERR_INVALID_ARG_TYPE',
         });
     }
+});
+
+Deno.test('bun: sleepSync exposes Bun function metadata', () => {
+    strictEqual(sleepSync.name, 'sleepSync');
+    strictEqual(sleepSync.length, 1);
+    strictEqual(Object.hasOwn(sleepSync, 'prototype'), false);
+    deepStrictEqual(Object.getOwnPropertyDescriptor(sleepSync, 'name'), {
+        value: 'sleepSync', writable: false, enumerable: false, configurable: true,
+    });
+    deepStrictEqual(Object.getOwnPropertyDescriptor(sleepSync, 'length'), {
+        value: 1, writable: false, enumerable: false, configurable: true,
+    });
+    throws(() => Reflect.construct(sleepSync, [0]), TypeError);
 });
 
 Deno.test('bun: sleepSync blocks the thread without running jobs', async () => {
