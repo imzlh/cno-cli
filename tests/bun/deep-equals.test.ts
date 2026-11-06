@@ -15,6 +15,9 @@ Deno.test('bun: deepEquals primitive and object semantics', () => {
     strictEqual(deepEquals({ [symbol]: 1 }, { [symbol]: 2 }), false);
     strictEqual(deepEquals(Array(1), [undefined]), true);
     strictEqual(deepEquals(Array(1), [undefined], true), false);
+    // Bun only enables strict mode for the literal boolean true.
+    strictEqual(deepEquals(new A(), new B(), 1 as unknown as boolean), true);
+    strictEqual(deepEquals(new A(), new B(), 'true' as unknown as boolean), true);
 });
 
 Deno.test('bun: deepEquals collections, views, cycles and builtins', () => {
@@ -50,6 +53,15 @@ Deno.test('bun: deepEquals own properties and strict prototypes', () => {
     const symbol = Symbol('same');
     strictEqual(deepEquals(Object(symbol), Object(symbol)), true);
     strictEqual(deepEquals(Object(symbol), Object(Symbol('same'))), false);
+    strictEqual(deepEquals(Object.create({ x: 1 }), Object.create({ x: 2 }), true), true);
+    class Same {}
+    strictEqual(deepEquals(Object.create({ constructor: Same }), Object.create({ constructor: Same }), true), true);
+    strictEqual(deepEquals(Object.create({ constructor: class A {} }), Object.create({ constructor: class B {} }), true), false);
+    strictEqual(deepEquals(
+        Object.create(Object.create({ constructor: class A {} })),
+        Object.create(Object.create({ constructor: class B {} })),
+        true,
+    ), false);
 });
 
 Deno.test('bun: deepEquals byte windows and strict typed-array properties', () => {
@@ -60,6 +72,12 @@ Deno.test('bun: deepEquals byte windows and strict typed-array properties', () =
     const b = Object.assign(new Uint8Array([1]), { extra: 2 });
     strictEqual(deepEquals(a, b), true);
     strictEqual(deepEquals(a, b, true), false);
+    class Bytes extends Uint8Array {}
+    strictEqual(deepEquals(new Bytes([1]), new Uint8Array([1])), true);
+    strictEqual(deepEquals(new Bytes([1]), new Uint8Array([1]), true), true);
+    const leftView = Object.assign(new DataView(new Uint8Array([1]).buffer), { extra: 1 });
+    const rightView = Object.assign(new DataView(new Uint8Array([1]).buffer), { extra: 2 });
+    strictEqual(deepEquals(leftView, rightView), false);
     if (typeof SharedArrayBuffer !== 'undefined') {
         const left = new SharedArrayBuffer(2), right = new SharedArrayBuffer(2);
         strictEqual(deepEquals(left, right), true);
@@ -68,6 +86,23 @@ Deno.test('bun: deepEquals byte windows and strict typed-array properties', () =
         strictEqual(deepEquals(left, new SharedArrayBuffer(3)), false);
         strictEqual(deepEquals(left, new ArrayBuffer(2)), false);
     }
+});
+
+Deno.test('bun: deepEquals array symbols and ignored string extras', () => {
+    const symbol = Symbol('item');
+    strictEqual(deepEquals(
+        Object.assign([1], { extra: 1, [symbol]: 1 }),
+        Object.assign([1], { extra: 2, [symbol]: 2 }),
+    ), false);
+    strictEqual(deepEquals(
+        Object.assign([1], { extra: 1, [symbol]: undefined }),
+        Object.assign([1], { extra: 2 }),
+    ), true);
+    strictEqual(deepEquals(
+        Object.assign([1], { [symbol]: undefined }),
+        [1],
+        true,
+    ), false);
 });
 
 Deno.test('bun: deepEquals unordered collections and recursive mismatch', () => {
