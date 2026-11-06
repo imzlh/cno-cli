@@ -2,7 +2,38 @@ import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import {
     Database,
     SQLiteError,
+    Statement,
 } from '../../cno/src/bun/sqlite/index.ts';
+
+Deno.test('bun:sqlite matches Bun constructor and exec alias shape', () => {
+    deepStrictEqual(Object.getOwnPropertyDescriptor(Database, 'length'), {
+        value: 2,
+        writable: false,
+        enumerable: false,
+        configurable: true,
+    });
+    deepStrictEqual(Object.getOwnPropertyDescriptor(Statement, 'length'), {
+        value: 1,
+        writable: false,
+        enumerable: false,
+        configurable: true,
+    });
+    strictEqual(Database.open.length, 2);
+    strictEqual(Database.prototype.transaction.length, 2);
+    deepStrictEqual(Object.getOwnPropertyDescriptor(Database.prototype, 'exec'), {
+        value: Database.prototype.run,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+    });
+
+    const db = Reflect.construct(Database, [':memory:', null]) as Database;
+    try {
+        strictEqual(db.filename, ':memory:');
+    } finally {
+        db.close();
+    }
+});
 
 Deno.test('bun:sqlite runs statements and preserves binding types', () => {
     const db = new Database(':memory:');
