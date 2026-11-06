@@ -96,6 +96,36 @@ Deno.test({ name: 'bun: spawn FileSink serializes stdin writes and closes with E
         stderr: 'pipe',
     });
     ok(child.stdin && typeof child.stdin === 'object' && 'write' in child.stdin);
+    const sinkPrototype = Object.getPrototypeOf(child.stdin) as Record<string, Function>;
+    strictEqual(Object.prototype.toString.call(child.stdin), '[object FileSink]');
+    strictEqual(child.stdin.constructor.name, 'FileSink');
+    for (const [name, length] of [['start', 1], ['write', 1], ['flush', 1], ['end', 0]] as const) {
+        const descriptor = Object.getOwnPropertyDescriptor(sinkPrototype, name)!;
+        strictEqual(descriptor.enumerable, true);
+        strictEqual(descriptor.writable, false);
+        strictEqual(descriptor.configurable, false);
+        strictEqual(descriptor.value.length, length);
+        throws(() => Reflect.apply(descriptor.value, {}, name === 'write' ? ['x'] : []), {
+            name: 'TypeError', message: 'Expected FileSink', code: 'ERR_INVALID_THIS',
+        });
+    }
+    throws(() => new (child.stdin.constructor as new () => object)(), {
+        name: 'TypeError', message: 'Illegal constructor', code: 'ERR_ILLEGAL_CONSTRUCTOR',
+    });
+    strictEqual(Reflect.apply(sinkPrototype.ref, null, []), undefined);
+    strictEqual(Reflect.apply(sinkPrototype.unref, {}, []), undefined);
+
+    const readablePrototype = Object.getPrototypeOf(child.stdout) as Record<string, Function>;
+    for (const name of ['blob', 'bytes', 'json', 'text']) {
+        strictEqual(Object.hasOwn(child.stdout, name), false);
+        const descriptor = Object.getOwnPropertyDescriptor(readablePrototype, name)!;
+        strictEqual(descriptor.enumerable, true);
+        strictEqual(descriptor.writable, true);
+        strictEqual(descriptor.configurable, true);
+        strictEqual(descriptor.value.length, 0);
+        strictEqual(Object.hasOwn(descriptor.value, 'prototype'), false);
+        throws(() => Reflect.construct(descriptor.value, []), TypeError);
+    }
     child.stdin.start({ highWaterMark: 2 });
     const first = child.stdin.write('abc');
     const second = child.stdin.write(new Uint8Array([100, 101]));
@@ -105,7 +135,13 @@ Deno.test({ name: 'bun: spawn FileSink serializes stdin writes and closes with E
     strictEqual(await child.stdin.end(), 0);
     strictEqual(await child.stdout.text(), 'abcde');
     strictEqual(await child.exited, 0);
-    throws(() => child.stdin.write('late'), /already closed/);
+    strictEqual(child.stdin.write('late'), true);
+    strictEqual(child.stdin.flush(), true);
+    throws(() => child.stdin.write(null as never), {
+        name: 'TypeError',
+        message: 'write() expects a string, ArrayBufferView, or ArrayBuffer',
+        code: 'ERR_STREAM_NULL_VALUES',
+    });
 });
 
 Deno.test({ name: 'bun: spawn and spawnSync replace explicit env and preserve typed-array offsets', timeout: 10000 }, async () => {
@@ -204,20 +240,20 @@ Deno.test({ name: 'bun: spawn maxBuffer kills a child that exceeds the stdout li
     strictEqual(child.signalCode, 'SIGTERM');
 });
 
-Deno.test({ name: 'bun: FileSink.end validates before closing and always delivers EOF', ignore: isWindows, timeout: 10000 }, async () => {
+Deno.test({ name: 'bun: FileSink.end treats its argument as metadata and always delivers EOF', ignore: isWindows, timeout: 10000 }, async () => {
     const withTimeout = <T>(promise: Promise<T>, fallback: T) =>
         Promise.race([promise, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), 2000))]);
 
     const first = spawn(['/bin/cat'], { stdin: 'pipe', stdout: 'pipe' });
-    throws(() => first.stdin.end('not-an-error' as never), TypeError);
-    // The rejected call must not mark the sink closed.
     strictEqual(await first.stdin.write('ok'), 2);
-    await first.stdin.end();
+    strictEqual(await first.stdin.end('not-an-error' as never), 2);
     strictEqual(await withTimeout(first.stdout.text(), 'HANG'), 'ok');
+    strictEqual(first.stdin.write('late'), true);
 
     const second = spawn(['/bin/cat'], { stdin: 'pipe', stdout: 'pipe' });
-    await rejects(second.stdin.end(new Error('boom')), /boom/);
-    strictEqual(await withTimeout(second.stdout.text(), 'HANG'), '');
+    strictEqual(await second.stdin.write('err'), 3);
+    strictEqual(await second.stdin.end(new Error('boom')), 3);
+    strictEqual(await withTimeout(second.stdout.text(), 'HANG'), 'err');
     strictEqual(await second.exited, 0);
 });
 
