@@ -6,6 +6,10 @@ import { build } from 'esbuild';
 
 let native = {
     os: { platform: process.platform, getenv: name => process.env[name] },
+    error: {
+        errno: { OK: 0, ENOENT: -2, EIO: -5, EISDIR: -21, UNKNOWN: -4094 },
+        strerror: code => String(code),
+    },
     asyncfs: {},
 };
 globalThis.__openedFileUse = name => native[name];
@@ -127,6 +131,32 @@ test('opened file closes exactly once on stream errors and cancellation', async 
     await reader.cancel();
     await opened.close();
     assert.equal(cancellable.closes, 1);
+});
+
+test('opened file normalizes native errno failures at each public read boundary', async () => {
+    const nativeError = (message, code) => Object.assign(new Error(message), { code });
+    asyncfs.open = async () => { throw nativeError('missing', -2); };
+    await assert.rejects(() => openedFile.openReadableFile('/missing'), {
+        name: 'Error', code: 'ENOENT', errno: -2, syscall: 'open', path: '/missing',
+    });
+
+    let statCloses = 0;
+    const statHandle = {
+        async stat() { throw nativeError('not readable', -21); },
+        async close() { statCloses++; },
+    };
+    await assert.rejects(() => openedFile.adoptReadableFile(statHandle), {
+        name: 'Error', code: 'EISDIR', errno: -21, syscall: 'fstat',
+    });
+    assert.equal(statCloses, 1);
+
+    const failing = mockHandle(new Uint8Array([1]), fileStat(1));
+    const opened = await openedFile.adoptReadableFile(failing.handle);
+    failing.handle.read = async () => { throw nativeError('input/output error', -5); };
+    await assert.rejects(() => streamBytes(opened.stream()), {
+        name: 'Error', code: 'EIO', errno: -5, syscall: 'read',
+    });
+    assert.equal(failing.closes, 1);
 });
 
 test('unknown-size measurement observes cancellation without retaining input', async () => {
