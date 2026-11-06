@@ -230,6 +230,30 @@ Deno.test('bun: JSONL replacement decoding preserves malformed UTF-8 behavior', 
     deepStrictEqual(parseJSONLChunk(new Uint8Array([0x22, 0xed, 0xa0, 0x80, 0x22, 0x0a])).values, ['\uFFFD\uFFFD\uFFFD']);
 });
 
+Deno.test('bun: JSONL byte read offsets count replacement-decoded UTF-8', () => {
+    deepStrictEqual(parseJSONLChunk(new Uint8Array([0x22, 0xff, 0x22])),
+        { values: ['\uFFFD'], read: 5, done: true, error: null });
+    deepStrictEqual(parseJSONLChunk(new Uint8Array([0x22, 0xc0, 0xaf, 0x22])),
+        { values: ['\uFFFD\uFFFD'], read: 8, done: true, error: null });
+    deepStrictEqual(parseJSONLChunk(new Uint8Array([0x22, 0xe2, 0x82, 0x22])),
+        { values: ['\uFFFD'], read: 5, done: true, error: null });
+    deepStrictEqual(parseJSONLChunk(new Uint8Array([0x22, 0xed, 0xa0, 0x80, 0x22])),
+        { values: ['\uFFFD\uFFFD\uFFFD'], read: 11, done: true, error: null });
+
+    const window = new Uint8Array([0x78, 0x78, 0x22, 0xff, 0x22, 0x0a, 0x31]);
+    deepStrictEqual(parseJSONLChunk(window, 2), { values: ['\uFFFD', 1], read: 9, done: true, error: null });
+    deepStrictEqual(parseJSONLChunk(new Uint8Array([0xff, 0x22, 0x61, 0x22]), 1),
+        { values: ['a'], read: 4, done: true, error: null });
+    deepStrictEqual(parseJSONLChunk(new Uint8Array([0x22, 0xff, 0x22, 0x40]), 0, 3),
+        { values: ['\uFFFD'], read: 5, done: true, error: null });
+
+    const partial = parseJSONLChunk(new Uint8Array([0x22, 0xff, 0x22, 0x0a, 0x31, 0x65]));
+    deepStrictEqual(partial.values, ['\uFFFD', 1]);
+    strictEqual(partial.read, 7);
+    strictEqual(partial.done, false);
+    strictEqual(partial.error instanceof SyntaxError, true);
+});
+
 Deno.test('bun: JSONL accepts CR as whitespace but not as a line separator', () => {
     deepStrictEqual(parseJSONLChunk('1\r'), { values: [1], read: 1, done: true, error: null });
     deepStrictEqual(parseJSONLChunk('1 \r\n 2\n').values, [1, 2]);
