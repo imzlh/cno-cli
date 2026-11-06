@@ -11,6 +11,18 @@ Deno.test({ name: 'bun.stdio: writes report the byte length they flushed', timeo
     strictEqual(await stdout.write('é'), 2);
 });
 
+Deno.test({ name: 'bun.stdio: Blob writes stream their exact bytes', timeout: 15000 }, async () => {
+    const child = spawn([process.execPath, 'eval', `
+        const backing = new TextEncoder().encode('xxblob-viewyy');
+        const first = await Bun.stdout.write(new Blob([backing.subarray(2, 11), '|é']));
+        const second = await Bun.write(Bun.stderr, new Blob(['stderr-blob']));
+        await Bun.write(Bun.stdout, ':' + String(first) + ':' + String(second));
+    `], { stdout: 'pipe', stderr: 'pipe' });
+    strictEqual(await child.exited, 0);
+    strictEqual(await child.stdout.text(), 'blob-view|é:12:11');
+    strictEqual(await child.stderr.text(), 'stderr-blob');
+});
+
 Deno.test({ name: 'bun.stdio: direction guards', timeout: 5000 }, async () => {
     await rejects(() => stdout.text(), /not readable/);
     await rejects(() => stdout.bytes(), /not readable/);
