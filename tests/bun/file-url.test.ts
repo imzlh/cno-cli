@@ -53,6 +53,13 @@ Deno.test('bun: pathToFileURL follows host separator rules', () => {
     strictEqual(fileURLToPath(url), `${Deno.cwd()}/${path}`);
 });
 
+Deno.test('bun: fileURLToPath applies URL string preprocessing', () => {
+    const path = `${Deno.cwd()}/preprocessed-file-url`;
+    const href = pathToFileURL(path).href;
+    strictEqual(fileURLToPath(` \0${href}\t\n`), path);
+    strictEqual(fileURLToPath(href.replace('file:', 'fi\nle:')), path);
+});
+
 Deno.test('bun: file URL conversions reject invalid inputs and encoded separators', () => {
     throws(() => fileURLToPath('https://example.com/a'), { name: 'TypeError', code: 'ERR_INVALID_URL_SCHEME' });
     throws(() => fileURLToPath('npm:package'), TypeError);
