@@ -333,6 +333,10 @@ Deno.test({ name: 'bun: file stream cancellation releases its descriptor', timeo
 Deno.test('bun: file and write reject unsupported options and inputs', async () => {
     await withTempDir('bun-file-errors', async (root) => {
         const path = join(root, 'value.txt');
+        throws(() => file(`${path}\0suffix`), { name: 'TypeError', code: 'ERR_INVALID_ARG_VALUE' });
+        throws(() => file(new URL(`${pathToFileURL(path).href}%00suffix`)), {
+            name: 'TypeError', code: 'ERR_INVALID_ARG_VALUE',
+        });
         throws(() => file(path, { endings: 'native' } as BlobPropertyBag), /unsupported option "endings"/);
         await rejects(
             () => write(path, 'x', { unsupported: true } as never),
