@@ -23,7 +23,7 @@
  */
 import { build } from 'esbuild';
 import { argv, env, exit } from 'node:process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +32,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const mode = argv[2] || 'release';
 const BUN_INJECTOR = resolve(__dirname, '../cno/src/bun/_internal/inject.ts');
+const VERSION_ONLY_PACKAGES = new Set([
+    resolve(__dirname, '../package.json'),
+    resolve(__dirname, '../cno/package.json'),
+    resolve(__dirname, '../cts/package.json'),
+]);
 
 // The Node compatibility sources must match the cno checkout bundled below.
 // Archive builds can supply the original commit explicitly when Git is absent.
@@ -63,10 +68,12 @@ const SYMBOL_BANNER = {
 // Every cno build keeps isFlowEnabled/isFlowTransformEnabled false, so the
 // sucrase flow parser plugin and FlowTransformer are statically dead (~47K
 // unmin / ~21K min). Stub both files out instead of editing vendored code.
-// Stub bodies throw so re-enabling flow fails loudly instead of silently
-// producing broken output.
-const SUCRASE_FLOW_STUB_FILTER =
-    /[/\\]cts[/\\]deps[/\\]sucrase[/\\]src[/\\](parser[/\\]plugins[/\\]flow|transformers[/\\]FlowTransformer)\.ts$/;
+// Every stub throws so re-enabling flow fails loudly instead of silently
+// producing broken output; keep the default export's class shape as well.
+const SUCRASE_FLOW_PARSER_FILTER =
+    /[/\\]cts[/\\]deps[/\\]sucrase[/\\]src[/\\]parser[/\\]plugins[/\\]flow\.ts$/;
+const SUCRASE_FLOW_TRANSFORMER_FILTER =
+    /[/\\]cts[/\\]deps[/\\]sucrase[/\\]src[/\\]transformers[/\\]FlowTransformer\.ts$/;
 const SUCRASE_FLOW_NAMES = [
     'flowAfterParseClassSuper', 'flowAfterParseVarHead', 'flowParseArrow',
     'flowParseAssignableListItemTypes', 'flowParseExportDeclaration', 'flowParseExportStar',
@@ -78,9 +85,12 @@ const SUCRASE_FLOW_NAMES = [
     'flowStartParseFunctionParams', 'flowStartParseImportSpecifiers', 'flowStartParseNewArguments',
     'flowStartParseObjPropValue', 'flowTryParseExportDefaultExpression', 'flowTryParseStatement',
 ];
-const SUCRASE_FLOW_STUB =
-    SUCRASE_FLOW_NAMES.map((name) => `export function ${name}() { throw new Error('flow transform disabled in this build'); }`).join('\n') +
-    '\nexport default class FlowTransformer {}\n';
+const SUCRASE_FLOW_ERROR = "throw new Error('flow transform disabled in this build');";
+const SUCRASE_FLOW_PARSER_STUB =
+    `function flowDisabled() { ${SUCRASE_FLOW_ERROR} }\n` +
+    `export { ${SUCRASE_FLOW_NAMES.map((name) => `flowDisabled as ${name}`).join(', ')} };\n`;
+const SUCRASE_FLOW_TRANSFORMER_STUB =
+    `export default class FlowTransformer { constructor() { ${SUCRASE_FLOW_ERROR} } }\n`;
 
 /**
  * @type { import('esbuild').BuildOptions }
@@ -95,6 +105,22 @@ const common = {
     keepNames:          true,
     metafile:           true,
     plugins: [{
+        name: 'trim-embedded-package-metadata',
+        setup(builder) {
+            // The embedded CLI reads only these three versions. Keep source
+            // imports standards-compatible (JSON exposes only `default`) and
+            // trim metadata solely at this bundle boundary.
+            builder.onLoad({ filter: /[/\\]package\.json$/, namespace: 'file' }, ({ path }) => {
+                const absolute = resolve(path);
+                if (!VERSION_ONLY_PACKAGES.has(absolute)) return null;
+                const { version } = JSON.parse(readFileSync(absolute, 'utf8'));
+                if (typeof version !== 'string' || version.length === 0) {
+                    throw new Error(`Bundled package has no version: ${absolute}`);
+                }
+                return { contents: JSON.stringify({ version }), loader: 'json' };
+            });
+        },
+    }, {
         name: 'no-embedded-bun-implementation',
         setup(builder) {
             // The injector is the only Bun file the CLI bundle may contain. It
@@ -107,8 +133,12 @@ const common = {
     }, {
         name: 'stub-disabled-sucrase-flow',
         setup(builder) {
-            builder.onLoad({ filter: SUCRASE_FLOW_STUB_FILTER }, () => ({
-                contents: SUCRASE_FLOW_STUB,
+            builder.onLoad({ filter: SUCRASE_FLOW_PARSER_FILTER, namespace: 'file' }, () => ({
+                contents: SUCRASE_FLOW_PARSER_STUB,
+                loader: 'js',
+            }));
+            builder.onLoad({ filter: SUCRASE_FLOW_TRANSFORMER_FILTER, namespace: 'file' }, () => ({
+                contents: SUCRASE_FLOW_TRANSFORMER_STUB,
                 loader: 'js',
             }));
         },

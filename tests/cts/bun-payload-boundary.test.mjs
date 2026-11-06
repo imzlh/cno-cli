@@ -13,8 +13,9 @@ const slash = (path) => path.replaceAll('\\', '/');
 
 // The main bundle may contain exactly the Bun injector. Implementations are
 // installed as TypeScript by `cno setup` and transformed on demand by CTS.
-test('embedded CLI bundle contains only the Bun injector', () => {
+test('embedded CLI bundle contains only the Bun injector', t => {
     const directory = mkdtempSync(join(tmpdir(), 'cno-bun-boundary-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
     const outfile = join(directory, 'cno-cli.min.js');
     const metafile = join(directory, 'meta.json');
     execFileSync(process.execPath, [join(root, 'scripts/bundle.mjs'), 'min'], {
@@ -22,7 +23,8 @@ test('embedded CLI bundle contains only the Bun injector', () => {
         env: { ...process.env, CNO_POLYFILL_REVISION: revision, CNO_BUNDLE_OUTFILE: outfile, CNO_BUNDLE_METAFILE: metafile },
         stdio: 'pipe',
     });
-    const inputs = Object.keys(JSON.parse(readFileSync(metafile, 'utf8')).inputs).map(slash);
+    const metadata = JSON.parse(readFileSync(metafile, 'utf8'));
+    const inputs = Object.keys(metadata.inputs).map(slash);
     assert.deepEqual(
         inputs.filter((input) => /(^|\/)cno\/src\/bun\//.test(input)),
         ['cno/src/bun/_internal/inject.ts'],
@@ -35,6 +37,38 @@ test('embedded CLI bundle contains only the Bun injector', () => {
     for (const marker of ['BunFile', 'randomUUIDv7', 'CryptoHasher']) {
         assert.ok(!text.includes(marker), `main bundle contains Bun implementation marker: ${marker}`);
     }
+
+    const outputs = Object.values(metadata.outputs);
+    assert.equal(outputs.length, 1, 'min bundle must have exactly one output');
+    const outputInputs = outputs[0].inputs;
+    const normalizedOutputInputs = new Map(Object.entries(outputInputs)
+        .map(([input, value]) => [slash(input), value]));
+    const contribution = (match) => [...normalizedOutputInputs]
+        .filter(([input]) => match(input))
+        .reduce((total, [, value]) => total + value.bytesInOutput, 0);
+    for (const manifest of ['package.json', 'cno/package.json', 'cts/package.json']) {
+        assert.ok(normalizedOutputInputs.has(manifest), `missing embedded manifest: ${manifest}`);
+        const bytes = normalizedOutputInputs.get(manifest).bytesInOutput;
+        assert.ok(bytes > 0 && bytes <= 64, `${manifest} must retain only its version field`);
+        const { version } = JSON.parse(readFileSync(join(root, manifest), 'utf8'));
+        const marker = `{version:${JSON.stringify(version)}}`;
+        assert.equal(
+            text.split(marker).length - 1,
+            1,
+            `${manifest} must embed exactly its source version`,
+        );
+    }
+    const flowInputs = [...normalizedOutputInputs.keys()]
+        .filter(input => /sucrase\/src\/(?:parser\/plugins\/flow|transformers\/FlowTransformer)\.ts$/.test(input));
+    assert.deepEqual(flowInputs.sort(), [
+        'cts/deps/sucrase/src/parser/plugins/flow.ts',
+        'cts/deps/sucrase/src/transformers/FlowTransformer.ts',
+    ]);
+    const flowBytes = contribution(input => flowInputs.includes(input));
+    assert.ok(
+        flowBytes > 0 && flowBytes <= 512,
+        'disabled Sucrase Flow stubs must stay compact',
+    );
 });
 
 test('release verification rejects stale Bun payloads in tar and zip archives', t => {
