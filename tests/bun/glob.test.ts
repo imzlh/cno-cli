@@ -20,6 +20,7 @@ Deno.test('bun Glob: lexical matching and validation', () => {
         ['a/?[0-9].ts', 'a/x2.ts', true], ['a/?[!0-9].ts', 'a/x2.ts', false],
         ['{src,test}/**/*.{ts,js}', 'src/a.ts', true],
         ['file{01..03}.ts', 'file02.ts', true], ['{a..e..2}', 'c', true],
+        ['{a}', 'a', true], ['{}', '', true],
         ['@(foo|bar).ts', 'bar.ts', true], ['+(a|b).ts', 'abba.ts', true],
         ['?(a).ts', '.ts', true], ['*(a|b).ts', 'abab.ts', true],
         ['!(foo).ts', 'bar.ts', true], ['!(foo).ts', 'foo.ts', false],
@@ -29,6 +30,7 @@ Deno.test('bun Glob: lexical matching and validation', () => {
         ['[\\d].ts', 'd.ts', true], ['[\\d].ts', '1.ts', false],
         ['[\\s]', 's', true], ['[\\s]', ' ', false],
         ['[\\]]', ']', true], ['[a\\-z]', '-', true],
+        ['[z-a]', '[z-a]', false], ['**/', '', true],
     ];
     for (const [pattern, value, expected] of cases) {
         strictEqual(new Glob(pattern).match(value), expected, `${pattern} / ${value}`);
@@ -37,6 +39,52 @@ Deno.test('bun Glob: lexical matching and validation', () => {
     throws(() => new Glob('*').match(null as unknown as string), TypeError);
     strictEqual(new Glob(new String('*.ts') as unknown as string).match(new String('a.ts') as unknown as string), true);
     throws(() => new Glob(new Proxy(new String('*.ts'), {}) as unknown as string), TypeError);
+});
+
+Deno.test('bun Glob: constructor and match shape, brands and string extraction', () => {
+    strictEqual(Glob.name, 'Glob');
+    strictEqual(Glob.length, 1);
+    strictEqual(Glob.prototype.match.name, 'match');
+    strictEqual(Glob.prototype.match.length, 1);
+    deepStrictEqual(Object.getOwnPropertyDescriptor(Glob.prototype, 'match'), {
+        value: Glob.prototype.match,
+        writable: true,
+        enumerable: true,
+        configurable: false,
+    });
+
+    const glob = new Glob('*');
+    strictEqual(Object.prototype.toString.call(glob), '[object Glob]');
+    const invalidThis = (error: unknown): boolean => error instanceof TypeError
+        && (error as TypeError & { code?: string }).code === 'ERR_INVALID_THIS';
+    throws(() => Reflect.apply(Glob.prototype.match, {}, [null]), invalidThis);
+    throws(() => Reflect.apply(Glob.prototype.match, Glob.prototype, ['a']), invalidThis);
+    throws(() => Reflect.apply(Glob.prototype.match, new Proxy(glob, {}), ['a']), invalidThis);
+
+    class GlobSubclass extends Glob {}
+    strictEqual(new GlobSubclass('*').match('a'), true);
+    const alternate = Reflect.construct(Glob, ['*'], function Alternate() {});
+    strictEqual(Reflect.apply(Glob.prototype.match, alternate, ['a']), true);
+
+    const valueOfDescriptor = Object.getOwnPropertyDescriptor(String.prototype, 'valueOf')!;
+    const pattern = new String('*.ts');
+    const input = new String('a.ts');
+    let reads = 0;
+    let matched = false;
+    try {
+        Object.defineProperty(String.prototype, 'valueOf', {
+            configurable: true,
+            get() {
+                reads++;
+                return valueOfDescriptor.value;
+            },
+        });
+        matched = new Glob(pattern as unknown as string).match(input as unknown as string);
+    } finally {
+        Object.defineProperty(String.prototype, 'valueOf', valueOfDescriptor);
+    }
+    strictEqual(matched, true);
+    strictEqual(reads, 0);
 });
 
 Deno.test('bun Glob: scan option coercion and eager validation', async () => {
