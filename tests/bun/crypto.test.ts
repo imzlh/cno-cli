@@ -1,6 +1,9 @@
 import { deepStrictEqual, strictEqual, throws } from 'node:assert';
+import { runInNewContext } from 'node:vm';
 import { CryptoHasher } from '../../cno/src/bun/crypto/index.ts';
 import { Blob } from '../../cno/src/webapi/formdata.ts';
+
+const code = (expected: string) => (error: unknown) => (error as { code?: string }).code === expected;
 
 Deno.test('bun: CryptoHasher hashes, copies, and resets', () => {
     const h = new CryptoHasher('SHA-256').update('a');
@@ -72,4 +75,56 @@ Deno.test('bun: CryptoHasher replaces lone surrogates before string encoding', (
         new CryptoHasher('sha256').update('a\ud800b').digest('hex'),
         new CryptoHasher('sha256').update('a\ufffdb').digest('hex'),
     );
+});
+
+Deno.test('bun: CryptoHasher shape and receiver checks match Bun', () => {
+    const Hash = CryptoHasher as unknown as {
+        new (algorithm: string): CryptoHasher;
+        (...args: unknown[]): unknown;
+        length: number;
+        hash: Function;
+        prototype: CryptoHasher;
+    };
+    const hasher = new Hash('sha256');
+    strictEqual(Hash.length, 0);
+    strictEqual(Hash.hash.length, 2);
+    strictEqual(Hash.prototype.update.length, 2);
+    strictEqual(Hash.prototype.digest.length, 0);
+    strictEqual(Hash.prototype.copy.length, 0);
+    strictEqual(Object.prototype.toString.call(hasher), '[object CryptoHasher]');
+    deepStrictEqual(Reflect.ownKeys(hasher), []);
+    deepStrictEqual(
+        Reflect.ownKeys(Hash.prototype).map(String).sort(),
+        ['Symbol(Symbol.toStringTag)', 'algorithm', 'byteLength', 'constructor', 'copy', 'digest', 'update'],
+    );
+    throws(() => Hash('sha256'), (error: unknown) => error instanceof TypeError && code('ERR_ILLEGAL_CONSTRUCTOR')(error));
+    for (const method of [Hash.prototype.update, Hash.prototype.digest, Hash.prototype.copy]) {
+        throws(
+            () => Reflect.apply(method as Function, {}, ['abc']),
+            (error: unknown) => error instanceof TypeError && code('ERR_INVALID_THIS')(error),
+        );
+    }
+    const algorithm = Object.getOwnPropertyDescriptor(Hash.prototype, 'algorithm')!.get!;
+    throws(() => algorithm.call(Object.create(Hash.prototype)), /only be used on instances of CryptoHasher/);
+    strictEqual(Reflect.apply(Hash.hash, null, ['sha256', 'abc', 'hex']), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+});
+
+Deno.test('bun: CryptoHasher accepts cross-realm buffers and preserves view windows', () => {
+    const foreign = runInNewContext(`(() => {
+        const inputBacking = new Uint8Array([9, 97, 98, 99, 9]);
+        const outputBacking = new Uint8Array(80).fill(42);
+        return {
+            buffer: inputBacking.buffer,
+            typed: inputBacking.subarray(1, 4),
+            data: new DataView(inputBacking.buffer, 1, 3),
+            outputBacking,
+            output: outputBacking.subarray(8, 72),
+        };
+    })()`);
+    strictEqual(CryptoHasher.hash('sha256', foreign.buffer, 'hex'), CryptoHasher.hash('sha256', new Uint8Array([9, 97, 98, 99, 9]), 'hex'));
+    strictEqual(CryptoHasher.hash('sha256', foreign.typed, 'hex'), CryptoHasher.hash('sha256', 'abc', 'hex'));
+    strictEqual(CryptoHasher.hash('sha256', foreign.data, foreign.output), foreign.output);
+    strictEqual(Buffer.from(foreign.outputBacking.subarray(8, 40)).toString('hex'), CryptoHasher.hash('sha256', 'abc', 'hex'));
+    deepStrictEqual(Array.from(foreign.outputBacking.subarray(0, 8)), Array(8).fill(42));
+    deepStrictEqual(Array.from(foreign.outputBacking.subarray(72)), Array(8).fill(42));
 });

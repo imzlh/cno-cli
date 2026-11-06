@@ -1,5 +1,6 @@
 import { deepStrictEqual, notStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { Buffer } from 'node:buffer';
+import { runInNewContext } from 'node:vm';
 import { MD4, MD5, SHA1, SHA224, SHA256, SHA384, SHA512, SHA512_256, sha } from '../../cno/src/bun/crypto/hash-classes.ts';
 import { md4 } from '../../cno/src/bun/crypto/md4.ts';
 import { Blob } from '../../cno/src/webapi/formdata.ts';
@@ -346,11 +347,11 @@ Deno.test('bun hash classes: string encodings', () => {
         throws(() => SHA256.hash('abc', bad as 'hex'), /Unknown encoding/);
     }
     for (const bad of [5, true, {}, 0n, () => 1, Symbol('x'), []]) {
-        throws(() => new SHA256().digest(bad as never), (error: unknown) => error instanceof TypeError && error.message === 'expected string or buffer' && code('ERR_INVALID_ARG_TYPE')(error));
-        throws(() => SHA256.hash('abc', bad as never), /expected string or buffer/);
+        throws(() => new SHA256().digest(bad as never), (error: unknown) => error instanceof TypeError && error.message === 'output must be of type string or ArrayBuffer or ArrayBufferView' && code('ERR_INVALID_ARG_TYPE')(error));
+        throws(() => SHA256.hash('abc', bad as never), /output must be of type string or ArrayBuffer or ArrayBufferView/);
     }
     // hash() treats null as a bad output while digest() treats it as "none".
-    throws(() => SHA256.hash('abc', null as never), /expected string or buffer/);
+    throws(() => SHA256.hash('abc', null as never), /output must be of type string or ArrayBuffer or ArrayBufferView/);
     // A rejected digest() argument does not consume the hasher.
     const hasher = new SHA256().update('abc');
     throws(() => hasher.digest('nope' as 'hex'), TypeError);
@@ -399,17 +400,17 @@ Deno.test('bun hash classes: update snapshots its input', () => {
 Deno.test('bun hash classes: rejects unsupported inputs', () => {
     for (const [, [Hash]] of Object.entries(classes)) {
         for (const bad of [5, null, undefined, {}, [97], true, 0n, Symbol('x'), () => 1]) {
-            throws(() => new Hash().update(bad), (error: unknown) => error instanceof TypeError && error.message === 'expected blob or string or buffer' && code('ERR_INVALID_ARG_TYPE')(error));
-            throws(() => Hash.hash(bad), (error: unknown) => error instanceof TypeError && error.message === 'expected blob, string or buffer' && code('ERR_INVALID_ARG_TYPE')(error));
+            throws(() => new Hash().update(bad), (error: unknown) => error instanceof TypeError && error.message === 'input must be a string, ArrayBuffer, ArrayBufferView or Blob' && code('ERR_INVALID_ARG_TYPE')(error));
+            throws(() => Hash.hash(bad), (error: unknown) => error instanceof TypeError && error.message === 'input must be a string, ArrayBuffer, ArrayBufferView or Blob' && code('ERR_INVALID_ARG_TYPE')(error));
         }
-        throws(() => (Hash.hash as () => unknown)(), /expected blob, string or buffer/);
-        throws(() => (new Hash().update as () => unknown).call(new Hash()), /expected blob or string or buffer/);
+        throws(() => (Hash.hash as () => unknown)(), /input must be a string/);
+        throws(() => (new Hash().update as () => unknown).call(new Hash()), /input must be a string/);
         // A rejected update leaves the hasher usable.
         const hasher = new Hash();
         throws(() => hasher.update(5), TypeError);
         strictEqual(hasher.update('').digest('hex'), emptyVectors[Object.keys(classes).find(key => classes[key][0] === Hash)!]);
         // Input is validated before the output argument.
-        throws(() => Hash.hash(5, 'nope'), /expected blob, string or buffer/);
+        throws(() => Hash.hash(5, 'nope'), /input must be a string/);
         throws(() => Hash.hash('a', 'nope'), /Unknown encoding/);
     }
 });
@@ -435,9 +436,10 @@ Deno.test('bun hash classes: single-use state errors', () => {
         const hasher = new Hash();
         hasher.update('abc');
         strictEqual(hasher.digest('hex'), abcVectors[name]);
-        for (const action of [() => hasher.update('x'), () => hasher.update(5 as never), () => hasher.digest(), () => hasher.digest('nope' as 'hex')]) {
+        for (const action of [() => hasher.update('x'), () => hasher.digest(), () => hasher.digest('nope' as 'hex')]) {
             throws(action, (error: unknown) => error instanceof Error && !(error instanceof TypeError) && code('ERR_INVALID_STATE')(error) && error.message.startsWith(`${name} hasher already digested, create a new instance to `));
         }
+        throws(() => hasher.update(5 as never), (error: unknown) => error instanceof TypeError && code('ERR_INVALID_ARG_TYPE')(error));
         throws(() => hasher.update('x'), /create a new instance to update$/);
         throws(() => hasher.digest(), /create a new instance to digest again$/);
         strictEqual(hasher.byteLength, classes[name][1]);
@@ -480,9 +482,29 @@ Deno.test('bun hash classes: sha helper is SHA-512/256', () => {
     strictEqual((sha as (input: string, output?: unknown) => unknown)('abc', undefined) instanceof Uint8Array, true);
     throws(() => sha('abc', new Uint8Array(16)), /TypedArray must be at least 32 bytes/);
     throws(() => sha('abc', 'nope' as 'hex'), /Unknown encoding: nope/);
-    throws(() => sha('abc', null as never), /expected string or buffer/);
-    throws(() => (sha as () => unknown)(), /expected blob, string or buffer/);
-    throws(() => sha(5 as never, 'hex'), /expected blob, string or buffer/);
+    throws(() => sha('abc', null as never), /output must be of type string or ArrayBuffer or ArrayBufferView/);
+    throws(() => (sha as () => unknown)(), /input must be a string/);
+    throws(() => sha(5 as never, 'hex'), /input must be a string/);
+});
+
+Deno.test('bun hash classes: cross-realm inputs and output windows', () => {
+    const foreign = runInNewContext(`(() => {
+        const inputBacking = new Uint8Array([9, 97, 98, 99, 9]);
+        const outputBacking = new Uint8Array(40).fill(42);
+        return {
+            buffer: inputBacking.buffer,
+            typed: inputBacking.subarray(1, 4),
+            data: new DataView(inputBacking.buffer, 1, 3),
+            outputBacking,
+            output: outputBacking.subarray(4, 36),
+        };
+    })()`);
+    strictEqual(SHA256.hash(foreign.buffer, 'hex'), SHA256.hash(new Uint8Array([9, 97, 98, 99, 9]), 'hex'));
+    strictEqual(SHA256.hash(foreign.typed, 'hex'), abcVectors.SHA256);
+    strictEqual(SHA256.hash(foreign.data, foreign.output), foreign.output);
+    strictEqual(hex(foreign.output), abcVectors.SHA256);
+    deepStrictEqual(Array.from(foreign.outputBacking.subarray(0, 4)), Array(4).fill(42));
+    deepStrictEqual(Array.from(foreign.outputBacking.subarray(36)), Array(4).fill(42));
 });
 
 Deno.test('bun hash classes: no cross-talk between algorithms', () => {
