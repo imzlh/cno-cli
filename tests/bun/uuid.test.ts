@@ -63,6 +63,27 @@ Deno.test('bun: UUIDv7 follows Bun coercion across realms', () => {
     strictEqual(randomUUIDv7(date).slice(0, 13), '00000000-002a');
 });
 
+Deno.test('bun: UUIDv7 uses captured intrinsics', () => {
+    const originalDateNow = Date.now;
+    const originalString = globalThis.String;
+    const originalToLowerCase = String.prototype.toLowerCase;
+    const before = originalDateNow();
+    Date.now = () => 42;
+    globalThis.String = (() => 'buffer') as unknown as StringConstructor;
+    originalString.prototype.toLowerCase = () => 'buffer';
+    try {
+        const uuid = randomUUIDv7();
+        const after = originalDateNow();
+        const emitted = Number.parseInt(`${uuid.slice(0, 8)}${uuid.slice(9, 13)}`, 16);
+        ok(emitted >= Math.min(before, after) && emitted <= Math.max(before, after));
+        ok(/^00000000-002a-7/.test(randomUUIDv7('HEX' as 'hex', 42)));
+    } finally {
+        Date.now = originalDateNow;
+        globalThis.String = originalString;
+        originalString.prototype.toLowerCase = originalToLowerCase;
+    }
+});
+
 Deno.test('bun: UUIDv7 has Bun function shape', () => {
     strictEqual(randomUUIDv7.name, 'randomUUIDv7');
     strictEqual(randomUUIDv7.length, 2);
