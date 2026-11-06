@@ -5,7 +5,8 @@ Deno.test('bun: sleepSync validates and truncates its argument', () => {
     for (const value of [undefined, null, true, '1', 1n, Symbol(), {}, new Number(1), new Date(), new Date(NaN)]) {
         throws(() => sleepSync(value as number), {
             name: 'TypeError',
-            message: "Expected milliseconds to be a number for 'sleepSync'.",
+            message: 'milliseconds must be a number',
+            code: 'ERR_INVALID_ARG_TYPE',
         });
     }
     let coerced = false;
@@ -16,6 +17,7 @@ Deno.test('bun: sleepSync validates and truncates its argument', () => {
         throws(() => sleepSync(value), {
             name: 'TypeError',
             message: `argument to sleepSync must not be negative, got ${result}`,
+            code: 'ERR_INVALID_ARG_TYPE',
         });
     }
 });
