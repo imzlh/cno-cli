@@ -36,6 +36,55 @@ Deno.test({ name: 'bun: top-level write streams Request bodies without materiali
     });
 });
 
+Deno.test('bun: top-level write uses Request stream view windows, not shadowing properties', async () => {
+    await withTempDir('bun-write-request-views', async root => {
+        const path = join(root, 'output.bin');
+        const backing = new Uint8Array([9, 65, 66, 9]);
+        const chunks: ArrayBufferView[] = [
+            new Uint8Array(backing.buffer, 1, 2),
+            new DataView(backing.buffer, 1, 2),
+        ];
+        for (const chunk of chunks) {
+            Object.defineProperties(chunk, {
+                buffer: { value: new ArrayBuffer(0) },
+                byteOffset: { value: 0 },
+                byteLength: { value: 0 },
+            });
+        }
+        const request = requestWithBody(new ReadableStream<ArrayBufferView>({
+            start(controller) {
+                for (const chunk of chunks) controller.enqueue(chunk);
+                controller.close();
+            },
+        }) as unknown as BodyInit);
+
+        strictEqual(await write(path, request), 4);
+        deepStrictEqual(await file(path).bytes(), new Uint8Array([65, 66, 65, 66]));
+    });
+});
+
+Deno.test('bun: top-level write treats detached Request stream views as empty chunks', async () => {
+    await withTempDir('bun-write-request-detached', async root => {
+        const path = join(root, 'output.bin');
+        const backing = new ArrayBuffer(4);
+        const chunks: ArrayBufferView[] = [
+            new Uint8Array(backing, 1, 2),
+            new DataView(backing, 1, 2),
+        ];
+        structuredClone(backing, { transfer: [backing] });
+        const request = requestWithBody(new ReadableStream<ArrayBufferView>({
+            start(controller) {
+                for (const chunk of chunks) controller.enqueue(chunk);
+                controller.close();
+            },
+        }) as unknown as BodyInit);
+
+        await write(path, 'original');
+        strictEqual(await write(path, request), 0);
+        deepStrictEqual(await file(path).bytes(), new Uint8Array(0));
+    });
+});
+
 Deno.test('bun: top-level write truncates for bodyless Requests and honors createPath', async () => {
     await withTempDir('bun-write-request-empty', async root => {
         const path = join(root, 'nested', 'output.txt');
