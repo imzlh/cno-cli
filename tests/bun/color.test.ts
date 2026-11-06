@@ -1,6 +1,33 @@
 import { deepStrictEqual, strictEqual, throws } from 'node:assert';
 import { color } from '../../cno/src/bun/utils/color.ts';
 
+Deno.test('bun: color has Bun native function shape and validates input before format', () => {
+    strictEqual(color.name, 'color');
+    strictEqual(color.length, 2);
+    strictEqual(Object.hasOwn(color, 'prototype'), false);
+    throws(() => Reflect.construct(color, ['red']), TypeError);
+
+    const events: string[] = [];
+    const poisonedFormat = new String('hex');
+    Object.defineProperty(poisonedFormat, Symbol.toPrimitive, {
+        get() {
+            events.push('format');
+            throw new Error('format must not be coerced');
+        },
+    });
+    throws(() => color(undefined, poisonedFormat), /Expected input/);
+    deepStrictEqual(events, []);
+
+    const input = new Proxy({}, {
+        get() {
+            events.push('input');
+            throw new Error('input must not be inspected');
+        },
+    });
+    throws(() => color(input, 'bad'), /format must be one of/);
+    deepStrictEqual(events, []);
+});
+
 Deno.test('bun: color parses common CSS color syntax and canonicalizes output', () => {
     for (const [input, css, hex] of [
         ['red', 'red', '#ff0000'], ['  #ABC  ', '#abc', '#aabbcc'],
@@ -33,39 +60,72 @@ Deno.test('bun: color accepts numeric typed arrays using array channel rules', (
     deepStrictEqual(color(new Uint8ClampedArray([1.5, 256, -5, 1]), '[rgba]'), [2, 255, 0, 1]);
     deepStrictEqual(color(new Float32Array([1.9, 256, -5, .5]), '[rgba]'), [1, 255, 0, 0]);
     deepStrictEqual(color(new Float64Array([1.9, 2.9, 3.9, 127.9]), '[rgba]'), [1, 2, 3, 127]);
+    const hiddenLength = new Uint8Array([4, 5, 6]);
+    Object.defineProperty(hiddenLength, 'length', {
+        get() { throw new Error('typed array length getter must not run'); },
+    });
+    deepStrictEqual(color(hiddenLength, '[rgba]'), [4, 5, 6, 255]);
     throws(() => color(new Uint8Array(2)), /Expected array length 3 or 4/);
     throws(() => color(new DataView(new ArrayBuffer(3))), /Expected r to be a integer/);
 });
 
-Deno.test('bun: color accepts StringLike objects without hiding their errors', () => {
-    strictEqual(color({ toString() { return 'rgb(4 5 6 / .5)'; } }, 'hex'), '#040506');
-    strictEqual(color(new String('red'), 'css'), 'red');
-
-    let stringified = false;
-    deepStrictEqual(color({
-        r: 1,
-        g: 2,
-        b: 3,
+Deno.test('bun: color treats objects as RGB records without StringLike coercion', () => {
+    const events: string[] = [];
+    const input = {
+        get r() { events.push('r'); return 1; },
+        get g() { events.push('g'); return 2; },
+        get b() { events.push('b'); return 3; },
+        get a() { events.push('a'); return .5; },
         toString() {
-            stringified = true;
+            events.push('toString');
             throw new Error('must not stringify RGB objects');
         },
-    }, '[rgba]'), [1, 2, 3, 255]);
-    strictEqual(stringified, false);
+    };
+    deepStrictEqual(color(input, '[rgba]'), [1, 2, 3, 127]);
+    deepStrictEqual(events, ['r', 'g', 'b', 'a']);
 
-    const expected = new Error('StringLike failure');
-    throws(() => color({ toString() { throw expected; } }), error => error === expected);
+    throws(() => color({ toString() { return 'red'; } }), /Expected r to be a integer/);
+    throws(() => color(new String('red')), /Expected r to be a integer/);
     throws(() => color({}), /Expected r to be a integer/);
+});
+
+Deno.test('bun: color excludes Proxy arrays and only reads selected channels', () => {
+    const proxyEvents: string[] = [];
+    const proxy = new Proxy([1, 2, 3], {
+        get(target, key, receiver) {
+            proxyEvents.push(String(key));
+            return Reflect.get(target, key, receiver);
+        },
+    });
+    throws(() => color(proxy, '[rgba]'), /Expected r to be a integer/);
+    deepStrictEqual(proxyEvents, ['r']);
+
+    const alphaEvents: string[] = [];
+    const rgb = [1, 2, 3];
+    const prototype = Object.create(Array.prototype);
+    Object.defineProperty(prototype, 3, {
+        configurable: true,
+        get() {
+            alphaEvents.push('3');
+            throw new Error('length-three alpha must not be read');
+        },
+    });
+    Object.setPrototypeOf(rgb, prototype);
+    deepStrictEqual(color(rgb, '[rgba]'), [1, 2, 3, 255]);
+    deepStrictEqual(alphaEvents, []);
 });
 
 Deno.test('bun: color checks formats and invalid inputs', () => {
     strictEqual(color(null), null);
     strictEqual(color(true), null);
     strictEqual(color('red', null), 'red');
+    strictEqual(color('red', new String('hex')), '#ff0000');
     throws(() => color(undefined), TypeError);
     throws(() => color([], 'rgb'), /Expected array length 3 or 4/);
     throws(() => color({ r: '1', g: 2, b: 3 }), TypeError);
     throws(() => color('red', 1), TypeError);
+    throws(() => color('red', new Proxy(new String('hex'), {})), TypeError);
+    throws(() => color(Symbol('red')), /Cannot convert a symbol to a string/);
     throws(() => color(null, 'bad'), TypeError);
 });
 
