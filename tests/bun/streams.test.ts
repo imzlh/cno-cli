@@ -1,5 +1,5 @@
 import { deepStrictEqual, rejects, strictEqual, throws } from 'node:assert';
-import { concatArrayBuffers, readableStreamToArrayBuffer, readableStreamToBytes, readableStreamToFormData, readableStreamToJSON, readableStreamToText } from '../../cno/src/bun/utils/streams.ts';
+import { concatArrayBuffers, readableStreamToArrayBuffer, readableStreamToBlob, readableStreamToBytes, readableStreamToFormData, readableStreamToJSON, readableStreamToText } from '../../cno/src/bun/utils/streams.ts';
 
 function stream<T>(chunks: T[]): ReadableStream<T> {
     return new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } });
@@ -10,10 +10,24 @@ Deno.test('bun: concatArrayBuffers honors offsets and length limits', () => {
     const chunks = [new DataView(bytes.buffer, 1, 2), new Uint8Array([3, 4])];
     deepStrictEqual([...new Uint8Array(concatArrayBuffers(chunks))], [1, 2, 3, 4]);
     deepStrictEqual([...concatArrayBuffers(chunks, 3, true)], [1, 2, 3]);
+    const uint8 = concatArrayBuffers(chunks, undefined, true);
+    strictEqual(uint8.constructor, Uint8Array);
+    strictEqual(uint8.byteOffset, 0);
+    deepStrictEqual([...uint8], [1, 2, 3, 4]);
+    strictEqual(concatArrayBuffers(chunks).constructor, ArrayBuffer);
     strictEqual(concatArrayBuffers(chunks, 0).byteLength, 0);
     strictEqual(concatArrayBuffers(chunks, 99).byteLength, 4);
     throws(() => concatArrayBuffers(chunks, -1), RangeError);
     throws(() => concatArrayBuffers(chunks, NaN), RangeError);
+});
+
+Deno.test('bun: readableStreamToBlob applies Blob part semantics to each chunk', async () => {
+    const source = new Uint8Array([9, 65, 66, 9]);
+    const blob = await readableStreamToBlob(stream([
+        new DataView(source.buffer, 1, 2), new Blob(['!']), 12, null, new SharedArrayBuffer(1),
+    ]));
+    strictEqual(blob.type, '');
+    deepStrictEqual([...new Uint8Array(await blob.arrayBuffer())], [65, 66, 33, 49, 50, 110, 117, 108, 108, 0]);
 });
 
 Deno.test('bun: stream conversions handle mixed bytes and UTF-8', async () => {
@@ -66,7 +80,11 @@ Deno.test('bun: readableStreamToFormData parses url-encoded bytes split across c
     const form = await readableStreamToFormData(stream([bytes.subarray(0, 12), bytes.subarray(12, 15), bytes.subarray(15)]));
     deepStrictEqual(entries(form), [['a', '1'], ['b', '你'], ['a', '2 x'], ['flag', ''], ['', 'empty'], ['bad', '%ZZ%4']]);
     deepStrictEqual(entries(await readableStreamToFormData(stream(['x=%C3', new Uint8Array([0xa9])]))), [['x', 'é']]);
+    deepStrictEqual(entries(await readableStreamToFormData(stream([{ toString: () => 'object=value' }]))), [['object', 'value']]);
+    deepStrictEqual(entries(await readableStreamToFormData(stream([new SharedArrayBuffer(1)]))), [['\0', '']]);
     deepStrictEqual(entries(await readableStreamToFormData(stream([]))), []);
+    deepStrictEqual(entries(await readableStreamToFormData(stream(['x=1']), '')), [['x', '1']]);
+    deepStrictEqual(entries(await readableStreamToFormData(stream(['x=1']), new Uint8Array())), [['x', '1']]);
     deepStrictEqual(entries(await readableStreamToFormData(stream([new Uint8Array([97, 61, 0xff])]), undefined)), [['a', '\ufffd']]);
 });
 
@@ -86,7 +104,7 @@ Deno.test('bun: readableStreamToFormData parses multipart with string and byte b
             ['foo', 'bar'],
             ['multi', 'line1\r\n--not-boundary\r\nline3'],
             ['f"q', 'a".txt|text/plain|5'],
-            ['bin', 'b.bin|text/plain|2'],
+            ['bin', 'b.bin|text/plain;charset=utf-8|2'],
         ]);
         deepStrictEqual([...new Uint8Array(await (form.get('bin') as File).arrayBuffer())], [0, 255]);
     }
@@ -107,12 +125,11 @@ Deno.test('bun: readableStreamToFormData rejects malformed forms and releases th
         await rejects(readableStreamToFormData(source, 'B'), TypeError, text);
         strictEqual(source.locked, false);
     }
-    for (const boundary of ['', 'a\nb']) await rejects(readableStreamToFormData(stream(['x=1']), boundary), TypeError);
+    await rejects(readableStreamToFormData(stream(['x=1']), 'a\nb'), TypeError);
     const error = new Error('source failure');
     await rejects(readableStreamToFormData(new ReadableStream({ start(controller) { controller.error(error); } })), value => value === error);
     const locked = stream(['a=1']);
     const reader = locked.getReader();
     await rejects(readableStreamToFormData(locked), TypeError);
     reader.releaseLock();
-    await rejects(readableStreamToFormData(stream([{}]) as ReadableStream<Uint8Array>), TypeError);
 });
