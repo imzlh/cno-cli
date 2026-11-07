@@ -1,6 +1,7 @@
 import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert';
 import Bun, { spawn, spawnSync } from 'bun';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { withTempDir } from '../_helpers/temp.ts';
 import type { BunProcessResourceUsage } from '../../cno/src/bun/process/types.ts';
 
@@ -142,6 +143,54 @@ Deno.test({ name: 'bun: spawn FileSink serializes stdin writes and closes with E
         message: 'write() expects a string, ArrayBufferView, or ArrayBuffer',
         code: 'ERR_STREAM_NULL_VALUES',
     });
+});
+
+Deno.test({ name: 'bun: spawn FileSink uses intrinsic binary brands and view slots', ignore: isWindows, timeout: 10000 }, async () => {
+    const child = spawn(['/bin/cat'], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
+    const foreign = runInNewContext(`(() => {
+        const buffer = new ArrayBuffer(6);
+        new Uint8Array(buffer).set([10, 11, 12, 13, 14, 15]);
+        return { buffer, typed: new Uint16Array(buffer, 2, 2), data: new DataView(buffer, 3, 2) };
+    })()`);
+    for (const value of Object.values(foreign) as object[]) {
+        for (const property of ['buffer', 'byteOffset', 'byteLength']) {
+            Object.defineProperty(value, property, { get() { throw new Error(`shadowed ${property}`); } });
+        }
+    }
+
+    strictEqual(await child.stdin.write(foreign.buffer), 6);
+    strictEqual(await child.stdin.write(foreign.typed), 4);
+    strictEqual(await child.stdin.write(foreign.data), 2);
+
+    const detached = new ArrayBuffer(4);
+    const detachedTyped = new Uint8Array(detached, 1, 2);
+    const detachedData = new DataView(detached, 1, 2);
+    structuredClone(detached, { transfer: [detached] });
+    strictEqual(await child.stdin.write(detached), 0);
+    strictEqual(await child.stdin.write(detachedTyped), 0);
+    strictEqual(await child.stdin.write(detachedData), 0);
+
+    for (const value of [new Proxy(foreign.buffer, {}), new Proxy(foreign.typed, {}), new Proxy(foreign.data, {})]) {
+        throws(() => child.stdin.write(value), {
+            name: 'TypeError',
+            message: 'write() expects a string, ArrayBufferView, or ArrayBuffer',
+            code: 'ERR_INVALID_ARG_TYPE',
+        });
+    }
+
+    const originalIsView = ArrayBuffer.isView;
+    let intrinsicWrite: Promise<number> | true;
+    try {
+        ArrayBuffer.isView = (() => { throw new Error('replacement called'); }) as typeof ArrayBuffer.isView;
+        intrinsicWrite = child.stdin.write(new Uint8Array([20, 21]));
+    } finally {
+        ArrayBuffer.isView = originalIsView;
+    }
+    strictEqual(await intrinsicWrite!, 2);
+
+    await child.stdin.end();
+    deepStrictEqual([...await child.stdout.bytes()], [10, 11, 12, 13, 14, 15, 12, 13, 14, 15, 13, 14, 20, 21]);
+    strictEqual(await child.exited, 0);
 });
 
 Deno.test({ name: 'bun: spawn and spawnSync replace explicit env and preserve typed-array offsets', timeout: 10000 }, async () => {
