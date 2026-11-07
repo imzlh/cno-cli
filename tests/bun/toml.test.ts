@@ -55,7 +55,28 @@ nums = [+1, -0, 0b101, 0o77, 1_000, 1.25e+2, inf, -inf, nan]`;
         deepStrictEqual(TOML.parse(new Uint8Array(shared)), { a: 1 });
     }
     strictEqual(TOML.parse('value = "\ud800"').value, '\ufffd');
-    strictEqual(TOML.stringify({ '\udc00': '\ud800' }), '"\ufffd" = "\ufffd"\n');
+});
+
+denoTest('stringify replaces lone surrogates and preserves pairs', () => {
+    const output = TOML.stringify({
+        ['key-high\ud800']: 'value-high\ud800',
+        ['key-low\udc00']: 'value-low\udc00',
+        pair: '\ud83d\ude00',
+        array: ['\ud800', '\udc00', '\ud83d\ude00'],
+        ['table-high\ud800']: { ok: true },
+        ['table-low\udc00']: { ok: true },
+        ['table-pair\ud83d\ude00']: { ok: true },
+    });
+    strictEqual(output, '"key-high\ufffd" = "value-high\ufffd"\n"key-low\ufffd" = "value-low\ufffd"\npair = "\ud83d\ude00"\narray = ["\ufffd", "\ufffd", "\ud83d\ude00"]\n\n["table-high\ufffd"]\nok = true\n\n["table-low\ufffd"]\nok = true\n\n["table-pair\ud83d\ude00"]\nok = true\n');
+    deepStrictEqual(TOML.parse(output), {
+        'key-high\ufffd': 'value-high\ufffd',
+        'key-low\ufffd': 'value-low\ufffd',
+        pair: '\ud83d\ude00',
+        array: ['\ufffd', '\ufffd', '\ud83d\ude00'],
+        'table-high\ufffd': { ok: true },
+        'table-low\ufffd': { ok: true },
+        'table-pair\ud83d\ude00': { ok: true },
+    });
 });
 
 denoTest('byte inputs use intrinsic windows and empty invalidated views', () => {
