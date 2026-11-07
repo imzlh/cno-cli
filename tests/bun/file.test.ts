@@ -720,6 +720,43 @@ Deno.test({ name: 'bun: file stream cancellation releases its descriptor', timeo
     });
 });
 
+Deno.test('bun: path file stream validates its advisory chunk size', async () => {
+    await withTempDir('bun-file-stream-size', async (root) => {
+        const path = join(root, 'stream.bin');
+        await write(path, 'contents');
+        const source = file(path);
+
+        for (const value of [undefined, null, 0, -1, 1.5, NaN, Infinity]) {
+            const stream = source.stream(value as number);
+            await stream.cancel();
+        }
+        for (const value of ['1', {}, new Number(1), Symbol('size')]) {
+            throws(() => source.stream(value as never), {
+                name: 'TypeError',
+                message: 'chunkSize must be a number',
+                code: 'ERR_INVALID_ARG_TYPE',
+            });
+        }
+
+        const missing = file(join(root, 'missing.bin'));
+        throws(() => missing.stream('1' as never), { code: 'ERR_INVALID_ARG_TYPE' });
+
+        const fd = openSync(path, 'r');
+        try {
+            await file(fd).stream(Symbol('ignored') as never).cancel();
+        } finally {
+            closeSync(fd);
+        }
+
+        const fallback = Reflect.apply(
+            Object.getPrototypeOf(source).stream,
+            new Blob(['blob']),
+            ['ignored'],
+        ) as ReadableStream;
+        await fallback.cancel();
+    });
+});
+
 Deno.test('bun: file and write reject unsupported options and inputs', async () => {
     await withTempDir('bun-file-errors', async (root) => {
         const path = join(root, 'value.txt');
