@@ -55,6 +55,30 @@ Deno.test('bun: color supports numeric, array and object representations', () =>
     strictEqual(color('red', 'ansi-16m'), '\x1b[38;2;255;0;0m');
 });
 
+Deno.test('bun: color emits HSL output with Bun float32 formatting', () => {
+    for (const [input, expected] of [
+        ['red', 'hsl(0, 100%, 50%)'],
+        ['lime', 'hsl(120, 100%, 50%)'],
+        ['blue', 'hsl(240, 100%, 50%)'],
+        ['white', 'hsl(0, 0%, 100%)'],
+        ['black', 'hsl(0, 0%, 0%)'],
+        ['gray', 'hsl(0, 0%, 50.196083%)'],
+        ['#010203', 'hsl(210, 49.999992%, 0.7843138%)'],
+        ['#123456', 'hsl(210, 65.38462%, 20.392157%)'],
+        ['#abcdef', 'hsl(210, 68%, 80.39216%)'],
+        ['#663399', 'hsl(270, 50.000008%, 40%)'],
+        [[255, 128, 0], 'hsl(30.11765, 100%, 50%)'],
+        [[1, 2, 3, 4], 'hsl(210, 49.999992%, 0.7843138%)'],
+        [{ r: 12, g: 34, b: 56, a: .25 }, 'hsl(210, 64.70587%, 13.333334%)'],
+        ['#ff000080', 'hsl(0, 100%, 50%)'],
+        ['rgba(1,2,3,.5)', 'hsl(210, 49.999992%, 0.7843138%)'],
+    ] as const) {
+        strictEqual(color(input, 'hsl'), expected);
+    }
+    strictEqual(color('nonsense', 'hsl'), null);
+    strictEqual(color(null, 'hsl'), null);
+});
+
 Deno.test('bun: color accepts numeric typed arrays using array channel rules', () => {
     deepStrictEqual(color(new Uint8Array([1, 2, 3]), '[rgba]'), [1, 2, 3, 255]);
     deepStrictEqual(color(new Uint8ClampedArray([1.5, 256, -5, 1]), '[rgba]'), [2, 255, 0, 1]);
@@ -148,7 +172,10 @@ Deno.test('bun: color ANSI256 ignores alpha without enabling unsupported termina
     strictEqual(color('transparent', 'ansi-256'), '\x1b[38;5;16m');
     strictEqual(color('invalid-color', 'ansi-256'), null);
     // Lab output remains unimplemented; unknown formats are rejected outright.
-    throws(() => color('red', 'lab'), /not implemented/);
+    throws(() => color('red', 'lab'), {
+        name: 'Error',
+        message: "Bun.color output format 'lab' is not implemented",
+    });
     for (const format of ['ansi-4', 'ansi-8', 'ansi-32']) {
         throws(() => color('red', format), TypeError);
     }
