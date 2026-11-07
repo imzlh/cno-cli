@@ -88,6 +88,36 @@ Deno.test('bun: deepEquals byte windows and strict typed-array properties', () =
     }
 });
 
+Deno.test('bun: deepEquals isolates view branding from ArrayBuffer.isView replacement', () => {
+    const original = Object.getOwnPropertyDescriptor(ArrayBuffer, 'isView')!;
+    const actual: boolean[] = [];
+    try {
+        for (const replacement of [
+            () => false,
+            () => { throw new Error('must not call replaced ArrayBuffer.isView'); },
+        ]) {
+            Object.defineProperty(ArrayBuffer, 'isView', { ...original, value: replacement });
+            for (const strict of [false, true]) {
+                actual.push(
+                    deepEquals(new Uint8Array([1]), new Uint8Array([1]), strict),
+                    deepEquals(new Uint8Array([1]), new Uint8Array([2]), strict),
+                    deepEquals(new Uint8Array([1]), new Int8Array([1]), strict),
+                    deepEquals(
+                        new DataView(new Uint8Array([1]).buffer),
+                        new DataView(new Uint8Array([2]).buffer),
+                        strict,
+                    ),
+                );
+            }
+        }
+    } finally {
+        Object.defineProperty(ArrayBuffer, 'isView', original);
+    }
+    const expected = [true, false, false, true, true, false, false, true];
+    strictEqual(actual.length, expected.length * 2);
+    for (let i = 0; i < actual.length; i++) strictEqual(actual[i], expected[i % expected.length]);
+});
+
 Deno.test('bun: deepEquals array symbols and ignored string extras', () => {
     const symbol = Symbol('item');
     strictEqual(deepEquals(
