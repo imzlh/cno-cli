@@ -226,6 +226,37 @@ Deno.test({ name: 'bun: write preserves typed-array offsets and accepts Blob/Res
     });
 });
 
+Deno.test('bun: write binary brands do not use a replaced ArrayBuffer.isView', async () => {
+    await withTempDir('bun-file-write-brands', async (root) => {
+        const path = join(root, 'output.bin');
+        const originalIsView = ArrayBuffer.isView;
+        let typedResult: Uint8Array;
+        let dataResult: Uint8Array;
+        try {
+            ArrayBuffer.isView = (() => { throw new Error('replacement called'); }) as typeof ArrayBuffer.isView;
+
+            const typed = new Uint8Array([65, 66, 67, 68]).subarray(1, 3);
+            const data = new DataView(new Uint8Array([9, 69, 70, 9]).buffer, 1, 2);
+            for (const view of [typed, data]) {
+                for (const property of ['buffer', 'byteOffset', 'byteLength']) {
+                    Object.defineProperty(view, property, {
+                        get() { throw new Error(`shadowed ${property}`); },
+                    });
+                }
+            }
+
+            strictEqual(await write(path, typed), 2);
+            typedResult = await file(path).bytes();
+            strictEqual(await file(path).write(data), 2);
+            dataResult = await file(path).bytes();
+        } finally {
+            ArrayBuffer.isView = originalIsView;
+        }
+        deepStrictEqual(typedResult!, new Uint8Array([66, 67]));
+        deepStrictEqual(dataResult!, new Uint8Array([69, 70]));
+    });
+});
+
 Deno.test({ name: 'bun: write creates parents, truncates, and is safe for same-file input', timeout: 10000 }, async () => {
     await withTempDir('bun-file-write-paths', async (root) => {
         const path = join(root, 'nested', 'value.txt');
