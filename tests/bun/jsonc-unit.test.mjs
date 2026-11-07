@@ -68,6 +68,16 @@ test('JSONC accepts comments and trailing commas in nested containers', () => {
     assert.deepEqual(JSONC.parse('\ufeff[1,/* before close */]'), [1]);
 });
 
+test('JSONC accepts Bun ECMAScript whitespace outside strings', () => {
+    const whitespace = '\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006'
+        + '\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff';
+    assert.deepEqual(JSONC.parse(`${whitespace}[${whitespace}1${whitespace},${whitespace}]${whitespace}`), [1]);
+
+    const stringValue = `before${whitespace}after`;
+    assert.equal(JSONC.parse(JSON.stringify(stringValue)), stringValue);
+    assert.throws(() => JSONC.parse('[1// vertical whitespace does not end the comment\v\f,2]'), SyntaxError);
+});
+
 test('JSONC preserves comment markers, delimiters, and escaped quotes inside strings', () => {
     const value = ['https://example.test/a/*b*/', '\\"//not a comment', '\\\\', ',}', ',]', '/*', '*/'];
     assert.deepEqual(JSONC.parse(`/* before */ ${JSON.stringify(value)} // after`), value);
@@ -82,7 +92,7 @@ test('JSONC rejects malformed JSON and does not broaden into JSON5', () => {
         '{"x":,}', '{"x",}', '{"x":true, "y":}',
         '{unquoted:1}', "{'single':1}", '[undefined]', '[NaN]', '[Infinity]',
         '[0x10]', '[+1]', '[01]', '"unterminated', '"raw\nnewline"',
-        '[1,]\u00a0', '[1,]\u2028', '[1,]\ufeff', '\u00a01', '\u20281',
+        '[1,]\u0085', '[1,]\u180e', '[1,]\u2060', '\u00851', '\u180e1',
         '{} {}', '1/* comment */2', '/* nested /* */ */ {}',
     ];
     for (const source of invalid) {
