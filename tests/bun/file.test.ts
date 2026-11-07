@@ -151,6 +151,38 @@ Deno.test('bun: descriptor writes and writers advance the shared offset without 
     });
 });
 
+Deno.test('bun: write accepts numeric descriptor destinations', async () => {
+    await withTempDir('bun-write-fd', async (root) => {
+        const path = join(root, 'target.txt');
+        writeFileSync(path, '0123456789');
+        const fd = openSync(path, 'r+');
+        try {
+            strictEqual(readSync(fd, new Uint8Array(3), 0, 3, null), 3);
+            strictEqual(await write(fd, new Uint8Array([88, 65, 66, 89]).subarray(1, 3)), 2);
+            strictEqual(await write(fd, new Response('CD')), 2);
+            strictEqual(await write(fd, new ReadableStream({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode('E'));
+                    controller.close();
+                },
+            }), { createPath: false, mode: 0o600 }), 1);
+            strictEqual(readFileSync(path, 'utf8'), '012ABCDE89');
+            strictEqual(readFromCurrentOffset(fd), '89');
+            strictEqual(fstatSync(fd).size, 10);
+        } finally {
+            closeSync(fd);
+        }
+
+        for (const value of [-1, 1.5, NaN, Infinity, 2 ** 31]) {
+            await rejects(() => write(value, 'x'), { code: 'ERR_OUT_OF_RANGE' });
+        }
+        const closed = openSync(path, 'r+');
+        closeSync(closed);
+        await rejects(() => write(closed, 'x'), { code: 'EBADF' });
+        strictEqual(readFileSync(path, 'utf8'), '012ABCDE89');
+    });
+});
+
 Deno.test('bun: descriptor BunFiles stream as write sources and expose deletion errors as values', async () => {
     await withTempDir('bun-file-fd-source', async (root) => {
         const sourcePath = join(root, 'source.txt');
@@ -184,6 +216,16 @@ Deno.test('bun: descriptor BunFiles stream as write sources and expose deletion 
                 strictEqual(fstatSync(sameFd).size, 18);
             } finally {
                 closeSync(sameFd);
+            }
+
+            const directFd = openSync(samePath, 'r+');
+            try {
+                strictEqual(readSync(directFd, new Uint8Array(2), 0, 2, null), 2);
+                strictEqual(await write(directFd, file(directFd)), 16);
+                strictEqual(readFileSync(samePath, 'utf8'), '0123456789234567892345678923456789');
+                strictEqual(fstatSync(directFd).size, 34);
+            } finally {
+                closeSync(directFd);
             }
 
             const large = new Uint8Array(70 * 1024);
