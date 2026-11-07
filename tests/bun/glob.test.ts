@@ -154,12 +154,34 @@ Deno.test('bun Glob: scan options, paths, depth and iterator parity', async () =
         await scanBoth('*.ts', { cwd: root, absolute: true }, [join(root, 'a.ts')]);
         await scanBoth(join(root, '*.ts'), { cwd: root }, [join(root, 'a.ts')]);
         await scanBoth('!*.ts', { cwd: root }, ['b.js']);
-        await scanBoth('!sub/*.ts', { cwd: root }, ['a.ts', 'b.js', 'sub/d.js']);
+        await scanBoth('!sub/*.ts', { cwd: root }, []);
         await scanBoth('{a,b}.{ts,js}', { cwd: root }, ['a.ts', 'b.js']);
         throws(() => [...new Glob('*').scanSync({ cwd: join(root, 'missing') })]);
         throws(() => [...new Glob('*').scanSync({ cwd: join(root, 'a.ts') })], /ENOTDIR/);
         await rejects(async () => { for await (const _ of new Glob('*').scan({ cwd: join(root, 'missing') })) { /* consume */ } });
         await rejects(async () => { for await (const _ of new Glob('*').scan({ cwd: join(root, 'a.ts') })) { /* consume */ } }, /ENOTDIR/);
+    });
+});
+
+Deno.test('bun Glob: negated scans preserve suffix shape and depth', async () => {
+    await withTempDir('bun-glob-negated-depth', async root => {
+        Deno.mkdirSync(join(root, 'sub', 'deep', 'more'), { recursive: true });
+        Deno.mkdirSync(join(root, 'other', 'deep'), { recursive: true });
+        Deno.mkdirSync(join(root, 'sub2'));
+        for (const name of [
+            'root.ts', 'root.js',
+            'sub/s.ts', 'sub/s.js',
+            'sub/deep/d.ts', 'sub/deep/d.js', 'sub/deep/more/m.ts',
+            'other/o.ts', 'other/o.js', 'other/deep/od.ts', 'other/deep/od.js',
+            'sub2/z.ts',
+        ]) {
+            Deno.writeTextFileSync(join(root, name), 'x');
+        }
+
+        await scanBoth('!sub/*.ts', { cwd: root }, ['other/o.ts', 'sub2/z.ts']);
+        await scanBoth('!sub/deep/*.ts', { cwd: root }, ['other/deep/od.ts']);
+        await scanBoth('!sub/*/*.ts', { cwd: root }, ['other/deep/od.ts']);
+        await scanBoth('!**/*.ts', { cwd: root }, []);
     });
 });
 
