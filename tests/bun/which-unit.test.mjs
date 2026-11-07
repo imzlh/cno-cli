@@ -190,6 +190,50 @@ test('which reads and converts option fields once in Bun order', () => {
     ]);
 });
 
+test('which rejects Symbol option fields in Bun conversion order', () => {
+    let cwdReads = 0;
+    assert.throws(() => which('', {
+        PATH: Symbol('PATH'),
+        get cwd() {
+            cwdReads++;
+            return '.';
+        },
+    }), {
+        name: 'TypeError',
+        message: 'Cannot convert a symbol to a string',
+    });
+    assert.equal(cwdReads, 0);
+
+    const log = [];
+    assert.throws(() => which('', {
+        PATH: {
+            [Symbol.toPrimitive](hint) {
+                log.push(`PATH:${hint}`);
+                return '';
+            },
+        },
+        get cwd() {
+            log.push('get:cwd');
+            return Symbol('cwd');
+        },
+    }), {
+        name: 'TypeError',
+        message: 'Cannot convert a symbol to a string',
+    });
+    assert.deepEqual(log, ['PATH:string', 'get:cwd']);
+});
+
+test('which preserves ToString errors from Symbol-producing option objects', () => {
+    const values = [
+        Object(Symbol('boxed')),
+        { [Symbol.toPrimitive]: () => Symbol('primitive') },
+    ];
+    for (const value of values) {
+        assert.throws(() => which('', { PATH: value }), { name: 'TypeError' });
+        assert.throws(() => which('', { PATH: '', cwd: value }), { name: 'TypeError' });
+    }
+});
+
 test('which ignores primitive options and stringifies option fields', { skip: !posix }, () => {
     const { root, bin, cleanup } = fixture();
     try {
