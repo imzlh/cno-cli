@@ -1,4 +1,5 @@
 import { deepStrictEqual, strictEqual, throws } from 'node:assert';
+import { runInNewContext } from 'node:vm';
 import { TOML, parseTOML, stringifyTOML } from '../../cno/src/bun/utils/toml.ts';
 
 denoTest('exports and document syntax', () => {
@@ -165,6 +166,44 @@ denoTest('stringify sections, arrays, keys and special values', () => {
     throws(() => TOML.stringify({ x: 1n }), /BigInt/);
     const cycle: any = {}; cycle.self = cycle;
     throws(() => TOML.stringify(cycle), /circular/);
+});
+
+denoTest('stringify reads Date internal slots through captured intrinsics', () => {
+    const timestamp = Date.UTC(2030, 0, 2, 3, 4, 5, 678);
+    const expected = 'value = 2030-01-02T03:04:05.678Z\n';
+    const foreign = runInNewContext(`new Date(${timestamp})`) as Date;
+    const unlinked = Object.setPrototypeOf(new Date(timestamp), null) as Date;
+
+    for (const date of [foreign, unlinked]) {
+        strictEqual(TOML.stringify({ value: date }), expected);
+        throws(() => TOML.stringify(date), /expects an object at the top level/);
+    }
+    for (const date of [new Date(NaN), runInNewContext('new Date(NaN)'), Object.setPrototypeOf(new Date(NaN), null)]) {
+        throws(() => TOML.stringify({ value: date }), {
+            name: 'Error',
+            message: 'TOML.stringify cannot serialize an invalid Date',
+        });
+        throws(() => TOML.stringify(date), /expects an object at the top level/);
+    }
+
+    strictEqual(TOML.stringify({ value: Object.create(Date.prototype) }), '[value]\n');
+    strictEqual(TOML.stringify({ value: new Proxy(new Date(timestamp), {}) }), '[value]\n');
+
+    const DateConstructor = Date;
+    const toISOString = Date.prototype.toISOString;
+    const date = new Date(timestamp);
+    try {
+        DateConstructor.prototype.toISOString = () => { throw new Error('patched toISOString called'); };
+        globalThis.Date = class ReplacementDate {
+            static [Symbol.hasInstance](): boolean {
+                throw new Error('replacement Date instanceof called');
+            }
+        } as unknown as DateConstructor;
+        strictEqual(TOML.stringify({ value: date }), expected);
+    } finally {
+        DateConstructor.prototype.toISOString = toISOString;
+        globalThis.Date = DateConstructor;
+    }
 });
 
 function denoTest(name: string, fn: () => void) { Deno.test(`bun: TOML ${name}`, fn); }
