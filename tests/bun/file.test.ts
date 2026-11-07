@@ -260,6 +260,60 @@ Deno.test({ name: 'bun: write preserves typed-array offsets and accepts Blob/Res
     });
 });
 
+Deno.test({ name: 'bun: write recognizes Blob inputs by intrinsic slots', timeout: 10000 }, async () => {
+    await withTempDir('bun-file-write-blob-slots', async (root) => {
+        const path = join(root, 'output.txt');
+        const writeBoth = async (value: Blob, expected: string) => {
+            strictEqual(await write(path, value), expected.length);
+            strictEqual(await file(path).text(), expected);
+            strictEqual(await file(path).write(value), expected.length);
+            strictEqual(await file(path).text(), expected);
+        };
+
+        const blob = new Blob(['blob-slots']);
+        Object.setPrototypeOf(blob, null);
+        await writeBoth(blob, 'blob-slots');
+
+        const inputFile = new File(['file-slots'], 'input.txt');
+        Object.setPrototypeOf(inputFile, null);
+        await writeBoth(inputFile, 'file-slots');
+
+        let getterCalls = 0;
+        const getters = new Blob(['intrinsic']);
+        for (const name of ['arrayBuffer', 'stream', 'size'] as const) {
+            Object.defineProperty(getters, name, { get() { getterCalls++; throw new Error(name); } });
+        }
+        await writeBoth(getters, 'intrinsic');
+        strictEqual(getterCalls, 0);
+
+        for (const value of [Object.create(Blob.prototype), new Proxy(new Blob(['proxy']), {})]) {
+            strictEqual(await write(path, value), 13);
+            strictEqual(await file(path).text(), '[object Blob]');
+            strictEqual(await file(path).write(value), 13);
+            strictEqual(await file(path).text(), '[object Blob]');
+        }
+        const custom = { toString: () => 'custom' };
+        strictEqual(await write(path, custom as never), 6);
+        strictEqual(await file(path).text(), 'custom');
+        strictEqual(await file(path).write(custom as never), 6);
+        strictEqual(await file(path).text(), 'custom');
+
+        const blobDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Blob')!;
+        const fileDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'File')!;
+        const oldBlob = new Blob(['old-blob']);
+        const oldFile = new File(['old-file'], 'input.txt');
+        try {
+            Reflect.set(globalThis, 'Blob', function ReplacementBlob() {});
+            Reflect.set(globalThis, 'File', function ReplacementFile() {});
+            await writeBoth(oldBlob, 'old-blob');
+            await writeBoth(oldFile, 'old-file');
+        } finally {
+            Object.defineProperty(globalThis, 'Blob', blobDescriptor);
+            Object.defineProperty(globalThis, 'File', fileDescriptor);
+        }
+    });
+});
+
 Deno.test('bun: write binary brands do not use a replaced ArrayBuffer.isView', async () => {
     await withTempDir('bun-file-write-brands', async (root) => {
         const path = join(root, 'output.bin');
