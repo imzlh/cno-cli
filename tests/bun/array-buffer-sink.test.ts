@@ -191,6 +191,41 @@ test('bun: ArrayBufferSink highWaterMark is only a hint', () => {
     }
 });
 
+test('bun: ArrayBufferSink highWaterMark uses captured numeric intrinsics', () => {
+    const nativeNumberIsFinite = Number.isFinite;
+    const nativeMathTrunc = Math.trunc;
+    const nativeMathMin = Math.min;
+    const calls = { isFinite: 0, trunc: 0, min: 0 };
+    let result: SinkResult | undefined;
+    let thrown: unknown;
+    Number.isFinite = () => {
+        calls.isFinite++;
+        throw new Error('patched Number.isFinite called');
+    };
+    Math.trunc = () => {
+        calls.trunc++;
+        throw new Error('patched Math.trunc called');
+    };
+    Math.min = () => {
+        calls.min++;
+        throw new Error('patched Math.min called');
+    };
+    try {
+        const sink = started({ highWaterMark: 1.5 });
+        sink.write('ok');
+        result = sink.end();
+    } catch (error) {
+        thrown = error;
+    } finally {
+        Number.isFinite = nativeNumberIsFinite;
+        Math.trunc = nativeMathTrunc;
+        Math.min = nativeMathMin;
+    }
+    assert.equal(thrown, undefined);
+    assert.deepEqual(calls, { isFinite: 0, trunc: 0, min: 0 });
+    assert.deepEqual(bytes(result!), [111, 107]);
+});
+
 test('bun: ArrayBufferSink option flags only honor real booleans and non-object options are ignored', () => {
     for (const options of [undefined, null, 0, 'x', true, [], {}, { asUint8Array: 1, stream: 'yes' }]) {
         const sink = started(options as never);
