@@ -190,6 +190,43 @@ Deno.test('webapi fetch upstream: Body parses multipart non-ASCII names filename
     strictEqual(await file.text(), 'y');
 });
 
+Deno.test('webapi fetch upstream: Body parses quoted multipart boundaries', async () => {
+    const { Response: PolyfillResponse } = await import('../../cno/src/webapi/fetch/response.ts');
+    const boundary = 'quoted-boundary';
+    const payload = [
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="field"',
+        '',
+        'value',
+        `--${boundary}--`,
+        '',
+    ].join('\r\n');
+
+    for (const contentType of [
+        `multipart/form-data; boundary="${boundary}"`,
+        `multipart/form-data; charset=UTF-8; boundary="${boundary}"`,
+        `multipart/form-data; boundary="${boundary}"; charset=UTF-8`,
+    ]) {
+        const formData = await new PolyfillResponse(payload, { headers: { 'content-type': contentType } }).formData();
+        strictEqual(formData.get('field'), 'value');
+    }
+
+    for (const contentType of [
+        'multipart/form-data; boundary=""',
+        'multipart/form-data; boundary=',
+        'multipart/form-data; boundary = quoted-boundary',
+        'multipart/form-data; boundary="unterminated',
+    ]) {
+        await rejects(() => new PolyfillResponse(payload, { headers: { 'content-type': contentType } }).formData(), TypeError);
+    }
+
+    const input = new FormData();
+    input.append('field', 'value');
+    const contentType = `multipart/form-data; boundary="${boundary}"; charset=UTF-8`;
+    const response = new PolyfillResponse(input, { headers: { 'content-type': contentType } });
+    strictEqual(response.headers.get('content-type'), contentType);
+});
+
 Deno.test('webapi fetch upstream: Body round-trips multipart non-ASCII FormData', async () => {
     const input = new FormData();
     input.append('文字', '文字');
