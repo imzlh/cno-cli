@@ -74,6 +74,33 @@ Deno.test('bun: namespace slots match Bun descriptors and lifecycle replacement'
     Bun.main = originalMain;
 });
 
+Deno.test('bun: cwd is a hidden replaceable startup snapshot', () => {
+    const bun = Bun as typeof Bun & { cwd: string };
+    const originalCwd = Deno.cwd();
+    strictEqual(bun.cwd, originalCwd);
+    strictEqual((globalThis.Bun as typeof bun).cwd, originalCwd);
+    deepStrictEqual(Object.getOwnPropertyDescriptor(bun, 'cwd'), {
+        value: originalCwd,
+        writable: true,
+        enumerable: false,
+        configurable: false,
+    });
+    strictEqual(Object.keys(bun).includes('cwd'), false);
+    strictEqual(Object.getOwnPropertyNames(bun).includes('cwd'), true);
+
+    const alternateCwd = originalCwd === '/' ? new URL('../..', import.meta.url) : '/';
+    try {
+        Deno.chdir(alternateCwd);
+        strictEqual(bun.cwd, originalCwd);
+    } finally {
+        Deno.chdir(originalCwd);
+    }
+
+    bun.cwd = 'replacement-cwd';
+    strictEqual(bun.cwd, 'replacement-cwd');
+    bun.cwd = originalCwd;
+});
+
 Deno.test('bun: sleep validates inputs synchronously and uses Date internal slots', async () => {
     for (const value of [
         undefined,
