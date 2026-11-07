@@ -137,6 +137,32 @@ Deno.test('bun: deepEquals keeps Date branding after prototype replacement', () 
     strictEqual(deepEquals(Object.create(Date.prototype), new Date(1)), false);
 });
 
+Deno.test('bun: deepEquals keeps collection branding after prototype replacement', () => {
+    const map = Object.setPrototypeOf(new Map([['key', 1]]), null);
+    strictEqual(deepEquals(map, new Map([['key', 1]])), true);
+    strictEqual(deepEquals(map, new Map([['key', 2]])), false);
+    strictEqual(deepEquals(map, new Map([['key', 1]]), true), true);
+
+    const set = Object.setPrototypeOf(new Set([1]), null);
+    strictEqual(deepEquals(set, new Set([1])), true);
+    strictEqual(deepEquals(set, new Set([2])), false);
+    strictEqual(deepEquals(set, new Set([1]), true), true);
+
+    const mapWithSetPrototype = Object.setPrototypeOf(new Map([['key', 1]]), Set.prototype);
+    const setWithMapPrototype = Object.setPrototypeOf(new Set([1]), Map.prototype);
+    strictEqual(deepEquals(mapWithSetPrototype, new Map([['key', 1]])), true);
+    strictEqual(deepEquals(setWithMapPrototype, new Set([1])), true);
+
+    const replaced = { constructor: class Replacement {} };
+    strictEqual(deepEquals(Object.setPrototypeOf(new Map([['key', 1]]), replaced), new Map([['key', 1]])), true);
+    strictEqual(deepEquals(Object.setPrototypeOf(new Set([1]), replaced), new Set([1])), true);
+
+    strictEqual(deepEquals(Object.create(Map.prototype), new Map()), false);
+    strictEqual(deepEquals(Object.create(Set.prototype), new Set()), false);
+    strictEqual(deepEquals(new Proxy(new Map(), {}), new Map()), false);
+    strictEqual(deepEquals(new Proxy(new Set(), {}), new Set()), false);
+});
+
 Deno.test('bun: deepEquals function values are identity-only', () => {
     const left = function named(value: unknown) { return value; };
     const right = function named(value: unknown) { return value; };
