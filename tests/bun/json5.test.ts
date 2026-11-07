@@ -149,6 +149,55 @@ Deno.test('bun: JSON5.stringify identifies boxed values without consulting toStr
     throws(() => JSON5.stringify(Object(1n)), /cannot serialize BigInt/);
 });
 
+Deno.test('bun: JSON5.stringify treats proxy arrays as ordinary objects', () => {
+    strictEqual(JSON5.stringify([1, 2]), '[1,2]');
+    strictEqual(JSON5.stringify(new Proxy([1, 2], {})), "{'0':1,'1':2}");
+    strictEqual(JSON5.stringify({ value: new Proxy([1, 2], {}) }), "{value:{'0':1,'1':2}}");
+    strictEqual(
+        JSON5.stringify(new Proxy(Object.assign([, 2], { extra: 3 }), {})),
+        "{'1':2,extra:3}",
+    );
+
+    const events: string[] = [];
+    const target = [1, 2];
+    Object.defineProperty(target, '0', {
+        configurable: true,
+        enumerable: true,
+        get() {
+            events.push('getter:0');
+            return 7;
+        },
+    });
+    const value = new Proxy(target, {
+        ownKeys(inner) {
+            events.push('ownKeys');
+            return Reflect.ownKeys(inner);
+        },
+        getOwnPropertyDescriptor(inner, key) {
+            events.push(`gopd:${String(key)}`);
+            return Reflect.getOwnPropertyDescriptor(inner, key);
+        },
+        get(inner, key, receiver) {
+            events.push(`get:${String(key)}`);
+            return Reflect.get(inner, key, receiver);
+        },
+    });
+    strictEqual(JSON5.stringify(value), "{'0':7,'1':2}");
+    deepStrictEqual(events, [
+        'ownKeys', 'gopd:0', 'gopd:1', 'gopd:length',
+        'get:0', 'getter:0', 'get:1',
+    ]);
+
+    const revoked = Proxy.revocable([1, 2], {});
+    revoked.revoke();
+    throws(() => JSON5.stringify(revoked.proxy), TypeError);
+
+    const cyclicTarget: unknown[] = [];
+    const cyclic = new Proxy(cyclicTarget, {});
+    cyclicTarget.push(cyclic);
+    throws(() => JSON5.stringify(cyclic), /Converting circular structure to JSON5/);
+});
+
 Deno.test('bun: JSON5.stringify space uses boxed primitive brands and ordinary coercion', () => {
     const value = { a: 1 };
     strictEqual(JSON5.stringify(value, null, -2), '{a:1}');
