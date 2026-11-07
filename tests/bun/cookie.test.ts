@@ -115,6 +115,37 @@ Deno.test('bun: CookieMap set merges and delete removes all matching duplicates'
     strictEqual([...deleted].filter(([name]) => name === 'a').length, 1);
 });
 
+Deno.test('bun: CookieMap empty set removes entries but emits an ordinary changed header', () => {
+    const map = new CookieMap('a=1; b=2; a=3');
+    map.set('a', '', { path: '/empty', secure: true });
+    strictEqual(map.size, 1);
+    strictEqual(map.get('a'), null);
+    strictEqual(map.has('a'), false);
+    deepStrictEqual([...map], [['b', '2']]);
+    deepStrictEqual(map.toJSON(), { b: '2' });
+    deepStrictEqual(map.toSetCookieHeaders(), ['a=; Path=/empty; Secure; SameSite=Lax']);
+
+    map.set({ name: 'missing', path: '/object', sameSite: 'strict' });
+    strictEqual(map.size, 1);
+    deepStrictEqual(map.toSetCookieHeaders(), [
+        'a=; Path=/empty; Secure; SameSite=Lax',
+        'missing=; Path=/object; SameSite=Strict',
+    ]);
+
+    map.set({ name: 'undefined', value: undefined as unknown as string });
+    map.set({ name: 'null', value: null as unknown as string });
+    deepStrictEqual([...map], [['null', 'null'], ['undefined', 'undefined'], ['b', '2']]);
+    map.set('a', 'restored');
+    map.set('missing', 'restored');
+    map.set('a', '');
+    deepStrictEqual(map.toSetCookieHeaders(), [
+        'undefined=undefined; Path=/; SameSite=Lax',
+        'null=null; Path=/; SameSite=Lax',
+        'missing=restored; Path=/; SameSite=Lax',
+        'a=; Path=/; SameSite=Lax',
+    ]);
+});
+
 Deno.test('bun: CookieMap emits changed headers in last-touch order', () => {
     const map = new CookieMap('untouched=yes');
     map.set('a', '1');
@@ -333,4 +364,21 @@ Deno.test('bun: CookieMap iterators stay live across front insertions and deleti
     map.delete('b');
     map.set('d', '4');
     deepStrictEqual([...iterator], [['d', '4'], ['a', '1'], ['c', '3']]);
+});
+
+Deno.test('bun: CookieMap live iterators treat empty set as one deletion operation', () => {
+    const after = new CookieMap('a=1; b=2; c=3');
+    const afterIterator = after.entries();
+    deepStrictEqual(afterIterator.next(), { value: ['a', '1'], done: false });
+    after.set('c', '');
+    deepStrictEqual([...afterIterator], [['a', '1'], ['b', '2']]);
+
+    const duplicates = new CookieMap('x=0; a=1; y=2; a=3; z=4');
+    const duplicateIterator = duplicates.entries();
+    deepStrictEqual(duplicateIterator.next(), { value: ['x', '0'], done: false });
+    deepStrictEqual(duplicateIterator.next(), { value: ['a', '1'], done: false });
+    deepStrictEqual(duplicateIterator.next(), { value: ['y', '2'], done: false });
+    duplicates.set('a', '');
+    deepStrictEqual([...duplicateIterator], [['z', '4']]);
+    deepStrictEqual([...duplicates], [['x', '0'], ['y', '2'], ['z', '4']]);
 });
