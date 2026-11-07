@@ -156,3 +156,35 @@ Deno.test('bun: UUIDv5 validates types, encodings and namespace in Bun order', (
     call(boxed('x', 'name'), boxed(namespace, 'namespace'), boxed('hex', 'encoding'));
     deepStrictEqual(order, ['name', 'namespace', 'encoding']);
 });
+
+Deno.test('bun: UUIDv5 uses captured string intrinsics', () => {
+    const call = randomUUIDv5;
+    const NativeString = String;
+    const stringPrototype = NativeString.prototype;
+    const name = new NativeString('www.widgets.com');
+    const boxedNamespace = new NativeString('DNS');
+    const stringDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'String')!;
+    const valueOfDescriptor = Object.getOwnPropertyDescriptor(stringPrototype, 'valueOf')!;
+    const toLowerCaseDescriptor = Object.getOwnPropertyDescriptor(stringPrototype, 'toLowerCase')!;
+    const replaceDescriptor = Object.getOwnPropertyDescriptor(stringPrototype, 'replace')!;
+    const poison = () => { throw new Error('poisoned string intrinsic'); };
+    let actual: string | undefined;
+    let ucs2: string | undefined;
+
+    try {
+        Object.defineProperty(globalThis, 'String', { ...stringDescriptor, value: poison });
+        Object.defineProperty(stringPrototype, 'valueOf', { ...valueOfDescriptor, value: poison });
+        Object.defineProperty(stringPrototype, 'toLowerCase', { ...toLowerCaseDescriptor, value: poison });
+        Object.defineProperty(stringPrototype, 'replace', { ...replaceDescriptor, value: poison });
+        actual = call(name, boxedNamespace);
+        ucs2 = call(new NativeString('x'), boxedNamespace, 'ucs2');
+    } finally {
+        Object.defineProperty(globalThis, 'String', stringDescriptor);
+        Object.defineProperty(stringPrototype, 'valueOf', valueOfDescriptor);
+        Object.defineProperty(stringPrototype, 'toLowerCase', toLowerCaseDescriptor);
+        Object.defineProperty(stringPrototype, 'replace', replaceDescriptor);
+    }
+
+    strictEqual(actual, expected);
+    strictEqual(ucs2, '\ub105\u016a\uc646\udd56\u6ebd\udfc6\ua1b4\u7a42');
+});
