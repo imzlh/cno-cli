@@ -26,6 +26,25 @@ Deno.test('bun dns lookup validates and rejects failed resolution', async () => 
     });
     throws(() => dns.lookup('localhost', { family: 5 as 4 }), /InvalidFamily/);
     throws(() => dns.lookup('localhost', { family: 'IPV4' as 'IPv4' }), /InvalidFamily/);
+    const nativeMathTrunc = Math.trunc;
+    let mathTruncCalls = 0;
+    let invalidFamily: unknown;
+    Math.trunc = () => {
+        mathTruncCalls++;
+        throw new Error('patched Math.trunc called');
+    };
+    try {
+        dns.lookup('127.0.0.1', { family: 5.5 as 4 });
+    } catch (error) {
+        invalidFamily = error;
+    } finally {
+        Math.trunc = nativeMathTrunc;
+    }
+    strictEqual(mathTruncCalls, 0);
+    throws(() => { throw invalidFamily; }, {
+        name: 'Error',
+        message: 'Invalid options passed to lookup(): InvalidFamily',
+    });
     throws(() => dns.lookup('localhost', { port: '80' as unknown as number }), {
         name: 'TypeError',
         code: 'ERR_INVALID_ARG_TYPE',
