@@ -160,3 +160,30 @@ Deno.test('bun: stringWidth perCodePoint measures each code point', () => {
     strictEqual(stringWidth(true as unknown as string, opt), 4);
     throws(() => stringWidth(Symbol('x') as unknown as string, opt), TypeError);
 });
+
+Deno.test('bun: stringWidth widens bounded East Asian ambiguous symbols when requested', () => {
+    const ambiguous = [
+        '\u2010', '\u2013', '\u2016', '\u2020', '\u2022', '\u2030', '\u203b',
+        '\u2103', '\u212b', '\u2160', '\u216b', '\u2200', '\u2211', '\u2260',
+        '\u2261', '\u2605', '\u2606', '\u2663', '\u2665',
+    ];
+    for (const symbol of ambiguous) {
+        strictEqual(stringWidth(symbol), 1);
+        strictEqual(stringWidth(symbol, { ambiguousIsNarrow: false }), 2);
+        strictEqual(stringWidth(symbol, { perCodePoint: true }), 1);
+        strictEqual(stringWidth(symbol, { perCodePoint: true, ambiguousIsNarrow: false }), 2);
+    }
+
+    strictEqual(stringWidth('\u200f', { ambiguousIsNarrow: false }), 0);
+    strictEqual(stringWidth('\u200f', { perCodePoint: true, ambiguousIsNarrow: false }), 0);
+    const narrowNeighbors = [
+        '\u2011', '\u2012', '\u2017', '\u201f', '\u2023', '\u202f', '\u2031',
+        '\u203a', '\u203c', '\u2102', '\u2104', '\u212a', '\u212c', '\u215f',
+        '\u216c', '\u21ff', '\u2201', '\u2210', '\u2212', '\u225f', '\u2262',
+        '\u2604', '\u2607', '\u2662', '\u2666',
+    ];
+    for (const neighbor of narrowNeighbors) {
+        strictEqual(stringWidth(neighbor, { ambiguousIsNarrow: false }), 1);
+        strictEqual(stringWidth(neighbor, { perCodePoint: true, ambiguousIsNarrow: false }), 1);
+    }
+});
