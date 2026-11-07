@@ -172,6 +172,27 @@ Deno.test('bun: readableStreamToFormData parses multipart with string and byte b
     deepStrictEqual(entries(await readableStreamToFormData(stream(['--B\r\nContent-Disposition: form-data; name=x\r\n\r\n\r\n--B--']), 'B')), [['x', '']]);
 });
 
+Deno.test('bun: readableStreamToFormData matches Bun multipart folded-header handling', async () => {
+    const parse = (headers: string) => readableStreamToFormData(stream([
+        `--B\r\n${headers}\r\n\r\nx\r\n--B--\r\n`,
+    ]), 'B');
+
+    for (const whitespace of [' ', '\t']) {
+        await rejects(parse(`Content-Disposition: form-data;\r\n${whitespace}name="x"`), TypeError);
+
+        const orphan = await parse(
+            `${whitespace}ignored:value\r\nContent-Disposition: form-data; name="x"`,
+        );
+        deepStrictEqual(entries(orphan), [['x', 'x']]);
+
+        const foldedType = await parse(
+            `Content-Disposition: form-data; name="x"; filename="a.txt"\r\n` +
+            `Content-Type:\r\n${whitespace}text/custom`,
+        );
+        deepStrictEqual(entries(foldedType), [['x', 'a.txt|text/plain;charset=utf-8|1']]);
+    }
+});
+
 Deno.test('bun: readableStreamToFormData rejects malformed forms and releases the stream', async () => {
     const part = (head: string) => `--B\r\n${head}\r\n\r\nv\r\n--B--\r\n`;
     for (const text of [
