@@ -16,6 +16,36 @@ Deno.test('bun: UUIDv7 timestamp, version, variant and encodings', () => {
     ok(randomUUIDv7(42).startsWith('00000000-002a-7'));
 });
 
+Deno.test('bun: UUIDv7 accepts Bun byte-string encoding aliases', () => {
+    // The timestamp bytes form valid UTF-8 but contain high bits, so each
+    // byte-string encoding has a distinct, deterministic prefix.
+    const expectedTimestamp = Buffer.from([0xc3, 0xa9, 0xe4, 0xb8, 0xad, 0x41]);
+    const timestamp = 0xc3a9e4b8ad41;
+    const encodings = [
+        'utf8', 'utf-8', 'ascii', 'latin1', 'binary',
+        'ucs2', 'ucs-2', 'utf16le', 'UtF8',
+    ] as const;
+    for (const encoding of encodings) {
+        const encoded = (randomUUIDv7 as any)(encoding, timestamp);
+        strictEqual(typeof encoded, 'string');
+        const normalized = encoding.toLowerCase() as BufferEncoding;
+        const prefix = expectedTimestamp.toString(normalized);
+        strictEqual(encoded.slice(0, prefix.length), prefix, encoding);
+
+        if (['latin1', 'binary', 'ucs2', 'ucs-2', 'utf16le'].includes(normalized)) {
+            const bytes = Buffer.from(encoded, normalized);
+            strictEqual(bytes.length, 16, encoding);
+            deepStrictEqual(bytes.subarray(0, 6), expectedTimestamp, encoding);
+            strictEqual(bytes[6] >> 4, 7, encoding);
+            strictEqual(bytes[8] >> 6, 2, encoding);
+        } else {
+            // ASCII loses high bits and UTF-8 can replace random invalid tails,
+            // but the version byte follows the deterministic prefix directly.
+            strictEqual(encoded.charCodeAt(prefix.length) >> 4, 7, encoding);
+        }
+    }
+});
+
 Deno.test('bun: UUIDv7 increments within a repeated timestamp', () => {
     const first = randomUUIDv7('buffer', 123456);
     const second = randomUUIDv7('buffer', 123456);
@@ -105,7 +135,9 @@ Deno.test('bun: UUIDv7 has Bun function shape', () => {
 });
 
 Deno.test('bun: UUIDv7 rejects invalid encoding and timestamps', () => {
-    throws(() => randomUUIDv7('invalid' as 'hex'), { name: 'TypeError', code: 'ERR_UNKNOWN_ENCODING' });
+    for (const encoding of ['utf-16le', '', 'bogus']) {
+        throws(() => (randomUUIDv7 as any)(encoding, 0), { name: 'TypeError', code: 'ERR_UNKNOWN_ENCODING' });
+    }
     strictEqual(Buffer.isBuffer(randomUUIDv7('BUFFER' as 'buffer', 0)), true);
     ok(/^00000000-0000-7/.test(randomUUIDv7('HEX' as 'hex', 0)));
     ok(/^00000000-0000-7/.test((randomUUIDv7 as any)({}, 0)));
