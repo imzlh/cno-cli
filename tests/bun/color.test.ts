@@ -79,6 +79,33 @@ Deno.test('bun: color emits HSL output with Bun float32 formatting', () => {
     strictEqual(color(null, 'hsl'), null);
 });
 
+Deno.test('bun: color emits D50 CIELAB output', () => {
+    const parseLab = (value: unknown): number[] => {
+        const match = /^lab\(([^%]+)% ([^ ]+) ([^)]+)\)$/.exec(String(value));
+        if (!match) throw new Error(`Invalid Lab output: ${value}`);
+        return match.slice(1).map(Number);
+    };
+    const closeToBun = (input: unknown, expected: number[]) => {
+        const actual = parseLab(color(input, 'lab'));
+        for (let index = 0; index < expected.length; index++) {
+            strictEqual(Math.abs(actual[index] - expected[index]) < 0.0001, true,
+                `${JSON.stringify(input)} channel ${index}: ${actual[index]} != ${expected[index]}`);
+        }
+    };
+
+    strictEqual(color('black', 'lab'), 'lab(0% 0 0)');
+    closeToBun('white', [100, 0, 0.000011920929]);
+    closeToBun('red', [54.290546, 80.80492, 69.89099]);
+    closeToBun('lime', [87.81854, -79.27111, 80.994606]);
+    closeToBun('blue', [29.5683, 68.287384, -112.02972]);
+    closeToBun('#010203', [0.5039673, -0.16776472, -0.47766268]);
+    closeToBun('#123456', [20.675468, -2.2767782, -24.593157]);
+    strictEqual(color('#ff000080', 'lab'), color('red', 'lab'));
+    strictEqual(color('transparent', 'lab'), color('black', 'lab'));
+    strictEqual(color('nonsense', 'lab'), null);
+    strictEqual(color(null, 'lab'), null);
+});
+
 Deno.test('bun: color accepts numeric typed arrays using array channel rules', () => {
     deepStrictEqual(color(new Uint8Array([1, 2, 3]), '[rgba]'), [1, 2, 3, 255]);
     deepStrictEqual(color(new Uint8ClampedArray([1.5, 256, -5, 1]), '[rgba]'), [2, 255, 0, 1]);
@@ -171,11 +198,6 @@ Deno.test('bun: color ANSI256 ignores alpha without enabling unsupported termina
     strictEqual(color('rgba(255, 0, 0, 0.5)', 'ansi-256'), '\x1b[38;5;196m');
     strictEqual(color('transparent', 'ansi-256'), '\x1b[38;5;16m');
     strictEqual(color('invalid-color', 'ansi-256'), null);
-    // Lab output remains unimplemented; unknown formats are rejected outright.
-    throws(() => color('red', 'lab'), {
-        name: 'Error',
-        message: "Bun.color output format 'lab' is not implemented",
-    });
     for (const format of ['ansi-4', 'ansi-8', 'ansi-32']) {
         throws(() => color('red', format), TypeError);
     }
