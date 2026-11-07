@@ -80,6 +80,40 @@ Deno.test('bun: file reports missing and empty files without fabricated contents
     });
 });
 
+Deno.test('bun: file formData uses its content type and remains repeatable', async () => {
+    await withTempDir('bun-file-formdata', async (root) => {
+        const urlEncodedPath = join(root, 'values.data');
+        await write(urlEncodedPath, 'a=1&b=hello+world&a=2');
+        const source = file(urlEncodedPath, { type: 'application/x-www-form-urlencoded' });
+        const expected = [['a', '1'], ['b', 'hello world'], ['a', '2']];
+
+        deepStrictEqual([...await source.formData()], expected);
+        deepStrictEqual([...await source.formData()], expected);
+        deepStrictEqual([...await source.slice().formData()], expected);
+        await rejects(() => source.slice('text/plain').formData(), /Unsupported content type/);
+
+        const defaultTextPath = join(root, 'values.txt');
+        await write(defaultTextPath, 'x=1');
+        await rejects(() => file(defaultTextPath).formData(), /Unsupported content type/);
+
+        for (const type of ['application/x-www-form-urlencoded', 'text/plain']) {
+            await rejects(() => file(join(root, 'missing.data'), { type }).formData(), { code: 'ENOENT' });
+        }
+
+        const multipartPath = join(root, 'multipart.data');
+        await write(multipartPath,
+            '--b\r\nContent-Disposition: form-data; name="field"\r\n\r\nvalue\r\n' +
+            '--b\r\nContent-Disposition: form-data; name="upload"; filename="x.txt"\r\n' +
+            'Content-Type: text/plain\r\n\r\nxy\r\n--b--\r\n');
+        const multipart = await file(multipartPath, { type: 'multipart/form-data; boundary=b' }).formData();
+        strictEqual(multipart.get('field'), 'value');
+        const upload = multipart.get('upload');
+        ok(upload instanceof File);
+        strictEqual(upload.name, 'x.txt');
+        strictEqual(await upload.text(), 'xy');
+    });
+});
+
 Deno.test('bun: file slices use byte bounds, including nested slices and negatives', async () => {
     await withTempDir('bun-file-slice', async (root) => {
         const path = join(root, 'letters.txt');
