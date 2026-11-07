@@ -219,6 +219,56 @@ Deno.test({ name: 'bun: spawn and spawnSync replace explicit env and preserve ty
     });
 });
 
+Deno.test({ name: 'bun: static Blob stdin uses intrinsic slots and constructors', ignore: isWindows, timeout: 10000 }, async () => {
+    const output = async (value: Blob) => {
+        const child = spawn(['/bin/cat'], { stdin: value, stdout: 'pipe', stderr: 'pipe' });
+        strictEqual(await child.exited, 0);
+        return child.stdout.text();
+    };
+    const syncOutput = (value: Blob) => spawnSync(['/bin/cat'], {
+        stdin: value,
+        stdout: 'pipe',
+        stderr: 'pipe',
+    }).stdout.toString();
+
+    const asyncBlob = new Blob(['async-slots']);
+    const syncBlob = new File(['sync-slots'], 'stdin.txt');
+    Object.setPrototypeOf(asyncBlob, null);
+    Object.setPrototypeOf(syncBlob, null);
+    strictEqual(await output(asyncBlob), 'async-slots');
+    strictEqual(syncOutput(syncBlob), 'sync-slots');
+
+    for (const value of [Object.create(Blob.prototype), new Proxy(new Blob(['proxy']), {})]) {
+        throws(() => spawn(['/bin/cat'], { stdin: value }), (error: Error & { code?: string }) =>
+            error.code === 'ERR_INVALID_ARG_TYPE');
+        throws(() => spawnSync(['/bin/cat'], { stdin: value }), (error: Error & { code?: string }) =>
+            error.code === 'ERR_INVALID_ARG_TYPE');
+    }
+
+    let getterCalls = 0;
+    const getterBlob = new Blob(['intrinsic']);
+    for (const name of ['bytes', 'arrayBuffer', 'stream', 'size'] as const) {
+        Object.defineProperty(getterBlob, name, { get() { getterCalls++; throw new Error(name); } });
+    }
+    strictEqual(await output(getterBlob), 'intrinsic');
+    strictEqual(syncOutput(getterBlob), 'intrinsic');
+    strictEqual(getterCalls, 0);
+
+    const blobDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Blob')!;
+    const fileDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'File')!;
+    const oldBlob = new Blob(['old-blob']);
+    const oldFile = new File(['old-file'], 'stdin.txt');
+    try {
+        Reflect.set(globalThis, 'Blob', function ReplacementBlob() {});
+        Reflect.set(globalThis, 'File', function ReplacementFile() {});
+        strictEqual(await output(oldBlob), 'old-blob');
+        strictEqual(syncOutput(oldFile), 'old-file');
+    } finally {
+        Object.defineProperty(globalThis, 'Blob', blobDescriptor);
+        Object.defineProperty(globalThis, 'File', fileDescriptor);
+    }
+});
+
 Deno.test({ name: 'bun: spawn reports signal termination with Bun exit semantics', ignore: isWindows, timeout: 10000 }, async () => {
     const child = spawn(['/bin/sh', '-c', 'while :; do sleep 1; done'], {
         stdout: 'ignore',
