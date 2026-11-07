@@ -171,21 +171,29 @@ Deno.test('bun: sleep preserves native metadata and asynchronous ordering', asyn
     deepStrictEqual(events, ['sync', 'microtask', 'sleep', 'timer']);
 });
 
-Deno.test('bun: sleep uses the intrinsic Promise and keeps Infinity pending', async () => {
+Deno.test('bun: sleep uses intrinsic globals and keeps Infinity pending', async () => {
     const NativePromise = Promise;
+    const nativeMathMin = Math.min;
+    let mathMinCalls = 0;
     let sleeping: Promise<void>;
     class PoisonPromise {
         constructor() {
             throw new Error('patched Promise called');
         }
     }
+    Math.min = () => {
+        mathMinCalls++;
+        throw new Error('patched Math.min called');
+    };
     Reflect.set(globalThis, 'Promise', PoisonPromise);
     try {
-        sleeping = Bun.sleep(0);
+        sleeping = Bun.sleep(1);
     } finally {
         Reflect.set(globalThis, 'Promise', NativePromise);
+        Math.min = nativeMathMin;
     }
     ok(sleeping instanceof NativePromise);
+    strictEqual(mathMinCalls, 0);
     await sleeping;
 
     let settled = false;
