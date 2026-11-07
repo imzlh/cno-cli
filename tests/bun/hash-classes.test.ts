@@ -507,6 +507,25 @@ Deno.test('bun hash classes: cross-realm inputs and output windows', () => {
     deepStrictEqual(Array.from(foreign.outputBacking.subarray(36)), Array(4).fill(42));
 });
 
+Deno.test('bun hash classes: input and output ignore a replaced ArrayBuffer.isView', () => {
+    const original = ArrayBuffer.isView;
+    let calls = 0;
+    let output: DataView;
+    ArrayBuffer.isView = () => {
+        calls++;
+        throw new Error('poisoned ArrayBuffer.isView');
+    };
+    try {
+        strictEqual(SHA256.hash(new Uint8Array([97, 98, 99]), 'hex'), abcVectors.SHA256);
+        output = new DataView(new ArrayBuffer(32));
+        strictEqual(SHA256.hash('abc', output), output);
+        strictEqual(calls, 0);
+    } finally {
+        ArrayBuffer.isView = original;
+    }
+    strictEqual(hex(output!), abcVectors.SHA256);
+});
+
 Deno.test('bun hash classes: no cross-talk between algorithms', () => {
     const digests = new Set(Object.values(classes).map(([Hash]) => hex(Hash.hash('abc') as Uint8Array)));
     strictEqual(digests.size, 8); // SHA256 and SHA512_256 share a length but not a value.
