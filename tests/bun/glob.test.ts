@@ -41,6 +41,36 @@ Deno.test('bun Glob: lexical matching and validation', () => {
     throws(() => new Glob(new Proxy(new String('*.ts'), {}) as unknown as string), TypeError);
 });
 
+Deno.test('bun Glob: lexical matching treats escaped slashes as separators', () => {
+    const cases: Array<[string, string, boolean]> = [
+        ['a\\/b', 'a/b', true],
+        ['\\/a', '/a', true],
+        ['a\\/', 'a/', true],
+        ['a\\//b', 'a//b', true],
+        ['a\\/\\/b', 'a//b', true],
+        ['a\\\\/b', 'a/b', false],
+        ['a\\\\/b', 'a\\/b', true],
+        ['a\\\\\\/b', 'a\\/b', true],
+        ['a\\/*', 'a/.hidden', true],
+        ['a\\/.*', 'a/.hidden', true],
+        ['a\\/**', 'a', false],
+        ['a\\/**', 'a/', true],
+        ['**\\/a', 'a', false],
+        ['**\\/a', 'x/a', true],
+        ['**\\/a', 'x/y/a', false],
+        ['a/**\\/b', 'a/b', false],
+        ['a/**\\/b', 'a/x/b', true],
+        ['a/**\\/b', 'a/x/y/b', false],
+        ['a\\/{b,c}', 'a/b', true],
+        ['a\\/{b,c}', 'a/c', true],
+        ['{a,b}\\/c', 'b/c', true],
+    ];
+    // This pins Glob.match only; scan root planning has a separate path grammar.
+    for (const [pattern, value, expected] of cases) {
+        strictEqual(new Glob(pattern).match(value), expected, `${pattern} / ${value}`);
+    }
+});
+
 Deno.test('bun Glob: constructor and method shape, brands and string extraction', () => {
     strictEqual(Glob.name, 'Glob');
     strictEqual(Glob.length, 1);
