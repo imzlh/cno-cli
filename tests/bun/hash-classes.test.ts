@@ -417,14 +417,31 @@ Deno.test('bun hash classes: rejects unsupported inputs', () => {
 
 Deno.test('bun hash classes: Bun.file blobs are rejected like Bun', async () => {
     const { file, write } = await import('../../cno/src/bun/file.ts');
+    const { CryptoHasher } = await import('../../cno/src/bun/crypto/index.ts');
+    const { default: hash } = await import('../../cno/src/bun/hash/index.ts');
     const directory = await Deno.makeTempDir({ prefix: 'cno-bun-hash-classes-' });
     try {
         const path = `${directory}/input.txt`;
         await write(path, 'abc');
-        for (const input of [file(path), file(path).slice(0, 1)]) {
+        const plain = file(path);
+        const nullPrototype = file(path);
+        Object.setPrototypeOf(nullPrototype, null);
+        const blobDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Blob')!;
+        const plainBlob = new Blob(['abc']);
+        for (const input of [plain, file(path).slice(0, 1), nullPrototype]) {
             throws(() => SHA256.hash(input, 'hex'), (error: unknown) => error instanceof TypeError && error.message === 'File blob cannot be used here' && code('ERR_INVALID_ARG_TYPE')(error));
             throws(() => new SHA256().update(input), /File blob cannot be used here/);
             throws(() => sha(input, 'hex'), /File blob cannot be used here/);
+            throws(() => hash(input), /File blob cannot be used here/);
+            throws(() => CryptoHasher.hash('sha256', input, 'hex'), /File blob cannot be used here/);
+            throws(() => new CryptoHasher('sha256').update(input), /File blob cannot be used here/);
+        }
+        try {
+            Reflect.set(globalThis, 'Blob', function ReplacementBlob() {});
+            throws(() => SHA256.hash(plain, 'hex'), /File blob cannot be used here/);
+            strictEqual(SHA256.hash(plainBlob, 'hex'), abcVectors.SHA256);
+        } finally {
+            Object.defineProperty(globalThis, 'Blob', blobDescriptor);
         }
     } finally {
         await Deno.remove(directory, { recursive: true });
