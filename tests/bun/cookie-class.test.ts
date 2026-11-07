@@ -1,5 +1,7 @@
 import { deepStrictEqual, strictEqual, throws, doesNotThrow } from 'node:assert';
+import { runInNewContext } from 'node:vm';
 import { Cookie } from '../../cno/src/bun/cookie/cookie.ts';
+import { CookieMap } from '../../cno/src/bun/cookie/index.ts';
 
 Deno.test('constructs and serializes attributes in Bun order', () => {
         const cookie = new Cookie('sid', 'a b', { domain: 'example.com', path: '/app', expires: new Date(0), maxAge: 12, secure: true, httpOnly: true, partitioned: true, sameSite: 'strict' });
@@ -94,5 +96,45 @@ Deno.test('brands setters and methods before coercion or private state access', 
         const descriptor = Object.getOwnPropertyDescriptor(Cookie, property)!;
         strictEqual(descriptor.enumerable, true);
         strictEqual(descriptor.configurable, false);
+    }
+});
+
+Deno.test('cookie expiry uses Date internal slots and captured intrinsics', () => {
+    const timestamp = Date.UTC(2030, 0, 2, 3, 4, 5);
+    const expected = 'Wed, 02 Jan 2030 03:04:05 GMT';
+    const foreign = runInNewContext(`new Date(${timestamp})`) as Date;
+    const unlinked = Object.setPrototypeOf(new Date(timestamp), null) as Date;
+
+    for (const date of [foreign, unlinked]) {
+        const cookie = new Cookie('a', 'b', { expires: date });
+        strictEqual(cookie.serialize(), `a=b; Path=/; Expires=${expected}; SameSite=Lax`);
+        strictEqual(cookie.expires?.getTime(), timestamp);
+
+        const map = new CookieMap();
+        map.set('a', 'b', { expires: date });
+        deepStrictEqual(map.toSetCookieHeaders(), [`a=b; Path=/; Expires=${expected}; SameSite=Lax`]);
+    }
+
+    const spoof = Object.create(Date.prototype);
+    throws(() => new Cookie('a', 'b', { expires: spoof }), TypeError);
+    throws(() => new CookieMap().set('a', 'b', { expires: spoof }), TypeError);
+
+    const methods = [
+        'getTime', 'toUTCString', 'getUTCDay', 'getUTCDate', 'getUTCMonth',
+        'getUTCFullYear', 'getUTCHours', 'getUTCMinutes', 'getUTCSeconds',
+    ] as const;
+    const originals = methods.map(method => Date.prototype[method]);
+    const date = new Date(timestamp);
+    try {
+        for (const method of methods) {
+            Date.prototype[method] = (() => { throw new Error(`patched ${method} called`); }) as never;
+        }
+        strictEqual(new Cookie('a', 'b', { expires: date }).serialize(),
+            `a=b; Path=/; Expires=${expected}; SameSite=Lax`);
+        const map = new CookieMap();
+        map.set('a', 'b', { expires: date });
+        deepStrictEqual(map.toSetCookieHeaders(), [`a=b; Path=/; Expires=${expected}; SameSite=Lax`]);
+    } finally {
+        methods.forEach((method, index) => { Date.prototype[method] = originals[index] as never; });
     }
 });
