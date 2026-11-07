@@ -148,3 +148,63 @@ Deno.test('bun: JSON5.stringify identifies boxed values without consulting toStr
     strictEqual(JSON5.stringify(Object.create(Number.prototype)), '{}');
     throws(() => JSON5.stringify(Object(1n)), /cannot serialize BigInt/);
 });
+
+Deno.test('bun: JSON5.stringify space uses boxed primitive brands and ordinary coercion', () => {
+    const value = { a: 1 };
+    strictEqual(JSON5.stringify(value, null, -2), '{a:1}');
+    strictEqual(JSON5.stringify(value, null, NaN), '{a:1}');
+    strictEqual(JSON5.stringify(value, null, Infinity), '{\n          a: 1,\n}');
+    strictEqual(JSON5.stringify(value, null, '1234567890XYZ'), '{\n1234567890a: 1,\n}');
+
+    const foreign = runInNewContext(`({ number: new Number(2), string: new String('xy') })`);
+    strictEqual(JSON5.stringify(value, null, foreign.number), '{\n  a: 1,\n}');
+    strictEqual(JSON5.stringify(value, null, foreign.string), '{\nxya: 1,\n}');
+
+    for (const space of [Object.create(Number.prototype), Object.create(String.prototype),
+        new Proxy(new Number(2), {}), new Proxy(new String('xy'), {})]) {
+        strictEqual(JSON5.stringify(value, null, space), '{a:1}');
+    }
+    throws(() => JSON5.stringify(value, null, Object.setPrototypeOf(new Number(2), null)), TypeError);
+    throws(() => JSON5.stringify(value, null, Object.setPrototypeOf(new String('xy'), null)), TypeError);
+
+    let numberCalls = 0;
+    const number = new Number(2);
+    Object.defineProperty(number, 'valueOf', { value() { numberCalls++; return 3; } });
+    strictEqual(JSON5.stringify(value, null, number), '{\n   a: 1,\n}');
+    strictEqual(numberCalls, 1);
+
+    let stringCalls = 0;
+    const string = new String('xy');
+    Object.defineProperty(string, 'toString', { value() { stringCalls++; return 'zz'; } });
+    strictEqual(JSON5.stringify(value, null, string), '{\nzza: 1,\n}');
+    strictEqual(stringCalls, 1);
+
+    const OriginalNumber = Number;
+    const OriginalString = String;
+    const numberPrototypeValueOf = Number.prototype.valueOf;
+    const stringPrototypeToString = String.prototype.toString;
+    try {
+        Number.prototype.valueOf = () => { throw new Error('patched Number.valueOf called'); };
+        String.prototype.toString = () => { throw new Error('patched String.toString called'); };
+        throws(() => JSON5.stringify(value, null, new Number(2)), /patched Number\.valueOf called/);
+        throws(() => JSON5.stringify(value, null, new String('xy')), /patched String\.toString called/);
+
+        globalThis.Number = class ReplacementNumber {
+            static [Symbol.hasInstance](): boolean { throw new Error('replacement Number instanceof called'); }
+        } as unknown as NumberConstructor;
+        globalThis.String = class ReplacementString {
+            static [Symbol.hasInstance](): boolean { throw new Error('replacement String instanceof called'); }
+        } as unknown as StringConstructor;
+        const boxedNumber = new OriginalNumber(2);
+        const boxedString = new OriginalString('xy');
+        Object.defineProperty(boxedNumber, 'valueOf', { value: numberPrototypeValueOf });
+        Object.defineProperty(boxedString, 'toString', { value: stringPrototypeToString });
+        strictEqual(JSON5.stringify(value, null, boxedNumber), '{\n  a: 1,\n}');
+        strictEqual(JSON5.stringify(value, null, boxedString), '{\nxya: 1,\n}');
+    } finally {
+        OriginalNumber.prototype.valueOf = numberPrototypeValueOf;
+        OriginalString.prototype.toString = stringPrototypeToString;
+        globalThis.Number = OriginalNumber;
+        globalThis.String = OriginalString;
+    }
+});
