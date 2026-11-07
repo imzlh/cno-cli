@@ -71,6 +71,62 @@ Deno.test({ name: 'bun: file lazily reads paths and local file URLs', timeout: 1
     });
 });
 
+Deno.test('bun: file infers Bun 1.4.4 MIME types for common extensions', () => {
+    const cases: Record<string, string> = {
+        avif: 'image/avif',
+        bmp: 'image/x-ms-bmp',
+        cjs: 'text/javascript;charset=utf-8',
+        css: 'text/css;charset=utf-8',
+        csv: 'text/csv',
+        cts: 'text/javascript;charset=utf-8',
+        eot: 'application/vnd.ms-fontobject',
+        gif: 'image/gif',
+        gz: 'application/gzip',
+        htm: 'text/html;charset=utf-8',
+        html: 'text/html;charset=utf-8',
+        ico: 'image/x-icon',
+        jpeg: 'image/jpeg',
+        jpg: 'image/jpeg',
+        js: 'text/javascript;charset=utf-8',
+        json: 'application/json;charset=utf-8',
+        jsx: 'text/javascript;charset=utf-8',
+        map: 'application/json;charset=utf-8',
+        md: 'text/markdown',
+        mjs: 'text/javascript;charset=utf-8',
+        mp3: 'audio/mpeg',
+        mp4: 'video/mp4',
+        mts: 'text/javascript;charset=utf-8',
+        otf: 'font/otf',
+        pdf: 'application/pdf',
+        png: 'image/png',
+        svg: 'image/svg+xml',
+        tar: 'application/x-tar',
+        ts: 'text/javascript;charset=utf-8',
+        tsx: 'text/javascript;charset=utf-8',
+        ttf: 'font/ttf',
+        txt: 'text/plain;charset=utf-8',
+        wasm: 'application/wasm',
+        wav: 'audio/x-wav',
+        webm: 'video/webm',
+        webmanifest: 'application/manifest+json',
+        webp: 'image/webp',
+        woff: 'font/woff',
+        woff2: 'font/woff2',
+        xml: 'application/xml',
+        yaml: 'text/yaml',
+        yml: 'text/yaml',
+        zip: 'application/zip',
+    };
+    for (const [extension, type] of Object.entries(cases)) {
+        strictEqual(file(`asset.${extension}`).type, type, extension);
+    }
+    strictEqual(file('ASSET.TXT').type, 'text/plain;charset=utf-8');
+    strictEqual(file('asset.jsonc').type, 'application/octet-stream');
+    strictEqual(file('asset.constructor').type, 'application/octet-stream');
+    strictEqual(file('asset.unknown').type, 'application/octet-stream');
+    strictEqual(file('no-extension').type, 'application/octet-stream');
+});
+
 Deno.test('bun: file borrows descriptors and consumes their shared read offset', async () => {
     await withTempDir('bun-file-fd-read', async (root) => {
         const path = join(root, 'source.txt');
