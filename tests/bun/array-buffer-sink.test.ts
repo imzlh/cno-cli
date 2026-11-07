@@ -100,6 +100,21 @@ test('bun: ArrayBufferSink reads the intrinsic view window without invoking shad
     assert.deepEqual(bytes(sink.end()), [11, 12]);
 });
 
+test('bun: ArrayBufferSink write() is unaffected by replacing ArrayBuffer.isView', () => {
+    const original = ArrayBuffer.isView;
+    let result: SinkResult;
+    try {
+        ArrayBuffer.isView = () => { throw new Error('replaced ArrayBuffer.isView'); };
+        const sink = started();
+        assert.equal(sink.write(new Uint8Array([20, 21])), 2);
+        assert.equal(sink.write(new DataView(new Uint8Array([22, 23]).buffer)), 2);
+        result = sink.end();
+    } finally {
+        ArrayBuffer.isView = original;
+    }
+    assert.deepEqual(bytes(result!), [20, 21, 22, 23]);
+});
+
 test('bun: ArrayBufferSink write() rejects unsupported chunks with TypeError', () => {
     const sink = started();
     for (const value of [undefined, null, 1, true, {}, [1, 2], Symbol('x'), 1n, new Blob(['a'])]) {
