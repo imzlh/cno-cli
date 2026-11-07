@@ -1,5 +1,6 @@
 import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert';
 import Bun, { file, write } from 'bun';
+import { closeSync, fstatSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -33,6 +34,17 @@ const positiveSizePseudoFile = (() => {
     return undefined;
 })();
 
+function readFromCurrentOffset(fd: number): string {
+    const chunks: Uint8Array[] = [];
+    while (true) {
+        const buffer = new Uint8Array(32);
+        const count = readSync(fd, buffer, 0, buffer.byteLength, null);
+        if (count === 0) break;
+        chunks.push(buffer.slice(0, count));
+    }
+    return chunks.map(chunk => new TextDecoder().decode(chunk)).join('');
+}
+
 Deno.test({ name: 'bun: file lazily reads paths and local file URLs', timeout: 10000 }, async () => {
     await withTempDir('bun-file-read', async (root) => {
         const path = join(root, 'message.txt');
@@ -56,6 +68,167 @@ Deno.test({ name: 'bun: file lazily reads paths and local file URLs', timeout: 1
         deepStrictEqual(Array.from(await fromPath.bytes()), [104, 195, 169, 108, 108, 111]);
         strictEqual((await fromPath.arrayBuffer()).byteLength, 6);
         strictEqual(await new Response(fromPath).text(), 'héllo');
+    });
+});
+
+Deno.test('bun: file borrows descriptors and consumes their shared read offset', async () => {
+    await withTempDir('bun-file-fd-read', async (root) => {
+        const path = join(root, 'source.txt');
+        writeFileSync(path, '0123456789');
+        const fd = openSync(path, 'r+');
+        try {
+            const prefix = new Uint8Array(2);
+            strictEqual(readSync(fd, prefix, 0, 2, null), 2);
+            const source = file(fd, { type: 'text/custom' });
+            strictEqual(source.name, undefined);
+            strictEqual(source.type, 'text/custom');
+            strictEqual(file(fd).type, 'application/octet-stream');
+            strictEqual(file(fd, { type: '' }).type, 'application/octet-stream');
+            strictEqual(source.size, 10);
+            strictEqual(source.lastModified, Deno.statSync(path).mtime!.getTime());
+            strictEqual(await source.exists(), true);
+            strictEqual((await source.stat()).size, 10);
+            strictEqual(await source.text(), '23456789');
+            strictEqual(await source.text(), '');
+            strictEqual(fstatSync(fd).size, 10);
+
+            const cloneFd = openSync(path, 'r');
+            try {
+                strictEqual(readSync(cloneFd, new Uint8Array(2), 0, 2, null), 2);
+                const clone = structuredClone(file(cloneFd));
+                strictEqual(await clone.text(), '23456789');
+                strictEqual(readFromCurrentOffset(cloneFd), '');
+                strictEqual(fstatSync(cloneFd).size, 10);
+            } finally {
+                closeSync(cloneFd);
+            }
+        } finally {
+            closeSync(fd);
+        }
+    });
+});
+
+Deno.test('bun: descriptor streams and nonnegative slices use positional reads', async () => {
+    await withTempDir('bun-file-fd-stream', async (root) => {
+        const path = join(root, 'source.txt');
+        writeFileSync(path, '0123456789');
+        const fd = openSync(path, 'r');
+        try {
+            const prefix = new Uint8Array(4);
+            strictEqual(readSync(fd, prefix, 0, 4, null), 4);
+            strictEqual(await new Response(file(fd).stream()).text(), '0123456789');
+            strictEqual(await new Response(file(fd).slice(2, 5).stream()).text(), '234');
+            strictEqual(await new Response(file(fd).slice(-Infinity, 3).stream()).text(), '012');
+            strictEqual(readFromCurrentOffset(fd), '456789');
+            throws(() => file(fd).slice(-1), /Negative slices/);
+            await rejects(() => file(fd).slice(1, 3).text(), /cannot seek a borrowed descriptor/);
+        } finally {
+            closeSync(fd);
+        }
+    });
+});
+
+Deno.test('bun: descriptor writes and writers advance the shared offset without closing', async () => {
+    await withTempDir('bun-file-fd-write', async (root) => {
+        const path = join(root, 'target.txt');
+        writeFileSync(path, '0123456789');
+        const fd = openSync(path, 'r+');
+        try {
+            const prefix = new Uint8Array(3);
+            strictEqual(readSync(fd, prefix, 0, 3, null), 3);
+            const target = file(fd);
+            strictEqual(await target.write('AB'), 2);
+            strictEqual(await write(target, new Response('CD')), 2);
+            const writer = target.writer();
+            strictEqual(writer.write('E'), 1);
+            strictEqual(writer.end(), 1);
+            strictEqual(readFileSync(path, 'utf8'), '012ABCDE89');
+            strictEqual(readFromCurrentOffset(fd), '89');
+            strictEqual(fstatSync(fd).size, 10);
+        } finally {
+            closeSync(fd);
+        }
+    });
+});
+
+Deno.test('bun: descriptor BunFiles stream as write sources and expose deletion errors as values', async () => {
+    await withTempDir('bun-file-fd-source', async (root) => {
+        const sourcePath = join(root, 'source.txt');
+        const targetPath = join(root, 'target.txt');
+        const samePath = join(root, 'same.txt');
+        const largePath = join(root, 'large.bin');
+        writeFileSync(sourcePath, 'abcdef');
+        writeFileSync(targetPath, 'XXXXXXXX');
+        const sourceFd = openSync(sourcePath, 'r');
+        const targetFd = openSync(targetPath, 'r+');
+        try {
+            strictEqual(readSync(sourceFd, new Uint8Array(2), 0, 2, null), 2);
+            strictEqual(readSync(targetFd, new Uint8Array(3), 0, 3, null), 3);
+            strictEqual(await write(file(targetFd), file(sourceFd)), 4);
+            strictEqual(readFileSync(targetPath, 'utf8'), 'XXXcdefX');
+            strictEqual(readFromCurrentOffset(sourceFd), '');
+            strictEqual(readFromCurrentOffset(targetFd), 'X');
+
+            const deletion = await file(targetFd).delete() as unknown as Error & { code?: string };
+            strictEqual(deletion instanceof TypeError, true);
+            strictEqual(deletion.code, 'ERR_INVALID_ARG_TYPE');
+            strictEqual(readFileSync(targetPath, 'utf8'), 'XXXcdefX');
+
+            writeFileSync(samePath, '0123456789');
+            const sameFd = openSync(samePath, 'r+');
+            try {
+                strictEqual(readSync(sameFd, new Uint8Array(2), 0, 2, null), 2);
+                const same = file(sameFd);
+                strictEqual(await write(same, same), 8);
+                strictEqual(readFileSync(samePath, 'utf8'), '012345678923456789');
+                strictEqual(fstatSync(sameFd).size, 18);
+            } finally {
+                closeSync(sameFd);
+            }
+
+            const large = new Uint8Array(70 * 1024);
+            for (let index = 0; index < large.byteLength; index++) large[index] = index % 251;
+            writeFileSync(largePath, large);
+            const largeFd = openSync(largePath, 'r+');
+            try {
+                strictEqual(readSync(largeFd, new Uint8Array(17), 0, 17, null), 17);
+                const same = file(largeFd);
+                strictEqual(await write(same, same), large.byteLength - 17);
+                const actual = readFileSync(largePath);
+                strictEqual(actual.byteLength, large.byteLength * 2 - 17);
+                deepStrictEqual(new Uint8Array(actual.subarray(0, large.byteLength)), large);
+                deepStrictEqual(new Uint8Array(actual.subarray(large.byteLength)), large.subarray(17));
+            } finally {
+                closeSync(largeFd);
+            }
+        } finally {
+            closeSync(sourceFd);
+            closeSync(targetFd);
+        }
+    });
+});
+
+Deno.test('bun: descriptor construction validates eagerly but use stays lazy', async () => {
+    for (const value of [-1, 2 ** 31]) {
+        throws(() => file(value), { name: 'RangeError', code: 'ERR_OUT_OF_RANGE' });
+    }
+    for (const value of [1.5, NaN, Infinity]) {
+        throws(() => file(value), { name: 'RangeError', code: 'ERR_OUT_OF_RANGE' });
+    }
+
+    await withTempDir('bun-file-fd-closed', async (root) => {
+        const path = join(root, 'closed.txt');
+        writeFileSync(path, 'closed');
+        const fd = openSync(path, 'r');
+        const source = file(fd);
+        closeSync(fd);
+        strictEqual(source.size, 0);
+        strictEqual(source.lastModified, 2 ** 52 - 1);
+        strictEqual(await source.exists(), false);
+        await rejects(() => source.stat(), { code: 'EBADF' });
+        await rejects(() => source.text(), { code: 'EBADF' });
+        await rejects(() => source.write('x'), { code: 'EBADF' });
+        await rejects(() => write(source, 'x'), { code: 'EBADF' });
     });
 });
 
