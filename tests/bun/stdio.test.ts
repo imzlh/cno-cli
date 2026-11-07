@@ -25,6 +25,7 @@ Deno.test({ name: 'bun.stdio: Blob writes stream their exact bytes', timeout: 15
 
 Deno.test({ name: 'bun.stdio: Blob writes use intrinsic branding and streaming', timeout: 15000 }, async () => {
     const child = spawn([process.execPath, 'eval', `
+        const target = Bun.stdout;
         const NativeBlob = Blob;
         const blob = new NativeBlob(['intrinsic']);
         Object.setPrototypeOf(blob, null);
@@ -36,9 +37,9 @@ Deno.test({ name: 'bun.stdio: Blob writes use intrinsic branding and streaming',
             get() { throw new Error('File own stream getter must not run'); },
         });
         globalThis.Blob = class ReplacementBlob {};
-        const blobWritten = await Bun.stdout.write(blob);
-        const fileWritten = await Bun.stdout.write(file);
-        await Bun.stdout.write(':' + blobWritten + ':' + fileWritten);
+        const blobWritten = await target.write(blob);
+        const fileWritten = await target.write(file);
+        await target.write(':' + blobWritten + ':' + fileWritten);
     `], { stdout: 'pipe', stderr: 'pipe' });
     strictEqual(await child.exited, 0);
     strictEqual(await child.stdout.text(), 'intrinsicfile:9:4');

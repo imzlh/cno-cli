@@ -3,7 +3,6 @@ import { Buffer } from 'node:buffer';
 import { runInNewContext } from 'node:vm';
 import { MD4, MD5, SHA1, SHA224, SHA256, SHA384, SHA512, SHA512_256, sha } from '../../cno/src/bun/crypto/hash-classes.ts';
 import { md4 } from '../../cno/src/bun/crypto/md4.ts';
-import { Blob } from '../../cno/src/webapi/formdata.ts';
 
 // Expected values below were generated with Bun 1.3.14 (the oracle for
 // behavior), and cross-checked against bun-types 1.4.4 for the API surface.

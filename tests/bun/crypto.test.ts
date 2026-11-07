@@ -1,7 +1,6 @@
 import { deepStrictEqual, strictEqual, throws } from 'node:assert';
 import { runInNewContext } from 'node:vm';
 import { CryptoHasher } from '../../cno/src/bun/crypto/index.ts';
-import { Blob } from '../../cno/src/webapi/formdata.ts';
 
 const code = (expected: string) => (error: unknown) => (error as { code?: string }).code === expected;
 
