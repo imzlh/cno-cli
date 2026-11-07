@@ -244,6 +244,91 @@ Deno.test('bun: compression helpers read and convert option fields in declaratio
     deepStrictEqual(abruptEvents, ['get level', 'coerce level']);
 });
 
+Deno.test('bun: compression option conversion uses captured numeric intrinsics', () => {
+    const OriginalNumber = Number;
+    const OriginalString = String;
+    const numberIsNaN = Number.isNaN;
+    const numberIsInteger = Number.isInteger;
+    const mathTrunc = Math.trunc;
+    const mathMax = Math.max;
+    const mathMin = Math.min;
+    const objectIs = Object.is;
+    const packed = gzipSync('x');
+    let compressionWindowCalls = 0;
+    let levelCalls = 0;
+    let decompressionWindowCalls = 0;
+    const events: string[] = [];
+    try {
+        globalThis.Number = (() => { throw new Error('replacement Number called'); }) as unknown as NumberConstructor;
+        globalThis.String = (() => { throw new Error('replacement String called'); }) as unknown as StringConstructor;
+        OriginalNumber.isNaN = () => { throw new Error('replacement Number.isNaN called'); };
+        OriginalNumber.isInteger = () => { throw new Error('replacement Number.isInteger called'); };
+        Math.trunc = () => { throw new Error('replacement Math.trunc called'); };
+        Math.max = () => { throw new Error('replacement Math.max called'); };
+        Math.min = () => { throw new Error('replacement Math.min called'); };
+        Object.is = () => { throw new Error('replacement Object.is called'); };
+
+        const compressed = gzipSync('x', {
+            get windowBits() {
+                events.push('get windowBits');
+                return { valueOf() { compressionWindowCalls++; events.push('coerce windowBits'); return 15; } } as never;
+            },
+            get library() { events.push('get library'); return 'libdeflate'; },
+            get level() {
+                events.push('get level');
+                return { valueOf() { levelCalls++; events.push('coerce level'); return 12; } } as never;
+            },
+            get memLevel() { events.push('get memLevel'); return 8; },
+            get strategy() { events.push('get strategy'); return 0; },
+        });
+        if (decoder.decode(gunzipSync(compressed)) !== 'x') throw new Error('compressed result mismatch');
+        if (decoder.decode(gunzipSync(packed, {
+            windowBits: { valueOf() { decompressionWindowCalls++; return 31.9; } } as never,
+        })) !== 'x') throw new Error('decompressed result mismatch');
+        const expectedEvents = [
+            'get windowBits', 'coerce windowBits', 'get library', 'get level',
+            'coerce level', 'get memLevel', 'get strategy',
+        ];
+        if (events.length !== expectedEvents.length || events.some((event, index) => event !== expectedEvents[index])) {
+            throw new Error(`option order mismatch: ${events.join(',')}`);
+        }
+        if (compressionWindowCalls !== 1 || levelCalls !== 1 || decompressionWindowCalls !== 1) {
+            throw new Error('option coercion count mismatch');
+        }
+        const invalid = (run: () => unknown, name: string, message: string, code: string) => {
+            try {
+                run();
+            } catch (error) {
+                const actual = error as Error & { code?: string };
+                if (actual.name === name && actual.message === message && actual.code === code) return;
+                throw error;
+            }
+            throw new Error('expected compression option error');
+        };
+        invalid(
+            () => gzipSync('x', { memLevel: false } as never),
+            'TypeError',
+            'The "ZlibCompressionOptions.memLevel" property must be of type number. Received type boolean (false)',
+            'ERR_INVALID_ARG_TYPE',
+        );
+        invalid(
+            () => gzipSync('x', { memLevel: -0 } as never),
+            'RangeError',
+            'The value of "ZlibCompressionOptions.memLevel" is out of range. It must be >= 1 && <= 9. Received -0',
+            'ERR_OUT_OF_RANGE',
+        );
+    } finally {
+        OriginalNumber.isNaN = numberIsNaN;
+        OriginalNumber.isInteger = numberIsInteger;
+        Math.trunc = mathTrunc;
+        Math.max = mathMax;
+        Math.min = mathMin;
+        Object.is = objectIs;
+        globalThis.Number = OriginalNumber;
+        globalThis.String = OriginalString;
+    }
+});
+
 Deno.test('bun: compression rejects invalid input and incomplete streams', () => {
     let invalid: (Error & { code?: string }) | undefined;
     try {
