@@ -66,6 +66,73 @@ Deno.test({ name: 'bun.net: echo between Bun.listen and Bun.connect', timeout: 1
     }
 });
 
+Deno.test({ name: 'bun.net: Socket writes use intrinsic view brands and windows', timeout: 10000 }, async () => {
+    const received: number[] = [];
+    let serverEnded = false;
+    let clientClosed = false;
+    const listener = listen({
+        hostname: '127.0.0.1',
+        port: 0,
+        socket: {
+            data(_socket, chunk) {
+                received.push(...chunk as Uint8Array);
+            },
+            end() {
+                serverEnded = true;
+            },
+        },
+    });
+
+    try {
+        await connect({
+            hostname: '127.0.0.1',
+            port: listener.port,
+            socket: {
+                data() {},
+                open(socket) {
+                    const source = new Uint8Array([10, 11, 12, 13, 14, 15]);
+                    const typed = new Uint8Array(source.buffer, 1, 2);
+                    const data = new DataView(source.buffer, 3, 2);
+                    const ending = new Uint8Array(new Uint8Array([20, 21, 22, 23]).buffer, 1, 2);
+                    for (const view of [typed, data, ending]) {
+                        for (const property of ['buffer', 'byteOffset', 'byteLength']) {
+                            Object.defineProperty(view, property, {
+                                get() { throw new Error(`shadowed ${property}`); },
+                            });
+                        }
+                    }
+
+                    const detached = new ArrayBuffer(4);
+                    const detachedTyped = new Uint8Array(detached, 1, 2);
+                    const detachedData = new DataView(detached, 1, 2);
+                    structuredClone(detached, { transfer: [detached] });
+
+                    const originalIsView = ArrayBuffer.isView;
+                    try {
+                        ArrayBuffer.isView = (() => { throw new Error('replacement called'); }) as typeof ArrayBuffer.isView;
+                        strictEqual(socket.write(typed), 2);
+                        strictEqual(socket.write(data), 2);
+                        throws(() => socket.write(new Proxy(new Uint8Array([30]), {}) as never), TypeError);
+                        throws(() => socket.write(new Proxy(new DataView(new ArrayBuffer(1)), {}) as never), TypeError);
+                        strictEqual(socket.write(detachedTyped), 0);
+                        strictEqual(socket.write(detachedData), 0);
+                        strictEqual(socket.end(ending), 2);
+                    } finally {
+                        ArrayBuffer.isView = originalIsView;
+                    }
+                },
+                close() {
+                    clientClosed = true;
+                },
+            },
+        });
+        await until(() => serverEnded && clientClosed, 'intrinsic view writes close');
+        deepStrictEqual(received, [11, 12, 13, 14, 21, 22]);
+    } finally {
+        listener.stop(true);
+    }
+});
+
 Deno.test({ name: 'bun.net: binaryType controls data chunk shapes', timeout: 10000 }, async () => {
     for (const binaryType of ['arraybuffer', 'buffer', 'uint8array', undefined] as const) {
         const listener = listen({
