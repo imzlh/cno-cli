@@ -139,6 +139,68 @@ Deno.test('bun: inspect recognizes common cross-realm builtins', () => {
     ].join('\n'));
 });
 
+Deno.test('bun: inspect reads view brands and metadata from internal slots', () => {
+    const original = Object.getOwnPropertyDescriptor(ArrayBuffer, 'isView')!;
+    const actual: string[] = [];
+    try {
+        for (const replacement of [
+            () => false,
+            () => { throw new Error('must not call replaced ArrayBuffer.isView'); },
+        ]) {
+            Object.defineProperty(ArrayBuffer, 'isView', { ...original, value: replacement });
+            actual.push(
+                inspect(new Uint8Array([1, 2])),
+                inspect(new DataView(new Uint8Array([3, 4]).buffer)),
+            );
+        }
+    } finally {
+        Object.defineProperty(ArrayBuffer, 'isView', original);
+    }
+    deepStrictEqual(actual, [
+        'Uint8Array(2) [ 1, 2 ]',
+        'DataView(2) [ 3, 4 ]',
+        'Uint8Array(2) [ 1, 2 ]',
+        'DataView(2) [ 3, 4 ]',
+    ]);
+
+    const typed = new Uint8Array([5, 6]);
+    const dataView = new DataView(new Uint8Array([7, 8]).buffer);
+    for (const view of [typed, dataView]) {
+        Object.defineProperties(view, {
+            buffer: { get() { throw new Error('must not read shadow buffer'); } },
+            byteOffset: { get() { throw new Error('must not read shadow byteOffset'); } },
+            byteLength: { get() { throw new Error('must not read shadow byteLength'); } },
+            [Symbol.toStringTag]: { get() { throw new Error('must not read shadow tag'); } },
+        });
+    }
+    strictEqual(inspect(typed), 'Uint8Array(2) [ 5, 6 ]');
+    strictEqual(inspect(dataView), 'DataView(2) [ 7, 8 ]');
+
+    const foreign = runInNewContext(`({
+        typed: new Uint16Array([258, 515]),
+        dataView: new DataView(new Uint8Array([9, 10]).buffer),
+    })`) as { typed: Uint16Array; dataView: DataView };
+    strictEqual(inspect(foreign.typed), 'Uint16Array(2) [ 258, 515 ]');
+    strictEqual(inspect(foreign.dataView), 'DataView(2) [ 9, 10 ]');
+
+    const detach = (view: Uint8Array | DataView) => {
+        const buffer = view.buffer as ArrayBuffer;
+        structuredClone(buffer, { transfer: [buffer] });
+        return view;
+    };
+    strictEqual(inspect(detach(new Uint8Array(2))), 'Uint8Array(0) []');
+    strictEqual(inspect(detach(new DataView(new ArrayBuffer(2)))), 'DataView(0) []');
+
+    const typedBuffer = new ArrayBuffer(4, { maxByteLength: 8 });
+    const outOfBoundsTyped = new Uint8Array(typedBuffer, 2, 2);
+    typedBuffer.resize(1);
+    strictEqual(inspect(outOfBoundsTyped), 'Uint8Array(0) []');
+    const dataViewBuffer = new ArrayBuffer(4, { maxByteLength: 8 });
+    const outOfBoundsDataView = new DataView(dataViewBuffer, 2, 2);
+    dataViewBuffer.resize(1);
+    strictEqual(inspect(outOfBoundsDataView), 'DataView(0) []');
+});
+
 Deno.test('bun: inspect does not dispatch spoofed builtin tags', () => {
     for (const tag of ['Date', 'RegExp', 'Map', 'Set', 'ArrayBuffer']) {
         strictEqual(inspect({ [Symbol.toStringTag]: tag, a: 1 }),
