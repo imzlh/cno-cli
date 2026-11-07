@@ -55,6 +55,69 @@ Deno.test('bun: UUIDv5 preserves view windows and accepts cross-realm binary val
     strictEqual(randomUUIDv5(new DataView(paddedName.buffer, 2, 15), new DataView(paddedNamespace.buffer, 2, 16)), expected);
 });
 
+Deno.test('bun: UUIDv5 reads binary brands and windows from internal slots', () => {
+    const ns = Uint8Array.from(namespace.replaceAll('-', '').match(/../g)!, value => parseInt(value, 16));
+    const name = new TextEncoder().encode('www.widgets.com');
+    const shadow = <T extends ArrayBuffer | ArrayBufferView>(value: T): T => {
+        for (const key of ['buffer', 'byteOffset', 'byteLength']) {
+            Object.defineProperty(value, key, { configurable: true, get() { throw new Error(`read ${key}`); } });
+        }
+        return value;
+    };
+
+    strictEqual(randomUUIDv5(shadow(name.slice()), ns), expected);
+    strictEqual(randomUUIDv5(shadow(new DataView(name.slice().buffer)), ns), expected);
+    strictEqual(randomUUIDv5(name, shadow(ns.slice())), expected);
+    strictEqual(randomUUIDv5(name, shadow(new DataView(ns.slice().buffer))), expected);
+    strictEqual(randomUUIDv5(shadow(name.slice().buffer), ns), expected);
+    strictEqual(randomUUIDv5(name, shadow(ns.slice().buffer)), expected);
+
+    const call = randomUUIDv5 as (...args: any[]) => any;
+    throws(() => call(new Proxy(name, {}), ns), { code: 'ERR_INVALID_ARG_TYPE' });
+    throws(() => call(new Proxy(name.buffer, {}), ns), { code: 'ERR_INVALID_ARG_TYPE' });
+    throws(() => call(name, new Proxy(ns, {})), { code: 'ERR_INVALID_ARG_TYPE' });
+    throws(() => call(name, new Proxy(ns.buffer, {})), { code: 'ERR_INVALID_ARG_TYPE' });
+
+    const isView = ArrayBuffer.isView;
+    try {
+        ArrayBuffer.isView = (() => { throw new Error('ArrayBuffer.isView called'); }) as typeof ArrayBuffer.isView;
+        strictEqual(randomUUIDv5(name, ns), expected);
+        throws(() => call({}, ns), { code: 'ERR_INVALID_ARG_TYPE' });
+        throws(() => call(name, {}), { code: 'ERR_INVALID_ARG_TYPE' });
+    } finally {
+        ArrayBuffer.isView = isView;
+    }
+});
+
+Deno.test('bun: UUIDv5 treats detached and out-of-bounds views as empty windows', () => {
+    const ns = Uint8Array.from(namespace.replaceAll('-', '').match(/../g)!, value => parseInt(value, 16));
+    const emptyName = randomUUIDv5('', ns);
+    const call = randomUUIDv5 as (...args: any[]) => any;
+    const detached = (kind: 'buffer' | 'typed' | 'view') => {
+        const buffer = new ArrayBuffer(16);
+        const value = kind === 'buffer' ? buffer : kind === 'typed' ? new Uint8Array(buffer) : new DataView(buffer);
+        structuredClone(buffer, { transfer: [buffer] });
+        return value;
+    };
+
+    for (const kind of ['buffer', 'typed', 'view'] as const) {
+        strictEqual(call(detached(kind), ns), emptyName);
+        throws(() => call('', detached(kind)), { code: 'ERR_INVALID_ARG_VALUE', message: 'Namespace must be exactly 16 bytes' });
+    }
+
+    if (typeof ArrayBuffer.prototype.resize !== 'function') return;
+    const outOfBounds = (kind: 'typed' | 'view') => {
+        const buffer = new ArrayBuffer(32, { maxByteLength: 64 });
+        const value = kind === 'typed' ? new Uint8Array(buffer, 16, 16) : new DataView(buffer, 16, 16);
+        buffer.resize(8);
+        return value;
+    };
+    for (const kind of ['typed', 'view'] as const) {
+        strictEqual(call(outOfBounds(kind), ns), emptyName);
+        throws(() => call('', outOfBounds(kind)), { code: 'ERR_INVALID_ARG_VALUE', message: 'Namespace must be exactly 16 bytes' });
+    }
+});
+
 Deno.test('bun: UUIDv5 predefined namespaces are case insensitive', () => {
     const cases = [
         ['dns', '6ba7b810-9dad-11d1-80b4-00c04fd430c8', '21f7f8de-8051-5b89-8680-0195ef798b6a'],
