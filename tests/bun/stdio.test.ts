@@ -23,6 +23,54 @@ Deno.test({ name: 'bun.stdio: Blob writes stream their exact bytes', timeout: 15
     strictEqual(await child.stderr.text(), 'stderr-blob');
 });
 
+Deno.test({ name: 'bun.stdio: Blob writes use intrinsic branding and streaming', timeout: 15000 }, async () => {
+    const child = spawn([process.execPath, 'eval', `
+        const NativeBlob = Blob;
+        const blob = new NativeBlob(['intrinsic']);
+        Object.setPrototypeOf(blob, null);
+        Object.defineProperty(blob, 'stream', {
+            get() { throw new Error('own stream getter must not run'); },
+        });
+        const file = new File(['file'], 'probe.txt');
+        Object.defineProperty(file, 'stream', {
+            get() { throw new Error('File own stream getter must not run'); },
+        });
+        globalThis.Blob = class ReplacementBlob {};
+        const blobWritten = await Bun.stdout.write(blob);
+        const fileWritten = await Bun.stdout.write(file);
+        await Bun.stdout.write(':' + blobWritten + ':' + fileWritten);
+    `], { stdout: 'pipe', stderr: 'pipe' });
+    strictEqual(await child.exited, 0);
+    strictEqual(await child.stdout.text(), 'intrinsicfile:9:4');
+    strictEqual(await child.stderr.text(), '');
+});
+
+Deno.test({ name: 'bun.stdio: forged and proxied Blobs do not enter the Blob reader', timeout: 15000 }, async () => {
+    const child = spawn([process.execPath, 'eval', `
+        const fake = Object.create(null);
+        Object.defineProperty(fake, Symbol.toStringTag, { value: 'Blob' });
+        Object.defineProperty(fake, 'stream', {
+            get() { throw new Error('fake stream getter must not run'); },
+        });
+        const proxy = new Proxy(new Blob(['x']), {
+            get() { throw new Error('proxy property access must not run'); },
+        });
+        const result = [];
+        for (const value of [fake, proxy]) {
+            try {
+                await Bun.stdout.write(value);
+                result.push('accepted');
+            } catch (error) {
+                result.push(error instanceof TypeError ? 'TypeError' : String(error));
+            }
+        }
+        await Bun.stdout.write(result.join(','));
+    `], { stdout: 'pipe', stderr: 'pipe' });
+    strictEqual(await child.exited, 0);
+    strictEqual(await child.stdout.text(), 'TypeError,TypeError');
+    strictEqual(await child.stderr.text(), '');
+});
+
 Deno.test({ name: 'bun.stdio: direction guards', timeout: 5000 }, async () => {
     await rejects(() => stdout.text(), /not readable/);
     await rejects(() => stdout.bytes(), /not readable/);
