@@ -639,6 +639,45 @@ Deno.test({ name: 'bun: write creates parents, truncates, and is safe for same-f
     });
 });
 
+Deno.test('bun: write recognizes Request and Response inputs by intrinsic slots', async () => {
+    await withTempDir('bun-file-write-body-slots', async (root) => {
+        const path = join(root, 'output.txt');
+        const writeBody = async (value: Request | Response, expected: string) => {
+            Object.setPrototypeOf(value, null);
+            Object.defineProperties(value, {
+                body: { get() { throw new Error('shadowed body getter ran'); } },
+                bodyUsed: { get() { throw new Error('shadowed bodyUsed getter ran'); } },
+            });
+            strictEqual(await write(path, value), expected.length);
+            strictEqual(await file(path).text(), expected);
+        };
+
+        const NativeRequest = Request;
+        const NativeResponse = Response;
+        const request = new NativeRequest('https://example.invalid/', { method: 'POST', body: 'request-data' });
+        const response = new NativeResponse('response-data');
+        try {
+            Reflect.set(globalThis, 'Request', class ReplacementRequest {});
+            Reflect.set(globalThis, 'Response', class ReplacementResponse {});
+            await writeBody(request, 'request-data');
+            await writeBody(response, 'response-data');
+        } finally {
+            Reflect.set(globalThis, 'Request', NativeRequest);
+            Reflect.set(globalThis, 'Response', NativeResponse);
+        }
+
+        for (const [value, expected] of [
+            [new Proxy(new Response('proxy'), {}), '[object Response]'],
+            [new Proxy(new Request('https://example.invalid/'), {}), '[object Request]'],
+            [Object.create(Response.prototype), '[object Response]'],
+            [Object.create(Request.prototype), '[object Request]'],
+        ] as const) {
+            strictEqual(await write(path, value as never), expected.length);
+            strictEqual(await file(path).text(), expected);
+        }
+    });
+});
+
 Deno.test({ name: 'bun: Response writes stream without arrayBuffer materialization', timeout: 10000 }, async () => {
     await withTempDir('bun-file-response-stream', async (root) => {
         const path = join(root, 'output.bin');
