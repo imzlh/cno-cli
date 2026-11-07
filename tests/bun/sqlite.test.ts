@@ -1,4 +1,5 @@
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
+import vm from 'node:vm';
 import {
     Database,
     SQLiteError,
@@ -106,6 +107,68 @@ Deno.test('bun:sqlite runs statements and preserves binding types', () => {
             'SELECT * FROM items WHERE id = ?',
         ).get(99), null);
     } finally {
+        db.close();
+    }
+});
+
+Deno.test('bun:sqlite recognizes BLOBs by binary internal slots', () => {
+    const db = new Database(':memory:');
+    const statement = db.query<{ hex: string }>('SELECT hex(?) AS hex');
+    const blobHex = (value: unknown) => statement.get([value])?.hex;
+    const originalIsView = ArrayBuffer.isView;
+    try {
+        const shared = new SharedArrayBuffer(2);
+        new Uint8Array(shared).set([5, 6]);
+        strictEqual(blobHex(Uint8Array.of(1, 2).buffer), '0102');
+        strictEqual(blobHex(new DataView(Uint8Array.of(0, 3, 4).buffer, 1, 2)), '0304');
+        strictEqual(blobHex(shared), '0506');
+
+        const context = vm.createContext({});
+        strictEqual(blobHex(vm.runInContext('new Uint8Array([7, 8])', context)), '0708');
+        strictEqual(blobHex(vm.runInContext('Uint8Array.of(9, 10).buffer', context)), '090A');
+        strictEqual(blobHex(vm.runInContext(`
+            (() => {
+                const value = new SharedArrayBuffer(2);
+                new Uint8Array(value).set([11, 12]);
+                return value;
+            })()
+        `, context)), '0B0C');
+
+        const shadowed = Uint8Array.of(13, 14);
+        Object.defineProperties(shadowed, {
+            buffer: { get: () => { throw new Error('read shadowed buffer'); } },
+            byteOffset: { get: () => { throw new Error('read shadowed byteOffset'); } },
+            byteLength: { get: () => { throw new Error('read shadowed byteLength'); } },
+        });
+        strictEqual(blobHex(shadowed), '0D0E');
+
+        ArrayBuffer.isView = (() => false) as typeof ArrayBuffer.isView;
+        strictEqual(blobHex(Uint8Array.of(15, 16)), '0F10');
+        ArrayBuffer.isView = (() => { throw new Error('replacement called'); }) as typeof ArrayBuffer.isView;
+        throws(() => blobHex({}), /Binding|primitive|binary|TypedArray/);
+
+        const detachedView = Uint8Array.of(17, 18);
+        const detachedBuffer = detachedView.buffer;
+        structuredClone(detachedBuffer, { transfer: [detachedBuffer] });
+        strictEqual(blobHex(detachedView), '');
+        strictEqual(blobHex(detachedBuffer), '');
+
+        const resizable = new ArrayBuffer(4, { maxByteLength: 8 });
+        const outOfBounds = new DataView(resizable, 2, 2);
+        resizable.resize(1);
+        strictEqual(blobHex(outOfBounds), '');
+
+        throws(() => blobHex(new Proxy(Uint8Array.of(19, 20), {})), /Binding|primitive|binary|TypedArray/);
+
+        db.run('CREATE TABLE copied (value BLOB)');
+        const source = Uint8Array.of(21, 22);
+        const insert = db.prepare('INSERT INTO copied VALUES (?)', [source]);
+        source.set([99, 99]);
+        insert.run();
+        strictEqual(db.query<{ hex: string }>('SELECT hex(value) AS hex FROM copied').get()?.hex, '1516');
+        insert.finalize();
+    } finally {
+        ArrayBuffer.isView = originalIsView;
         db.close();
     }
 });
