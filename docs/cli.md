@@ -256,8 +256,12 @@ before CTS installs its own engine hook.
 
 `cno cache <file>...` resolves every entry. If any entry belongs to the local
 project, it also seeds package dependencies, including development tools; the
-entry graph supplies the relevant import-map edges. Remote-only entries do not
-seed unrelated project dependencies.
+entry graph supplies the relevant import-map edges. A local entry's nearest
+project config is used even when the command is launched from another directory,
+matching `cno run` and `deno cache`. Multiple local entries may share one project
+config root; entries from different project roots must be cached in separate
+invocations because one resolver cannot apply multiple import maps. Remote-only
+entries do not seed unrelated project dependencies.
 
 The command sets `persistLock: true`, so it is the normal path that writes
 `cts.lock`. Both invocation forms share runtime preparation and cleanup, including
@@ -295,9 +299,11 @@ shared utilities to:
 ```
 
 It prefers local checkout sources such as `cno/src/node`, `cno/src/bun`, and
-`cno/src/utils`. If no local source is found, it can fetch these files from
-GitHub. Setup does not precompile Bun sources; CTS transforms and caches raw
-TypeScript as it is loaded.
+`cno/src/utils`, searching upward from the current directory and then from the
+executable. The executable search keeps a staged development binary attached to
+its checkout when it is invoked from another project. If no local source is
+found, setup can fetch these files from GitHub. Setup does not precompile Bun
+sources; CTS transforms and caches raw TypeScript as it is loaded.
 
 The bare `bun` specifier and `bun:index` resolve to `<cacheDir>/bun/index.ts`.
 For `bun:x`, CTS first checks `<cacheDir>/bun/x.ts`, then

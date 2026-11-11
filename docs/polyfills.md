@@ -136,7 +136,9 @@ CTS resolves Node builtins from:
 ```
 
 It copies raw `.ts` files from local `cno/src/node`, `cno/src/bun`, and
-`cno/src/utils` when available:
+`cno/src/utils` when available. Local discovery searches upward from both the
+current directory and the executable, so a staged checkout binary works from
+another project's directory:
 
 ```sh
 build/stage/cno setup

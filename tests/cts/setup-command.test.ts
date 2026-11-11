@@ -27,7 +27,9 @@ Deno.test('setup: staged command installs local Node and Bun sources without tra
     try {
         const output = await new Deno.Command(execPath, {
             args: ['setup', `--cache-dir=${cacheDir}`],
-            cwd: Deno.cwd(),
+            // A staged binary must find the checkout beside its executable even
+            // when invoked from an unrelated project directory.
+            cwd: root,
             stdout: 'piped',
             stderr: 'piped',
         }).output();

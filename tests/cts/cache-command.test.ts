@@ -173,6 +173,90 @@ Deno.test('cache command: entry-mode specifier collection can exclude deno impor
     }
 });
 
+Deno.test('cache command: absolute entry discovers its project config outside the invocation cwd', async () => {
+    const root = makePosixTempDir('cache-absolute-entry-config');
+    const caller = join(root, 'caller');
+    const project = join(root, 'project');
+    const cacheDir = join(root, 'cache');
+    const entry = join(project, 'src', 'main.ts');
+    const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+    try {
+        mkdirSync(caller, { recursive: true });
+        mkdirSync(join(project, 'src'), { recursive: true });
+        writeFileSync(join(project, 'deno.json'), JSON.stringify({
+            imports: { 'configured-dependency': './dependency.ts' },
+        }));
+        writeFileSync(join(project, 'dependency.ts'), 'export const configured = true;\n');
+        writeFileSync(entry, 'import { configured } from "configured-dependency"; export { configured };\n');
+
+        const output = await new Deno.Command(execPath, {
+            args: ['cache', '--silent', '--no-oxc', `--cache-dir=${cacheDir}`, entry],
+            cwd: caller,
+            env: {
+                ALL_PROXY: '', HTTPS_PROXY: '', HTTP_PROXY: '',
+                all_proxy: '', https_proxy: '', http_proxy: '',
+                NO_PROXY: '*', no_proxy: '*',
+            },
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const text = decoder.decode(output.stdout) + decoder.decode(output.stderr);
+
+        strictEqual(output.code, 0, text);
+        strictEqual(existsSync(join(project, 'cts.lock')), true, 'lock belongs to the entry project');
+        strictEqual(existsSync(join(caller, 'cts.lock')), false, 'invocation cwd does not own the entry lock');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cache command: rejects local entries from different project config roots', async () => {
+    const root = makePosixTempDir('cache-cross-project-entries');
+    const caller = join(root, 'caller');
+    const firstProject = join(root, 'first-project');
+    const secondProject = join(root, 'second-project');
+    const cacheDir = join(root, 'cache');
+    const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
+    try {
+        mkdirSync(caller, { recursive: true });
+        mkdirSync(firstProject, { recursive: true });
+        mkdirSync(secondProject, { recursive: true });
+        for (const project of [firstProject, secondProject]) {
+            writeFileSync(join(project, 'deno.json'), JSON.stringify({
+                imports: { 'project-dependency': './dependency.ts' },
+            }));
+            writeFileSync(join(project, 'dependency.ts'), 'export const value = true;\n');
+            writeFileSync(join(project, 'main.ts'), 'export { value } from "project-dependency";\n');
+        }
+
+        const output = await new Deno.Command(execPath, {
+            args: [
+                'cache', '--silent', '--no-oxc', `--cache-dir=${cacheDir}`,
+                join(firstProject, 'main.ts'), join(secondProject, 'main.ts'),
+            ],
+            cwd: caller,
+            env: {
+                ALL_PROXY: '', HTTPS_PROXY: '', HTTP_PROXY: '',
+                all_proxy: '', https_proxy: '', http_proxy: '',
+                NO_PROXY: '*', no_proxy: '*',
+            },
+            stdout: 'piped',
+            stderr: 'piped',
+        }).output();
+        const text = decoder.decode(output.stdout) + decoder.decode(output.stderr);
+
+        strictEqual(output.code, 1, text);
+        strictEqual(text.includes('different project config roots'), true, text);
+        strictEqual(text.includes(firstProject), true, text);
+        strictEqual(text.includes(secondProject), true, text);
+        strictEqual(text.includes('Run cno cache separately for each project.'), true, text);
+        strictEqual(existsSync(join(firstProject, 'cts.lock')), false, 'must fail before writing the first project lock');
+        strictEqual(existsSync(join(secondProject, 'cts.lock')), false, 'must fail before writing the second project lock');
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test({ name: 'cache command: remote entry targets do not seed project package dependencies', timeout: 30000 }, async () => {
     const root = makePosixTempDir('cache-remote-entry-only');
     try {

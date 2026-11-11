@@ -30,16 +30,20 @@ async function compile(revision) {
                 name: 'setup-host',
                 setup(plugin) {
                     const exports = {
+                        '../../cno/src/main': [],
                         '../../cno/src/webapi/fetch': ['fetchAsync'],
                         '../../cno/src/utils/fs-path': ['ensureDirectorySync'],
                         '../../cno/src/utils/path': ['normalize', 'resolvePath', 'pathParents', 'dirname', 'join'],
                         '../../cts/src/utils/log': ['log'],
+                        '../../cts/src/utils/misc': ['isRecord'],
                         '../env': ['readEnv'],
                     };
                     plugin.onResolve({ filter: /./ }, args => Object.hasOwn(exports, args.path)
                         ? { path: args.path, namespace: 'setup-host' } : undefined);
                     plugin.onLoad({ filter: /./, namespace: 'setup-host' }, args => ({
-                        contents: exports[args.path].map(name => `export const ${name} = __setup_host__.${name};`).join('\n'),
+                        contents: args.path === '../../cno/src/main'
+                            ? '__setup_host__.bootstrapWebRuntime();'
+                            : exports[args.path].map(name => `export const ${name} = __setup_host__.${name};`).join('\n'),
                     }));
                 },
             }],
@@ -66,12 +70,14 @@ async function fixture(t, revision = REVISION_A, root, options = {}) {
     let cleanupMutations = 0;
     let cleanupFaultAfterMutation = false;
     let lockHeld = false;
+    let webRuntimeReady = false;
+    let webRuntimeBoots = 0;
     const stat = value => ({
         size: value.size, isFile: value.isFile(), isDirectory: value.isDirectory(), isSymbolicLink: value.isSymbolicLink(),
     });
     const native = {
         os: {
-            cwd: root, homeDir: root, platform: process.platform, pid: process.pid, args: ['cno'],
+            cwd: root, homeDir: root, exePath: options.exePath, platform: process.platform, pid: process.pid, args: ['cno'],
             uname: () => ({ sysname: process.platform === 'win32' ? 'Windows_NT' : 'Linux' }),
         },
         console: { log() {}, error() {} },
@@ -153,9 +159,15 @@ async function fixture(t, revision = REVISION_A, root, options = {}) {
             }
         },
         ensureDirectorySync: (value, mode) => fs.mkdirSync(value, { recursive: true, mode }),
+        isRecord: value => typeof value === 'object' && value !== null && !Array.isArray(value),
         readEnv: () => null,
         log: { debug() {} },
+        bootstrapWebRuntime() {
+            webRuntimeReady = true;
+            webRuntimeBoots++;
+        },
         async fetchAsync(url) {
+            assert.equal(webRuntimeReady, true, 'remote setup must bootstrap Web globals before fetch');
             if (options.fetchDelayMs) await new Promise(resolve => setTimeout(resolve, options.fetchDelayMs));
             requests.push(url);
             if (url.startsWith('https://api.github.com/')) {
@@ -185,6 +197,7 @@ async function fixture(t, revision = REVISION_A, root, options = {}) {
     }));
     return {
         ...modules.setup, cli: modules.cli, root, cacheDir, requests,
+        webRuntimeBoots: () => webRuntimeBoots,
         flags: { 'cache-dir': cacheDir },
         metadata: () => JSON.parse(fs.readFileSync(path.join(cacheDir, 'node/.cno-setup-ready'), 'utf8')),
         failDownload: () => { failDownload = true; },
@@ -241,6 +254,7 @@ function assertNoRemoteTransactionTrees(cacheDir) {
 test('remote setup downloads the tree and all sources at the bundled commit', async t => {
     const f = await fixture(t);
     await f.runSetup(f.flags);
+    assert.equal(f.webRuntimeBoots(), 1);
     assert.equal(f.requests[0], `https://api.github.com/repos/imzlh/cno/git/trees/${REVISION_A}?recursive=1`);
     assert.deepEqual(f.requests.slice(1).sort(), [
         'src/node/fs/index.ts', 'src/node/path.ts',
@@ -497,6 +511,34 @@ test('legacy readiness markers are refreshed and failed downloads preserve the p
     await assert.rejects(f.runSetup(f.flags), /Some files failed to download/);
     assert.deepEqual(fs.readFileSync(path.join(f.cacheDir, 'node/.cno-setup-ready')), markerBeforeFailure);
     assertNoRemoteTransactionTrees(f.cacheDir);
+});
+
+test('local setup finds checkout sources beside the staged executable from an unrelated cwd', async t => {
+    const root = fs.mkdtempSync(path.join(tmpdir(), 'cno-setup-executable-source-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const cwd = path.join(root, 'unrelated-project');
+    const workspace = path.join(root, 'workspace');
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.mkdirSync(path.join(cwd, 'src', 'node'), { recursive: true });
+    const exePath = path.join(workspace, 'build', 'stage', process.platform === 'win32' ? 'cno.exe' : 'cno');
+    fs.mkdirSync(path.dirname(exePath), { recursive: true });
+    fs.writeFileSync(exePath, 'staged executable placeholder');
+    const f = await fixture(t, REVISION_A, cwd, {
+        exePath,
+    });
+    fs.mkdirSync(path.join(workspace, 'cno', 'src', 'node', 'fs'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, 'cno', 'src', 'node', 'fs', 'index.ts'), '// local node\n');
+    fs.mkdirSync(path.join(workspace, 'cno', 'src', 'bun', 'sqlite'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, 'cno', 'src', 'bun', 'index.ts'), '// local bun\n');
+    fs.writeFileSync(path.join(workspace, 'cno', 'src', 'bun', 'sqlite', 'index.ts'), '// local sqlite\n');
+    fs.mkdirSync(path.join(workspace, 'cno', 'src', 'utils'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, 'cno', 'src', 'utils', 'path.ts'), '// local utils\n');
+
+    await f.runSetup(f.flags);
+
+    assert.equal(f.metadata().source, 'local');
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.webRuntimeBoots(), 0, 'local setup does not need the Web runtime');
 });
 
 test('source-mode setup keeps local installs and requires an explicit commit for remote downloads', async t => {

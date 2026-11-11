@@ -1,7 +1,3 @@
-// The webapi/fetch graph evaluates at module scope (it Reflect.sets the
-// fetch globals), which on `cno exec` happens before the polyfill bootstrap
-// imports — keep that graph free of bare-global dereferences.
-import { fetchAsync } from '../../cno/src/webapi/fetch';
 import { ensureDirectorySync } from '../../cno/src/utils/fs-path';
 import { normalize, resolvePath, pathParents, dirname, join } from '../../cno/src/utils/path';
 import { log } from '../../cts/src/utils/log';
@@ -24,10 +20,29 @@ type GitHubTreeResponse = {
     message?: string;
 };
 
+type FetchAsync = typeof import('../../cno/src/webapi/fetch').fetchAsync;
+
+/**
+ * Remote setup is itself a consumer of the Web runtime it helps provision.
+ * Non-runtime CLI commands deliberately defer the main polyfill bootstrap, so
+ * fetch must not be evaluated or called until its global dependencies exist.
+ */
+async function loadRemoteFetch(): Promise<FetchAsync> {
+    await import('../../cno/src/main');
+    return (await import('../../cno/src/webapi/fetch')).fetchAsync;
+}
+
 function isNotFound(value: unknown): boolean {
     if (value === null || typeof value !== 'object') return false;
     const code = (value as { code?: unknown }).code;
     return code === sysError.errno.ENOENT || code === 'ENOENT';
+}
+
+function isMissingDirectoryCandidate(value: unknown): boolean {
+    if (isNotFound(value)) return true;
+    if (value === null || typeof value !== 'object') return false;
+    const code = (value as { code?: unknown }).code;
+    return code === sysError.errno.ENOTDIR || code === 'ENOTDIR';
 }
 
 function isAlreadyExists(value: unknown): boolean {
@@ -431,7 +446,7 @@ function findLocalPolyfillSource(start: string): LocalPolyfillSource | null {
                     };
                 }
             } catch (error) {
-                if (!isNotFound(error)) throw error;
+                if (!isMissingDirectoryCandidate(error)) throw error;
             }
         }
 
@@ -440,6 +455,22 @@ function findLocalPolyfillSource(start: string): LocalPolyfillSource | null {
         dir = up;
     }
     return null;
+}
+
+function findRuntimePolyfillSource(): LocalPolyfillSource | null {
+    const fromCwd = findLocalPolyfillSource(os.cwd);
+    if (fromCwd?.bun && fromCwd.utils) return fromCwd;
+
+    // A staged development binary is commonly invoked from another project.
+    // Walk from the executable as well so its checkout sources remain usable
+    // even when the current directory has no cno tree of its own.
+    const executable = typeof os.exePath === 'string' ? os.exePath.replace(/ \(deleted\)$/, '') : '';
+    if (!executable) return fromCwd;
+    const fromExecutable = findLocalPolyfillSource(dirname(executable));
+    if (fromExecutable?.bun && fromExecutable.utils) return fromExecutable;
+    // Preserve the original diagnostic for an explicitly selected but
+    // incomplete current-directory source tree.
+    return fromCwd;
 }
 
 /**
@@ -538,7 +569,7 @@ function validateRemoteSourcePath(path: string): boolean {
     return segments.every(segment => segment !== '' && segment !== '.' && segment !== '..');
 }
 
-async function installRemote(cacheDir: string, revision: string): Promise<RemoteInstall> {
+async function installRemote(cacheDir: string, revision: string, fetchAsync: FetchAsync): Promise<RemoteInstall> {
     const githubBase = `https://raw.githubusercontent.com/imzlh/cno/${revision}`;
     const githubTree = `https://api.github.com/repos/imzlh/cno/git/trees/${revision}?recursive=1`;
     log.debug('oxc', () => 'Fetching file list from GitHub...');
@@ -860,8 +891,9 @@ export async function runSetup(flags: Record<string, string | boolean>): Promise
     const cacheDir = resolveCacheDir(flags);
     // An explicit revision selects remote installation even inside a checkout.
     const requestedRevision = flags['polyfill-revision'];
-    const localSrc = requestedRevision === undefined ? findLocalPolyfillSource(os.cwd) : null;
+    const localSrc = requestedRevision === undefined ? findRuntimePolyfillSource() : null;
     const revision = localSrc ? null : requirePolyfillRevision(requestedRevision ?? bundledPolyfillRevision);
+    const fetchAsync = localSrc ? null : await loadRemoteFetch();
     await withSetupLock(cacheDir, async () => {
         cleanupRemoteDownloads(cacheDir);
         recoverRemotePublish(cacheDir);
@@ -898,7 +930,7 @@ export async function runSetup(flags: Record<string, string | boolean>): Promise
             writeNodePolyfillMarker(cacheDir, revision);
         } else {
             console.log(`Installing Node and Bun polyfills from imzlh/cno@${revision}`);
-            const install = await installRemote(cacheDir, revision!);
+            const install = await installRemote(cacheDir, revision!, fetchAsync!);
             publishRemoteInstall(cacheDir, revision!, install);
         }
 
