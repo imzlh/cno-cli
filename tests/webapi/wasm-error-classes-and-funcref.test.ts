@@ -259,7 +259,8 @@ Deno.test('wasm: Table.set rejects a funcref from another instance', () => {
         () => target.table.set(0, foreign.five as unknown as WebAssembly.ExportValue),
         TypeError,
     );
-    strictEqual((target.table.get(0) as () => number)(), 42, 'a refused cross-instance index must not corrupt the slot');
+    strictEqual((target.table.get(0) as () => number)(), 42,
+                'a refused cross-instance index must not corrupt the slot');
 });
 
 // ============================================================================

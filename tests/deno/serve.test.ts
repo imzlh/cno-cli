@@ -355,6 +355,57 @@ Deno.test({ name: 'deno: Deno.serve lifecycle exposes addr onListen finished abo
     }
 });
 
+Deno.test({ name: 'deno: Deno.serve completed waits for the full streamed response', timeout: 10000 }, async () => {
+    if (!await canListenTcp()) return;
+
+    const releaseBody = Promise.withResolvers<void>();
+    const completion = Promise.withResolvers<'resolved' | 'rejected'>();
+    let completionState = 'pending';
+    let sentHead = false;
+    const encoder = new TextEncoder();
+    const server = Deno.serve({ hostname: '127.0.0.1', port: 0 }, (_request, info) => {
+        info.completed.then(
+            () => {
+                completionState = 'resolved';
+                completion.resolve('resolved');
+            },
+            () => {
+                completionState = 'rejected';
+                completion.resolve('rejected');
+            },
+        );
+        return new Response(new ReadableStream<Uint8Array>({
+            async pull(controller) {
+                if (sentHead) return;
+                sentHead = true;
+                controller.enqueue(encoder.encode('head'));
+                await releaseBody.promise;
+                controller.enqueue(encoder.encode('tail'));
+                controller.close();
+            },
+        }));
+    });
+
+    try {
+        const response = await fetch(`http://127.0.0.1:${server.addr.port}/completed-stream`);
+        ok(response.body);
+        const reader = response.body.getReader();
+        const first = await reader.read();
+        strictEqual(new TextDecoder().decode(first.value), 'head');
+        await sleep(25);
+        strictEqual(completionState, 'pending', 'completed must stay pending while the body is streaming');
+
+        releaseBody.resolve();
+        const second = await reader.read();
+        strictEqual(new TextDecoder().decode(second.value), 'tail');
+        strictEqual((await reader.read()).done, true);
+        strictEqual(await withTimeout(completion.promise), 'resolved');
+    } finally {
+        releaseBody.resolve();
+        await server.shutdown();
+    }
+});
+
 Deno.test({ name: 'deno: Deno.serve recovers from response validation with fresh response state', timeout: 5000 }, async () => {
     if (!await canListenTcp()) return;
 
@@ -432,6 +483,7 @@ Deno.test({
 
     const onErrorHits: unknown[] = [];
     const controller = new AbortController();
+    const completion = Promise.withResolvers<unknown>();
     let firstChunk: () => void;
     const firstChunkGate = new Promise<void>((r) => { firstChunk = r; });
 
@@ -443,7 +495,11 @@ Deno.test({
             onErrorHits.push(error);
             return new Response('should-not-run', { status: 500 });
         },
-    }, () => {
+    }, (_request, info) => {
+        info.completed.then(
+            () => completion.resolve(null),
+            (error) => completion.resolve(error),
+        );
         // Streaming body so the peer can leave before end().
         const body = new ReadableStream<Uint8Array>({
             start(ctrl) {
@@ -481,6 +537,8 @@ Deno.test({
         // Let the server drain the write/EPIPE path.
         await sleep(150);
         strictEqual(onErrorHits.length, 0, `onError must not fire on peer disconnect: ${onErrorHits}`);
+        const completionError = await withTimeout(completion.promise);
+        ok(completionError instanceof Deno.errors.Interrupted, 'completed must reject with Interrupted on disconnect');
     } finally {
         controller.abort();
         try { await withTimeout(server.finished); } catch {}

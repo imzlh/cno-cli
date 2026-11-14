@@ -1,5 +1,7 @@
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { Buffer } from 'node:buffer';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import {
     DynamicLibrary,
     dlclose,
@@ -27,7 +29,19 @@ import {
 // The native binding knows the platform's actual C runtime loader name. The
 // calls themselves only use node:ffi; this avoids assuming glibc, musl, or a
 // particular Windows CRT filename in the test fixture.
-const libcPath = import.meta.use('ffi').LIBC_NAME;
+const libcPath = import.meta.use('ffi').libraries.c;
+const fixtureFilename = Deno.build.os === 'windows'
+    ? 'ffi_fixture.dll'
+    : Deno.build.os === 'darwin'
+        ? 'libffi_fixture.dylib'
+        : 'libffi_fixture.so';
+const nativeExecutable = import.meta.use('os').exePath;
+const ffiFixtureDirectory = resolve(dirname(nativeExecutable), '..', 'circu.js');
+const ffiFixturePath = [
+    resolve(ffiFixtureDirectory, fixtureFilename),
+    ...['Debug', 'Release', 'RelWithDebInfo', 'MinSizeRel']
+        .map(configuration => resolve(ffiFixtureDirectory, configuration, fixtureFilename)),
+].find(existsSync) ?? resolve(ffiFixtureDirectory, fixtureFilename);
 
 Deno.test('node26 ffi: suffix and type constants expose the portable surface', () => {
     ok(['so', 'dylib', 'dll'].includes(suffix));
@@ -49,9 +63,11 @@ Deno.test('node26 ffi: dlopen resolves and invokes common libc functions', () =>
 
     try {
         const input = Buffer.from('hello ffi\0');
+        const offsetInput = Buffer.from('xoffset\0').subarray(1);
         strictEqual(handle.functions.abs(-42), 42);
         strictEqual(handle.functions.free(null), undefined);
         strictEqual(handle.functions.strlen(input), 9n);
+        strictEqual(handle.functions.strlen(offsetInput), 6n);
         strictEqual(handle.functions.strtod('3.25', null), 3.25);
 
         const tail = handle.functions.strchr(input, 'f'.charCodeAt(0));
@@ -88,7 +104,10 @@ Deno.test('node26 ffi: DynamicLibrary and dlsym share cached symbols and close s
     const functions = lib.getFunctions({
         strchr: { arguments: ['pointer', 'i32'], return: 'pointer' },
     });
-    strictEqual(toString(functions.strchr(Buffer.from('abc\0'), 0x62)), 'bc');
+    // node:ffi exposes pointers as bare bigint addresses, which cannot own
+    // memory they alias. Keep the source alive until the returned tail is read.
+    const input = Buffer.from('abc\0');
+    strictEqual(toString(functions.strchr(input, 0x62)), 'bc');
 
     dlclose(lib);
     dlclose(lib);
@@ -158,7 +177,12 @@ Deno.test('node26 ffi: same-thread callbacks can be passed to native functions',
         const values = new Int32Array([9, -2, 7, 1, 0]);
         const comparator = lib.registerCallback(
             { arguments: ['pointer', 'pointer'], return: 'i32' },
-            (left, right) => getInt32(left as bigint) - getInt32(right as bigint),
+            (left, right) => {
+                const difference = getInt32(left as bigint) - getInt32(right as bigint);
+                // The compatibility API historically encoded callback results
+                // through DataView, so out-of-range integers wrap to their C width.
+                return 0x1_0000_0000 + difference;
+            },
         );
 
         lib.unrefCallback(comparator);
@@ -170,6 +194,65 @@ Deno.test('node26 ffi: same-thread callbacks can be passed to native functions',
         throws(() => lib.refCallback(comparator), /unknown callback/i);
     } finally {
         lib.close();
+    }
+});
+
+Deno.test('node26 ffi: registered callbacks preserve native thread provenance across libraries', () => {
+    const owner = new DynamicLibrary(ffiFixturePath);
+    const caller = new DynamicLibrary(ffiFixturePath);
+    try {
+        const callOnThread = caller.getFunction('ffi_fixture_call_callback_on_thread', {
+            arguments: ['pointer', 'i32', 'i32'],
+            return: 'i32',
+        });
+        const isNull = caller.getFunction('ffi_fixture_pointer_is_null', {
+            arguments: ['pointer'],
+            return: 'i32',
+        });
+        const callback = owner.registerCallback(
+            { arguments: ['i32', 'i32'], return: 'i32' },
+            (left, right) => Number(left) + Number(right),
+        );
+
+        throws(() => callOnThread(callback, 20, 22), /unsupported native thread/i);
+
+        owner.unregisterCallback(callback);
+        // An unregistered address is once again an ordinary opaque pointer. It
+        // must not try to read `.pointer` from the now-closed native callback.
+        strictEqual(isNull(callback), 0);
+        throws(() => owner.refCallback(callback), /unknown callback/i);
+
+        const closedWithOwner = owner.registerCallback(
+            { arguments: ['i32', 'i32'], return: 'i32' },
+            (left, right) => Number(left) + Number(right),
+        );
+        owner.close();
+        // Closing the owning library also removes its callbacks from the
+        // process-wide provenance registry.
+        strictEqual(isNull(closedWithOwner), 0);
+    } finally {
+        owner.close();
+        caller.close();
+    }
+});
+
+Deno.test('node26 ffi: integer arguments keep legacy fixed-width wrapping', () => {
+    const cases = [
+        ['ffi_fixture_roundtrip_i8', 'i8', 0x101, 1],
+        ['ffi_fixture_roundtrip_u8', 'u8', -0xff, 1],
+        ['ffi_fixture_roundtrip_i16', 'i16', 0x1_0002, 2],
+        ['ffi_fixture_roundtrip_u16', 'u16', -0xfffe, 2],
+        ['ffi_fixture_roundtrip_i32', 'i32', 0x1_0000_0003, 3],
+        ['ffi_fixture_roundtrip_u32', 'u32', -0xffff_fffd, 3],
+        ['ffi_fixture_roundtrip_i64', 'i64', 0x1_0000_0000_0000_0004n, 4n],
+        ['ffi_fixture_roundtrip_u64', 'u64', -0xffff_ffff_ffff_fffbn, 5n],
+    ] as const;
+
+    for (const [name, type, input, expected] of cases) {
+        using handle = dlopen(ffiFixturePath, {
+            [name]: { arguments: [type], return: type },
+        });
+        strictEqual(handle.functions[name](input), expected, type);
     }
 });
 

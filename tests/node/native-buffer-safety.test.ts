@@ -4,36 +4,36 @@ import { ok, strictEqual, throws } from 'node:assert';
 const socket = import.meta.use('socket');
 const crypto = import.meta.use('crypto');
 
-const { AF_INET, SOCK_DGRAM } = socket.defines;
+const { AF_INET, SOCK_DGRAM } = socket;
 const SENTINEL = [0x53, 0x45, 0x4e, 0x54]; // "SENT"
 
 /** Bind a loopback UDP receiver and a sender connected to it. */
-function udpPair(): { rx: CModuleSocket.PosixSocket; tx: CModuleSocket.PosixSocket } {
+function udpPair(): { rx: CModuleSocket.Socket; tx: CModuleSocket.Socket } {
     for (let attempt = 0; attempt < 32; attempt++) {
         const port = 42000 + Math.floor(Math.random() * 8000);
-        const rx = new socket.PosixSocket(AF_INET, SOCK_DGRAM, 0);
+        const rx = new socket.Socket(AF_INET, SOCK_DGRAM, 0);
         try {
-            rx.bind(socket.create_sockaddr_inet({ ip: '127.0.0.1', port }));
+            rx.bind({ ip: '127.0.0.1', port });
         } catch {
             rx.close();
             continue;
         }
-        const tx = new socket.PosixSocket(AF_INET, SOCK_DGRAM, 0);
-        tx.connect(socket.create_sockaddr_inet({ ip: '127.0.0.1', port }));
+        const tx = new socket.Socket(AF_INET, SOCK_DGRAM, 0);
+        tx.connect({ ip: '127.0.0.1', port });
         return { rx, tx };
     }
     throw new Error('could not bind a loopback UDP port');
 }
 
 /** Read the first pending datagram, or null if none arrives within `ms`. */
-function firstDatagram(rx: CModuleSocket.PosixSocket, ms: number): Promise<Uint8Array | null> {
+function firstDatagram(rx: CModuleSocket.Socket, ms: number): Promise<Uint8Array | null> {
     return new Promise((resolve) => {
-        const timer = setTimeout(() => { try { rx.pollStop(); } catch {} resolve(null); }, ms);
-        rx.poll(socket.uv_poll_event_bits.READABLE, () => {
+        const timer = setTimeout(() => { try { rx.stopPoll(); } catch {} resolve(null); }, ms);
+        rx.poll(socket.READABLE, () => {
             clearTimeout(timer);
-            // pollStop/recv must not run inside the poll callback.
+            // stopPoll/recv must not run inside the poll callback.
             setTimeout(() => {
-                try { rx.pollStop(); } catch {}
+                try { rx.stopPoll(); } catch {}
                 let data: Uint8Array | null = null;
                 try { data = rx.recv(65535); } catch { data = null; }
                 resolve(data);

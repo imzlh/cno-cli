@@ -273,6 +273,13 @@ Deno.test('process upstream: kill validates pid and signal shapes', () => {
         (error: unknown) => error !== null && typeof error === 'object' &&
             Reflect.get(error, 'code') === 'ERR_UNKNOWN_SIGNAL',
     );
+    for (const signal of [-1, 999]) {
+        throws(
+            () => process.kill(process.pid, signal),
+            (error: unknown) => error !== null && typeof error === 'object' &&
+                Reflect.get(error, 'code') === 'EINVAL',
+        );
+    }
     strictEqual(process.kill, processDefault.kill);
     strictEqual(processDefault.kill, globalThis.process.kill);
 });

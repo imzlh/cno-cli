@@ -403,6 +403,56 @@ Deno.test({ name: 'child_process: kill() accepts a lowercase signal name like No
     ok(settled, 'child survived kill("sigterm")');
 });
 
+Deno.test({ name: 'child_process: accepts Node signal aliases and reports their canonical names', timeout: 20000 }, async () => {
+    if (isWindows) return;
+    for (const [alias, canonical] of [['SIGIOT', 'SIGABRT'], ['SIGPOLL', 'SIGIO']] as const) {
+        const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},15000)'], { stdio: ['ignore', 'ignore', 'ignore'] });
+        await new Promise((r) => setTimeout(r, 150));
+        strictEqual(child.kill(alias), true);
+        const result = await new Promise<{ code: number | null; signal: string | null }>((resolve) => {
+            child.on('close', (code, signal) => resolve({ code, signal: signal as string | null }));
+        });
+        strictEqual(result.code, null);
+        strictEqual(result.signal, canonical);
+    }
+});
+
+Deno.test({ name: 'process: signal listeners accept Node aliases', timeout: 20000 }, async () => {
+    if (isWindows) return;
+    for (const [listenerSignal, sentSignal] of [
+        ['SIGIOT', 'SIGABRT'],
+        ['SIGIO', 'SIGPOLL'],
+        ['SIGPOLL', 'SIGIO'],
+    ] as const) {
+        const script = `
+            process.once(${JSON.stringify(listenerSignal)}, () => process.exit(42));
+            setTimeout(() => process.kill(process.pid, ${JSON.stringify(sentSignal)}), 25);
+            setTimeout(() => process.exit(99), 5000);
+        `;
+        const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'ignore', 'ignore'] });
+        const result = await new Promise<{ code: number | null; signal: string | null }>((resolve) => {
+            child.on('close', (code, signal) => resolve({ code, signal: signal as string | null }));
+        });
+        strictEqual(result.code, 42, `listener ${listenerSignal} did not handle ${sentSignal}`);
+        strictEqual(result.signal, null);
+    }
+});
+
+Deno.test({ name: 'child_process: invalid numeric signals throw before changing killed', timeout: 20000 }, () => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},8000)'], { stdio: ['ignore', 'ignore', 'ignore'] });
+    try {
+        for (const signal of [-1, 999]) {
+            throws(
+                () => child.kill(signal),
+                (error: NodeJS.ErrnoException) => error.code === 'ERR_UNKNOWN_SIGNAL',
+            );
+            strictEqual(child.killed, false);
+        }
+    } finally {
+        child.kill('SIGKILL');
+    }
+});
+
 Deno.test({ name: 'child_process: kill() on an already-exited child returns false and leaves killed false', timeout: 20000 }, async () => {
     const child = spawn(process.execPath, ['-e', 'process.exit(3)'], { stdio: ['ignore', 'ignore', 'ignore'] });
     await new Promise<void>((resolve) => child.on('close', () => resolve()));

@@ -10,7 +10,7 @@
  * cno/src/node/wasi/mod.ts matches /^[A-Za-z]:[\\/]/ as well as a leading slash.
  *
  * SECURITY NOTE, measured, not asserted here: the OTHER WASI path -- WAMR's own
- * libc-wasi, reached by handing preopens to wasm.setWasiOptions() via
+ * libc-wasi, reached by handing preopens to Module.configureWasi() via
  * import.meta.use('wasm') -- DOES leave the sandbox for exactly these inputs.
  * With a preopen granting only a jail directory, a guest read 27 bytes of a file
  * outside it, and also wrote to, unlinked, and created directories outside it.

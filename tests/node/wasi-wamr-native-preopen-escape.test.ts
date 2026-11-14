@@ -19,7 +19,7 @@
  *   drive letter and the guest lands outside its sandbox.
  *
  * REACHED VIA
- *   `import.meta.use('wasm')`, available to any script, exposes `setWasiOptions`
+ *   `import.meta.use('wasm')`, available to any script, exposes `configureWasi`
  *   directly. Handing it real preopens configures WAMR's own libc-wasi, which
  *   then serves every `path_*` syscall without cno's containment check running.
  *   This is a different code path from `node:wasi`, whose TS bindings DO refuse
@@ -177,7 +177,7 @@ interface Ctx {
 
 /*
  * Build the guest on the WAMR-NATIVE path: preopens go straight to
- * wasm_runtime_set_wasi_args via setWasiOptions, and no JS WASI bindings are
+ * wasm_runtime_set_wasi_args via configureWasi, and no JS WASI bindings are
  * supplied, so WAMR's libc-wasi serves every syscall.
  */
 /*
@@ -218,12 +218,12 @@ function nativeGuest(): Ctx {
 
     const wasm = (import.meta as unknown as { use: (m: string) => Record<string, Function> }).use('wasm');
     const bytes = buildProbe();
-    const mod = wasm.parseModule(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-    wasm.setWasiOptions(mod, ['probe'], null, { '/jail': jail });
-    const inst = wasm.buildInstance(mod);
-    const mem = wasm.getMemoryBuffer(inst) as ArrayBuffer;
+    const mod = wasm.load(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    mod.configureWasi({ args: ['probe'], preopens: { '/jail': jail } });
+    const inst = mod.instantiate();
+    const mem = inst.memoryBuffer() as ArrayBuffer;
     const call = (name: string, ...args: unknown[]): number =>
-        wasm.callFuncByIndex(inst, wasm.getFuncIndex(inst, name), ...args) as number;
+        inst.callByIndex(inst.functionIndex(name), ...args) as number;
     call('_start');
     return { root, jail, secretPath, mem, call };
 }

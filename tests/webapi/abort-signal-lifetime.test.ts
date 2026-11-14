@@ -58,10 +58,17 @@ Deno.test('AbortSignal lifetime: live Request clones keep following their source
 });
 
 Deno.test('AbortSignal lifetime: a live dependent keeps its timeout source functional', async () => {
-    const derived = AbortSignal.any([AbortSignal.timeout(100)]);
-    await collect();
-    if (!derived.aborted) await new Promise(resolve => derived.addEventListener('abort', resolve, { once: true }));
-    strictEqual(derived.reason.name, 'TimeoutError');
+    // AbortSignal.timeout() is deliberately unref'ed, so pin the loop with
+    // unrelated work while verifying that an observed dependent still fires.
+    const keepAlive = timers.setTimeout(() => {}, 1_000);
+    try {
+        const derived = AbortSignal.any([AbortSignal.timeout(100)]);
+        await collect();
+        if (!derived.aborted) await new Promise(resolve => derived.addEventListener('abort', resolve, { once: true }));
+        strictEqual(derived.reason.name, 'TimeoutError');
+    } finally {
+        timers.clearTimeout(keepAlive);
+    }
 });
 
 for (const mode of ['any', 'request', 'clone'] as const) {

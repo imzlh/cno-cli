@@ -1,5 +1,7 @@
 import { ok, strictEqual, throws } from 'node:assert';
 
+const os = import.meta.use('os');
+
 Deno.test('AbortSignal upstream: constructor is illegal', () => {
     throws(() => new AbortSignal(), TypeError);
     throws(() => new (class extends AbortSignal {})(), TypeError);
@@ -77,13 +79,26 @@ Deno.test('AbortSignal.any: accepts any iterable and rejects non-iterables', () 
 });
 
 Deno.test('AbortSignal.timeout: aborts asynchronously with TimeoutError', async () => {
+    const keepAlive = setTimeout(() => {}, 100);
     const signal = AbortSignal.timeout(1);
-    strictEqual(signal.aborted, false);
-    await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+    try {
+        strictEqual(signal.aborted, false);
+        await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
 
-    strictEqual(signal.aborted, true);
-    ok(signal.reason instanceof DOMException);
-    strictEqual(signal.reason.name, 'TimeoutError');
+        strictEqual(signal.aborted, true);
+        ok(signal.reason instanceof DOMException);
+        strictEqual(signal.reason.name, 'TimeoutError');
+    } finally {
+        clearTimeout(keepAlive);
+    }
+});
+
+Deno.test('AbortSignal.timeout: does not keep the event loop referenced', () => {
+    const before = os.refHandleCount();
+    const signal = AbortSignal.timeout(60_000);
+
+    strictEqual(signal.aborted, false);
+    strictEqual(os.refHandleCount(), before);
 });
 
 Deno.test('AbortSignal.timeout: rejects invalid timeout values', () => {

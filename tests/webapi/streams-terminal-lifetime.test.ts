@@ -17,19 +17,21 @@ for (const Stream of [CompressionStream, DecompressionStream]) {
         Deno.test({ name: `${Stream.name}: ${terminal} releases the native codec`, timeout: 5000 }, async () => {
             const zlib = import.meta.use('zlib');
             const compress = Stream === CompressionStream;
-            const factoryName = compress ? 'createGzip' : 'createGunzip';
-            const factory = zlib[factoryName];
+            const constructorName = compress ? 'Gzip' : 'Gunzip';
+            const Codec = zlib[constructorName];
             const reason = new TypeError('codec stopped');
             let handleRef: WeakRef<object>;
-            Reflect.set(zlib, factoryName, () => {
-                const handle = factory();
-                handleRef = new WeakRef(handle);
-                if (terminal === 'write error' || terminal === 'finish error') {
-                    const method = terminal === 'finish error' ? 'finish' : compress ? 'deflate' : 'inflate';
-                    Reflect.set(handle, method, () => { throw reason; });
-                }
-                return handle;
-            });
+            Reflect.set(zlib, constructorName, new Proxy(Codec, {
+                construct(target, args, newTarget) {
+                    const handle = Reflect.construct(target, args, newTarget);
+                    handleRef = new WeakRef(handle);
+                    if (terminal === 'write error' || terminal === 'finish error') {
+                        const method = terminal === 'finish error' ? 'finish' : compress ? 'deflate' : 'inflate';
+                        Reflect.set(handle, method, () => { throw reason; });
+                    }
+                    return handle;
+                },
+            }));
             try {
                 const stream = new Stream('gzip');
                 const writer = stream.writable.getWriter();
@@ -48,9 +50,23 @@ for (const Stream of [CompressionStream, DecompressionStream]) {
                 } else {
                     const consumed = new Response(stream.readable).arrayBuffer();
                     const readRejected = rejects(consumed, error => error === reason);
-                    await rejects(terminal === 'write error'
-                        ? writer.write(new Uint8Array([1]))
-                        : writer.close(), error => error === reason);
+                    let operation: Promise<void>;
+                    if (terminal === 'write error') {
+                        // Decompression validates a three-byte wrapper header
+                        // before calling into the native codec. Feed a complete
+                        // gzip header so this branch reaches the patched
+                        // inflate() method rather than stopping in the facade.
+                        operation = writer.write(compress
+                            ? new Uint8Array([1])
+                            : new Uint8Array([0x1f, 0x8b, 0x08]));
+                    } else {
+                        // An empty compressed stream is rejected before the
+                        // codec's finish() hook. Accept the wrapper header first
+                        // so this branch exercises native finish failure cleanup.
+                        if (!compress) await writer.write(new Uint8Array([0x1f, 0x8b, 0x08]));
+                        operation = writer.close();
+                    }
+                    await rejects(operation, error => error === reason);
                     await readRejected;
                 }
                 writer.releaseLock();
@@ -58,7 +74,7 @@ for (const Stream of [CompressionStream, DecompressionStream]) {
                 strictEqual(handleRef!.deref(), undefined, 'retaining the stream must not retain a terminal codec');
                 strictEqual(stream.writable.locked, false);
             } finally {
-                Reflect.set(zlib, factoryName, factory);
+                Reflect.set(zlib, constructorName, Codec);
             }
         });
     }

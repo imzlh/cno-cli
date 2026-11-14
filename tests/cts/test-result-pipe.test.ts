@@ -32,11 +32,11 @@ Deno.test('test runner keeps Node IPC out of the CLI result path', () => {
 });
 
 Deno.test('test runner still escalates cleanup when the native waiter rejects', async () => {
-    const signals: Array<CModuleProcess.Signal | undefined> = [];
-    const child = { kill: (signal?: CModuleProcess.Signal) => { signals.push(signal); } };
+    const killedWith: Array<CModuleSignals.Signal | undefined> = [];
+    const child = { kill: (signal?: CModuleSignals.Signal) => { killedWith.push(signal); } };
     const failure = Promise.reject<CModuleProcess.ExitInfo>(new Error('wait failed'));
     strictEqual(await settleChild(child, failure, [0, 1, 1]), undefined);
-    deepStrictEqual(signals, [undefined, 'SIGKILL']);
+    deepStrictEqual(killedWith, [undefined, import.meta.use('signals').signals.SIGKILL]);
 });
 
 Deno.test('test result pipe reassembles a split JSON frame and waits for EOF', async () => {

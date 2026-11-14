@@ -214,9 +214,9 @@ Deno.test('CNO native xml: parser streams elements character data comments and c
     strictEqual(xml.escape('<>&"\''), '&lt;&gt;&amp;&quot;&apos;');
 });
 
-Deno.test('CNO native sourcemap: load lookup and remove simple mappings', () => {
+Deno.test('CNO native sourcemap: load accepts objects, JSON strings and bytes', () => {
     const sourcemap = import.meta.use('sourcemap');
-    const file = `/virtual/cno-native-${Deno.pid}-${Date.now()}.js`;
+    const file = `/virtual/cno-native-${Deno.pid}-${Date.now()}`;
     const map = {
         version: 3,
         file: 'out.js',
@@ -225,17 +225,26 @@ Deno.test('CNO native sourcemap: load lookup and remove simple mappings', () => 
         mappings: 'AAAA',
     };
 
-    strictEqual(sourcemap.has(file), false);
-    strictEqual(sourcemap.loadJSON(file, JSON.stringify(map)), 1);
-    strictEqual(sourcemap.has(file), true);
+    strictEqual('loadJSON' in sourcemap, false);
+    strictEqual('loadJSONBytes' in sourcemap, false);
 
-    const mapping = sourcemap.getMapping(file, 1, 0);
-    strictEqual(mapping.found, true);
-    strictEqual(mapping.original_file, 'source.ts');
-    strictEqual(mapping.original_line, 1);
-    strictEqual(mapping.original_column, 0);
+    const json = JSON.stringify(map);
+    const jsonBytes = new TextEncoder().encode(json);
+    const inputs = [map, json, jsonBytes, jsonBytes.buffer];
+    for (let i = 0; i < inputs.length; i++) {
+        const mapFile = `${file}-${i}.js`;
+        strictEqual(sourcemap.has(mapFile), false);
+        strictEqual(sourcemap.load(mapFile, inputs[i]), 1);
+        strictEqual(sourcemap.has(mapFile), true);
 
-    strictEqual(sourcemap.remove(file), true);
-    strictEqual(sourcemap.has(file), false);
-    strictEqual(sourcemap.remove(file), false);
+        const mapping = sourcemap.getMapping(mapFile, 1, 0);
+        strictEqual(mapping.found, true);
+        strictEqual(mapping.original_file, 'source.ts');
+        strictEqual(mapping.original_line, 1);
+        strictEqual(mapping.original_column, 0);
+
+        strictEqual(sourcemap.remove(mapFile), true);
+        strictEqual(sourcemap.has(mapFile), false);
+        strictEqual(sourcemap.remove(mapFile), false);
+    }
 });
