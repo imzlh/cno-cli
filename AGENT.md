@@ -469,7 +469,7 @@ only a missing *value* is graceful, a missing bus is a broken install.
 `cno.engine.eventMux.v1` facade) — not channels.
 
 **Runtime events.** Native code publishes lifecycle events through
-`tjs__dispatch_event()` onto the reserved `circu.runtime`/`event` channel as a
+`tjs__dispatch_event()` onto the reserved `core`/`event` channel as a
 frame `{ name, data, context }`. `context` is one shared object per dispatch
 (`handled`, `dispatched`, `rejectionEmitted`); receivers coordinate through it,
 never through module flags. Dispatch order is priority descending, then
