@@ -25,7 +25,7 @@
   ],
   "author": "iz",
   "license": "MIT",
-  "packageManager": "pnpm@10.17.1",
+  "packageManager": "pnpm@12.18.0",
   "dependencies": {
     "@cnojs/http": "workspace:./http",
     "ts-interface-checker": "^1.0.2"
