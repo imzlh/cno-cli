@@ -10,15 +10,13 @@ const os = import.meta.use('os');
 const console = import.meta.use('console');
 const process = import.meta.use('process');
 const asyncfs = import.meta.use('asyncfs');
-const signals = import.meta.use('signals');
 
 type BinaryInvocation = Pick<ParsedCli, 'kernelArgs' | 'kernelFlags' | 'flags' | 'commandOptions'>;
 
 /** Map a native wait result to the shell exit-code convention. */
 export function childExitCode(info: CModuleProcess.ExitInfo): number {
     if (info.term_signal === null) return info.exit_status;
-    const signalNumber = signals?.signals[info.term_signal];
-    return typeof signalNumber === 'number' ? 128 + signalNumber : 1;
+    return 128 + info.term_signal;
 }
 
 async function chmodExecutableQuietly(path: string): Promise<void> {

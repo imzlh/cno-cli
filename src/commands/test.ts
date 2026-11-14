@@ -14,6 +14,7 @@ const fs = import.meta.use('fs');
 const timers = import.meta.use('timers');
 const engine = import.meta.use('engine');
 const sysError = import.meta.use('error');
+const signals = import.meta.use('signals');
 
 // A child that exits before its result pipe opens (or leaks fd 3 into a daemon)
 // must not hang `cno test` forever.
@@ -104,7 +105,7 @@ function isCnoHostTest(path: string): boolean {
 
 type KillableChild = Pick<CModuleProcess.ChildProcess, 'kill'>;
 
-function killChildQuietly(child: KillableChild, signal?: CModuleProcess.Signal): void {
+function killChildQuietly(child: KillableChild, signal?: CModuleSignals.Signal): void {
     try {
         child.kill(signal);
     } catch {
@@ -151,7 +152,7 @@ export async function settleChild(
     killChildQuietly(child);
     const reaped = await waitForExit(delays[1]);
     if (reaped) return info;
-    killChildQuietly(child, 'SIGKILL');
+    killChildQuietly(child, signals.signals.SIGKILL);
     await waitForExit(delays[2]);
     return info;
 }
