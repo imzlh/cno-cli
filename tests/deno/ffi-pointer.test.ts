@@ -218,6 +218,7 @@ Deno.test('deno ffi: nonblocking UnsafeFnPointer rejects without executing nativ
 
 Deno.test('deno ffi: dlopen calls native functions and handles optional symbols', () => {
     const ffi = import.meta.use('ffi');
+    const engine = import.meta.use('engine');
     const library = dlopen(ffi.libraries.c, {
         strlen: { parameters: ['buffer'], result: 'usize' },
         missing: { name: 'cno_missing_symbol_for_ffi_test', parameters: [], result: 'void', optional: true },
@@ -231,12 +232,12 @@ Deno.test('deno ffi: dlopen calls native functions and handles optional symbols'
 
     try {
         strictEqual(library.symbols.missing, null);
-        strictEqual(Number(library.symbols.strlen(new TextEncoder().encode('hello\0'))), 5);
+        strictEqual(Number(library.symbols.strlen(engine.encodeString('hello\0'))), 5);
     } finally {
         library.close();
     }
     library.close();
-    throws(() => library.symbols.strlen(new TextEncoder().encode('closed\0')), /Library is closed/);
+    throws(() => library.symbols.strlen(engine.encodeString('closed\0')), /Library is closed/);
 });
 
 Deno.test('deno ffi: nonblocking dlopen symbols reject without executing and retain close semantics', async () => {

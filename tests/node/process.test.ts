@@ -690,14 +690,17 @@ Deno.test('process upstream: unimplemented event names still use EventEmitter li
     ];
     const handler = () => {};
     for (const event of events) {
+        // The cno test runner holds its own unhandledRejection listener, so
+        // assert deltas rather than absolute counts.
+        const base = process.listenerCount(event);
         process.on(event, handler);
-        strictEqual(process.listenerCount(event), 1);
+        strictEqual(process.listenerCount(event), base + 1);
         process.off(event, handler);
-        strictEqual(process.listenerCount(event), 0);
+        strictEqual(process.listenerCount(event), base);
         process.on(event, handler);
-        strictEqual(process.listenerCount(event), 1);
+        strictEqual(process.listenerCount(event), base + 1);
         process.removeListener(event, handler);
-        strictEqual(process.listenerCount(event), 0);
+        strictEqual(process.listenerCount(event), base);
     }
 });
 
