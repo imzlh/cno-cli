@@ -393,3 +393,43 @@ Deno.test('cts cjs bridge: exposes named exports attached to function exports', 
     strictEqual(mod.namespace.Ajv2020, Ajv2020);
     ok(typeof mod.namespace.ValidationError === 'function');
 });
+
+Deno.test('cts cjs bridge: exports real names without a temporary global slot', () => {
+    const bridgeGlobals = () => Object.getOwnPropertyNames(globalThis)
+        .filter((name) => name.startsWith('__cts_cjs_bridge_'));
+    deepStrictEqual(bridgeGlobals(), []);
+
+    const exportsBinding = { kind: 'exports' };
+    const moduleBinding = { kind: 'module' };
+    const requireBinding = () => 'require';
+    const moduleExportsBinding = { kind: 'real module.exports key' };
+    const stringBinding = { kind: 'arbitrary string name' };
+    const cjsExports = {
+        exports: exportsBinding,
+        module: moduleBinding,
+        require: requireBinding,
+        'module.exports': moduleExportsBinding,
+        'not an identifier\n"quoted"': stringBinding,
+    };
+
+    const mod = bridgeCjsToEsm('/tmp/cjs-dynamic-export-names.cjs', {}, cjsExports);
+    deepStrictEqual(bridgeGlobals(), [], 'constructing the wrapper must not publish exports globally');
+    engine.promiseResult(mod.eval());
+    deepStrictEqual(bridgeGlobals(), [], 'evaluating the wrapper must not leave bridge globals behind');
+
+    const ns = mod.namespace;
+    strictEqual(ns.default, cjsExports);
+    strictEqual(ns['module.exports'], moduleExportsBinding);
+    strictEqual(ns.exports, exportsBinding);
+    strictEqual(ns.module, moduleBinding);
+    strictEqual(ns.require, requireBinding);
+    strictEqual(ns['not an identifier\n"quoted"'], stringBinding);
+    deepStrictEqual(Object.keys(ns).sort(), [
+        'default',
+        'exports',
+        'module',
+        'module.exports',
+        'not an identifier\n"quoted"',
+        'require',
+    ]);
+});
