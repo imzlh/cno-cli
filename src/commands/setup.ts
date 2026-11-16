@@ -55,11 +55,18 @@ function symlinkRefused(path: string): Error {
     return new Error(`Refusing symlink in setup cache path: ${path}`);
 }
 
+function isDarwinSystemAlias(path: string): boolean {
+    return (os.platform === 'darwin' || os.platform === 'macos')
+        && (path === '/var' || path === '/tmp' || path === '/etc');
+}
+
 /** Reject symlinks in every existing component, including the final target. */
 function assertNoSymlinkPath(path: string): void {
     for (const current of pathParents(path)) {
         try {
-            if (fs.lstat(current).isSymbolicLink) throw symlinkRefused(current);
+            if (fs.lstat(current).isSymbolicLink && !isDarwinSystemAlias(current)) {
+                throw symlinkRefused(current);
+            }
         } catch (error) {
             if (isNotFound(error)) break;
             throw error;

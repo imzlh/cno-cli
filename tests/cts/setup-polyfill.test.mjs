@@ -77,7 +77,8 @@ async function fixture(t, revision = REVISION_A, root, options = {}) {
     });
     const native = {
         os: {
-            cwd: root, homeDir: root, exePath: options.exePath, platform: process.platform, pid: process.pid, args: ['cno'],
+            cwd: root, homeDir: root, exePath: options.exePath, platform: options.platform ?? process.platform,
+            pid: process.pid, args: ['cno'],
             uname: () => ({ sysname: process.platform === 'win32' ? 'Windows_NT' : 'Linux' }),
         },
         console: { log() {}, error() {} },
@@ -146,10 +147,17 @@ async function fixture(t, revision = REVISION_A, root, options = {}) {
         },
         error: { errno: { ENOENT: 'ENOENT', EEXIST: 'EEXIST' } },
     };
+    if (options.darwinVarAlias) {
+        const lstat = native.fs.lstat;
+        native.fs.lstat = value => value === '/var'
+            ? { size: 0, isFile: false, isDirectory: false, isSymbolicLink: true }
+            : lstat(value);
+    }
     const host = {
         ...path,
         resolvePath: (value, cwd) => path.resolve(cwd, value),
         *pathParents(value) {
+            if (options.darwinVarAlias) yield '/var';
             const parsed = path.parse(value);
             const relative = value.slice(parsed.root.length).split(/[\\/]+/).filter(Boolean);
             let current = parsed.root;
@@ -443,6 +451,12 @@ test('readiness rejects symlinked polyfill directories even with a valid marker'
 
     await assert.rejects(f.ensureNodePolyfills(f.cacheDir), /Refusing symlink in setup cache path/);
     assert.equal(f.requests.length, requestsBefore, 'symlink rejection happens before network access');
+});
+
+test('setup accepts the fixed macOS /var system alias', async t => {
+    const f = await fixture(t, REVISION_A, undefined, { platform: 'darwin', darwinVarAlias: true });
+    await f.runSetup(f.flags);
+    assert.equal(f.metadata().revision, REVISION_A);
 });
 
 test('setup serializes equivalent cache path spellings in one process', async t => {
