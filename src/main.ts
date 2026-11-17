@@ -160,12 +160,8 @@ function exitWithCode(code: number): never {
 }
 
 function currentProcessExitCode(): number | undefined {
-    try {
-        const code = Reflect.get(globalThis, 'process')?.exitCode;
-        return typeof code === 'number' ? code : undefined;
-    } catch {
-        return undefined;
-    }
+    const code = Reflect.get(globalThis, 'process')?.exitCode;
+    return typeof code === 'number' ? code : undefined;
 }
 
 /** Native exit status does not keep the event loop alive or stop pending work. */

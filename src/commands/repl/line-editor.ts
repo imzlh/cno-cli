@@ -141,9 +141,7 @@ export class LineEditor {
     }
 
     setTerminalMode(mode: number): void {
-        try {
-            (this.#stdin as CModuleStreams.TTY).mode = mode;
-        } catch {}
+        (this.#stdin as CModuleStreams.TTY).mode = mode;
     }
 
     /** Erase the current input, then write `message` in its place. */

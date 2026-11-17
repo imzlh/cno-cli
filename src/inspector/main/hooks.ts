@@ -514,23 +514,15 @@ export class Hooks {
 	installBinding(name: string): void {
 		if (!name || this.installedBindings.has(name)) return
 		this.installedBindings.add(name)
-		try {
-			Reflect.set(globalThis, name, (payload: unknown) => {
-				const str = typeof payload === 'string' ? payload : String(payload)
-				this.safeEmit(WorkerEvent.BindingCalled, { name, payload: str } satisfies BindingCalledPayload)
-			})
-		} catch {
-			/* ignore */
-		}
+		Reflect.set(globalThis, name, (payload: unknown) => {
+			const str = typeof payload === 'string' ? payload : String(payload)
+			this.safeEmit(WorkerEvent.BindingCalled, { name, payload: str } satisfies BindingCalledPayload)
+		})
 	}
 
 	removeBinding(name: string): void {
 		this.installedBindings.delete(name)
-		try {
-			Reflect.deleteProperty(globalThis, name)
-		} catch {
-			/* ignore */
-		}
+		Reflect.deleteProperty(globalThis, name)
 	}
 
 	// ── teardown ────────────────────────────────────────────────────
@@ -547,11 +539,7 @@ export class Hooks {
 		// Delete the properties, not just forget the names: clearing the set alone
 		// left every Runtime.addBinding function alive on globalThis after detach,
 		// each closing over a dead endpoint. removeBinding() already does this.
-		for (const name of this.installedBindings) {
-			try {
-				Reflect.deleteProperty(globalThis, name)
-			} catch { /* non-configurable: nothing we can do */ }
-		}
+		for (const name of this.installedBindings) Reflect.deleteProperty(globalThis, name)
 		this.installedBindings.clear()
 		this.scriptSourcePaths.clear()
 		this.bodySources.fetch.buffers.clear()
@@ -576,31 +564,11 @@ export class Hooks {
 			Reflect.deleteProperty(con, kOrigin);
 			this.consoleOriginals = null
 		}
-		try {
-			setFetchHook(null)
-		} catch {
-			/* ignore */
-		}
-		try {
-			setWebSocketHook(null)
-		} catch {
-			/* ignore */
-		}
-		try {
-			setFetchInterceptHook(null)
-		} catch {
-			/* ignore */
-		}
-		try {
-			setServeHook(null)
-		} catch {
-			/* ignore */
-		}
-		try {
-			import.meta.use('evbus').delete('cno.inspector', 'networkHooks')
-		} catch {
-			/* ignore */
-		}
+		setFetchHook(null)
+		setWebSocketHook(null)
+		setFetchInterceptHook(null)
+		setServeHook(null)
+		import.meta.use('evbus').delete('cno.inspector', 'networkHooks')
 	}
 
 	private safeEmit(ev: WorkerEvent, params: unknown): void {

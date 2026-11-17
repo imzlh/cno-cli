@@ -376,7 +376,7 @@ export class Evaluator {
 				}
 			}
 			// Unknown unserializable value — warn and return undefined.
-			try { nativeConsole.warn(`unknown unserializableValue: ${u}`) } catch { /* ignore */ }
+			nativeConsole.warn(`unknown unserializableValue: ${u}`)
 			return undefined
 		}
 		return a.value

@@ -309,13 +309,9 @@ export class Inspector {
 		try {
 			native.stop()
 		} catch {
-			/* ignore */
+			/* runtime may already be shutting down */
 		}
-		try {
-			this.dc?.stop()
-		} catch {
-			/* ignore */
-		}
+		this.dc?.stop()
 		this.serializer?.releaseGroup('backtrace')
 		this.hooks?.teardown()
 	}

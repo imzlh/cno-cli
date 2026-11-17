@@ -104,36 +104,28 @@ export class CnoRepl implements LineEditorHost {
         }
 
         // Keep Ctrl+C under REPL control while a read is active.
-        try {
-            const sig = import.meta.use('signals');
-            if (sig) {
-                let debounce = 0;
-                this.#sigintHandle = sig.signal(sig.signals.SIGINT, () => {
-                    if (this.#running && !this.#evaluating) {
-                        this.#stopReadingQuietly();
-                    }
-                    const now = Date.now();
-                    if (now - debounce < 300) {
-                        // Double-press within 300ms: force exit
-                        this.cleanup();
-                        os.exit(130);
-                        return;
-                    }
-                    debounce = now;
-                    this.handleCtrlC();
-                });
+        const sig = import.meta.use('signals');
+        let debounce = 0;
+        this.#sigintHandle = sig.signal(sig.signals.SIGINT, () => {
+            if (this.#running && !this.#evaluating) {
+                this.#stopReadingQuietly();
             }
-        } catch {
-            // signal module unavailable — rely on raw-VT \x03 delivery only
-        }
+            const now = Date.now();
+            if (now - debounce < 300) {
+                // Double-press within 300ms: force exit
+                this.cleanup();
+                os.exit(130);
+                return;
+            }
+            debounce = now;
+            this.handleCtrlC();
+        });
 
         // Cleanup on exit (TTY restore + close history DB)
         this.#onExit(() => {
             this.#history.close();
             this.#settleExitCode();
-            try {
-                this.#sigintHandle?.close();
-            } catch {}
+            this.#sigintHandle?.close();
             if (this.#isatty) {
                 try {
                     sfs.write(os.STDOUT_FILENO, engine.encodeString('\x1b[?2004l'));
@@ -250,11 +242,9 @@ export class CnoRepl implements LineEditorHost {
 
     #stopReadingQuietly(): void {
         if (!this.#reading) return;
-        try {
-            this.#editor.stdin.stopRead();
-        } catch {} finally {
-            this.#reading = false;
-        }
+        // stopRead is a no-op for a closing or already-idle handle.
+        this.#editor.stdin.stopRead();
+        this.#reading = false;
     }
 
     #startReadingQuietly(): void {
@@ -505,13 +495,7 @@ export class CnoRepl implements LineEditorHost {
     async #evaluate(expr: string): Promise<void> {
         try {
             this.#evaluating = true;
-            let code: string;
-            try {
-                code = this.#transform(expr);
-            } catch (e) {
-                this.#printError(e);
-                return;
-            }
+            const code = this.#transform(expr);
             const result = (await engine.eval<{ value: unknown }>(code, '<eval>', engine.EVAL_ASYNC | engine.EVAL_NEW_BACKTRACE)).value;
 
             // ANSI color belongs only on a terminal.
@@ -590,13 +574,11 @@ export class CnoRepl implements LineEditorHost {
 
     /** Preserve an explicit exit code; otherwise successful REPL exit is zero. */
     #settleExitCode(): void {
-        try {
-            const proc = Reflect.get(globalThis, 'process');
-            if (proc === null || typeof proc !== 'object') return;
-            if (Reflect.get(proc, 'exitCode') === undefined) {
-                Reflect.set(proc, 'exitCode', 0);
-            }
-        } catch { /* Exit-code cleanup is best effort. */ }
+        const proc = Reflect.get(globalThis, 'process');
+        if (proc === null || typeof proc !== 'object') return;
+        if (Reflect.get(proc, 'exitCode') === undefined) {
+            Reflect.set(proc, 'exitCode', 0);
+        }
     }
 
     #onExit(callback: () => void): void { this.#exitCallback = callback; }

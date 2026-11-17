@@ -14,24 +14,18 @@ import { readEnv } from '../../env';
 const fs = import.meta.use('fs');
 
 function homeDir(): string | null {
+    const win = uname.sysname.includes('Windows');
+    const v = readEnv(win ? 'USERPROFILE' : 'HOME');
+    if (!v) return null;
     try {
-        const win = uname.sysname.includes('Windows');
-        const v = readEnv(win ? 'USERPROFILE' : 'HOME');
-        if (!v) return null;
-        try {
-            return fs.realpath(v);
-        } catch {
-            // HOME may not resolve (sandbox, missing dir); keep the raw path.
-            return v;
-        }
-    } catch { return null; }
+        return fs.realpath(v);
+    } catch {
+        // HOME may not resolve (sandbox, missing dir); keep the raw path.
+        return v;
+    }
 }
 function exists(path: string): boolean {
-    try {
-        return fs.exists(path);
-    } catch {
-        return false;
-    }
+    return fs.exists(path);
 }
 
 export async function runRepl(

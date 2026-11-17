@@ -284,10 +284,8 @@ function previewProp(name: string, v: unknown): PropertyPreview {
 }
 
 function abbreviate(v: unknown, subtype?: RemoteObjectSubtype): string {
-	try {
-		if (subtype === 'array' && Array.isArray(v)) return `Array(${v.length})`;
-		return classNameOf(v);
-	} catch { return 'Object'; }
+	if (subtype === 'array' && Array.isArray(v)) return `Array(${v.length})`;
+	return classNameOf(v);
 }
 
 function appendErrorPreview(preview: ObjectPreview, value: unknown): void {

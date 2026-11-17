@@ -53,13 +53,9 @@ export class WorkerEndpoint {
 
 	// Notifications must not turn transport failures into worker crash reports.
 	notify<M extends RpcMethod>(method: M, params: RpcParams[M]): void {
-		try {
-			void this.call(method, params).catch((e: unknown) => {
-				log.debug('debug', () => `rpc notify ${method} failed: ${errMsg(e)}`)
-			})
-		} catch (e) {
-			log.debug('debug', () => `rpc notify ${method} threw: ${errMsg(e)}`)
-		}
+		void this.call(method, params).catch((e: unknown) => {
+			log.debug('debug', () => `rpc notify ${method} failed: ${errMsg(e)}`)
+		})
 	}
 
 	/** Flip transport mode. Driven by doResume / setConnected in DebuggerDomain. */

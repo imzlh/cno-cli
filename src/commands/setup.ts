@@ -205,7 +205,7 @@ async function withSetupLock<T>(cacheDir: string, fn: () => Promise<T>): Promise
     let release = () => {};
     const turn = new Promise<void>(resolve => { release = resolve; });
     setupLockQueue.set(cacheDir, turn);
-    if (previous) await previous.catch(() => {});
+    if (previous) await previous;
 
     try {
         assertNoSymlinkPath(cacheDir);
