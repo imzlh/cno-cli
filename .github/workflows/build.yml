@@ -171,3 +171,33 @@ jobs:
           name: cno-${{ matrix.target }}
           path: artifacts/*
           if-no-files-found: error
+
+  test:
+    name: test ${{ matrix.target }}
+    needs: native
+    if: inputs.run-tests
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.native-matrix) }}
+    env:
+      CTS_CACHE_DIR: ${{ runner.temp }}/cno-test-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/download-artifact@v4
+        with:
+          name: cno-${{ matrix.target }}
+          path: build/stage
+      - name: Unpack staged runtime
+        if: runner.os != 'Windows'
+        run: tar -xzf "build/stage/cno-${{ matrix.target }}.tar.gz" -C build/stage
+      - name: Unpack staged runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Expand-Archive -Path "build/stage/cno-${{ matrix.target }}.zip" -DestinationPath build/stage -Force
+      - name: Run runtime test suite
+        run: node scripts/ci/run-tests.mjs --stage=build/stage --shards=core,node,web,compat
