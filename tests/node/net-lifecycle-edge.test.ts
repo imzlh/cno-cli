@@ -109,7 +109,10 @@ Deno.test({
     // the NUMBER -4047 — and 'close' never arrived at all.
     const server = net.createServer((socket) => {
         socket.on('error', () => { /* ignore */ });
-        setTimeout(() => socket.destroy(), 60);
+        // resetAndDestroy sends a TCP RST. destroy() alone races libuv's graceful
+        // shutdown-and-drain and can degrade into a clean FIN (client EOF, no
+        // error), which would make this assertion test a kernel timing race.
+        setTimeout(() => socket.resetAndDestroy(), 60);
     });
     const port = await listen(server);
 

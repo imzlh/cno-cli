@@ -78,9 +78,18 @@ Deno.test('tty: isatty returns false for invalid fd values', () => {
 });
 
 Deno.test('tty: WriteStream prototype color helpers match upstream shape', () => {
-    strictEqual(tty.WriteStream.prototype.hasColors(), true);
-    strictEqual(tty.WriteStream.prototype.hasColors({}), true);
-    // Node rejects a count below 2 (ERR_OUT_OF_RANGE), verified against v24.18.
+    // Unbound prototype calls default to process.env, so the VALUE flips with
+    // the runner's TERM/FORCE_COLOR (true in an interactive shell, false in a
+    // piped runner). The env-driven variants below are deterministic.
+    ok([true, false].includes(tty.WriteStream.prototype.hasColors()));
+    // A single object argument is the env form (v24.22.3: false here since the
+    // object carries no color hints).
+    strictEqual(tty.WriteStream.prototype.hasColors({}), false);
+    strictEqual(tty.WriteStream.prototype.hasColors(undefined, { FORCE_COLOR: '3' }), true);
+    strictEqual(tty.WriteStream.prototype.hasColors(undefined, { NO_COLOR: '1' }), false);
+    // An object count WITH an explicit env is an argument-type error, and a
+    // count below 2 is out of range (both measured v24.22.3).
+    throws(() => tty.WriteStream.prototype.hasColors({}, { FORCE_COLOR: '3' }), TypeError);
     throws(() => tty.WriteStream.prototype.hasColors(1), RangeError);
     ok([1, 4, 8, 24].includes(tty.WriteStream.prototype.getColorDepth()));
 });
@@ -99,8 +108,10 @@ Deno.test('tty: NO_COLOR and NODE_DISABLE_COLORS force depth 1', () => {
     strictEqual(colorProbe().getColorDepth({ NO_COLOR: '1' }), 1);
     strictEqual(colorProbe().getColorDepth({ NODE_DISABLE_COLORS: '1' }), 1);
     strictEqual(colorProbe().getColorDepth({ TERM: 'dumb' }), 1);
-    // An empty NO_COLOR is ignored by Node (verified against v24.18).
-    ok(colorProbe().getColorDepth({ NO_COLOR: '' }) > 1);
+    // An empty NO_COLOR is ignored by Node (verified against v24.18): with a
+    // color-capable TERM the depth stays above 1. A bare {NO_COLOR:''} env has
+    // no TERM and still reports 1 — the ambient-env value is not deterministic.
+    strictEqual(colorProbe().getColorDepth({ NO_COLOR: '', TERM: 'xterm-256color' }), 8);
 });
 
 Deno.test('tty: FORCE_COLOR levels match Node', () => {

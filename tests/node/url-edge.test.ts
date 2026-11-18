@@ -56,9 +56,27 @@ Deno.test('url: pathToFileURL percent-encodes URL syntax characters', () => {
 });
 
 Deno.test('url: pathToFileURL resolves driveless and drive-relative Windows paths', () => {
-    const drive = path.win32.resolve('/').slice(0, 2);
-    strictEqual(url.pathToFileURL('/tmp/x', { windows: true }).href, `file:///${drive}/tmp/x`);
-    strictEqual(url.pathToFileURL('C:a', { windows: true }).href, 'file:///C:/a');
+    if (Deno.build.os === 'windows') {
+        // On Windows the win32 resolve supplies the current drive letter.
+        const drive = path.win32.resolve('/').slice(0, 2);
+        strictEqual(url.pathToFileURL('/tmp/x', { windows: true }).href, `file:///${drive}/tmp/x`);
+    } else {
+        // POSIX has no cwd drive; win32.resolve('/') is driveless (measured
+        // v24.22.3: pathToFileURL('/tmp/x', {windows:true}) keeps /tmp/x).
+        strictEqual(url.pathToFileURL('/tmp/x', { windows: true }).href, 'file:///tmp/x');
+    }
+    // Drive-relative 'C:a' resolves against the process cwd's position on the
+    // C: drive — the current directory, wherever the test runs (measured
+    // v24.22.3 on POSIX: file:///C:/<encoded-cwd>/a). Note the drive prefix is
+    // added here even though pathToFileURL(cwd) has none on POSIX.
+    const cwdHref = url.pathToFileURL(process.cwd(), { windows: true }).href;
+    const driveRelative = url.pathToFileURL('C:a', { windows: true }).href;
+    if (Deno.build.os === 'windows') {
+        // The cwd already carries its own drive; only the tail is portable.
+        ok(driveRelative.startsWith('file:///C:/'));
+    } else {
+        strictEqual(driveRelative, cwdHref.replace(/^file:\/\/\//, 'file:///C:/').replace(/\/$/, '') + '/a');
+    }
     strictEqual(url.pathToFileURL('C:\\a\\..\\b', { windows: true }).href, 'file:///C:/b');
     strictEqual(url.pathToFileURL('C:\\dir\\', { windows: true }).href, 'file:///C:/dir/');
 });

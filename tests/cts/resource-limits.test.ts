@@ -103,29 +103,27 @@ Deno.test('resource-limits: --memory-limit refuses allocation past the cap', asy
         const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
         ok(!r.stdout.includes('COMPLETED-NO-OOM'),
             `allocation of ${CAP}MB must be refused under ${MEM}; got: ${r.stdout}`);
-        ok(r.stdout.includes('CAUGHT'), `expected a caught OOM, got: ${r.stdout}`);
+        // quickjs-ng #1814 made InternalError uncatchable, so the OOM aborts
+        // the runtime instead of landing in the user's catch (V8 parity: an
+        // exhausted heap is fatal). The refusal must still be loud.
+        ok(r.code !== 0, `refused allocation must exit non-zero, got ${r.code}`);
+        ok(/out of memory/i.test(r.stderr), `stderr must diagnose the OOM, got: ${r.stderr}`);
     });
 });
 
-// --- 2. the OOM is a catchable JS exception (NOT a fatal abort) --------------
+// --- 2. the OOM aborts the runtime even from inside try/catch (V8 parity) ----
 
-Deno.test('resource-limits: OOM is a catchable exception, not a fatal abort', async () => {
+Deno.test('resource-limits: OOM is a fatal abort even inside try/catch', async () => {
     await withTempDir('rl-catch', async (dir) => {
         const f = join(dir, 'a.js');
         Deno.writeTextFileSync(f, allocSrc('buf', CAP, true));
         const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
-        // The process survives and keeps running user code after the OOM.
-        ok(r.stdout.includes('END'),
-            `process must survive a caught OOM and reach END; got: ${r.stdout}`);
-        strictEqual(r.code, 0, 'a caught OOM leaves exit code 0');
-        // When there is headroom to build the Error, it is a proper
-        // InternalError('out of memory').
-        ok(r.stdout.includes('name=InternalError'),
-            `expected InternalError, got: ${r.stdout}`);
-        ok(r.stdout.includes('msg=out of memory'),
-            `expected "out of memory" message, got: ${r.stdout}`);
-        ok(r.stdout.includes('isError=true'),
-            `OOM value must be an Error instance, got: ${r.stdout}`);
+        // Uncatchable InternalError: the catch block never runs, so no END and
+        // no CAUGHT on stdout — the runtime dumps the error and exits 1.
+        ok(!r.stdout.includes('END'),
+            `an uncatchable OOM must not reach END; got: ${r.stdout}`);
+        ok(r.code !== 0, `uncatchable OOM must exit non-zero, got ${r.code}`);
+        ok(/out of memory/i.test(r.stderr), `stderr must diagnose the OOM, got: ${r.stderr}`);
     });
 });
 
@@ -174,9 +172,9 @@ Deno.test('resource-limits: uncaught OOM in a Promise exits non-zero', async () 
     });
 });
 
-// --- 5. OOM inside a vm sandbox is catchable by the host --------------------
+// --- 5. OOM inside a vm sandbox aborts the runtime (V8 parity) --------------
 
-Deno.test('resource-limits: OOM in a vm sandbox is catchable by the host', async () => {
+Deno.test('resource-limits: OOM in a vm sandbox is a fatal abort', async () => {
     await withTempDir('rl-vm', async (dir) => {
         const f = join(dir, 'a.js');
         Deno.writeTextFileSync(f, `
@@ -197,9 +195,12 @@ Deno.test('resource-limits: OOM in a vm sandbox is catchable by the host', async
         const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
         ok(!r.stdout.includes('VM-COMPLETED-NO-OOM'),
             `vm allocation must be refused under ${MEM}; got: ${r.stdout}`);
-        ok(r.stdout.includes('HOST-CAUGHT'),
-            `host must be able to catch the sandbox OOM, got: ${r.stdout}`);
-        ok(r.stdout.includes('END'), 'host must survive the sandbox OOM');
+        // quickjs-ng #1814 made the sandbox OOM uncatchable, so the host's
+        // try/catch never runs and the runtime aborts — the same semantics as
+        // a V8 heap OOM inside vm.runInNewContext (measured Node: fatal).
+        ok(!r.stdout.includes('HOST-CAUGHT'), 'the sandbox OOM is not catchable');
+        ok(r.code !== 0, `sandbox OOM must exit non-zero, got ${r.code}`);
+        ok(/out of memory/i.test(r.stderr), `stderr must diagnose the OOM, got: ${r.stderr}`);
     });
 });
 
@@ -230,8 +231,10 @@ Deno.test('resource-limits: --memory-limit is enforced inside a file Worker', as
     });
 });
 
-Deno.test('resource-limits: a worker OOM reaches the parent as error + exit 1', async () => {
-    // cno exposes a catchable InternalError on `error`, then exits 1.
+Deno.test('resource-limits: a worker OOM stops the worker with exit 1 and a diagnostic', async () => {
+    // quickjs-ng #1814: the worker's OOM follows the uncatchable-error path —
+    // the worker dumps the OOM to stderr and exits 1; the parent observes the
+    // exit (no 'error' event, which was the pre-#1814 catchable contract).
     await withTempDir('rl-worker-err', async (dir) => {
         const wf = join(dir, 'w.js');
         Deno.writeTextFileSync(wf, workerAllocSrc());
@@ -244,10 +247,12 @@ Deno.test('resource-limits: a worker OOM reaches the parent as error + exit 1', 
             w.on('exit', (c) => console.log('[EV exit] ' + c));
         `);
         const r = await runCno([`--memory-limit=${MEM}`, 'run', f], dir);
-        ok(/\[EV error\] InternalError out of memory/.test(r.stdout),
-            `'error' must fire with the OOM; stdout: ${r.stdout}`);
+        ok(!r.stdout.includes('[EV error]'),
+            `the uncatchable OOM must not surface as an 'error' event; stdout: ${r.stdout}`);
         ok(r.stdout.includes('[EV exit] 1'),
             `a worker killed by OOM must exit 1; stdout: ${r.stdout}`);
+        ok(/out of memory/i.test(r.stderr),
+            `the worker's stderr must carry the OOM diagnostic; stderr: ${r.stderr}`);
         // User code cannot reach postMessage under the cap. Any message is an
         // internal worker-control envelope leaked into the public channel, not a
         // claim about Node's OOM event ordering.
@@ -269,18 +274,16 @@ Deno.test('resource-limits: --memory-limit is enforced inside an eval Worker', a
             const w = new Worker(\`
                 const { parentPort } = require('node:worker_threads');
                 const cfg = import.meta.use('evbus').get('cno.runtime', 'workerRuntimeConfig');
+                // Report config propagation BEFORE allocating: post-#1814 the
+                // OOM itself is uncatchable and stops the worker mid-flight.
+                parentPort.postMessage({ hasCfg: !!cfg });
                 const sink = []; let mb = 0;
-                try {
-                    while (mb < ${CAP}) {
-                        sink.push(new Uint8Array(${CHUNK_MB} * 1024 * 1024));
-                        mb += ${CHUNK_MB};
-                    }
-                    sink.length = 0;
-                    parentPort.postMessage({ ok: true, mb, hasCfg: !!cfg });
-                } catch (e) {
-                    sink.length = 0;   // release before serialising -- see workerAllocSrc
-                    parentPort.postMessage({ caught: true, mb, hasCfg: !!cfg });
+                while (mb < ${CAP}) {
+                    sink.push(new Uint8Array(${CHUNK_MB} * 1024 * 1024));
+                    mb += ${CHUNK_MB};
                 }
+                sink.length = 0;
+                parentPort.postMessage({ ok: true, mb });
             \`, { eval: true });
             w.on('message', (m) => console.log('MSG ' + JSON.stringify(m)));
             w.on('exit', (c) => console.log('EXIT ' + c));
@@ -294,6 +297,10 @@ Deno.test('resource-limits: --memory-limit is enforced inside an eval Worker', a
             `stdout: ${r.stdout}`);
         ok(!r.stdout.includes(`"mb":${CAP}`),
             `an eval worker must not reach the ${CAP}MB cap; stdout: ${r.stdout}`);
+        ok(r.stdout.includes('EXIT 1'),
+            `an eval worker killed by the OOM must exit 1; stdout: ${r.stdout}`);
+        ok(/out of memory/i.test(r.stderr),
+            `the eval worker's stderr must diagnose the OOM; stderr: ${r.stderr}`);
     });
 });
 
@@ -385,8 +392,9 @@ Deno.test('resource-limits: CTS_MEMORY_LIMIT is enforced in the main thread', as
         const r = await runCno(['run', f], dir, { CTS_MEMORY_LIMIT: MEM });
         ok(!r.stdout.includes('COMPLETED-NO-OOM'),
             `CTS_MEMORY_LIMIT=${MEM} must refuse ${CAP}MB; got: ${r.stdout}`);
-        ok(r.stdout.includes('name=InternalError'),
-            `expected InternalError, got: ${r.stdout}`);
+        // Uncatchable since quickjs-ng #1814 (see test 2): fatal abort.
+        ok(r.code !== 0, `refused allocation must exit non-zero, got ${r.code}`);
+        ok(/out of memory/i.test(r.stderr), `stderr must diagnose the OOM, got: ${r.stderr}`);
     });
 });
 
@@ -407,7 +415,11 @@ Deno.test('resource-limits: CTS_MEMORY_LIMIT is enforced inside a Worker', async
         const r = await runCno(['run', f], dir, { CTS_MEMORY_LIMIT: MEM });
         ok(!r.stdout.includes('"ok":true'),
             `CTS_MEMORY_LIMIT=${MEM} must be enforced in the worker; got: ${r.stdout}`);
-        ok(r.stdout.includes('"caught":true'),
-            `worker must observe the OOM; got: ${r.stdout}`);
+        // Uncatchable OOM: the worker aborts (exit 1, stderr diagnostic) and
+        // the catch-based report never fires.
+        ok(r.stdout.includes('EXIT 1'),
+            `the worker must abort with exit 1; got: ${r.stdout}`);
+        ok(/out of memory/i.test(r.stderr),
+            `the worker's stderr must diagnose the OOM; stderr: ${r.stderr}`);
     });
 });

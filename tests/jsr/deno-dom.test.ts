@@ -33,6 +33,32 @@ Deno.test({ name: 'deno-dom: preserves utf8 text and attributes through wasm str
     strictEqual(doc.querySelector('a')?.textContent, '中文标题');
 });
 
+Deno.test({ name: 'deno-dom: re-importing a module that first evaluated it as a dependency settles', timeout: 30000 }, async () => {
+    const importer = Deno.makeTempFileSync({ prefix: 'cno-jsr-deno-dom-order-', suffix: '.ts' });
+    writeFileSync(importer, `
+        import { DOMParser } from "jsr:@b-fuze/deno-dom@0.1.56/wasm";
+        export const parsed = new DOMParser().parseFromString("<p>first</p>", "text/html")
+            ?.querySelector("p")?.textContent;
+    `);
+    try {
+        const first = await import(`file://${importer}`);
+        strictEqual(first.parsed, 'first');
+
+        // deno-dom was evaluated as a dependency above; this second import must
+        // not inherit an EVALUATING_ASYNC module record with a stale promise.
+        const direct = await Promise.race([
+            import('jsr:@b-fuze/deno-dom@0.1.56/wasm'),
+            new Promise<never>((_resolve, reject) => setTimeout(
+                () => reject(new Error('deno-dom re-import did not settle')),
+                30000,
+            )),
+        ]);
+        strictEqual(typeof direct.DOMParser, 'function');
+    } finally {
+        unlinkSync(importer);
+    }
+});
+
 Deno.test({ name: 'deno-dom: parses HTML through jsr wasm entry inside a worker', timeout: 60000 }, async () => {
     const file = writeWorker(`
         try {

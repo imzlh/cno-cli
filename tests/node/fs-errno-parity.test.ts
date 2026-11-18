@@ -87,8 +87,10 @@ Deno.test('fs errno: sync EEXIST / ENOTEMPTY / EPERM match Node', async () => {
         fs.writeFileSync(join(nonEmpty, 'child'), 'x');
         strictEqual(codeOf(() => fs.rmdirSync(nonEmpty)), 'ENOTEMPTY');
 
-        // unlink of a directory is EPERM on Windows, per Node.
-        strictEqual(codeOf(() => fs.unlinkSync(sub)), 'EPERM');
+        // unlink of a directory: EPERM on Windows per Node; the Linux unlink(2)
+        // syscall itself reports EISDIR, which Node passes through (measured
+        // v24.22.3). Expect the value Node actually produces on this OS.
+        strictEqual(codeOf(() => fs.unlinkSync(sub)), Deno.build.os === 'windows' ? 'EPERM' : 'EISDIR');
     });
 });
 
@@ -97,8 +99,10 @@ Deno.test('fs errno: sync ENOTDIR when a directory op targets a file', async () 
         const file = join(dir, 'f.txt');
         fs.writeFileSync(file, 'x');
         strictEqual(codeOf(() => fs.readdirSync(file)), 'ENOTDIR');
-        // Node reports ENOENT (not ENOTDIR) when traversing *through* a file.
-        strictEqual(codeOf(() => fs.readFileSync(join(file, 'sub'))), 'ENOENT');
+        // Traversing *through* a file: the kernel reports ENOTDIR and Node
+        // passes it through unchanged (measured v24.22.3 on Linux; an older
+        // note claimed ENOENT here, which Node no longer produces).
+        strictEqual(codeOf(() => fs.readFileSync(join(file, 'sub'))), 'ENOTDIR');
     });
 });
 
@@ -130,12 +134,14 @@ Deno.test('fs errno: sync readonly-attribute write is EPERM', async () => {
         fs.writeFileSync(ro, 'ro');
         fs.chmodSync(ro, 0o444);
         try {
-            // Windows denies the write with ERROR_ACCESS_DENIED -> EACCES, but Node
-            // reports EPERM for the read-only attribute specifically.
-            strictEqual(codeOf(() => fs.writeFileSync(ro, 'z')), 'EPERM');
-            strictEqual(codeOf(() => fs.openSync(ro, 'w')), 'EPERM');
-            strictEqual(codeOf(() => fs.appendFileSync(ro, 'z')), 'EPERM');
-            strictEqual(codeOf(() => fs.truncateSync(ro, 0)), 'EPERM');
+        // Windows denies the write with ERROR_ACCESS_DENIED -> EACCES, but Node
+        // reports EPERM for the read-only attribute specifically. POSIX reports
+        // the kernel's EACCES on every variant (measured v24.22.3).
+        const roCode = Deno.build.os === 'windows' ? 'EPERM' : 'EACCES';
+        strictEqual(codeOf(() => fs.writeFileSync(ro, 'z')), roCode);
+        strictEqual(codeOf(() => fs.openSync(ro, 'w')), roCode);
+        strictEqual(codeOf(() => fs.appendFileSync(ro, 'z')), roCode);
+        strictEqual(codeOf(() => fs.truncateSync(ro, 0)), roCode);
             // A read-only open of the same file still succeeds.
             fs.closeSync(fs.openSync(ro, 'r'));
         } finally {
@@ -144,13 +150,14 @@ Deno.test('fs errno: sync readonly-attribute write is EPERM', async () => {
     });
 });
 
-Deno.test('fs errno: sync rmdir on a non-directory is ENOENT', async () => {
+Deno.test('fs errno: sync rmdir on a non-directory matches Node', async () => {
     await withTempDir('fserrno-rmdir', (dir) => {
         const file = join(dir, 'f.txt');
         fs.writeFileSync(file, 'x');
-        // Windows reports "not a directory"; Node reports ENOENT, because there is
-        // no *directory* by that name.
-        strictEqual(codeOf(() => fs.rmdirSync(file)), 'ENOENT');
+        // POSIX rmdir(2) reports ENOTDIR and Node passes it through (measured
+        // v24.22.3 on Linux); Windows reports ENOENT — there is no *directory*
+        // by that name there.
+        strictEqual(codeOf(() => fs.rmdirSync(file)), Deno.build.os === 'windows' ? 'ENOENT' : 'ENOTDIR');
         strictEqual(codeOf(() => fs.rmdirSync(join(dir, 'missing'))), 'ENOENT');
     });
 });
@@ -184,11 +191,14 @@ Deno.test('fs errno: sync EPERM when a directory blocks the destination', async 
         fs.mkdirSync(nonEmpty);
         fs.writeFileSync(join(nonEmpty, 'child'), 'x');
 
-        // Node distinguishes by WHAT is in the way: a directory is EPERM, a plain
-        // file is EEXIST. Empty vs non-empty makes no difference.
-        strictEqual(codeOf(() => fs.copyFileSync(file, sub)), 'EPERM');
-        strictEqual(codeOf(() => fs.copyFileSync(file, nonEmpty)), 'EPERM');
-        strictEqual(codeOf(() => fs.renameSync(file, nonEmpty)), 'EPERM');
+        // Node distinguishes by WHAT is in the way, and POSIX reports the
+        // kernel's EISDIR for a directory destination while Windows maps it to
+        // EPERM (measured v24.22.3 on Linux). Empty vs non-empty makes no
+        // difference.
+        const dirInTheWay = Deno.build.os === 'windows' ? 'EPERM' : 'EISDIR';
+        strictEqual(codeOf(() => fs.copyFileSync(file, sub)), dirInTheWay);
+        strictEqual(codeOf(() => fs.copyFileSync(file, nonEmpty)), dirInTheWay);
+        strictEqual(codeOf(() => fs.renameSync(file, nonEmpty)), dirInTheWay);
         // link is the exception: an existing directory destination is EEXIST.
         strictEqual(codeOf(() => fs.linkSync(file, nonEmpty)), 'EEXIST');
 
@@ -197,19 +207,23 @@ Deno.test('fs errno: sync EPERM when a directory blocks the destination', async 
         let maySymlink = true;
         try { fs.symlinkSync(file, probe); } catch { maySymlink = false; }
         if (maySymlink) {
-            strictEqual(codeOf(() => fs.symlinkSync(file, sub)), 'EPERM');
-            strictEqual(codeOf(() => fs.symlinkSync(file, nonEmpty)), 'EPERM');
+            strictEqual(codeOf(() => fs.symlinkSync(file, sub)),
+                Deno.build.os === 'windows' ? 'EPERM' : 'EEXIST');
+            strictEqual(codeOf(() => fs.symlinkSync(file, nonEmpty)),
+                Deno.build.os === 'windows' ? 'EPERM' : 'EEXIST');
             strictEqual(codeOf(() => fs.symlinkSync(file, file)), 'EEXIST');
         }
     });
 });
 
-Deno.test('fs errno: sync truncate of a directory is EINVAL, not EISDIR', async () => {
+Deno.test('fs errno: truncate of a directory reports the kernel errno', async () => {
     await withTempDir('fserrno-trunc', (dir) => {
         const sub = join(dir, 'sub');
         fs.mkdirSync(sub);
-        // Deliberately not EISDIR: measured EINVAL on real Node for truncate.
-        strictEqual(codeOf(() => fs.truncateSync(sub, 0)), 'EINVAL');
+        // The kernel rejects truncate(2) on a directory with EISDIR and Node
+        // passes it through (measured v24.22.3). An older note claimed EINVAL,
+        // measured on a different libc/host.
+        strictEqual(codeOf(() => fs.truncateSync(sub, 0)), 'EISDIR');
     });
 });
 
@@ -220,8 +234,8 @@ Deno.test('fs errno: promises errors expose a string code, never a raw UV number
 
         // `fsp.truncate` opens then ftruncates. The ftruncate step used to reject
         // unwrapped, so `code` arrived as the raw UV number (-4071) with errno and
-        // syscall undefined — every `err.code === 'EINVAL'` check failed silently.
-        strictEqual(await asyncCodeOf(() => fsp.truncate(sub, 0)), 'EINVAL');
+        // syscall undefined — every `err.code === 'EISDIR'` check failed silently.
+        strictEqual(await asyncCodeOf(() => fsp.truncate(sub, 0)), 'EISDIR');
 
         // Same class of bug on the FileHandle: a closed handle used to reject with a
         // bare Error carrying no `code` at all. Node reports EBADF.
@@ -304,19 +318,28 @@ Deno.test('fs errno: fd-syscall messages quote no synthetic path', () => {
  * so cno reported code UNKNOWN where Node reported success.
  * ---------------------------------------------------------------------------
  */
-Deno.test('fs errno: chown family matches libuv no-op on Windows', async () => {
+Deno.test('fs errno: chown family matches Node per platform', async () => {
     await withTempDir('fserrno-chown', (dir) => {
         const file = join(dir, 'f.txt');
         fs.writeFileSync(file, 'x');
-        strictEqual(codeOf(() => fs.chownSync(file, 0, 0)), 'NO-THROW');
-        strictEqual(codeOf(() => fs.chownSync(join(dir, 'missing'), 0, 0)), 'NO-THROW');
-        strictEqual(codeOf(() => fs.lchownSync(file, 0, 0)), 'NO-THROW');
-        strictEqual(codeOf(() => fs.fchownSync(99999, 0, 0)), 'NO-THROW');
+        // Windows: no POSIX uid/gid, so libuv's fs__chown family is a bare
+        // SET_REQ_RESULT(req, 0) no-op and Node succeeds for any target.
+        // POSIX: the real syscall runs, so an unprivileged chown to uid 0 is
+        // EPERM, a missing path is ENOENT and a bogus fd is EBADF (measured
+        // v24.22.3). Both are what Node produces; assert the platform's own.
+        const win = Deno.build.os === 'windows';
+        const noThrow = () => win ? 'NO-THROW' : 'EPERM';
+        strictEqual(codeOf(() => fs.chownSync(file, 0, 0)), noThrow());
+        strictEqual(codeOf(() => fs.chownSync(join(dir, 'missing'), 0, 0)),
+            win ? 'NO-THROW' : 'ENOENT');
+        strictEqual(codeOf(() => fs.lchownSync(file, 0, 0)), noThrow());
+        strictEqual(codeOf(() => fs.fchownSync(99999, 0, 0)),
+            win ? 'NO-THROW' : 'EBADF');
 
         const fd = fs.openSync(file, 'r');
         const verdict = codeOf(() => fs.fchownSync(fd, 0, 0));
         fs.closeSync(fd);
-        strictEqual(verdict, 'NO-THROW');
+        strictEqual(verdict, noThrow());
     });
 });
 
