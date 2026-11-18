@@ -25,6 +25,8 @@ set(_EXT_LIBS "")
 set(_EXT_NAMES "")
 set(_EXT_INITS "")
 set(_EXT_SAFE  "")
+set(_EXT_USE   "")
+set(_EXT_ESM   "")
 
 macro(_cno_add_ext name init safe src inc)
     list(APPEND _EXT_SRCS  "${src}")
@@ -32,6 +34,8 @@ macro(_cno_add_ext name init safe src inc)
     list(APPEND _EXT_NAMES "${name}")
     list(APPEND _EXT_INITS "${init}")
     list(APPEND _EXT_SAFE  "${safe}")
+    list(APPEND _EXT_USE   "true")
+    list(APPEND _EXT_ESM   "false")
 endmacro()
 
 if(CNO_EMBED_EXT_H2)
@@ -104,12 +108,15 @@ if(_EXT_SRCS)
     set(CJS_EXTRA_MODULE_NAMES       "${_EXT_NAMES}"  CACHE INTERNAL "" FORCE)
     set(CJS_EXTRA_MODULE_INITS       "${_EXT_INITS}"  CACHE INTERNAL "" FORCE)
     set(CJS_EXTRA_MODULE_WORKER_SAFE "${_EXT_SAFE}"   CACHE INTERNAL "" FORCE)
+    set(CJS_EXTRA_MODULE_USE         "${_EXT_USE}"    CACHE INTERNAL "" FORCE)
+    set(CJS_EXTRA_MODULE_ESM         "${_EXT_ESM}"    CACHE INTERNAL "" FORCE)
     set(_CNO_GENERATED_EXTRA ON CACHE INTERNAL "" FORCE)
 elseif(_CNO_GENERATED_EXTRA)
     foreach(_var IN ITEMS
             CJS_EXTRA_SOURCES CJS_EXTRA_INCLUDE_DIRS CJS_EXTRA_LIBS
             CJS_EXTRA_DEFINES CJS_EXTRA_MODULE_NAMES CJS_EXTRA_MODULE_INITS
-            CJS_EXTRA_MODULE_WORKER_SAFE)
+            CJS_EXTRA_MODULE_WORKER_SAFE CJS_EXTRA_MODULE_USE
+            CJS_EXTRA_MODULE_ESM)
         unset(${_var} CACHE)
     endforeach()
     set(_CNO_GENERATED_EXTRA OFF CACHE INTERNAL "" FORCE)
@@ -273,8 +280,13 @@ endif()
 add_custom_target(cno-cli-bundle DEPENDS "${_CLI_BUNDLE}")
 
 # cjsc → C source (bytecode as const uint8_t cjs_blob[])
+# Debug info (pc→line maps) stays in the blob by default: dynamic import() from
+# the core resolves its base against the calling function's filename, which
+# STRIP_DEBUG erases, and core stack frames need positions to be strippable as
+# internal. Size cost is ~340 KB on the minified bundle; opt in to stripping
+# only when the archive is size-critical and loads no core-internal imports.
 set(_STRIP_FLAG "-s")
-if(CNO_RELEASE)
+if(CNO_STRIP_DEBUG)
     set(_STRIP_FLAG "-ss")
 endif()
 add_custom_command(
