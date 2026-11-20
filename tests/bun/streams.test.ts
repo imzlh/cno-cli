@@ -103,6 +103,21 @@ Deno.test('bun: stream conversions handle mixed bytes and UTF-8', async () => {
     // stream-leading BOM rule.
     strictEqual(await readableStreamToText(stream([bom, '\ufeffA'])), 'A');
     strictEqual(await readableStreamToText(stream(['\ufeff', bom, 'A'])), '\ufeffA');
+    strictEqual(await readableStreamToText(stream(['\ud800', '', '\ud83d', '\ude00'])), '\ud800😀');
+    strictEqual(await readableStreamToText(stream(['\ud800', bom, '\ud83d', '\ude00', '\ud800'])), '�\ufeff😀�');
+    const sequences: Array<[number[], string]> = [
+        [[0xef, 0xbb, 0xbf, 0xc3, 0xa9, 0xe4, 0xb8, 0xad, 0xf0, 0x9f, 0x98, 0x80], 'é中😀'],
+        [[0xe0, 0x80, 0x80, 0xed, 0xa0, 0x80], '������'],
+        [[0xe1, 0x80, 65, 0xf1, 0x80, 0x80, 65, 0xef, 0xbb], '�A�A�'],
+    ];
+    for (const [input, expected] of sequences) {
+        const bytes = new Uint8Array(input);
+        for (let split = 0; split <= bytes.byteLength; split++) {
+            strictEqual(await readableStreamToText(stream([
+                bytes.subarray(0, split), '', new Uint8Array(), bytes.subarray(split),
+            ])), expected);
+        }
+    }
     deepStrictEqual(await readableStreamToJSON(stream(['{"a":', new TextEncoder().encode('1}')])), { a: 1 });
     await rejects(readableStreamToJSON(stream(['invalid'])), SyntaxError);
 });
@@ -130,6 +145,39 @@ Deno.test('bun: stream errors and locks propagate without leaking the reader', a
     Object.defineProperty(shadowed, 'getReader', { value() { throw new Error('shadowed getReader ran'); } });
     deepStrictEqual([...await readableStreamToBytes(shadowed)], [2]);
     strictEqual(shadowed.locked, false);
+});
+
+Deno.test('bun: stream consumers preserve chunk references and source error precedence', async () => {
+    for (const consume of [readableStreamToArrayBuffer, readableStreamToText]) {
+        const bytes = new Uint8Array([65]);
+        let emitted = false;
+        const reused = new ReadableStream<Uint8Array>({
+            pull(controller) {
+                if (!emitted) {
+                    emitted = true;
+                    controller.enqueue(bytes);
+                } else {
+                    bytes[0] = 66;
+                    controller.close();
+                }
+            },
+        }, { highWaterMark: 0 });
+        const result = await consume(reused);
+        if (typeof result === 'string') strictEqual(result, 'B');
+        else deepStrictEqual([...new Uint8Array(result)], [66]);
+        strictEqual(reused.locked, false);
+
+        const failure = new Error('source failure after invalid chunk');
+        let stage = 0;
+        const broken = new ReadableStream({
+            pull(controller) {
+                if (stage++ === 0) controller.enqueue({});
+                else controller.error(failure);
+            },
+        }, { highWaterMark: 0 });
+        await rejects(consume(broken), error => error === failure);
+        strictEqual(broken.locked, false);
+    }
 });
 
 const encode = (value: string) => new TextEncoder().encode(value);

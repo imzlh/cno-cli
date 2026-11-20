@@ -1,4 +1,5 @@
 import { deepStrictEqual, strictEqual, throws } from 'node:assert';
+import { createHmac } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { CryptoHasher } from '../../cno/src/bun/crypto/index.ts';
 
@@ -13,6 +14,52 @@ Deno.test('bun: CryptoHasher hashes, copies, and resets', () => {
     strictEqual(copy.digest('hex'), 'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb');
     strictEqual(h.digest('hex'), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
     strictEqual(CryptoHasher.hash('sha256', 'abc', 'hex'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+});
+
+Deno.test('bun: CryptoHasher branches incremental state across algorithms and reused chunks', () => {
+    const input = Uint8Array.from({ length: 1031 }, (_, index) => (index * 29 + 7) & 255);
+    const prefix = input.subarray(0, 521);
+    const scratch = new Uint8Array(typeof SharedArrayBuffer === 'function'
+        ? new SharedArrayBuffer(69)
+        : new ArrayBuffer(69));
+    for (const algorithm of CryptoHasher.algorithms) {
+        const hasher = new CryptoHasher(algorithm);
+        for (let offset = 0; offset < prefix.byteLength; offset += 67) {
+            const chunk = prefix.subarray(offset, offset + 67);
+            scratch.set(chunk, 1);
+            hasher.update(new DataView(scratch.buffer, 1, chunk.byteLength));
+            scratch.fill(0);
+        }
+        const branch = hasher.copy();
+        const prefixOnly = branch.copy();
+        strictEqual(hasher.update(input.subarray(521)).digest('hex'), CryptoHasher.hash(algorithm, input, 'hex'), algorithm);
+        strictEqual(branch.update('tail').digest('hex'), new CryptoHasher(algorithm).update(prefix).update('tail').digest('hex'), algorithm);
+        strictEqual(prefixOnly.digest('hex'), CryptoHasher.hash(algorithm, prefix, 'hex'), algorithm);
+        strictEqual(hasher.digest('hex'), CryptoHasher.hash(algorithm, '', 'hex'), algorithm);
+        strictEqual(hasher.update(input).digest('hex'), CryptoHasher.hash(algorithm, input, 'hex'), algorithm);
+    }
+});
+
+Deno.test('bun: CryptoHasher HMAC branches preserve keys across block sizes', () => {
+    const input = Uint8Array.from({ length: 513 }, (_, index) => (index * 17 + 3) & 255);
+    const algorithms = [
+        'md5', 'ripemd160', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512',
+        'sha512-224', 'sha512-256', 'sha3-224', 'sha3-256', 'sha3-384', 'sha3-512',
+    ];
+    for (const algorithm of algorithms) {
+        for (const length of [0, 71, 200]) {
+            const key = Uint8Array.from({ length: length + 2 }, (_, index) => (index * 11 + 5) & 255).subarray(1, length + 1);
+            const expected = createHmac(algorithm, key).update(input).digest('hex');
+            const alternate = createHmac(algorithm, key).update(input.subarray(0, 257)).update('tail').digest('hex');
+            const hasher = new CryptoHasher(algorithm, new DataView(key.buffer, key.byteOffset, key.byteLength));
+            key.fill(0);
+            hasher.update(input.subarray(0, 63)).update(input.subarray(63, 257));
+            const branch = hasher.copy();
+            strictEqual(hasher.update(input.subarray(257)).digest('hex'), expected, `${algorithm}/${length}`);
+            strictEqual(branch.update('tail').digest('hex'), alternate, `${algorithm}/${length} copy`);
+            throws(() => hasher.copy(), /HMAC has been consumed/);
+        }
+    }
 });
 
 Deno.test('bun: CryptoHasher supports MD4 hashes and HMAC keys', () => {

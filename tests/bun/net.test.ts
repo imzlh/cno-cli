@@ -395,9 +395,10 @@ Deno.test({ name: 'bun.net: Socket and Listener expose branded prototype surface
 Deno.test({ name: 'bun.net: argument and option validation' }, async () => {
     throws(() => listen({ hostname: '127.0.0.1', port: 0, tls: true, socket: {} } as never), /TLS/);
     await rejects(
-        () => connect({ hostname: '127.0.0.1', port: 0, unix: '/tmp/bun-net-test.sock', socket: {} } as never),
-        /Unix/,
+        () => connect({ unix: '', socket: {} }),
+        /unix/,
     );
+    throws(() => listen({ unix: '\0abstract', socket: {} }), /abstract Unix/);
     throws(() => listen({ hostname: '127.0.0.1', port: 0, reusePort: true, socket: {} } as never), /reusePort/);
     throws(() => listen({ hostname: '127.0.0.1', port: 70000, socket: {} }), RangeError);
     throws(() => listen({ hostname: '', port: 0, socket: {} }), TypeError);
@@ -405,4 +406,124 @@ Deno.test({ name: 'bun.net: argument and option validation' }, async () => {
     throws(() => listen({ hostname: '127.0.0.1', port: 0, socket: { binaryType: 'dataview' } as never }), TypeError);
     await rejects(() => connect(null as never), TypeError);
     throws(() => listen(null as never), TypeError);
+});
+
+Deno.test({ name: 'bun.net: Unix sockets preserve half-close, reload, graceful stop and path ownership', ignore: Deno.build.os === 'windows', timeout: 10000 }, async () => {
+    const directory = Deno.makeTempDirSync({ prefix: 'bun-net-' });
+    const path = `${directory}/socket`;
+    let request = '';
+    let closed = false;
+    let received = '';
+    const listener = listen({
+        unix: path,
+        allowHalfOpen: true,
+        socket: {
+            open(socket) {
+                strictEqual(socket.listener, listener);
+                for (const name of ['remoteFamily', 'remoteAddress', 'remotePort', 'localFamily', 'localAddress', 'localPort'] as const) {
+                    strictEqual(socket[name], undefined);
+                }
+            },
+            data(_socket, chunk) {
+                request += decode(chunk);
+            },
+            end(socket) {
+                socket.end(`old:${request}`);
+            },
+        },
+    });
+    try {
+        strictEqual(listener.unix, path);
+        strictEqual(listener.port, undefined);
+        strictEqual(listener.hostname, undefined);
+        throws(() => listen({ unix: path, socket: {} }));
+        await connect({
+            unix: path,
+            socket: {
+                open(socket) {
+                    socket.end('ping');
+                },
+                data(_socket, chunk) {
+                    received += decode(chunk);
+                },
+                close() {
+                    closed = true;
+                },
+            },
+        });
+        await until(() => closed, 'Unix half-close response');
+        strictEqual(received, 'old:ping');
+
+        listener.reload({
+            socket: {
+                data(socket, chunk) {
+                    listener.stop();
+                    socket.end(`new:${decode(chunk)}`);
+                },
+            },
+        });
+        closed = false;
+        received = '';
+        await connect({
+            unix: path,
+            socket: {
+                open(socket) {
+                    socket.write('next');
+                },
+                data(socket, chunk) {
+                    received += decode(chunk);
+                    socket.end();
+                },
+                close() {
+                    closed = true;
+                },
+            },
+        });
+        await until(() => closed, 'Unix connection drains after listener stop');
+        strictEqual(received, 'new:next');
+        await until(() => {
+            try {
+                Deno.lstatSync(path);
+                return false;
+            } catch (error) {
+                if (error instanceof Deno.errors.NotFound) return true;
+                throw error;
+            }
+        }, 'Unix listener path cleanup');
+        const rebound = listen({ unix: path, socket: {} });
+        rebound.stop(true);
+    } finally {
+        listener.stop(true);
+        Deno.removeSync(directory, { recursive: true });
+    }
+});
+
+Deno.test({ name: 'bun.net: Unix bind conflicts preserve files and connection failures reject once', ignore: Deno.build.os === 'windows', timeout: 10000 }, async () => {
+    const directory = Deno.makeTempDirSync({ prefix: 'bun-net-conflict-' });
+    const path = `${directory}/existing`;
+    try {
+        Deno.writeTextFileSync(path, 'keep');
+        throws(() => listen({ unix: path, socket: {} }));
+        strictEqual(Deno.readTextFileSync(path), 'keep');
+        let connectErrors = 0;
+        let callbackError: unknown;
+        await rejects(
+            () => connect({
+                unix: `${directory}/missing`,
+                socket: {
+                    connectError(socket, error) {
+                        connectErrors++;
+                        callbackError = error;
+                        strictEqual(socket.remoteAddress, undefined);
+                        strictEqual(socket.localPort, undefined);
+                    },
+                },
+            }),
+            error => error === callbackError,
+        );
+        strictEqual(connectErrors, 1);
+        strictEqual(Deno.readTextFileSync(path), 'keep');
+    } finally {
+        Deno.removeSync(directory, { recursive: true });
+    }
 });

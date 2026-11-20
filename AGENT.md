@@ -128,14 +128,18 @@ implementation code leaking into the main blob or a pack.
 
 ### Native Modules And Imports
 
+- Order each module as imports, native `import.meta.use()` bindings, then the
+  implementation.
 - Use `import.meta.use('module')` for circu.js native modules. It is a runtime
   primitive, not a normal JavaScript import.
 - Avoid unnecessary type casts around native module values. Read the matching
   declaration in `circu.js/types/` first and narrow values properly.
 - `os.getenv()` throws when a variable is absent; catch that case when absence
   is expected.
-- For straightforward UTF-8 work, prefer `engine.encodeString`/
-  `engine.decodeString` when their semantics are sufficient.
+- Prefer native primitives and the cheapest API with the required semantics.
+  For UTF-8, prefer `engine.encodeString`/`engine.decodeString` over native
+  `text.Encoder`/`text.Decoder`, and those over global Web encoders. Use the
+  engine's UTF-16 helpers where available and appropriate.
 - Avoid adding global state when a native module or an explicitly owned runtime
   object can carry the state.
 
@@ -173,21 +177,18 @@ implementation code leaking into the main blob or a pack.
 
 ### Editing Style
 
-Prefer a focused patch over a broad rewrite. Match surrounding code and keep
-comments short; comments should explain a non-obvious invariant, not restate
-the code.
+Code quality takes priority over patch size. Refactor or replace an unsuitable
+architecture rather than accumulating workarounds; keep unrelated code intact.
+Keep comments brief and limited to non-obvious invariants.
 
-```ts
-import type { SomeType } from './types.ts';
+Use meaningful abstractions and existing helpers, but avoid layers of trivial
+one-line forwarding functions. Preserve error shapes and cleanup paths.
+Generated binaries, caches, lock changes, and unrelated worktree edits should
+not be included in a focused source change.
 
-const fs = import.meta.use('fs');
-
-const read = (path: string) => fs.readFile(path);
-```
-
-Use existing helpers and local abstractions before adding new ones. Preserve
-error shapes and cleanup paths. Generated binaries, caches, lock changes, and
-unrelated worktree edits should not be included in a focused source change.
+Do not add documentation, comment essays, or memory entries for each bug fix.
+Use a concise commit message to explain the change; keep any separately
+requested historical record in its own commit.
 
 ## circu.js: Native Runtime
 
@@ -655,6 +656,9 @@ build/stage/cno test tests/webapi
 
 General rules:
 
+- Test important, complex behavior and ownership contracts. Do not add tests
+  merely to check API existence or mechanically add a regression per bug;
+  prioritize improving the implementation over accumulating shallow tests.
 - Run the smallest bucket covering the changed contract, then broaden for
   shared runtime, loader, native, or HTTP changes.
 - A test file count is not the same as the number of individual test cases;
