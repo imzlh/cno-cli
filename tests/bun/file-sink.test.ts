@@ -1,9 +1,11 @@
 import { rejects, strictEqual, throws } from 'node:assert';
 import Bun, { stderr, stdin, stdout } from 'bun';
 import { join } from 'node:path';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
+
+const nativeFs = import.meta.use('fs');
 
 const fixtureRoot = fileURLToPath(new URL('../../build/bun-polyfill-VFyMWN5X/filesink-r5/tmp/', import.meta.url));
 mkdirSync(fixtureRoot, { recursive: true });
@@ -46,12 +48,70 @@ Deno.test({ name: 'bun.file.writer: highWaterMark is an advisory hint and option
         strictEqual(readFileSync(path, 'utf8'), '');
         strictEqual(sink.flush(), 4);
         strictEqual(readFileSync(path, 'utf8'), 'abcd');
+        const chunk = new Uint8Array(1000).fill(65);
+        for (let index = 0; index < 4; index++) strictEqual(sink.write(chunk), 1000);
+        strictEqual(readFileSync(path).byteLength, 4);
+        strictEqual(sink.write(chunk), 5000);
+        chunk.fill(66);
+        strictEqual(readFileSync(path, 'utf8'), 'abcd' + 'A'.repeat(5000));
+        strictEqual(sink.write(new Uint8Array(4096).fill(67)), 4096);
+        strictEqual(sink.write('tail'), 4);
+        strictEqual(readFileSync(path).byteLength, 9100);
+        strictEqual(sink.flush(), 4);
         strictEqual(sink.end(), 0);
         throws(() => Bun.file(path).writer('x' as never), TypeError);
         const permissive = Bun.file(join(dir, 'permissive.txt')).writer({ highWaterMark: -1 });
         permissive.start('ignored' as never);
         strictEqual(permissive.write('ok'), 2);
         strictEqual(permissive.end(), 2);
+    });
+});
+
+Deno.test({ name: 'bun.file.writer: retries partial flushes without replay and preserves borrowed descriptors', timeout: 10000 }, async () => {
+    await withFileSinkFixture('file-sink-retry', (dir) => {
+        const originalPwrite = nativeFs.pwrite;
+        for (const phase of ['buffer', 'pending'] as const) {
+            const path = join(dir, `${phase}.txt`);
+            const sink = Bun.file(path).writer();
+            sink.write('prefix');
+            const chunk = new Uint8Array(4096).fill(65);
+            const failure = new Error(`partial ${phase} failure`);
+            let calls = 0;
+            Reflect.set(nativeFs, 'pwrite', (fd: number, bytes: Uint8Array, offset: number) => {
+                calls++;
+                if (calls === 1) {
+                    return originalPwrite(fd, phase === 'buffer' ? bytes.subarray(0, 2) : bytes, offset);
+                }
+                if (calls === 2 && phase === 'pending') return originalPwrite(fd, bytes.subarray(0, 17), offset);
+                throw failure;
+            });
+            try {
+                throws(() => sink.write(chunk), failure);
+            } finally {
+                Reflect.set(nativeFs, 'pwrite', originalPwrite);
+            }
+            chunk.fill(66);
+            if (phase === 'buffer') {
+                strictEqual(sink.flush(), 4100);
+                strictEqual(sink.end(), 0);
+            } else {
+                strictEqual(sink.write('!'), 4080);
+                strictEqual(sink.end(), 1);
+            }
+            strictEqual(readFileSync(path, 'utf8'), 'prefix' + 'A'.repeat(4096) + (phase === 'pending' ? '!' : ''));
+        }
+
+        const path = join(dir, 'borrowed.txt');
+        const fd = openSync(path, 'w+');
+        try {
+            const sink = Bun.file(fd).writer();
+            strictEqual(sink.write(new Uint8Array(4096).fill(68)), 4096);
+            strictEqual(sink.end(), 0);
+            strictEqual(fstatSync(fd).size, 4096);
+            strictEqual(readFileSync(path, 'utf8'), 'D'.repeat(4096));
+        } finally {
+            closeSync(fd);
+        }
     });
 });
 

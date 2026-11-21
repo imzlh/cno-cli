@@ -117,12 +117,15 @@ Deno.test({ name: 'bun: serve routes handler errors through error and keeps serv
 
 Deno.test('bun: serve rejects unsupported transport and development options', () => {
     const fetch = () => new Response('unused');
-    for (const option of ['websocket', 'tls', 'development', 'reload']) {
+    for (const option of ['development', 'reload']) {
         throws(
             () => serve({ fetch, [option]: {} } as Parameters<typeof serve>[0]),
             new RegExp(`unsupported option "${option}"`),
         );
     }
+    throws(() => serve({ fetch, websocket: {} } as Parameters<typeof serve>[0]), /websocket requires/);
+    throws(() => serve({ fetch, tls: {} }), /TLS server requires cert and key/);
+    throws(() => serve({ fetch, tls: { cert: 'invalid', key: 'invalid' } } as Parameters<typeof serve>[0]), /SSL|TLS|Failed to create/);
 });
 
 Deno.test({ name: 'bun: serve reload replaces handlers atomically without rebinding', timeout: 5000 }, async () => {

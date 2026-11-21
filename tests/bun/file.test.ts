@@ -531,6 +531,55 @@ Deno.test({ name: 'bun: write preserves typed-array offsets and accepts Blob/Res
     });
 });
 
+Deno.test({ name: 'bun: write materializes BlobPart arrays before opening any destination', timeout: 10000 }, async () => {
+    await withTempDir('bun-file-write-parts', async (root) => {
+        const path = join(root, 'output.txt');
+        for (const destination of ['path', 'file', 'fd'] as const) {
+            writeFileSync(path, 'original');
+            const source = new Uint8Array([0, 65, 0]);
+            const blob = new Blob(['blob']);
+            Object.defineProperty(blob, 'stream', { get() { throw new Error('shadowed Blob stream'); } });
+            const parts = [
+                '\ud83d', '\ude00', new DataView(source.buffer, 1, 1),
+                { toString() { source[1] = 66; return '!'; } },
+                blob, null, undefined, ['x', 'y'], file(path),
+            ] as never;
+            const fd = destination === 'fd' ? openSync(path, 'r+') : undefined;
+            try {
+                const written = destination === 'file'
+                    ? await file(path).write(parts)
+                    : await write(fd ?? path, parts);
+                strictEqual(written, 15);
+                strictEqual(readFileSync(path, 'utf8'), '��A!blobx,y');
+                if (fd !== undefined) strictEqual(fstatSync(fd).size, written);
+            } finally {
+                if (fd !== undefined) closeSync(fd);
+            }
+        }
+
+        const indexed = ['a', 'b'];
+        indexed[Symbol.iterator] = function* () { yield 'ignored'; };
+        Object.defineProperty(indexed, 0, { get() { indexed.push('ignored'); return 'a'; } });
+        for (const [parts, expected] of [
+            [indexed, 'ab'],
+            [new Proxy(['a', 'b'], {}), 'a,b'],
+            [[false, true, 0, 12], 'falsetrue012'],
+            [[], ''],
+        ] as const) {
+            strictEqual(await write(path, parts as never), expected.length);
+            strictEqual(readFileSync(path, 'utf8'), expected);
+        }
+
+        writeFileSync(path, 'preserved');
+        const failure = new Error('part conversion failed');
+        for (const parts of [[Symbol('invalid')], ['before', { toString() { throw failure; } }]]) {
+            await rejects(() => write(path, parts as never), parts.length === 1 ? TypeError : failure);
+            await rejects(() => file(path).write(parts as never), parts.length === 1 ? TypeError : failure);
+            strictEqual(readFileSync(path, 'utf8'), 'preserved');
+        }
+    });
+});
+
 Deno.test({ name: 'bun: write recognizes Blob inputs by intrinsic slots', timeout: 10000 }, async () => {
     await withTempDir('bun-file-write-blob-slots', async (root) => {
         const path = join(root, 'output.txt');
