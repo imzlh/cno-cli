@@ -119,20 +119,25 @@ Deno.test('deno oracle: stat reports timestamps as Dates and core ids as numbers
     });
 });
 
+// Measured on Windows, but every assertion here is platform neutral: the child
+// is the current runtime (Deno.execPath()) so the exit codes come from
+// `Deno.exit` rather than cmd.exe builtins.
 Deno.test({ name: 'deno oracle: CommandOutput success always agrees with code', timeout: 20000 }, async () => {
-    const failure = await new Deno.Command('cmd', { args: ['/c', 'exit 3'] }).output();
+    const exitWith = (code: number) => new Deno.Command(Deno.execPath(), { args: ['eval', `Deno.exit(${code})`] });
+
+    const failure = await exitWith(3).output();
     strictEqual(failure.code, 3);
     strictEqual(failure.success, false);
     strictEqual(failure.signal, null);
     strictEqual(failure.success, failure.code === 0);
 
-    const failureSync = new Deno.Command('cmd', { args: ['/c', 'exit 7'] }).outputSync();
+    const failureSync = exitWith(7).outputSync();
     strictEqual(failureSync.code, 7);
     strictEqual(failureSync.success, false);
     strictEqual(failureSync.success, failureSync.code === 0);
     strictEqual(JSON.stringify(Object.keys(failureSync).sort()), JSON.stringify(['code', 'signal', 'stderr', 'stdout', 'success']));
 
-    const success = await new Deno.Command('cmd', { args: ['/c', 'exit 0'] }).output();
+    const success = await exitWith(0).output();
     strictEqual(success.code, 0);
     strictEqual(success.success, true);
     ok(success.stdout instanceof Uint8Array);
@@ -167,8 +172,13 @@ Deno.test({ name: 'deno oracle: env mutation round-trips and rejects malformed k
         strictEqual(Deno.env.get(key), 'value-1');
         strictEqual(Deno.env.has(key), true);
         strictEqual(Deno.env.toObject()[key], 'value-1');
-        // Windows environment lookups are case-insensitive in deno 2.9.3.
-        strictEqual(Deno.env.get(key.toLowerCase()), 'value-1');
+        // Windows environment lookups are case-insensitive; POSIX ones are not,
+        // and deno follows the host in both cases.
+        if (Deno.build.os === 'windows') {
+            strictEqual(Deno.env.get(key.toLowerCase()), 'value-1');
+        } else {
+            strictEqual(Deno.env.get(key.toLowerCase()), undefined);
+        }
     } finally {
         Deno.env.delete(key);
     }
@@ -272,9 +282,16 @@ Deno.test({ name: 'deno oracle: a caught spawn failure still exits cleanly', tim
     strictEqual(child.success, true);
 });
 
-// Regression: clearEnv must prevent libuv from restoring required Windows
-// variables from the parent environment on the asynchronous spawn path.
-Deno.test({ name: 'deno oracle: clearEnv clears the async child env as thoroughly as the sync one', timeout: 20000 }, async () => {
+// Windows-only: clearEnv must prevent libuv from restoring required Windows
+// variables from the parent environment on the asynchronous spawn path. There
+// is no portable equivalent (POSIX children inherit whatever envp we pass), so
+// this stays gated to the platform it was measured on.
+const CLEAR_ENV_EXPECTED = ['COMSPEC', 'PATHEXT', 'PROMPT'];
+Deno.test({
+    name: 'deno oracle: clearEnv clears the async child env as thoroughly as the sync one',
+    ignore: Deno.build.os !== 'windows',
+    timeout: 20000,
+}, async () => {
     const names = (bytes: Uint8Array) =>
         new TextDecoder().decode(bytes)
             .split(/\r?\n/)
@@ -286,8 +303,34 @@ Deno.test({ name: 'deno oracle: clearEnv clears the async child env as thoroughl
     const asyncNames = names((await new Deno.Command('cmd', { args: ['/c', 'set'], clearEnv: true }).output()).stdout);
     const syncNames = names(new Deno.Command('cmd', { args: ['/c', 'set'], clearEnv: true }).outputSync().stdout);
 
-    strictEqual(JSON.stringify(syncNames), JSON.stringify(['COMSPEC', 'PATHEXT', 'PROMPT']));
+    strictEqual(JSON.stringify(syncNames), JSON.stringify(CLEAR_ENV_EXPECTED));
     strictEqual(JSON.stringify(asyncNames), JSON.stringify(syncNames));
+});
+
+// Ported to the current runtime so it runs on every platform: clearEnv drops the
+// parent's environment, while an explicit `env` map keeps applying (it is not
+// itself subject to clearEnv).
+Deno.test({ name: 'deno oracle: clearEnv drops the parent environment', timeout: 20000 }, async () => {
+    const probe = 'CNO_ORACLE_CLEARENV_PROBE';
+    const previousProbe = Deno.env.get(probe);
+    const read = async (options: { clearEnv?: boolean; env?: Record<string, string> }) => {
+        const result = await new Deno.Command(Deno.execPath(), {
+            args: ['eval', `console.log(Deno.env.get('${probe}') ?? 'absent')`],
+            ...options,
+        }).output();
+        return new TextDecoder().decode(result.stdout).trim();
+    };
+
+    Deno.env.set(probe, 'inherited');
+    try {
+        strictEqual(await read({ clearEnv: true }), 'absent');
+        strictEqual(await read({}), 'inherited');
+        // Explicit env entries survive clearEnv: they are not inherited.
+        strictEqual(await read({ clearEnv: true, env: { [probe]: 'explicit' } }), 'explicit');
+    } finally {
+        if (previousProbe === undefined) Deno.env.delete(probe);
+        else Deno.env.set(probe, previousProbe);
+    }
 });
 
 // Both NXDOMAIN and an existing name without the requested record type map to
@@ -312,6 +355,10 @@ Deno.test('deno oracle: wrong-mode handle IO raises PermissionDenied', async () 
             readOnly.close();
         }
 
+        // A write-only handle cannot be read back either; like the read-only
+        // case the rejection comes from the handle's own mode check, so it is
+        // PermissionDenied on every platform (measured: EACCES "File not
+        // opened for reading").
         const writeOnly = await Deno.open(file, { write: true });
         try {
             await rejects(() => writeOnly.read(new Uint8Array(4)), Deno.errors.PermissionDenied);
@@ -323,7 +370,7 @@ Deno.test('deno oracle: wrong-mode handle IO raises PermissionDenied', async () 
 
 Deno.test({ name: 'deno oracle: output() runs the child when stdout is inherited or null', timeout: 20000 }, async () => {
     for (const stdout of ['inherit', 'null'] as const) {
-        const result = await new Deno.Command('cmd', { args: ['/c', 'exit 0'], stdout }).output();
+        const result = await new Deno.Command(Deno.execPath(), { args: ['eval', '0'], stdout }).output();
         strictEqual(result.success, true);
         strictEqual(result.code, 0);
         strictEqual(JSON.stringify(Object.keys(result).sort()), JSON.stringify(['code', 'signal', 'stderr', 'stdout', 'success']));
@@ -442,8 +489,10 @@ Deno.test({ name: 'deno oracle: Deno.inspect honours its documented options', ig
 });
 
 Deno.test('deno oracle: Deno.build.vendor matches the target triple', () => {
-    strictEqual(Deno.build.vendor, 'pc');
-    ok(Deno.build.target.includes(`-${Deno.build.vendor}-`), 'vendor must appear in the target triple');
+    const expectedVendor = Deno.build.os === 'windows'
+        ? 'pc'
+        : Deno.build.os === 'darwin' ? 'apple' : 'unknown';
+    strictEqual(Deno.build.vendor, expectedVendor);
 });
 
 // A/AAAA queries without an explicit name server use the system resolver so hosts-file

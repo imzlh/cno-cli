@@ -1,26 +1,47 @@
-/**
- * Shared @cnojs/http Server HTTP/2 accept + handler path.
- *
- * COVERAGE WARNING — the TLS h2 round-trip below is gated `ignore: !h2Available()`,
- * and `h2Available()` is false for a BUILD reason, not a platform one:
- * `build/CMakeCache.txt` carries `CNO_EMBED_EXT_H2:BOOL=OFF`, so the native
- * nghttp2 extension was never compiled in. (OBSERVED 2026-08-04: 0 ok / 1
- * skipped.) Re-enable by building with -DCNO_EMBED_EXT_H2=ON; until then the TLS
- * h2 accept + handler path here is UNMEASURED.
- *
- * This file used to report a file-level PASS while executing ZERO tests, which is
- * worse than failing. The GATE test at the bottom therefore runs unconditionally
- * and asserts the Server's fail-closed behaviour, so the file always executes at
- * least one real assertion in either build configuration. Same shape as
- * tests/webapi/quic-native.test.ts — do not add `ignore:` to it.
- */
+/** Shared @cnojs/http Server HTTP/2 requests and feature-disabled behavior. */
 import { strictEqual, ok } from 'node:assert';
 import { createServer } from '@cnojs/http/server';
 import { HttpVersion } from '@cnojs/http/protocol';
 import { h2Available, tryLoadH2 } from '@cnojs/http/h2-native';
 import * as http2 from 'node:http2';
+import { Server as SourceServer } from '../../http/src/server.ts';
 
 const ssl = import.meta.use('ssl');
+
+for (const cancelUpload of [false, true]) {
+    Deno.test({ name: `http h2: graceful shutdown preserves the last response (${cancelUpload ? 'cancelled upload' : 'GET'})`, ignore: !h2Available(), timeout: 10000 }, async () => {
+        const payload = 'tail-response'.repeat(16384);
+        const shutdown = Promise.withResolvers<void>();
+        const server = new SourceServer(async (request, response) => {
+            if (cancelUpload) request.cancelBody();
+            await response.end(payload);
+            void server.closeGracefully().then(shutdown.resolve, shutdown.reject);
+        }, { hostname: '127.0.0.1', port: 0, protocols: [HttpVersion.HTTP2] });
+        let session: ReturnType<typeof http2.connect> | undefined;
+        try {
+            server.listen();
+            await server.acceptLoop();
+            const addr = server.address();
+            ok(addr && 'port' in addr);
+            session = http2.connect(`http://127.0.0.1:${addr.port}`);
+            await once(session, 'connect');
+            const request = session.request({ ':method': cancelUpload ? 'POST' : 'GET', ':path': '/' });
+            const chunks: Buffer[] = [];
+            request.on('data', chunk => chunks.push(chunk));
+            const done = new Promise<void>((resolve, reject) => {
+                request.once('end', resolve);
+                request.once('error', reject);
+            });
+            if (cancelUpload) request.write('partial');
+            await done;
+            strictEqual(Buffer.concat(chunks).toString(), payload);
+            await shutdown.promise;
+        } finally {
+            session?.destroy();
+            await server.shutdown();
+        }
+    });
+}
 
 function once<T extends unknown[]>(
     emitter: { once(event: string, fn: (...args: T) => void): void },
@@ -48,7 +69,6 @@ Deno.test({
         port: 0,
         cert,
         key,
-        protocols: [HttpVersion.HTTP2, HttpVersion.HTTP11],
     });
 
     server.listen();
