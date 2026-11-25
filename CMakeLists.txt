@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(cno-cli LANGUAGES C)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(ExternalProject)
+include(CTest)
 
 # Startup cost is dominated by decoding the embedded bytecode blob, which has no
 # lazy path, so bundle size matters: minify by default in release builds.
@@ -12,8 +13,8 @@ else()
 endif()
 option(CNO_BUNDLE_MINIFY  "Minify the JS bundle"                   ${_MINIFY_DEFAULT})
 option(CNO_WITH_BROTLI    "Enable native Brotli compression"      ON)
-option(CNO_EMBED_EXT_H2   "Statically embed HTTP/2 extension"      OFF)
-option(CNO_EMBED_EXT_QUIC "Statically embed QUIC extension"        OFF)
+option(CNO_EMBED_EXT_H2 "Build the native HTTP/2 module into cno" OFF)
+option(CNO_EMBED_EXT_QUIC "Build the native QUIC module into cno" OFF)
 set(CJSC_PATH      "" CACHE FILEPATH "Pre-built host cjsc executable")
 set(CNO_EXT_DIR    "" CACHE PATH     "Pre-built native extensions dir (.so/.dll)")
 set(CNO_PREBUILT_BUNDLE "" CACHE FILEPATH "Host-generated JavaScript bundle; skips the Node/pnpm bundling step")
@@ -39,65 +40,19 @@ macro(_cno_add_ext name init safe src inc)
 endmacro()
 
 if(CNO_EMBED_EXT_H2)
-    find_package(nghttp2 CONFIG QUIET)
-    if(nghttp2_FOUND)
-        set(_NGHTTP2 nghttp2::nghttp2)
-    else()
-        find_package(PkgConfig REQUIRED)
-        pkg_check_modules(NGHTTP2 REQUIRED IMPORTED_TARGET libnghttp2)
-        set(_NGHTTP2 PkgConfig::NGHTTP2)
-    endif()
-    list(APPEND _EXT_LIBS "${_NGHTTP2}")
-    _cno_add_ext("@cnojs/http/ext-h2" "h2_ns_init" "false"
+    include(cmake/cno-http2.cmake)
+    list(APPEND _EXT_LIBS cno_nghttp2)
+    _cno_add_ext("@cnojs/http/ext-h2" "h2_ns_init" "true"
         "${CMAKE_CURRENT_SOURCE_DIR}/http/ext-h2/http2.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/http/ext-h2")
-    message(STATUS "[cno] embed ext-h2 (${_NGHTTP2})")
 endif()
 
 if(CNO_EMBED_EXT_QUIC)
-    set(_QUICLY "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic/deps/quicly")
-    if(NOT EXISTS "${_QUICLY}/CMakeLists.txt")
-        message(FATAL_ERROR "CNO_EMBED_EXT_QUIC: missing submodule at ${_QUICLY}")
-    endif()
-    find_package(OpenSSL REQUIRED)
-    # quicly.a is protocol-only (picotls sources live only in quicly's cli/tests).
-    # Build a private picotls static lib — do not add_subdirectory(picotls):
-    # both trees define a `cli` target and collide.
-    set(WITH_DTRACE OFF CACHE BOOL "" FORCE)
-    set(BUILD_FUZZER OFF CACHE BOOL "" FORCE)
-    set(_PICOTLS "${_QUICLY}/deps/picotls")
-    if(NOT EXISTS "${_PICOTLS}/lib/picotls.c")
-        message(FATAL_ERROR "CNO_EMBED_EXT_QUIC: missing picotls sources at ${_PICOTLS}")
-    endif()
-    if(NOT TARGET cno_picotls)
-        add_library(cno_picotls STATIC
-            "${_PICOTLS}/lib/picotls.c"
-            "${_PICOTLS}/lib/pembase64.c"
-            "${_PICOTLS}/lib/hpke.c"
-            "${_PICOTLS}/lib/openssl.c")
-        target_include_directories(cno_picotls PUBLIC
-            "${_PICOTLS}/include"
-            ${OPENSSL_INCLUDE_DIR})
-        target_link_libraries(cno_picotls PUBLIC
-            OpenSSL::Crypto OpenSSL::SSL ${CMAKE_DL_LIBS})
-        set_target_properties(cno_picotls PROPERTIES
-            POSITION_INDEPENDENT_CODE ON)
-    endif()
-    add_subdirectory("${_QUICLY}" "${CMAKE_BINARY_DIR}/quicly")
-    list(APPEND _EXT_LIBS
-        quicly cno_picotls
-        OpenSSL::SSL OpenSSL::Crypto)
-    _cno_add_ext("@cnojs/quic" "qc_ns_init" "false"
+    include(cmake/cno-quic.cmake)
+    list(APPEND _EXT_LIBS cno_quic_transport)
+    _cno_add_ext("@cnojs/quic" "qc_ns_init" "true"
         "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic/native.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/ext-quic")
-    list(APPEND _EXT_INCS
-        "${_QUICLY}/include"
-        "${_PICOTLS}/include"
-        "${_PICOTLS}/picotlsvs/picotls")
-    if(WIN32)
-        list(APPEND _EXT_INCS "${_QUICLY}/windows-compat/include")
-    endif()
-    message(STATUS "[cno] embed ext-quic (quicly + cno_picotls)")
 endif()
 
 if(_EXT_SRCS)
@@ -140,6 +95,39 @@ if(NOT CNO_WITH_BROTLI)
     set(BROTLIDEC_LIBRARY "")
 endif()
 add_subdirectory(circu.js)
+
+if(COMMAND _cno_link_static_dependency_closure)
+    _cno_link_static_dependency_closure()
+endif()
+
+if(BUILD_TESTING AND (CNO_EMBED_EXT_H2 OR CNO_EMBED_EXT_QUIC))
+    add_executable(protocol_runtime_test tests/native/protocol_runtime.c)
+    target_link_libraries(protocol_runtime_test PRIVATE libcjs qjs uv_a)
+    set_target_properties(protocol_runtime_test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    if(MSVC)
+        target_compile_options(protocol_runtime_test PRIVATE /experimental:c11atomics)
+    endif()
+    if(WIN32)
+        # vcpkg's applocal deployment runs for cjs-cli, while ctest launches
+        # this executable from the top-level build directory.  Mirror those
+        # runtime DLLs beside the test before it is run.
+        add_dependencies(protocol_runtime_test cjs-cli)
+        add_custom_command(TARGET protocol_runtime_test POST_BUILD
+            COMMAND "${CMAKE_COMMAND}"
+                "-DSRC_DIR=$<TARGET_FILE_DIR:cjs-cli>"
+                "-DDST_DIR=$<TARGET_FILE_DIR:protocol_runtime_test>"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/stage_dlls.cmake"
+            COMMENT "Stage protocol runtime DLLs")
+    endif()
+    if(CNO_EMBED_EXT_H2)
+        target_compile_definitions(protocol_runtime_test PRIVATE TEST_HTTP2)
+    endif()
+    if(CNO_EMBED_EXT_QUIC)
+        target_compile_definitions(protocol_runtime_test PRIVATE TEST_QUIC)
+    endif()
+    add_test(NAME protocol_runtime_test COMMAND protocol_runtime_test)
+    set_tests_properties(protocol_runtime_test PROPERTIES TIMEOUT 30)
+endif()
 if(TARGET cjsc AND NOT CMAKE_CROSSCOMPILING AND NOT CJSC_PATH)
     set_target_properties(cjsc PROPERTIES EXCLUDE_FROM_ALL FALSE)
 endif()

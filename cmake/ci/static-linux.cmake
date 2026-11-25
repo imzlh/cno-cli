@@ -9,6 +9,9 @@ set(CURL_NO_CURL_CMAKE TRUE)
 function(_cno_link_static_dependency_closure)
     find_package(PkgConfig REQUIRED)
     set(_modules libcurl openssl sqlite3 expat libffi)
+    if(CNO_EMBED_EXT_H2)
+        list(APPEND _modules libnghttp2)
+    endif()
     if(CNO_WITH_BROTLI)
         list(APPEND _modules libbrotlidec libbrotlienc)
     endif()
@@ -28,4 +31,6 @@ function(_cno_link_static_dependency_closure)
         "-Wl,--push-state,-Bstatic,--start-group" ${_link_items} "-Wl,--end-group,--pop-state")
 endfunction()
 
-cmake_language(DEFER CALL _cno_link_static_dependency_closure)
+# The root project calls this after circu.js has created libcjs.  Keep the
+# helper compatible with the root project's CMake 3.16 minimum; DEFER was
+# added in CMake 3.19 and is unavailable on older release images.

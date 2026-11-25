@@ -35,13 +35,13 @@ case "$libc" in
         apt-get install -y --no-install-recommends \
             ca-certificates bash build-essential cmake ninja-build pkg-config \
             binutils coreutils file libltdl-dev \
-            libffi-dev libsqlite3-dev libssl-dev zlib1g-dev libexpat1-dev
+            libffi-dev libsqlite3-dev libssl-dev zlib1g-dev libexpat1-dev libnghttp2-dev
         if [ "$libc" = glibc ]; then
             apt-get install -y --no-install-recommends libcurl4-openssl-dev libbrotli-dev
             export CNO_WITH_BROTLI=true
         else
             apt-get install -y --no-install-recommends curl \
-                libnghttp2-dev libzstd-dev libpsl-dev libidn2-dev
+                libzstd-dev libpsl-dev libidn2-dev
         fi
         archive="cno-linux-$target"
         oxc_libc=glibc
@@ -107,6 +107,7 @@ fi
 
 set -- -S . -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCNO_RELEASE=ON -DBUILD_SHARED_LIBS=OFF \
+    -DCNO_EMBED_EXT_H2=ON -DCNO_EMBED_EXT_QUIC=ON \
     -DCNO_WITH_BROTLI="$CNO_WITH_BROTLI" \
     -DCNO_PREBUILT_BUNDLE="$repository/dist/cno-cli.min.js" \
     -DWAMR_BUILD_TARGET="$wamr"
@@ -133,7 +134,8 @@ if [ "$target" = armv6 ] && [ "$oxc_libc" = glibc ]; then
 fi
 case "$libc" in
     musl)
-        set -- "$@" "-DCMAKE_PROJECT_cjs_INCLUDE=$repository/cmake/ci/static-linux.cmake"
+        set -- "$@" -DCNO_STATIC_LINK=ON \
+            "-DCMAKE_PROJECT_cjs_INCLUDE=$repository/cmake/ci/static-linux.cmake"
         set -- "$@" -DCMAKE_EXE_LINKER_FLAGS=-static
         linkage='fully static musl, including third-party native libraries'
         ;;
@@ -184,17 +186,24 @@ if [ "$libc" = musl ]; then
 else
     oxc_note='ext/oxc.so is loaded at runtime; --no-oxc selects the bundled Sucrase fallback.'
 fi
+cmake --build "$build" --target protocol_runtime_test --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
+LD_LIBRARY_PATH="$build/stage/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+    ctest --test-dir "$build" -R '^protocol_runtime_test$' --output-on-failure
 if [ "$run_tests" = true ]; then
     if [ "$libc" = musl ]; then
         sh scripts/ci/linux/smoke.sh "$build/stage"
     else
         sh scripts/ci/linux/smoke.sh "$build/stage" --with-oxc
     fi
+else
+    sh scripts/ci/linux/smoke.sh "$build/stage" --protocols-only
 fi
 cat > "$build/stage/BUILD-INFO.txt" <<EOF
 Target: linux-$libc-$target
 Linkage: $linkage
 Brotli: $CNO_WITH_BROTLI
+HTTP/2: built in
+QUIC: built in
 WebAssembly: ON ($wamr)
 OXC: $oxc_note
 Dependencies: $dependency_note

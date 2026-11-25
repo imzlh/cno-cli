@@ -113,6 +113,7 @@ else
 fi
 cmake -S "$root" -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCNO_RELEASE=ON -DBUILD_SHARED_LIBS=OFF \
+    -DCNO_EMBED_EXT_H2=ON -DCNO_EMBED_EXT_QUIC=ON \
     -DCNO_STATIC_LINK="$static_link" -DCNO_WITH_BROTLI=OFF \
     -DCMAKE_TOOLCHAIN_FILE="$vcpkg_root/scripts/buildsystems/vcpkg.cmake" \
     -DVCPKG_TARGET_TRIPLET="$target-linux-musl" \
@@ -171,20 +172,28 @@ if [[ $static_link == false ]]; then
         "$binary" "$build/stage/ext/oxc.so"
     sh "$root/scripts/ci/linux/verify.sh" musl "$build/stage" "$triple-readelf"
 fi
+cmake --build "$build" --target protocol_runtime_test --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
+if [[ $static_link == false ]]; then
+    bash "$root/scripts/ci/linux/stage-deps.sh" musl "$qemu_sysroot/lib" \
+        "$triple-readelf" "$triple-gcc" "$vcpkg_installed/$target-linux-musl/lib" \
+        "$build/bin/protocol_runtime_test"
+fi
+timeout --kill-after=10s 60s "$emulator" -L "$qemu_sysroot" "$build/bin/protocol_runtime_test"
+export CTS_CACHE_DIR="$build/smoke-cache"
+export CTS_EXT_PATH="$build/stage/ext"
+export NO_COLOR=1
+[[ -f "$root/cno/src/node/fs/index.ts" ]]
+smoke() {
+    local name=$1 pattern=$2
+    shift 2
+    timeout --kill-after=10s 180s "$emulator" -L "$qemu_sysroot" "$binary" "$@" \
+        2>&1 | tee "$build/smoke-$name.log"
+    grep -Eq "$pattern" "$build/smoke-$name.log"
+}
+smoke version '^cno [0-9]+\.[0-9]+\.[0-9]+' --version
+smoke setup 'Node polyfills ready at:' setup
+smoke protocols '^CNO_CI_PROTOCOLS_OK$' run --no-lock tests/ci/fixtures/protocols.ts
 if [[ $run_tests == true ]]; then
-    export CTS_CACHE_DIR="$build/smoke-cache"
-    export CTS_EXT_PATH="$build/stage/ext"
-    export NO_COLOR=1
-    [[ -f "$root/cno/src/node/fs/index.ts" ]]
-    smoke() {
-        local name=$1 pattern=$2
-        shift 2
-        timeout --kill-after=10s 180s "$emulator" -L "$qemu_sysroot" "$binary" "$@" \
-            2>&1 | tee "$build/smoke-$name.log"
-        grep -Eq "$pattern" "$build/smoke-$name.log"
-    }
-    smoke version '^cno [0-9]+\.[0-9]+\.[0-9]+' --version
-    smoke setup 'Node polyfills ready at:' setup
     smoke eval '^CNO_CI_EVAL_OK$' eval --ext=js \
         'if (await Promise.resolve(6 * 7) !== 42) throw new Error("evaluation failed"); console.log("CNO_CI_EVAL_OK");'
     smoke typescript '^CNO_CI_TYPESCRIPT_OK$' run --no-oxc --disable-cache tests/ci/fixtures/typescript.ts
@@ -210,6 +219,8 @@ cat > "$build/stage/BUILD-INFO.txt" <<EOF
 Target: ${archive_name#cno-}
 Linkage: $linkage_desc
 Brotli: false
+HTTP/2: built in
+QUIC: built in
 WebAssembly: $wasm
 OXC: ext/oxc.so (native musl companion)
 $dynamic_note

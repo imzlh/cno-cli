@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       run-tests:
-        description: Run type checks and staged runtime smoke tests.
+        description: Run type checks and full runtime tests; protocol smoke tests always run.
         type: boolean
         default: true
       native-matrix:
@@ -34,7 +34,7 @@ jobs:
       - if: inputs.run-tests
         run: pnpm run type-check
       - if: inputs.run-tests
-        run: node --test tests/cts/setup-polyfill.test.mjs tests/cts/cli-lifecycle.test.mjs tests/node/util-source.test.mjs
+        run: node --test tests/ci/*.test.mjs tests/bun/semver-unit.test.mjs tests/cts/cli-startup-loading.test.mjs tests/cts/setup-polyfill.test.mjs tests/cts/cli-lifecycle.test.mjs tests/node/util-source.test.mjs
       - run: pnpm run bundle:min
 
   native:
@@ -61,14 +61,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake ninja-build pkg-config \
             libcurl4-openssl-dev libltdl-dev libffi-dev libsqlite3-dev \
-            libssl-dev zlib1g-dev libexpat1-dev libbrotli-dev
+            libssl-dev zlib1g-dev libexpat1-dev libbrotli-dev libnghttp2-dev
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: |
-          brew install cmake ninja pkgconf libffi sqlite openssl@3 zlib expat curl brotli
+          brew install cmake ninja pkgconf libffi sqlite openssl@3 zlib expat curl brotli nghttp2
           prefixes="$(brew --prefix)"
-          for formula in libffi sqlite openssl@3 zlib expat curl brotli; do
+          for formula in libffi sqlite openssl@3 zlib expat curl brotli nghttp2; do
             prefixes="$prefixes;$(brew --prefix "$formula")"
           done
           printf 'CNO_CMAKE_PREFIX_PATH=%s\n' "$prefixes" >> "$GITHUB_ENV"
@@ -134,6 +134,16 @@ jobs:
         if: inputs.run-tests
         run: node --test tests/cts/module-id-cycle-guard.test.mjs tests/cts/pack-command.test.mjs
 
+      - name: Check native protocol runtime ownership
+        run: |
+          cmake --build build --config Release --target protocol_runtime_test
+          ctest --test-dir build -C Release -R '^protocol_runtime_test$' --output-on-failure
+
+      - name: Check HTTP/2 interoperability with Node.js
+        env:
+          CNO_TEST_BINARY: ${{ runner.os == 'Windows' && 'build/stage/cno.exe' || 'build/stage/cno' }}
+        run: node --test tests/node/http2-interop.test.mjs
+
       - name: Save Windows native dependencies
         if: always() && !cancelled() && runner.os == 'Windows' && steps.vcpkg-cache.outputs.cache-hit != 'true' && steps.vcpkg-cache.outputs.cache-primary-key != ''
         uses: actions/cache/save@v4
@@ -148,6 +158,12 @@ jobs:
         env:
           CTS_CACHE_DIR: ${{ runner.temp }}/cno-smoke-cache
         run: node scripts/ci/smoke.mjs build/stage
+
+      - name: Smoke test built-in protocols
+        if: ${{ !inputs.run-tests }}
+        env:
+          CTS_CACHE_DIR: ${{ runner.temp }}/cno-smoke-cache
+        run: node scripts/ci/smoke.mjs build/stage --protocols-only
 
       - name: Package
         if: runner.os != 'Windows'
@@ -182,8 +198,6 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(inputs.native-matrix) }}
-    env:
-      CTS_CACHE_DIR: ${{ runner.temp }}/cno-test-cache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -200,4 +214,6 @@ jobs:
         shell: pwsh
         run: Expand-Archive -Path "build/stage/cno-${{ matrix.target }}.zip" -DestinationPath build/stage -Force
       - name: Run runtime test suite
+        env:
+          CTS_CACHE_DIR: ${{ runner.temp }}/cno-test-cache
         run: node scripts/ci/run-tests.mjs --stage=build/stage --shards=core,node,web,compat
