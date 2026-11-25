@@ -164,17 +164,19 @@ type PropertyDescriptorRaw = TypedPropertyDescriptor<unknown> & { value?: unknow
 
 
 function objectSubtype(value: unknown): RemoteObjectSubtype | undefined {
-	if (Array.isArray(value)) return 'array';
-	if (value instanceof Error) return 'error';
-	if (value instanceof RegExp) return 'regexp';
-	if (value instanceof Date) return 'date';
-	if (value instanceof Map) return 'map';
-	if (value instanceof Set) return 'set';
-	if (typeof WeakMap !== 'undefined' && value instanceof WeakMap) return 'weakmap';
-	if (typeof WeakSet !== 'undefined' && value instanceof WeakSet) return 'weakset';
-	if (value instanceof Promise) return 'promise';
-	if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) return 'typedarray';
-	if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) return 'arraybuffer';
+	try {
+		if (Array.isArray(value)) return 'array';
+		if (value instanceof Error) return 'error';
+		if (value instanceof RegExp) return 'regexp';
+		if (value instanceof Date) return 'date';
+		if (value instanceof Map) return 'map';
+		if (value instanceof Set) return 'set';
+		if (typeof WeakMap !== 'undefined' && value instanceof WeakMap) return 'weakmap';
+		if (typeof WeakSet !== 'undefined' && value instanceof WeakSet) return 'weakset';
+		if (value instanceof Promise) return 'promise';
+		if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) return 'typedarray';
+		if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) return 'arraybuffer';
+	} catch { /* revoked proxies and prototype traps are still inspectable by id */ }
 	return undefined;
 }
 
@@ -186,7 +188,7 @@ function classNameOf(value: unknown): string {
 		const c = ctor && (typeof ctor === 'object' || typeof ctor === 'function')
 			? Reflect.get(ctor, 'name')
 			: undefined;
-		if (c) return c;
+		if (typeof c === 'string' && c) return c;
 	} catch {}
 	return safeClassTag(value);
 }
@@ -284,22 +286,25 @@ function previewProp(name: string, v: unknown): PropertyPreview {
 }
 
 function abbreviate(v: unknown, subtype?: RemoteObjectSubtype): string {
-	if (subtype === 'array' && Array.isArray(v)) return `Array(${v.length})`;
-	return classNameOf(v);
+	try {
+		if (subtype === 'array' && Array.isArray(v)) return `Array(${v.length})`;
+		return classNameOf(v);
+	} catch { return 'Object'; }
 }
 
 function appendErrorPreview(preview: ObjectPreview, value: unknown): void {
-	if (!(value instanceof Error)) return;
-	const error = value;
+	if (!value || typeof value !== 'object') return;
 	const props: PropertyPreview[] = [];
-	props.push({ name: 'name', type: 'string', value: safeString(error.name || 'Error') });
-	if (typeof error.message === 'string' && error.message) {
-		props.push({ name: 'message', type: 'string', value: truncatePreviewString(error.message) });
+	const name = safePropertyValue(value, 'name');
+	props.push({ name: 'name', type: 'string', value: safeString((name.ok && name.value) || 'Error') });
+	for (const key of ['message', 'stack']) {
+		const prop = safePropertyValue(value, key);
+		if (prop.ok && typeof prop.value === 'string' && prop.value) {
+			props.push({ name: key, type: 'string', value: truncatePreviewString(prop.value) });
+		}
 	}
-	if (typeof error.stack === 'string' && error.stack) {
-		props.push({ name: 'stack', type: 'string', value: truncatePreviewString(error.stack) });
-	}
-	const cause = Reflect.get(error, 'cause');
+	const causeProp = safePropertyValue(value, 'cause');
+	const cause = causeProp.ok ? causeProp.value : undefined;
 	if (cause !== undefined) {
 		if (cause === null) {
 			props.push({ name: 'cause', type: 'object', subtype: 'null', value: 'null' });

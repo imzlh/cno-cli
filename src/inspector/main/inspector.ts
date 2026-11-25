@@ -311,9 +311,14 @@ export class Inspector {
 		} catch {
 			/* runtime may already be shutting down */
 		}
-		this.dc?.stop()
+		try { this.dc?.stop() } catch { /* runtime may already be shutting down */ }
 		this.serializer?.releaseGroup('backtrace')
-		this.hooks?.teardown()
+		try {
+			this.hooks?.teardown()
+		} catch (error) {
+			// Cleanup failures must not strand lifecycle waiters or skip worker.stop().
+			try { console.error('Inspector hook cleanup failed:', error) } catch { /* diagnostics are best effort */ }
+		}
 	}
 
 	private rejectWaiters(error: Error): void {

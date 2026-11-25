@@ -513,33 +513,39 @@ export class Hooks {
 	// ── bindings ────────────────────────────────────────────────────
 	installBinding(name: string): void {
 		if (!name || this.installedBindings.has(name)) return
-		this.installedBindings.add(name)
-		Reflect.set(globalThis, name, (payload: unknown) => {
+		const installed = Reflect.set(globalThis, name, (payload: unknown) => {
 			const str = typeof payload === 'string' ? payload : String(payload)
 			this.safeEmit(WorkerEvent.BindingCalled, { name, payload: str } satisfies BindingCalledPayload)
 		})
+		if (!installed) throw new TypeError(`Cannot install inspector binding: ${name}`)
+		this.installedBindings.add(name)
 	}
 
 	removeBinding(name: string): void {
+		if (!this.installedBindings.has(name)) return
+		if (!Reflect.deleteProperty(globalThis, name)) throw new TypeError(`Cannot remove inspector binding: ${name}`)
 		this.installedBindings.delete(name)
-		Reflect.deleteProperty(globalThis, name)
 	}
 
 	// ── teardown ────────────────────────────────────────────────────
 	teardown(): void {
+		const errors: unknown[] = []
 		// Resolve all pending intercepts so native hooks don't hang.
 		this.releasePendingIntercepts()
 		if (this.loadListener) {
-			const remove = Reflect.get(globalThis, 'removeEventListener')
-			if (typeof remove === 'function') {
-				Reflect.apply(remove, globalThis, ['load', this.loadListener])
-			}
+			const listener = this.loadListener
 			this.loadListener = null
+			try {
+				const remove = Reflect.get(globalThis, 'removeEventListener')
+				if (typeof remove === 'function') Reflect.apply(remove, globalThis, ['load', listener])
+			} catch (error) { errors.push(error) }
 		}
 		// Delete the properties, not just forget the names: clearing the set alone
 		// left every Runtime.addBinding function alive on globalThis after detach,
 		// each closing over a dead endpoint. removeBinding() already does this.
-		for (const name of this.installedBindings) Reflect.deleteProperty(globalThis, name)
+		for (const name of this.installedBindings) {
+			try { this.removeBinding(name) } catch (error) { errors.push(error) }
+		}
 		this.installedBindings.clear()
 		this.scriptSourcePaths.clear()
 		this.bodySources.fetch.buffers.clear()
@@ -558,17 +564,24 @@ export class Hooks {
 		this.scriptHookInstalled = false
 		this.scriptInitHook = null
 		if (this.consoleOriginals) {
-			const con = globalThis.console;
-			for (const [m, fn] of Object.entries(this.consoleOriginals))
-				Reflect.set(con, m, fn)
-			Reflect.deleteProperty(con, kOrigin);
+			const originals = this.consoleOriginals
 			this.consoleOriginals = null
+			try {
+				const con = globalThis.console
+				for (const [m, fn] of Object.entries(originals)) {
+					try {
+						if (!Reflect.set(con, m, fn)) throw new TypeError(`Cannot restore console.${m}`)
+					} catch (error) { errors.push(error) }
+				}
+				if (!Reflect.deleteProperty(con, kOrigin)) throw new TypeError('Cannot remove inspector console originals')
+			} catch (error) { errors.push(error) }
 		}
 		setFetchHook(null)
 		setWebSocketHook(null)
-		setFetchInterceptHook(null)
 		setServeHook(null)
-		import.meta.use('evbus').delete('cno.inspector', 'networkHooks')
+		try { setFetchInterceptHook(null) } catch (error) { errors.push(error) }
+		try { import.meta.use('evbus').delete('cno.inspector', 'networkHooks') } catch (error) { errors.push(error) }
+		if (errors.length > 0) throw new AggregateError(errors, 'Inspector hook cleanup failed')
 	}
 
 	private safeEmit(ev: WorkerEvent, params: unknown): void {

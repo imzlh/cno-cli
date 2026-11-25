@@ -22,8 +22,11 @@ export class WorkerEndpoint {
 	constructor(pipe: Pipe, dc: DebugChannelWorker) {
 		this.channel = new ChannelClient(dc);
 		this.pipe = new PipeClient(pipe, (reason) => {
-			this.channel.dispose(reason);
 			this.onEvent = null;
+			try { this.channel.dispose(reason); } catch {
+				// dispose rejects pending RPCs before stopping the native channel.
+				// The main thread may already have stopped it during teardown.
+			}
 		});
 		// Each transport contains listener errors at its receive boundary.
 		this.pipe.onEvent = this.channel.onEvent = (event, params) => {
@@ -53,9 +56,13 @@ export class WorkerEndpoint {
 
 	// Notifications must not turn transport failures into worker crash reports.
 	notify<M extends RpcMethod>(method: M, params: RpcParams[M]): void {
-		void this.call(method, params).catch((e: unknown) => {
-			log.debug('debug', () => `rpc notify ${method} failed: ${errMsg(e)}`)
-		})
+		try {
+			void this.call(method, params).catch((e: unknown) => {
+				log.debug('debug', () => `rpc notify ${method} failed: ${errMsg(e)}`)
+			})
+		} catch (e) {
+			log.debug('debug', () => `rpc notify ${method} threw: ${errMsg(e)}`)
+		}
 	}
 
 	/** Flip transport mode. Driven by doResume / setConnected in DebuggerDomain. */
