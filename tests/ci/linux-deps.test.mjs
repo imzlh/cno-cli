@@ -131,7 +131,7 @@ test('rejects missing transitive libraries, host architecture, invalid names and
 
 test('release checks reject static external libraries and nonrelocatable search paths', t => {
     const f = fixture(t);
-    const needed = ['curl', 'ssl', 'crypto', 'sqlite3', 'ffi', 'expat', 'z'].map(name => `lib${name}.so.1`);
+    const needed = ['curl', 'ssl', 'crypto', 'sqlite3', 'ffi', 'expat', 'z', 'nghttp2'].map(name => `lib${name}.so.1`);
     needed.push('libc.so');
     const options = { rpath: '$ORIGIN/lib', interpreter: '/lib/ld-musl-mips.so.1' };
     mkdirSync(f.destination);
@@ -141,6 +141,8 @@ test('release checks reject static external libraries and nonrelocatable search 
     const check = () => run(shell, [verify, 'musl', f.stage, f.readelf]);
     assert.equal(check().status, 0);
     f.elf(f.binary, needed.filter(name => name !== 'libcurl.so.1'), options);
+    assert.notEqual(check().status, 0);
+    f.elf(f.binary, needed.filter(name => name !== 'libnghttp2.so.1'), options);
     assert.notEqual(check().status, 0);
     f.elf(f.binary, needed, { ...options, rpath: '/build/host/lib' });
     assert.notEqual(check().status, 0);

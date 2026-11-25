@@ -22,7 +22,8 @@ function cmake(...args) {
 }
 
 const configure = ['-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release'];
-const native = ['-DCNO_RELEASE=ON', '-DCNO_BUNDLE_MINIFY=ON'];
+const native = ['-DCNO_RELEASE=ON', '-DCNO_BUNDLE_MINIFY=ON',
+    '-DCNO_EMBED_EXT_H2=ON', `-DCNO_EMBED_EXT_QUIC=${windows ? 'OFF' : 'ON'}`];
 if (windows) {
     // CI only ships Release; the normal Windows triplets also compile every
     // dependency's Debug configuration. Keep those for developer builds.

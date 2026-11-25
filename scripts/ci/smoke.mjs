@@ -8,8 +8,9 @@ import { fileURLToPath } from 'node:url';
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const stageArgument = process.argv[2];
 const coreOnly = process.argv[3] === '--core-only';
-if (!stageArgument || process.argv.length !== (coreOnly ? 4 : 3)) {
-    console.error('Usage: node scripts/ci/smoke.mjs <stage-directory> [--core-only]');
+const protocolsOnly = process.argv[3] === '--protocols-only';
+if (!stageArgument || process.argv.length !== (coreOnly || protocolsOnly ? 4 : 3)) {
+    console.error('Usage: node scripts/ci/smoke.mjs <stage-directory> [--core-only|--protocols-only]');
     process.exit(1);
 }
 
@@ -17,7 +18,7 @@ const stage = resolve(stageArgument);
 const binary = join(stage, process.platform === 'win32' ? 'cno.exe' : 'cno');
 const extensionSuffix = process.platform === 'win32' ? '.dll'
     : process.platform === 'darwin' ? '.dylib' : '.so';
-const artifacts = coreOnly ? [binary] : [binary, join(stage, 'ext', `oxc${extensionSuffix}`)];
+const artifacts = coreOnly || protocolsOnly ? [binary] : [binary, join(stage, 'ext', `oxc${extensionSuffix}`)];
 for (const file of artifacts) {
     if (!existsSync(file)) throw new Error(`Missing staged artifact: ${file}`);
 }
@@ -61,6 +62,12 @@ function run(label, args, expectedOutput, timeout = 60_000, envOverrides = {}) {
 run('version', ['--version'], /^cno \d+\.\d+\.\d+/m);
 // setup finds the checked-out polyfills from cwd, keeping this check offline.
 run('install local polyfills', ['setup'], /Node polyfills ready at:/);
+run('built-in protocol round trips', ['run', '--no-lock', 'tests/ci/fixtures/protocols.ts'],
+    /^CNO_CI_PROTOCOLS_OK\r?$/m, 180_000);
+if (protocolsOnly) {
+    console.log('\n[smoke] All required built-in protocol checks passed.');
+    process.exit(0);
+}
 run('JavaScript evaluation', ['eval', '--ext=js',
     'if (await Promise.resolve(6 * 7) !== 42) throw new Error("evaluation failed"); console.log("CNO_CI_EVAL_OK");'],
     /^CNO_CI_EVAL_OK\r?$/m);

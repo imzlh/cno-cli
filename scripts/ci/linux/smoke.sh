@@ -8,10 +8,12 @@ case "${1:?Usage: smoke.sh stage-directory}" in
 esac
 binary="$stage/cno"
 with_oxc=false
+protocols_only=false
 case "${2:-}" in
     '') ;;
     --with-oxc) with_oxc=true; test -f "$stage/ext/oxc.so" ;;
-    *) printf 'Usage: smoke.sh stage-directory [--with-oxc]\n' >&2; exit 2 ;;
+    --protocols-only) protocols_only=true ;;
+    *) printf 'Usage: smoke.sh stage-directory [--with-oxc|--protocols-only]\n' >&2; exit 2 ;;
 esac
 test -x "$binary"
 test -f "$repository/cno/src/node/fs/index.ts"
@@ -45,6 +47,11 @@ run_check() {
 
 run_check version 'cno ' --version
 run_check 'install local polyfills' 'Node polyfills ready at:' setup
+run_check 'built-in protocol round trips' CNO_CI_PROTOCOLS_OK run --no-lock tests/ci/fixtures/protocols.ts
+if [ "$protocols_only" = true ]; then
+    printf '\n[smoke] All required built-in protocol checks passed.\n'
+    exit 0
+fi
 run_check 'JavaScript evaluation' CNO_CI_EVAL_OK eval --ext=js \
     'if (await Promise.resolve(6 * 7) !== 42) throw new Error("evaluation failed"); console.log("CNO_CI_EVAL_OK");'
 if [ "$with_oxc" = true ]; then

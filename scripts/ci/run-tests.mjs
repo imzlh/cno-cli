@@ -68,16 +68,39 @@ if (setup.status !== 0) {
     process.exit(setup.status ?? 1);
 }
 
+const protocols = spawnSync(binary, ['run', '--no-lock', 'tests/ci/fixtures/protocols.ts'], {
+    stdio: 'inherit',
+    env,
+    timeout: 180_000,
+    killSignal: 'SIGKILL',
+});
+if (protocols.error || protocols.status !== 0) {
+    console.error(`built-in protocol preflight failed: ${protocols.error?.message ?? protocols.signal ?? protocols.status}`);
+    process.exit(protocols.status ?? 1);
+}
+
 let failed = false;
 for (const name of shardNames) {
     const paths = SHARDS[name];
-    console.log(`\n=== shard ${name}: ${paths.join(' ')} ===`);
-    const r = spawnSync(binary, ['test', ...paths, `--concurrency=${concurrency}`], {
-        stdio: 'inherit',
-        env,
-        cwd: process.cwd(),
-    });
-    if (r.status !== 0) failed = true;
+    const runs = name === 'compat'
+        ? [
+            {
+                label: 'compat/bun',
+                paths: ['tests/bun'],
+                env: { ...env, CNO_TEST_CHILD_TIMEOUT_MS: '300000' },
+            },
+            { label: 'compat/jsr-npm', paths: ['tests/jsr', 'tests/npm'], env },
+        ]
+        : [{ label: name, paths, env }];
+    for (const run of runs) {
+        console.log(`\n=== shard ${run.label}: ${run.paths.join(' ')} ===`);
+        const r = spawnSync(binary, ['test', ...run.paths, `--concurrency=${concurrency}`], {
+            stdio: 'inherit',
+            env: run.env,
+            cwd: process.cwd(),
+        });
+        if (r.status !== 0) failed = true;
+    }
 }
 
 process.exit(failed ? 1 : 0);

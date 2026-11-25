@@ -55,7 +55,7 @@ done
 
 # Fail the release if any mandatory external dependency silently falls back
 # to an archive. Iconv is part of both libc implementations on these targets.
-for library in curl ssl crypto sqlite3 ffi expat z; do
+for library in curl ssl crypto sqlite3 ffi expat z nghttp2; do
     if ! printf '%s\n' "$needed" | grep -Eq "^lib$library\.so(\.|$)"; then
         printf 'External dependency lib%s must be shared in %s\n' "$library" "$stage/cno" >&2
         exit 1

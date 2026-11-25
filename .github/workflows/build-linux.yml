@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       run-tests:
-        description: Run type checks and staged runtime smoke tests.
+        description: Run type checks and full runtime tests; protocol smoke tests always run.
         type: boolean
         default: true
 
