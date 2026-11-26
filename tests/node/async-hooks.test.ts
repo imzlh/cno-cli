@@ -73,6 +73,41 @@ Deno.test('async_hooks: AsyncLocalStorage.disable is callable', () => {
     strictEqual(als.getStore(), undefined);
 });
 
+Deno.test('async_hooks: disable clears the current scope but preserves captured timers', async () => {
+    const als = new async_hooks.AsyncLocalStorage<string>();
+    const observed = als.run('before-disable', () => {
+        return Promise.all([
+            new Promise<string | undefined>(resolve => {
+                setTimeout(() => resolve(als.getStore()), 0);
+            }),
+            new Promise<string | undefined>(resolve => {
+                setImmediate(() => resolve(als.getStore()));
+            }),
+        ]);
+    });
+    als.disable();
+    strictEqual(als.getStore(), undefined);
+    als.run('after-disable', () => strictEqual(als.getStore(), 'after-disable'));
+    strictEqual(als.getStore(), undefined);
+
+    deepStrictEqual(await observed, ['before-disable', 'before-disable']);
+    strictEqual(als.getStore(), undefined);
+});
+
+Deno.test('async_hooks: scope disposal restores its previous store after disable and reenable', () => {
+    const als = new async_hooks.AsyncLocalStorage<string>();
+    als.run('outer', () => {
+        const scope = als.withScope('inner');
+        als.disable();
+        strictEqual(als.getStore(), undefined);
+        als.run('reenabled', () => strictEqual(als.getStore(), 'reenabled'));
+        strictEqual(als.getStore(), undefined);
+        scope.dispose();
+        strictEqual(als.getStore(), 'outer');
+    });
+    strictEqual(als.getStore(), undefined);
+});
+
 // --- 8. AsyncLocalStorage snapshot restores captured store -----------------
 
 Deno.test('async_hooks: AsyncLocalStorage.snapshot restores captured store', () => {
