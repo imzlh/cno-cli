@@ -145,6 +145,97 @@ Deno.test({ name: 'bun: spawn FileSink serializes stdin writes and closes with E
     });
 });
 
+Deno.test({ name: 'bun: lazy process pipes start independently on access and preserve lifecycle', ignore: isWindows, timeout: 10000 }, async () => {
+    await withTempDir('bun-process-lazy', async (root) => {
+        const marker = join(root, 'drained');
+        const command = ['/bin/sh', '-c',
+            'printf ready >&2; dd if=/dev/zero bs=65536 count=16 2>/dev/null; printf done > "$1"',
+            'sh', marker];
+        const child = spawn(command, { lazy: true, stdout: 'pipe', stderr: 'pipe' });
+        try {
+            const reader = child.stderr.getReader();
+            deepStrictEqual([...((await reader.read()).value!)], [114, 101, 97, 100, 121]);
+            await Bun.sleep(50);
+            throws(() => Deno.statSync(marker), Deno.errors.NotFound);
+
+            const output = child.readable.bytes();
+            strictEqual(child.readable, child.stdout);
+            strictEqual((await output).byteLength, 65536 * 16);
+            strictEqual(await child.exited, 0);
+            strictEqual((await reader.read()).done, true);
+            reader.releaseLock();
+            strictEqual(await Deno.readTextFile(marker), 'done');
+        } finally {
+            if (!child.killed) child.kill('SIGKILL');
+            await child.exited;
+        }
+
+        const eager = spawn(command, { stdout: 'pipe', stderr: 'ignore' });
+        strictEqual(await eager.exited, 0);
+        strictEqual((await eager.stdout.bytes()).byteLength, 65536 * 16);
+
+        const inheritedStdoutMarker = join(root, 'inherited-stdout-drained');
+        const inheritedStderrMarker = join(root, 'inherited-stderr-drained');
+        const inherited = spawn(['/bin/sh', '-c',
+            '(dd if=/dev/zero bs=65536 count=32 2>/dev/null; printf done > "$1") 2>/dev/null & '
+                + '(dd if=/dev/zero bs=65536 count=32 >&2 2>/dev/null; printf done > "$2") >/dev/null & exit 0',
+            'sh', inheritedStdoutMarker, inheritedStderrMarker], { lazy: true, stdout: 'pipe', stderr: 'pipe' });
+        try {
+            strictEqual(await inherited.exited, 0);
+            await Bun.sleep(250);
+            throws(() => Deno.statSync(inheritedStdoutMarker), Deno.errors.NotFound);
+            throws(() => Deno.statSync(inheritedStderrMarker), Deno.errors.NotFound);
+
+            const inheritedStdout = inherited.stdout;
+            strictEqual((await inheritedStdout.bytes()).byteLength, 65536 * 32);
+            strictEqual(await Deno.readTextFile(inheritedStdoutMarker), 'done');
+            throws(() => Deno.statSync(inheritedStderrMarker), Deno.errors.NotFound);
+
+            const inheritedStderr = inherited.stderr;
+            strictEqual((await inheritedStderr.bytes()).byteLength, 65536 * 32);
+            strictEqual(await Deno.readTextFile(inheritedStderrMarker), 'done');
+        } finally {
+            for (const output of [inherited.stdout, inherited.stderr]) {
+                if (output && typeof output !== 'number') await output.cancel();
+            }
+        }
+
+        const exited = Promise.withResolvers<unknown[]>();
+        const buffered = spawn(['/bin/sh', '-c', 'printf out; printf err >&2; exit 7'], {
+            lazy: true, stdout: 'pipe', stderr: 'pipe',
+            onExit(child, code, signal, error) {
+                exited.resolve([child === buffered, code, signal, error]);
+            },
+        });
+        strictEqual(await buffered.exited, 7);
+        deepStrictEqual(await exited.promise, [true, 7, null, undefined]);
+        strictEqual(await buffered.stdout.text(), 'out');
+        strictEqual(await buffered.stderr.text(), 'err');
+
+        for (const lazy of [1, 'yes']) {
+            const limited = spawn(['/bin/cat', '/dev/zero'], {
+                lazy: lazy as never, maxBuffer: 2, stdout: 'pipe', stderr: 'ignore',
+            });
+            const output = limited.stdout;
+            const drained = output && typeof output !== 'number'
+                ? output.bytes().catch(() => new Uint8Array())
+                : Promise.resolve(new Uint8Array());
+            strictEqual(await limited.exited, 143);
+            await drained;
+            if (output && typeof output !== 'number') await output.cancel();
+        }
+
+        const controller = new AbortController();
+        const cancelled = spawn(['/bin/sh', '-c', 'exec cat /dev/zero'], {
+            lazy: true, signal: controller.signal, stdout: 'pipe', stderr: 'ignore',
+        });
+        controller.abort();
+        strictEqual(await cancelled.exited, 143);
+        strictEqual(cancelled.signalCode, 'SIGTERM');
+        await cancelled.stdout.cancel();
+    });
+});
+
 Deno.test({ name: 'bun: spawn FileSink uses intrinsic binary brands and view slots', ignore: isWindows, timeout: 10000 }, async () => {
     const child = spawn(['/bin/cat'], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
     const foreign = runInNewContext(`(() => {
@@ -284,6 +375,17 @@ Deno.test({ name: 'bun: spawn reports signal termination with Bun exit semantics
     strictEqual(sync.exitCode, null as never);
     strictEqual(sync.signalCode, 'SIGTERM');
     strictEqual(sync.success, false);
+
+    if (Deno.build.os === 'linux') {
+        const realtime = spawn(['/bin/sh', '-c', 'kill -35 $$'], { stdout: 'ignore', stderr: 'ignore' });
+        strictEqual(await realtime.exited, 163);
+        strictEqual(realtime.exitCode, null);
+        strictEqual(realtime.signalCode, 35);
+        const syncRealtime = spawnSync(['/bin/sh', '-c', 'kill -35 $$']);
+        strictEqual(syncRealtime.exitCode, null as never);
+        strictEqual(syncRealtime.signalCode, 35);
+        strictEqual(syncRealtime.success, false);
+    }
 });
 
 Deno.test({ name: 'bun: process validation throws synchronously without launching', timeout: 10000 }, async () => {
