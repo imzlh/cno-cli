@@ -1,4 +1,4 @@
-import { deepStrictEqual, ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, rejects, strictEqual } from 'node:assert';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
@@ -1166,6 +1166,48 @@ Deno.test({
         await new Promise((resolve) => setTimeout(resolve, 10));
         ok((ignoredSignals() & sigpipeMask) !== 0n, 'task child guard reset SIGPIPE to its default action');
     },
+});
+
+Deno.test('cts task child: cleanup failures do not replace a non-zero child status', async () => {
+    const signals = import.meta.use('signals');
+    const process = import.meta.use('process');
+    const originalSignal = signals.signal;
+    const originalSpawn = process.spawn;
+    let closeCalls = 0;
+    let closeIndex = 0;
+    let closeErrors: unknown[] = [new Error('signal close failed')];
+    try {
+        Reflect.set(signals, 'signal', (signal: CModuleSignals.Signal) => ({
+            signal,
+            close() {
+                closeCalls++;
+                const error = closeErrors[Math.min(closeIndex++, closeErrors.length - 1)];
+                throw error;
+            },
+            [Symbol.toStringTag]: 'Signal Handler',
+        }));
+        let exitCode = 7;
+        Reflect.set(process, 'spawn', () => ({
+            wait: async () => ({ exit_status: exitCode, term_signal: null }),
+        }));
+
+        strictEqual(await runTaskChild(['fake-child'], {}, '/tmp'), 7);
+        ok(closeCalls > 0, 'the test must exercise signal guard cleanup');
+
+        exitCode = 0;
+        for (const firstError of [undefined, null]) {
+            closeErrors = [firstError, new Error('later signal close failed')];
+            closeIndex = 0;
+            await rejects(runTaskChild(['fake-child'], {}, '/tmp'), (error) => {
+                strictEqual(error, firstError,
+                    'the first cleanup failure, including undefined/null, must be preserved');
+                return true;
+            });
+        }
+    } finally {
+        Reflect.set(signals, 'signal', originalSignal);
+        Reflect.set(process, 'spawn', originalSpawn);
+    }
 });
 
 Deno.test({
