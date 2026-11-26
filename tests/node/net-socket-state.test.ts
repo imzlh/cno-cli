@@ -328,6 +328,46 @@ Deno.test({ name: 'net: socket readable event supports read() consumption', time
     }
 });
 
+Deno.test({ name: 'net: socket timeout does not keep an unconnected socket alive', timeout: 10000 }, async () => {
+    const socketSource = new URL('../../cno/src/node/net/socket.ts', import.meta.url).href;
+    const child = new Deno.Command(Deno.execPath(), {
+        args: ['eval', `import { Socket } from ${JSON.stringify(socketSource)}; new Socket().setTimeout(60_000);`],
+        stdout: 'piped',
+        stderr: 'piped',
+    }).spawn();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        try { child.kill('SIGKILL'); } catch { /* The child may have exited. */ }
+    }, 1500);
+    const output = await child.output();
+    clearTimeout(timeout);
+
+    strictEqual(output.success, true, new TextDecoder().decode(output.stderr));
+    strictEqual(timedOut, false, 'Socket#setTimeout kept the child process alive');
+
+    const { Socket: SourceSocket } = await import('../../cno/src/node/net/socket.ts');
+    const server = net.createServer((socket) => socket.resume());
+    await listen(server);
+    try {
+        const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('no port');
+        const timedOut = await new Promise<boolean>((resolve, reject) => {
+            const socket = new SourceSocket();
+            socket.once('error', reject);
+            socket.once('timeout', () => {
+                socket.destroy();
+                resolve(true);
+            });
+            socket.once('connect', () => socket.setTimeout(50));
+            socket.connect(address.port, '127.0.0.1');
+        });
+        strictEqual(timedOut, true, 'an unref timer must still fire while the socket is referenced');
+    } finally {
+        await close(server);
+    }
+});
+
 Deno.test({ name: 'net: readable data survives a read() deferred past EOF', timeout: 10000 }, async () => {
     // The socket's EOF handler clears `socket.readable` right after push(null).
     // Duplex.read() used to refuse to hand back already-buffered chunks once
