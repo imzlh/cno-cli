@@ -10,9 +10,7 @@ import { inspectOptions, type InspectOptions } from './inspector/options';
 import type { Inspector } from './inspector';
 
 type RuntimeModule = typeof import('../cts/src/runtime/index');
-type InspectorModule = typeof import('./inspector');
-type BridgeModule = typeof import('./inspector/bridge');
-type KernelModules = Pick<InspectorModule & BridgeModule, 'Inspector' | 'installInspectorBridge'>;
+type BridgeModule = Pick<typeof import('./inspector/bridge'), 'installInspectorBridge'>;
 
 type NodePreload = { kind: 'require' | 'import' | 'loader'; specifier: string };
 
@@ -23,7 +21,9 @@ export interface KernelContext {
     readonly runtimeFlags: Flags;
     readonly preloads: readonly string[];
     readonly nodePreloads: readonly NodePreload[];
-    /** Inspector/bridge implementations, loaded on first need. */
+    /** Install globals before constructing the Inspector or compiler. */
+    readonly initializeGlobals: () => Promise<void>;
+    /** The lightweight Inspector bridge implementation. */
     readonly modules: BridgeModule;
     /** The compiler/runtime chain, loaded on first need. */
     readonly runtimeModule: () => Promise<RuntimeModule>;
@@ -61,6 +61,7 @@ export async function prepareKernel(
     return {
         config,
         inspect: inspectOptions(kernelFlags),
+        initializeGlobals: async () => { await import('../cno/src/main'); },
         modules: await loadInspectorBridge(),
         runtimeModule,
         runtimeFlags: flagsFromOptions(cli.kernelOptions.filter(option => {
@@ -115,7 +116,7 @@ export async function openKernelRuntime(
 ): Promise<KernelRuntime> {
     let inspector: Inspector | null = null;
     let runtime: ReturnType<RuntimeModule['createRuntime']> | undefined;
-    let bridge: ReturnType<KernelModules['installInspectorBridge']> | undefined;
+    let bridge: ReturnType<BridgeModule['installInspectorBridge']> | undefined;
     let finished = false;
     let closed = false;
     let closePromise: Promise<void> | undefined;
@@ -133,10 +134,7 @@ export async function openKernelRuntime(
         return closePromise;
     };
     try {
-        // Every user-code path funnels through here; the polyfill globals
-        // (URL, fetch, TextEncoder, Deno, node bridge) must exist before the
-        // inspector or the runtime touches them.
-        await import('../cno/src/main');
+        await kernel.initializeGlobals();
         const { installInspectorBridge } = kernel.modules;
         if (kernel.inspect) {
             const inspect = kernel.inspect;

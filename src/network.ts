@@ -1,5 +1,6 @@
 import { setCurlInitHook as setCnoCurlInitHook, setRawConnectionHook } from '../cno/src/utils/network-hooks';
-import { type ProxyConfig, type ProxyType } from '../cno/src/utils/proxy';
+import { URL as PolyfillURL } from '../cno/src/webapi/url';
+import type { ProxyConfig, ProxyType } from '../cno/src/utils/proxy';
 import { log } from '../cts/src/utils/log';
 import { setCurlInitHook as setCtsCurlInitHook } from '../cts/src/utils/curl';
 import { readEnv } from './env';
@@ -35,7 +36,7 @@ function isProxyType(value: string): value is ProxyType {
 function parseProxyUrl(raw: string, defaultType: ProxyType = 'http'): Omit<ProxyConfig, 'noProxy'> {
     let input = raw.trim();
     if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) input = `${defaultType}://${input}`;
-    const u = new URL(input);
+    const u = new PolyfillURL(input);
     const proto = u.protocol.slice(0, -1);
     if (!isProxyType(proto)) throw new TypeError(`Unsupported proxy protocol: ${proto}`);
     const user = u.username ? decodeURIComponent(u.username) : null;
@@ -193,9 +194,8 @@ export function configureTlsHooks(flags: Record<string, string | boolean>): void
 }
 
 export async function startProxy(): Promise<void> {
-    // Proxy values from env/registry parse through the URL polyfill global.
-    await import('../cno/src/main');
-    // The proxy connector pulls in the raw HTTP/TLS stack; only --system-proxy needs it.
+    // The proxy connector pulls in the raw HTTP/TLS stack; only --system-proxy
+    // needs it. Keep that dependency out of the --skip-cert-verify path.
     const { createProxyConnector } = await import('../cno/src/utils/proxy');
     // Registry and environment settings must feed both curl and raw clients.
     const registry = win32?.HKCU !== undefined ? win32 : null;

@@ -179,6 +179,7 @@ export class CnoRepl implements LineEditorHost {
     async #readLine(): Promise<string | null> {
         this.#editor.beginLine();
         this.#startReadingQuietly();
+        if (!this.#running) return null;
         const queued = this.#pendingLines.shift();
         if (queued !== undefined) return queued;
         return new Promise((resolve) => {
@@ -242,7 +243,6 @@ export class CnoRepl implements LineEditorHost {
 
     #stopReadingQuietly(): void {
         if (!this.#reading) return;
-        // stopRead is a no-op for a closing or already-idle handle.
         this.#editor.stdin.stopRead();
         this.#reading = false;
     }
@@ -574,10 +574,14 @@ export class CnoRepl implements LineEditorHost {
 
     /** Preserve an explicit exit code; otherwise successful REPL exit is zero. */
     #settleExitCode(): void {
-        const proc = Reflect.get(globalThis, 'process');
-        if (proc === null || typeof proc !== 'object') return;
-        if (Reflect.get(proc, 'exitCode') === undefined) {
-            Reflect.set(proc, 'exitCode', 0);
+        try {
+            const proc = Reflect.get(globalThis, 'process');
+            if (proc === null || typeof proc !== 'object') return;
+            if (Reflect.get(proc, 'exitCode') === undefined) {
+                Reflect.set(proc, 'exitCode', 0);
+            }
+        } catch {
+            // Exit-code cleanup is best effort for host-provided process objects.
         }
     }
 

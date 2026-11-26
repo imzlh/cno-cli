@@ -7,7 +7,18 @@ import { Inspector } from '../../src/inspector/main/inspector.ts';
 import { installInspectorBridge, type InstalledInspectorBridge } from '../../src/inspector/bridge.ts';
 
 const bus = import.meta.use('evbus');
-const kernel: KernelContext = { config: {}, inspect: null, runtimeFlags: {}, preloads: [], nodePreloads: [] };
+
+// The staged test runner has already installed globals from the bundled polyfill.
+const kernel: KernelContext = {
+    config: {},
+    inspect: null,
+    runtimeFlags: {},
+    preloads: [],
+    nodePreloads: [],
+    initializeGlobals: async () => {},
+    modules: { installInspectorBridge },
+    runtimeModule: () => import('../../cts/src/runtime/index.ts'),
+};
 
 async function withInspectorMock(fn: (mock: {
     opened: Inspector[];
@@ -56,6 +67,35 @@ async function withRuntime(context: KernelContext, fn: (session: KernelRuntime) 
         rmSync(dir, { recursive: true, force: true });
     }
 }
+
+Deno.test('kernel lifecycle: globals initialize before Inspector and compiler ownership', async () => {
+    await withInspectorMock(async (mock) => {
+        const order: string[] = [];
+        mock.attach = async () => { order.push('inspector'); };
+        await withRuntime({
+            ...kernel,
+            inspect: { host: '127.0.0.1', port: 0, breakOnStart: false, waitForClient: false },
+            initializeGlobals: async () => { order.push('globals'); },
+            runtimeModule: async () => {
+                order.push('runtime');
+                return kernel.runtimeModule();
+            },
+        }, async () => {
+            deepStrictEqual(order, ['globals', 'inspector', 'runtime']);
+        });
+        strictEqual(mock.detached.length, 1);
+
+        const failure = new Error('globals failed');
+        await rejects(withRuntime({
+            ...kernel,
+            inspect: { host: '127.0.0.1', port: 0, breakOnStart: false, waitForClient: false },
+            initializeGlobals: async () => { throw failure; },
+            runtimeModule: async () => { throw new Error('unreachable'); },
+        }, async () => { throw new Error('unreachable'); }), error => error === failure);
+        strictEqual(mock.opened.length, 1);
+        strictEqual(mock.detached.length, 1);
+    });
+});
 
 Deno.test('kernel lifecycle: finish keeps the bridge usable and late inspectors unrefed', async () => {
     await withInspectorMock(async (mock) => {

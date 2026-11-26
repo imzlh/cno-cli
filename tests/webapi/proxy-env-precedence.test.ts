@@ -40,30 +40,8 @@ const PROXY_ENV = [
 /** The disk copy of the module under test, so its hook writes are observable. */
 const { startProxy, stopNetwork, getProxyInfo } = await import('../../src/network.ts');
 
-// --- disk client classes, with the global event classes preserved -------------
-// Same constraint as proxy-transport-clients.test.ts: importing the disk webapi
-// graph replaces globalThis.Event & friends at module scope. They must stay
-// clobbered while the disk clients run, and be restored before worker teardown
-// dispatches 'beforeunload', or that throws `Invalid event object`.
-
-const BAKED_EVENT_GLOBALS = {
-    Event: globalThis.Event,
-    EventTarget: globalThis.EventTarget,
-    CustomEvent: globalThis.CustomEvent,
-    ErrorEvent: globalThis.ErrorEvent,
-    PromiseRejectionEvent: globalThis.PromiseRejectionEvent,
-    CloseEvent: globalThis.CloseEvent,
-    MessageEvent: globalThis.MessageEvent,
-    DOMException: globalThis.DOMException,
-    ProgressEvent: globalThis.ProgressEvent,
-} as const;
-
 const { EventSource } = await import('../../cno/src/webapi/sse.ts');
 const { WebSocket } = await import('../../cno/src/webapi/websocket.ts');
-
-Deno.test.afterAll(() => {
-    for (const [name, cls] of Object.entries(BAKED_EVENT_GLOBALS)) Reflect.set(globalThis, name, cls);
-});
 
 // --- loopback counting sink --------------------------------------------------
 
@@ -156,11 +134,14 @@ function childProxyEnv(values: { http?: string; https?: string }): Record<string
     };
 }
 
-/** Replace the proxy env with exactly `values`, then re-read configuration. */
-function withProxyEnv(values: Record<string, string>): void {
+/** Replace the proxy env with exactly `values`, then re-read configuration.
+ * Await this: startProxy() installs the curl/raw hooks asynchronously (its
+ * dynamic connector import must settle), so a synchronous caller would assert
+ * against a not-yet-installed hook. */
+async function withProxyEnv(values: Record<string, string>): Promise<void> {
     clearProxyEnv();
     for (const [name, value] of Object.entries(values)) Deno.env.set(name, value);
-    startProxy();
+    await startProxy();
 }
 
 /**
@@ -214,9 +195,9 @@ function settle(client: { close(): void }, label: string, timeoutMs = 4000): Pro
 
 // --- tests: precedence and merging ------------------------------------------
 
-Deno.test('env: HTTP_PROXY is honoured on every platform, registry or not', () => {
+Deno.test('env: HTTP_PROXY is honoured on every platform, registry or not', async () => {
     try {
-        withProxyEnv({ HTTP_PROXY: 'http://127.0.0.1:19001' });
+        await withProxyEnv({ HTTP_PROXY: 'http://127.0.0.1:19001' });
         const hook = getCnoCurlInitHook();
         ok(hook, 'HTTP_PROXY must install the curl hook');
         const http = recordCurl();
@@ -226,9 +207,9 @@ Deno.test('env: HTTP_PROXY is honoured on every platform, registry or not', () =
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
-Deno.test('env wins over the Windows registry', () => {
+Deno.test('env wins over the Windows registry', async () => {
     try {
-        withProxyEnv({ HTTP_PROXY: 'http://127.0.0.1:19002', HTTPS_PROXY: 'http://127.0.0.1:19002' });
+        await withProxyEnv({ HTTP_PROXY: 'http://127.0.0.1:19002', HTTPS_PROXY: 'http://127.0.0.1:19002' });
         const config = getProxyInfo();
         ok(config, 'a proxy must be configured');
         strictEqual(new URL(config.url).port, '19002',
@@ -236,47 +217,47 @@ Deno.test('env wins over the Windows registry', () => {
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
-Deno.test('registry is the fallback when the env names no proxy', () => {
+Deno.test('registry is the fallback when the env names no proxy', async () => {
     try {
         clearProxyEnv();
-        startProxy();
+        await startProxy();
         const config = getProxyInfo();
         if (REGISTRY_PROXY) ok(config, 'an enabled registry proxy must still be used');
         else strictEqual(config, null, 'no registry proxy and no env means no proxy');
     } finally { stopNetwork(); }
 });
 
-Deno.test('neither source configured leaves no proxy', () => {
+Deno.test('neither source configured leaves no proxy', async () => {
     if (REGISTRY_PROXY) return; // not expressible on this machine
     try {
         clearProxyEnv();
-        startProxy();
+        await startProxy();
         strictEqual(getProxyInfo(), null);
     } finally { stopNetwork(); }
 });
 
-Deno.test('per-scheme merge: HTTPS_PROXY alone does not blank the http proxy', () => {
+Deno.test('per-scheme merge: HTTPS_PROXY alone does not blank the http proxy', async () => {
     try {
-        withProxyEnv({ HTTPS_PROXY: 'http://127.0.0.1:19003' });
+        await withProxyEnv({ HTTPS_PROXY: 'http://127.0.0.1:19003' });
         const config = getProxyInfo();
         ok(config, 'HTTPS_PROXY must produce a proxy config');
         strictEqual(new URL(config.url).port, '19003');
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
-Deno.test('ALL_PROXY is the fallback and a scheme-specific var overrides it', () => {
+Deno.test('ALL_PROXY is the fallback and a scheme-specific var overrides it', async () => {
     try {
-        withProxyEnv({ ALL_PROXY: 'http://127.0.0.1:19004' });
+        await withProxyEnv({ ALL_PROXY: 'http://127.0.0.1:19004' });
         strictEqual(new URL(getProxyInfo()!.url).port, '19004');
-        withProxyEnv({ ALL_PROXY: 'http://127.0.0.1:19004', HTTPS_PROXY: 'http://127.0.0.1:19005' });
+        await withProxyEnv({ ALL_PROXY: 'http://127.0.0.1:19004', HTTPS_PROXY: 'http://127.0.0.1:19005' });
         strictEqual(new URL(getProxyInfo()!.url).port, '19005',
             'HTTPS_PROXY must beat ALL_PROXY for https, matching curl');
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
-Deno.test('lowercase env spellings are honoured', () => {
+Deno.test('lowercase env spellings are honoured', async () => {
     try {
-        withProxyEnv({ http_proxy: 'http://127.0.0.1:19006' });
+        await withProxyEnv({ http_proxy: 'http://127.0.0.1:19006' });
         const hook = getCnoCurlInitHook();
         ok(hook, 'http_proxy must install the curl hook');
         const http = recordCurl();
@@ -285,18 +266,18 @@ Deno.test('lowercase env spellings are honoured', () => {
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
-Deno.test('a malformed env proxy does not prevent hook installation', () => {
+Deno.test('a malformed env proxy does not prevent hook installation', async () => {
     try {
-        withProxyEnv({ HTTP_PROXY: 'gopher://nope', HTTPS_PROXY: 'gopher://nope' });
+        await withProxyEnv({ HTTP_PROXY: 'gopher://nope', HTTPS_PROXY: 'gopher://nope' });
         // The value is unusable, but startProxy must not throw out and leave the
         // raw clients unhooked — that is the bypass this file exists to prevent.
         ok(getRawConnectionHook(), 'the raw-connection hook must be installed anyway');
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
-Deno.test('CURL hooks select the system proxy from the target scheme', () => {
+Deno.test('CURL hooks select the system proxy from the target scheme', async () => {
     try {
-        withProxyEnv({
+        await withProxyEnv({
             HTTP_PROXY: 'http://127.0.0.1:19008',
             HTTPS_PROXY: 'http://127.0.0.1:19009',
         });
@@ -313,9 +294,9 @@ Deno.test('CURL hooks select the system proxy from the target scheme', () => {
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
-Deno.test('a malformed HTTPS_PROXY does not fall back to HTTP_PROXY', () => {
+Deno.test('a malformed HTTPS_PROXY does not fall back to HTTP_PROXY', async () => {
     try {
-        withProxyEnv({
+        await withProxyEnv({
             HTTP_PROXY: 'http://127.0.0.1:19010',
             HTTPS_PROXY: 'gopher://invalid',
         });
@@ -332,9 +313,9 @@ Deno.test('a malformed HTTPS_PROXY does not fall back to HTTP_PROXY', () => {
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
-Deno.test('startProxy installs the raw-connection hook that the clients read', () => {
+Deno.test('startProxy installs the raw-connection hook that the clients read', async () => {
     try {
-        withProxyEnv({ HTTP_PROXY: 'http://127.0.0.1:19007' });
+        await withProxyEnv({ HTTP_PROXY: 'http://127.0.0.1:19007' });
         ok(getRawConnectionHook(), 'WebSocket/EventSource read this hook via connectHttp()');
     } finally { clearProxyEnv(); stopNetwork(); }
 });
@@ -344,7 +325,7 @@ Deno.test('startProxy installs the raw-connection hook that the clients read', (
 Deno.test({ name: 'raw connections reach the env-named proxy', timeout: 20000 }, async () => {
     const sink = await startSink();
     try {
-        withProxyEnv({ HTTP_PROXY: `http://127.0.0.1:${sink.port}` });
+        await withProxyEnv({ HTTP_PROXY: `http://127.0.0.1:${sink.port}` });
         await connectThroughHook('http://example.invalid/x');
         strictEqual(sink.arrivals, 1, 'the proxy must receive the connection');
     } finally { clearProxyEnv(); stopNetwork(); setRawConnectionHook(null); await closeSink(sink); }
@@ -353,7 +334,7 @@ Deno.test({ name: 'raw connections reach the env-named proxy', timeout: 20000 },
 Deno.test({ name: 'EventSource reaches the env-named proxy', timeout: 20000 }, async () => {
     const sink = await startSink();
     try {
-        withProxyEnv({ HTTP_PROXY: `http://127.0.0.1:${sink.port}` });
+        await withProxyEnv({ HTTP_PROXY: `http://127.0.0.1:${sink.port}` });
         const source = new EventSource('http://example.invalid/stream');
         await settle(source, 'sse');
         strictEqual(sink.arrivals, 1, 'EventSource must go through the proxy, not direct');
@@ -365,7 +346,7 @@ Deno.test({ name: 'EventSource reaches the env-named proxy', timeout: 20000 }, a
 Deno.test({ name: 'WebSocket reaches the env-named proxy', timeout: 20000 }, async () => {
     const sink = await startSink();
     try {
-        withProxyEnv({ HTTP_PROXY: `http://127.0.0.1:${sink.port}` });
+        await withProxyEnv({ HTTP_PROXY: `http://127.0.0.1:${sink.port}` });
         const socket = new WebSocket('ws://example.invalid/ws');
         await settle(socket, 'ws');
         strictEqual(sink.arrivals, 1, 'WebSocket must go through the proxy, not direct');
@@ -499,7 +480,7 @@ Deno.test({ name: 'fetch system proxy selects HTTP_PROXY and HTTPS_PROXY indepen
 Deno.test({ name: 'NO_PROXY bypasses the proxy for a matching host', timeout: 20000 }, async () => {
     const sink = await startSink();
     try {
-        withProxyEnv({ HTTP_PROXY: `http://127.0.0.1:${sink.port}`, NO_PROXY: 'example.invalid' });
+        await withProxyEnv({ HTTP_PROXY: `http://127.0.0.1:${sink.port}`, NO_PROXY: 'example.invalid' });
         await connectThroughHook('http://example.invalid/x').catch(() => undefined);
         strictEqual(sink.arrivals, 0, 'a NO_PROXY host must not reach the proxy');
     } finally { clearProxyEnv(); stopNetwork(); setRawConnectionHook(null); await closeSink(sink); }
@@ -508,7 +489,7 @@ Deno.test({ name: 'NO_PROXY bypasses the proxy for a matching host', timeout: 20
 Deno.test({ name: 'no_proxy lowercase also bypasses', timeout: 20000 }, async () => {
     const sink = await startSink();
     try {
-        withProxyEnv({ http_proxy: `http://127.0.0.1:${sink.port}`, no_proxy: 'example.invalid' });
+        await withProxyEnv({ http_proxy: `http://127.0.0.1:${sink.port}`, no_proxy: 'example.invalid' });
         await connectThroughHook('http://example.invalid/x').catch(() => undefined);
         strictEqual(sink.arrivals, 0, 'lowercase no_proxy must be honoured');
     } finally { clearProxyEnv(); stopNetwork(); setRawConnectionHook(null); await closeSink(sink); }
@@ -517,16 +498,16 @@ Deno.test({ name: 'no_proxy lowercase also bypasses', timeout: 20000 }, async ()
 Deno.test({ name: 'NO_PROXY that does not match still proxies', timeout: 20000 }, async () => {
     const sink = await startSink();
     try {
-        withProxyEnv({ HTTP_PROXY: `http://127.0.0.1:${sink.port}`, NO_PROXY: 'other.invalid' });
+        await withProxyEnv({ HTTP_PROXY: `http://127.0.0.1:${sink.port}`, NO_PROXY: 'other.invalid' });
         await connectThroughHook('http://example.invalid/x');
         strictEqual(sink.arrivals, 1, 'a non-matching NO_PROXY must not disable the proxy');
     } finally { clearProxyEnv(); stopNetwork(); setRawConnectionHook(null); await closeSink(sink); }
 });
 
-Deno.test('env NO_PROXY applies to a registry-sourced proxy', () => {
+Deno.test('env NO_PROXY applies to a registry-sourced proxy', async () => {
     if (!REGISTRY_PROXY) return; // needs a registry proxy to override
     try {
-        withProxyEnv({ NO_PROXY: 'example.invalid' });
+        await withProxyEnv({ NO_PROXY: 'example.invalid' });
         const config = getProxyInfo();
         ok(config, 'the registry proxy must still be in effect');
         strictEqual(config.noProxy, 'example.invalid',
@@ -534,8 +515,8 @@ Deno.test('env NO_PROXY applies to a registry-sourced proxy', () => {
     } finally { clearProxyEnv(); stopNetwork(); }
 });
 
-Deno.test('stopNetwork clears the hook and the config', () => {
-    withProxyEnv({ HTTP_PROXY: 'http://127.0.0.1:19008' });
+Deno.test('stopNetwork clears the hook and the config', async () => {
+    await withProxyEnv({ HTTP_PROXY: 'http://127.0.0.1:19008' });
     ok(getProxyInfo());
     clearProxyEnv();
     stopNetwork();

@@ -133,10 +133,14 @@ test('inspector can reopen while an earlier close is completing', async t => {
 
 test('REPL configures raw VT input and restores normal mode', async () => {
     const modes = [];
+    let failRestore = false;
     class TTY {
         size = [80, 24];
         constructor(fd) { this.fd = fd; }
-        set mode(value) { modes.push([this.fd, value]); }
+        set mode(value) {
+            if (failRestore) throw new Error('TTY is closing');
+            modes.push([this.fd, value]);
+        }
     }
     const native = {
         os: { STDIN_FILENO: 0, STDOUT_FILENO: 1, guessHandle: () => 'tty' },
@@ -148,6 +152,8 @@ test('REPL configures raw VT input and restores normal mode', async () => {
     assert.deepEqual(modes, [[0, 2]]);
     editor.setTerminalMode(0);
     assert.deepEqual(modes, [[0, 2], [0, 0]]);
+    failRestore = true;
+    assert.throws(() => editor.setTerminalMode(0), /TTY is closing/);
 });
 
 test('REPL file input does not create a terminal or set its mode', async () => {
@@ -160,4 +166,73 @@ test('REPL file input does not create a terminal or set its mode', async () => {
     const { LineEditor } = await fixture('src/commands/repl/line-editor.ts', { __test_use__: name => native[name] });
     new LineEditor({}, { tty: false });
     assert.equal(terminals, 0);
+});
+
+async function replFixture(t, { startRead, stopRead } = {}) {
+    let signal;
+    let input;
+    class TTY {
+        size = [80, 24];
+        mode = 0;
+        constructor(_fd, readable) { if (readable) input = this; }
+        startRead() { startRead?.(); }
+        stopRead() { stopRead?.(); }
+        write() {}
+    }
+    const native = {
+        os: {
+            STDIN_FILENO: 0, STDOUT_FILENO: 1, guessHandle: () => 'tty',
+            uname: () => ({ sysname: 'Linux' }),
+            getenv() { throw new Error('unset'); },
+            exit(code) { throw new Error(`unexpected exit: ${code}`); },
+        },
+        streams: { TTY, TTY_MODE_RAW_VT: 2, TTY_MODE_NORMAL: 0 },
+        signals: {
+            signals: { SIGINT: 2 },
+            signal(_number, callback) { signal = callback; return { close() {} }; },
+        },
+        console: { log() {}, warn() {}, error() {} },
+        engine: { encodeString: value => new TextEncoder().encode(value) },
+        error: { errno: { EIO: -5 } },
+        fs: { write() {} },
+    };
+    const { CnoRepl } = await fixture('src/commands/repl/runner.ts', {
+        __test_use__: name => native[name],
+    });
+    const repl = new CnoRepl({ history: { resetCursor() {}, close() {} } });
+    t.after(() => repl.cleanup());
+    return { repl, input, interrupt: () => signal() };
+}
+
+test('REPL finishes when restarting a canceled read finds a detached terminal', { timeout: 1000 }, async t => {
+    let reads = 0;
+    const { repl, interrupt } = await replFixture(t, {
+        startRead() {
+            if (++reads === 2) throw Object.assign(new Error('terminal detached'), { code: -5 });
+        },
+    });
+    const session = repl.start();
+    interrupt();
+    await session;
+    assert.equal(reads, 2);
+});
+
+test('REPL preserves read ownership when stopRead fails', { timeout: 1000 }, async t => {
+    const failure = new Error('stopRead failed');
+    let failStop = true;
+    let stops = 0;
+    const { repl, input, interrupt } = await replFixture(t, {
+        stopRead() {
+            stops++;
+            if (failStop) throw failure;
+        },
+    });
+    const session = repl.start();
+    let thrown;
+    try { interrupt(); } catch (error) { thrown = error; }
+    failStop = false;
+    input.onread(null, undefined);
+    await session;
+    assert.equal(thrown, failure);
+    assert.equal(stops, 2);
 });

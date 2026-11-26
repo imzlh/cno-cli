@@ -9,6 +9,9 @@ import ts from 'typescript';
 const source = ts.createSourceFile('main.ts',
     readFileSync(new URL('../../src/main.ts', import.meta.url), 'utf8'),
     ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const networkSource = ts.createSourceFile('network.ts',
+    readFileSync(new URL('../../src/network.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 
 test('CLI startup imports the lightweight blob registry, not network implementations', () => {
     const imports = source.statements.filter(ts.isImportDeclaration)
@@ -17,6 +20,24 @@ test('CLI startup imports the lightweight blob registry, not network implementat
     for (const path of ['./network', '../cno/src/utils/http', '../cno/src/webapi/url']) {
         assert.ok(!imports.includes(path), `${path} must not initialize on the startup path`);
     }
+});
+
+test('network proxy connector stays lazy on the TLS-only path', () => {
+    const imports = networkSource.statements.filter(ts.isImportDeclaration)
+        .map(statement => statement.moduleSpecifier.text);
+    assert.ok(imports.includes('../cno/src/utils/proxy'), 'network still needs proxy types');
+    const proxyImport = networkSource.statements.find(statement =>
+        ts.isImportDeclaration(statement) && statement.moduleSpecifier.text === '../cno/src/utils/proxy');
+    assert.ok(proxyImport && ts.isImportDeclaration(proxyImport));
+    assert.ok(proxyImport.importClause?.isTypeOnly === true,
+        'createProxyConnector must not initialize with network.ts');
+
+    const startProxy = networkSource.statements.find(statement =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === 'startProxy');
+    assert.ok(startProxy && ts.isFunctionDeclaration(startProxy));
+    const text = startProxy.getText(networkSource);
+    assert.match(text, /await import\(['"]\.\.\/cno\/src\/utils\/proxy['"]\)/,
+        'system proxy must load its connector only when enabled');
 });
 
 // Execute the actual flag handler without bootstrapping the native CLI. Keep its
