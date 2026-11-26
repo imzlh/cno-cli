@@ -353,6 +353,15 @@ Deno.test('dgram: send() reports a bad buffer list under Node’s argument name'
         );
         // A well-formed mixed list stays valid.
         s.send([Buffer.from('x'), 'y'], 1234, '127.0.0.1', () => {});
+        throws(
+            () => s.send([Buffer.from('x')] as unknown as Uint8Array[], 0, 1, 1234, '127.0.0.1', () => {}),
+            (err: unknown) => {
+                const e = err as { code?: string; message?: string };
+                return e?.code === 'ERR_INVALID_ARG_TYPE'
+                    && (e.message ?? '').includes('"buffer" argument')
+                    && (e.message ?? '').includes('Received an instance of Array');
+            },
+        );
     } finally {
         s.close();
     }

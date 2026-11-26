@@ -262,6 +262,60 @@ Deno.test('dns callback Resolver uses per-instance server', async () => {
     }
 });
 
+Deno.test('dns Resolver with no servers reports the native c-ares error', async () => {
+    const resolver = new dnsp.Resolver();
+    resolver.setServers([]);
+    await resolver.resolve4('localhost').then(
+        () => { throw new Error('expected UNKNOWN_ARES_ERROR'); },
+        error => {
+            strictEqual((error as NodeJS.ErrnoException).code, 'UNKNOWN_ARES_ERROR');
+            strictEqual((error as NodeJS.ErrnoException).errno, undefined);
+            strictEqual((error as NodeJS.ErrnoException).syscall, 'queryA');
+        },
+    );
+
+    const previous = dns.getServers();
+    try {
+        dns.setServers([]);
+        // The global API restores the platform resolver when its server list is
+        // empty; an explicit Resolver keeps the empty list and reports the
+        // c-ares error above.
+        const addresses = await dnsp.resolve4('localhost');
+        ok(addresses.length > 0, 'global DNS must use the platform resolver');
+    } finally {
+        dns.setServers(previous);
+    }
+});
+
+Deno.test('dns global empty server list falls back to the native default servers', async () => {
+    const nativeDns = import.meta.use('dns');
+    const previous = dns.getServers();
+    const nativeServers = Object.getOwnPropertyDescriptor(nativeDns, '__default_dnssrv');
+    const nativeQuery = Object.getOwnPropertyDescriptor(nativeDns, 'query');
+    let queriedServer: string | undefined;
+
+    try {
+        Object.defineProperty(nativeDns, '__default_dnssrv', {
+            configurable: true,
+            value: ['192.0.2.53'],
+        });
+        Reflect.set(nativeDns, 'query', async (_hostname: string, _type: number, server: string) => {
+            queriedServer = server;
+            return [{ type: nativeDns.A, address: '203.0.113.7', ttl: 60 }];
+        });
+        dns.setServers([]);
+
+        deepStrictEqual(await dnsp.resolve4('fixture.test'), ['203.0.113.7']);
+        strictEqual(queriedServer, '192.0.2.53');
+    } finally {
+        dns.setServers(previous);
+        if (nativeServers) Object.defineProperty(nativeDns, '__default_dnssrv', nativeServers);
+        else Reflect.deleteProperty(nativeDns, '__default_dnssrv');
+        if (nativeQuery) Object.defineProperty(nativeDns, 'query', nativeQuery);
+        else Reflect.deleteProperty(nativeDns, 'query');
+    }
+});
+
 Deno.test({ name: 'dns Resolver uses backup servers and configured tries', timeout: 10000 }, async () => {
     let silent: FixtureServer;
     let responding: FixtureServer;

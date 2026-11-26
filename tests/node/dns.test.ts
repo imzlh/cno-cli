@@ -143,6 +143,14 @@ Deno.test('dns: rejects invalid rrtype instead of silently querying A', async ()
     await rejects(() => dnsp.resolve('localhost', 'BAD'), TypeError);
 });
 
+Deno.test('dns: resolve failure callback receives only the error', async () => {
+    const args = await new Promise<unknown[]>((resolve) => {
+        dns.resolve('definitely-missing.invalid', (...callbackArgs) => resolve(callbackArgs));
+    });
+    strictEqual(args.length, 1);
+    strictEqual((args[0] as NodeJS.ErrnoException).code, 'ENOTFOUND');
+});
+
 Deno.test('dns: validates servers and supports ipv6first result order', () => {
     const previousServers = dns.getServers();
     const previousOrder = dns.getDefaultResultOrder();
@@ -165,6 +173,22 @@ Deno.test('dns: validates servers and supports ipv6first result order', () => {
     } finally {
         dns.setServers(previousServers);
         dns.setDefaultResultOrder(previousOrder);
+    }
+});
+
+Deno.test('dns: validates IPv6 zone identifiers using Node characters', () => {
+    const previousServers = dns.getServers();
+    try {
+        for (const zone of ['bad space', '/', 'eth_0']) {
+            throws(() => dns.setServers([`fe80::1%${zone}`]), { code: 'ERR_INVALID_IP_ADDRESS' });
+            throws(() => dns.lookupService(`fe80::1%${zone}`, 80, () => {}), { code: 'ERR_INVALID_ARG_VALUE' });
+            throws(() => dnsp.lookupService(`fe80::1%${zone}`, 80), { code: 'ERR_INVALID_ARG_VALUE' });
+        }
+
+        // Node accepts letters, digits, hyphen, dot and colon in a zone ID.
+        dns.setServers(['[fe80::1%eth0]:5353', '[fe80::1%en-0.1:2]:5354']);
+    } finally {
+        dns.setServers(previousServers);
     }
 });
 
