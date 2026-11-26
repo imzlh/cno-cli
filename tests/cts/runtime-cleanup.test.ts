@@ -1,6 +1,12 @@
 import { ok, rejects, strictEqual, throws } from 'node:assert';
-import { createRuntime } from '../../cts/src/api/index.ts';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { createRuntime, getActiveFileStore } from '../../cts/src/api/index.ts';
+import { createConfig } from '../../cts/src/config.ts';
 import { LockStore } from '../../cts/src/lock.ts';
+import { encodePack } from '../../cts/src/pack/format.ts';
+import { loadPack } from '../../cts/src/pack/reader.ts';
+import { ModuleResolver } from '../../cts/src/resolve/index.ts';
 import { ParseDriver } from '../../cts/src/parse.ts';
 import { PrecacheProgress } from '../../cts/src/utils/progress.ts';
 import { withTempDir } from '../_helpers/temp.ts';
@@ -30,6 +36,39 @@ Deno.test('cts runtime cleanup closes its owned lock store', async () => {
         // not re-open or otherwise disturb the already-closed store.
         runtime.cleanup();
         strictEqual(registry.has(store), false);
+    });
+});
+
+Deno.test('cts pack VFS is released by its owning resolver only', async () => {
+    await withTempDir('runtime-cleanup-pack-vfs', (root) => {
+        const runtime = createRuntime({ cacheDir: `${root}/cache`, silent: true });
+        const unrelated = new ModuleResolver(createConfig({
+            cacheDir: `${root}/other-cache`, silent: true,
+        }), root);
+        const packPath = join(root, 'fixture.jspack');
+        const entry = 'pack:/entry.txt';
+        writeFileSync(packPath, encodePack({
+            entry,
+            modules: {
+                [entry]: { localPath: entry, format: 'esm', fileKind: 'text', offset: 0, length: 1 },
+            },
+            edges: {},
+            bytecodeVersion: 'test',
+        }, new Uint8Array([120])));
+        const loaded = loadPack(packPath, runtime.resolver);
+        const store = loaded.session.store;
+        try {
+            strictEqual(getActiveFileStore(), store);
+            unrelated.close();
+            strictEqual(getActiveFileStore(), store,
+                'closing an unrelated resolver must not release another resolver\'s pack');
+            runtime.cleanup();
+            strictEqual(getActiveFileStore(), null,
+                'closing the owner must release the mapped pack container');
+        } finally {
+            unrelated.close();
+            runtime.cleanup();
+        }
     });
 });
 

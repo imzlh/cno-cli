@@ -6,6 +6,8 @@ import { transform } from '../../cts/deps/sucrase/src/index.ts';
 import { resolveExports, createCtx, clearPkgCache } from '../../cts/src/resolve/pkg.ts';
 import { normalizeBinField, getBinMap } from '../../cts/src/resolve/pkg.ts';
 
+const engine = import.meta.use('engine');
+
 // --- 1. Transformer: illegal TS syntax throws a structured error -----------
 //
 // TransformError must carry fileName/line/column so REPL/CLI can render a
@@ -38,6 +40,21 @@ Deno.test('cts: transformer strips shebang before transform', () => {
     ok(!out.startsWith('#!'), 'shebang must be stripped');
     ok(out.includes('const a = 1') || out.includes('const a: number = 1') || out.includes('number = 1'),
         'transformed body must remain');
+});
+
+Deno.test('cts: passthrough byte sources strip shebangs', () => {
+    const t = new Transformer({ sourceMaps: false });
+    const source = '#!/usr/bin/env node\nexport const value = 1;\n';
+    const output = t.transformBytes(engine.encodeString(source), 'plain.js');
+    const code = typeof output === 'string' ? output : engine.decodeString(output);
+    ok(!code.startsWith('#!'), 'passthrough bytes must not expose a shebang to QuickJS');
+    ok(code.includes('export const value = 1;'), code);
+
+    const extensionless = t.transformBytes(engine.encodeString(source), 'entry');
+    const extensionlessCode = typeof extensionless === 'string'
+        ? extensionless
+        : engine.decodeString(extensionless);
+    ok(!extensionlessCode.startsWith('#!'), extensionlessCode);
 });
 
 Deno.test('cts: transformer loads OXC lazily only for transformable source', () => {
@@ -125,6 +142,29 @@ Deno.test('cts: CJS transform preserves import-equals require side effects', () 
     ok(out.includes('const test = require("./side-effect.js")'), out);
 });
 
+Deno.test('cts: CJS decorator transform preserves accessors and import-equals side effects', () => {
+    const source = 'import unused = require("./side-effect.js"); class Subject { @dec accessor value: number = 1; }';
+    for (const filename of ['decorated.cts', 'decorated.ts', 'decorated.tsx']) {
+        let received: string | undefined;
+        let kind: string | undefined;
+        const transformer = new Transformer({ sourceMaps: false });
+        transformer.setOxc(new OxcTranspiler({
+            version: 'test',
+            transpile(code, options) {
+                received = code;
+                kind = options?.kind;
+                return { code, deps: [] };
+            },
+            scanImports() { return []; },
+        }));
+        const output = transformer.transformForCjs(source, filename);
+        strictEqual(output, received);
+        ok(output.includes('@dec accessor value = 1;'), output);
+        ok(output.includes('const unused = require("./side-effect.js")'), output);
+        strictEqual(kind, 'js');
+    }
+});
+
 Deno.test('cts: CNO transform preserves runtime import attributes', () => {
     const t = new Transformer();
     const out = t.transform(
@@ -173,8 +213,8 @@ Deno.test('cts: sucrase preserves native class fields when ES transforms are dis
         transforms: ['typescript'],
         disableESTransforms: true,
     });
-    ok(out.code.includes('class A {  x; static  y = "y"; ; }'), out.code);
-    ok(!out.code.includes('accessor'), out.code);
+    ok(out.code.includes('class A {  x; static accessor y = "y"; ; }'), out.code);
+    ok(!out.code.includes('declare accessor'), out.code);
 });
 
 // --- 8. Sucrase processes native class field initializers in output pass ----
