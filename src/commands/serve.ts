@@ -123,9 +123,8 @@ function startServe(
     let shuttingDown = false;
     const installedSignals = new Set<Deno.Signal>();
     const removeSignalListeners = () => {
-        // addSignalListener already validated the module, handler and signal.
         for (const signal of installedSignals) {
-            Deno.removeSignalListener(signal, shutdown);
+            try { Deno.removeSignalListener(signal, shutdown); } catch { /* cleanup race */ }
         }
         installedSignals.clear();
     };
