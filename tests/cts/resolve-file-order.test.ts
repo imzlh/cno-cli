@@ -123,3 +123,58 @@ Deno.test('cts resolver: local ESM paths reject encoded separators and dot trave
         rmSync(root, { recursive: true, force: true });
     }
 });
+
+Deno.test('cts resolver: explicit local extensions follow Bun source fallbacks', () => {
+    const root = makePosixTempDir('resolve-explicit-extension');
+    const entry = toPosixPath(join(root, 'entry.mjs'));
+    let resolver: ModuleResolver | null = null;
+    try {
+        tree(root, {
+            'entry.mjs': 'export {}\n',
+            'typed.ts': 'export const value = 1\n',
+            'view.tsx': 'export const value = 3\n',
+            'preferred.js': 'export const value = 4\n',
+            'preferred.ts': 'export const value = 5\n',
+            'preferred.tsx': 'export const value = 6\n',
+            'both.ts': 'export const value = 7\n',
+            'both.tsx': 'export const value = 8\n',
+            'module.mts': 'export const value = 6\n',
+            'legacy.cts': 'export const value = 7\n',
+            'preferred.mjs': 'export const value = 8\n',
+            'preferred.mts': 'export const value = 9\n',
+            'preferred.cjs': 'module.exports = 10\n',
+            'preferred.cts': 'module.exports = 11\n',
+            'node_modules/pkg/package.json': '{"name":"pkg","version":"1.0.0"}\n',
+            'node_modules/pkg/entry.mts': 'export const value = 8\n',
+            'node_modules/pkg/script.ts': 'export const value = 9\n',
+            'node_modules/pkg/view.tsx': 'export const value = 10\n',
+            'node_modules/pkg/legacy.cts': 'export const value = 11\n',
+        });
+        resolver = new ModuleResolver(createConfig({
+            cacheDir: toPosixPath(join(root, 'cache')),
+            disableLock: true,
+        }), root, true);
+
+        strictEqual(resolver.resolve('./typed.js', entry).localPath, toPosixPath(join(root, 'typed.ts')));
+        strictEqual(resolver.resolve('./view.js', entry).localPath, toPosixPath(join(root, 'view.tsx')));
+        strictEqual(resolver.resolve('./view.jsx', entry).localPath, toPosixPath(join(root, 'view.tsx')));
+        strictEqual(resolver.resolve('./preferred.js', entry).localPath, toPosixPath(join(root, 'preferred.js')));
+        strictEqual(resolver.resolve('./preferred.jsx', entry).localPath, toPosixPath(join(root, 'preferred.ts')));
+        strictEqual(resolver.resolve('./both.js', entry).localPath, toPosixPath(join(root, 'both.ts')));
+        strictEqual(resolver.resolve('./both.jsx', entry).localPath, toPosixPath(join(root, 'both.ts')));
+        strictEqual(resolver.resolve('./module.mjs', entry).localPath, toPosixPath(join(root, 'module.mts')));
+        strictEqual(resolver.resolve('./legacy.cjs', entry).localPath, toPosixPath(join(root, 'legacy.cts')));
+        strictEqual(resolver.resolve('./preferred.mjs', entry).localPath, toPosixPath(join(root, 'preferred.mjs')));
+        strictEqual(resolver.resolve('./preferred.cjs', entry).localPath, toPosixPath(join(root, 'preferred.cjs')));
+        strictEqual(resolver.resolve('./node_modules/pkg/script.js', entry).localPath,
+            toPosixPath(join(root, 'node_modules/pkg/script.ts')));
+        strictEqual(resolver.resolve('./node_modules/pkg/view.jsx', entry).localPath,
+            toPosixPath(join(root, 'node_modules/pkg/view.tsx')));
+        throws(() => resolver?.resolve('./node_modules/pkg/entry.mjs', entry), /Cannot resolve/);
+        throws(() => resolver?.resolve('./node_modules/pkg/legacy.cjs', entry), /Cannot resolve/);
+    } finally {
+        resolver?.close();
+        clearResolveCache();
+        rmSync(root, { recursive: true, force: true });
+    }
+});

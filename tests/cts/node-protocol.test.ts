@@ -1,4 +1,4 @@
-import { deepStrictEqual, strictEqual, throws } from 'node:assert';
+import { deepStrictEqual, rejects, strictEqual, throws } from 'node:assert';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makePosixTempDir } from '../_helpers/temp.ts';
@@ -15,6 +15,13 @@ function writePolyfill(cacheDir: string, bare: string): string {
         : joinPaths(cacheDir, 'node', bare, 'index.ts');
     mkdirSync(join(localPath, '..'), { recursive: true });
     writeFileSync(join(localPath), `export const id = ${JSON.stringify(bare)};\n`);
+    return localPath;
+}
+
+function writeUtilsPolyfill(cacheDir: string, relative: string): string {
+    const localPath = joinPaths(cacheDir, 'utils', `${relative}.ts`);
+    mkdirSync(join(localPath, '..'), { recursive: true });
+    writeFileSync(join(localPath), `export const id = ${JSON.stringify(relative)};\n`);
     return localPath;
 }
 
@@ -72,6 +79,32 @@ Deno.test('cts node protocol: relative polyfill imports stay inside builtin name
     }
 });
 
+Deno.test('cts node protocol: resolves the shared utils tree as a node builtin', () => {
+    const root = makePosixTempDir('node-protocol-utils');
+    try {
+        const cacheDir = joinPaths(root, 'cache');
+        const indexPath = writeUtilsPolyfill(cacheDir, 'index');
+        const pathPath = writeUtilsPolyfill(cacheDir, 'path');
+        const handler = new NodeHandler(createConfig({ cacheDir }));
+
+        deepStrictEqual(runSync(handler.resolve('node:utils', '/entry.ts')), {
+            specPath: 'node:utils',
+            localPath: indexPath,
+            format: 'esm',
+            fileKind: 'source',
+        });
+        strictEqual(handler.localPath('node:utils'), indexPath);
+        deepStrictEqual(runSync(handler.resolve('./path', 'node:utils')), {
+            specPath: 'node:utils/path',
+            localPath: pathPath,
+            format: 'esm',
+            fileKind: 'source',
+        });
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 Deno.test('cts node protocol: registered resolver bypasses cache filesystem lookup', () => {
     const root = makePosixTempDir('node-protocol-external');
     try {
@@ -89,6 +122,25 @@ Deno.test('cts node protocol: registered resolver bypasses cache filesystem look
         rmSync(root, { recursive: true, force: true });
     }
 });
+
+for (const method of ['resolve', 'resolveAsync'] as const) {
+    Deno.test(`cts node protocol: ${method} retries a builtin after resolver registration`, async () => {
+        const root = makePosixTempDir('node-protocol-registration-retry');
+        const resolver = new ModuleResolver(createConfig({
+            cacheDir: joinPaths(root, 'cache'), disableLock: true,
+        }), root);
+        try {
+            await rejects(async () => resolver[method]('node:fs', '/entry.ts'), {
+                code: 'ERR_UNKNOWN_BUILTIN_MODULE',
+            });
+            resolver.registerNodeResolver(bare => bare === 'fs' ? '/virtual/fs.ts' : null);
+            strictEqual((await resolver[method]('node:fs', '/entry.ts')).localPath, '/virtual/fs.ts');
+        } finally {
+            resolver.close();
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+}
 
 Deno.test('cts node protocol: trusts locked paths without cache-dir revalidation', () => {
     const root = makePosixTempDir('node-protocol-lock');

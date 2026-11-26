@@ -1,9 +1,11 @@
-import { deepStrictEqual, rejects, strictEqual } from 'node:assert';
+import { deepStrictEqual, rejects, strictEqual, throws } from 'node:assert';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createConfig } from '../../cts/src/config.ts';
 import { ErrorKind } from '../../cts/src/errors.ts';
 import { ModuleResolver } from '../../cts/src/resolve/index.ts';
+import { detectFormat } from '../../cts/src/resolve/pkg.ts';
 import { moduleViewRef, type ModuleInfo } from '../../cts/src/types.ts';
+import { clearNegativeCache } from '../../cts/src/utils/io.ts';
 import { canonicalizePath, joinPaths } from '../../cts/src/utils/path.ts';
 import { makePosixTempDir } from '../_helpers/temp.ts';
 
@@ -99,3 +101,83 @@ for (const method of ['resolve', 'resolveAsync'] as const) {
         }
     });
 }
+
+Deno.test('cts resolver: lifecycle-created files can be resolved after miss caches clear', async () => {
+    const root = makePosixTempDir('resolver-generated-file-retry');
+    const resolver = new ModuleResolver(createConfig({
+        cacheDir: joinPaths(root, 'cache'), disableLock: true, ignoreScripts: true,
+    }), root);
+    const parent = canonicalizePath(joinPaths(root, 'entry.ts'));
+    const target = canonicalizePath(joinPaths(root, 'generated.ts'));
+    try {
+        writeFileSync(parent, '');
+        await rejects(resolver.resolveAsync('./generated.ts', parent), {
+            kind: ErrorKind.FileNotFound,
+            code: 'ENOENT',
+        });
+
+        writeFileSync(target, 'export default 1;');
+        resolver.clearFileResolutionCaches();
+
+        const resolved = await resolver.resolveAsync('./generated.ts', parent);
+        strictEqual(resolved.localPath, target);
+    } finally {
+        resolver.close();
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts resolver: inspection misses do not survive a later successful resolve', () => {
+    const root = makePosixTempDir('resolver-inspection-miss');
+    const resolver = new ModuleResolver(createConfig({
+        cacheDir: joinPaths(root, 'cache'), disableLock: true, ignoreScripts: true,
+    }), root);
+    const parent = canonicalizePath(joinPaths(root, 'entry.ts'));
+    const target = canonicalizePath(joinPaths(root, 'generated.ts'));
+    try {
+        writeFileSync(parent, '');
+        throws(() => resolver.resolveForInspection('./generated.ts', parent), {
+            kind: ErrorKind.FileNotFound,
+            code: 'ENOENT',
+        });
+
+        writeFileSync(target, 'export default 1;');
+        clearNegativeCache();
+        strictEqual(resolver.resolve('./generated.ts', parent).localPath, target);
+        strictEqual(resolver.resolveForInspection('./generated.ts', parent).localPath, target);
+    } finally {
+        resolver.close();
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts resolver: lifecycle retry clears local npm package misses', async () => {
+    const root = makePosixTempDir('resolver-local-npm-retry');
+    const resolver = new ModuleResolver(createConfig({
+        cacheDir: joinPaths(root, 'cache'), disableLock: true, frozen: true, ignoreScripts: true,
+    }), root);
+    const parent = canonicalizePath(joinPaths(root, 'entry.ts'));
+    const pkgDir = joinPaths(root, 'node_modules', 'lifecycle-local-fixture');
+    const index = joinPaths(pkgDir, 'index.js');
+    try {
+        writeFileSync(parent, '');
+        mkdirSync(pkgDir, { recursive: true });
+        writeFileSync(index, 'module.exports = 1;');
+        strictEqual(detectFormat(index), 'esm');
+        await rejects(resolver.resolveAsync('lifecycle-local-fixture', parent), {
+            kind: ErrorKind.LockFrozen,
+        });
+
+        writeFileSync(joinPaths(pkgDir, 'package.json'), JSON.stringify({
+            name: 'lifecycle-local-fixture', version: '1.0.0', main: 'index.js', type: 'commonjs',
+        }));
+
+        resolver.clearFileResolutionCaches();
+        const resolved = await resolver.resolveAsync('lifecycle-local-fixture', parent);
+        strictEqual(resolved.localPath, index);
+        strictEqual(resolved.format, 'cjs');
+    } finally {
+        resolver.close();
+        rmSync(root, { recursive: true, force: true });
+    }
+});

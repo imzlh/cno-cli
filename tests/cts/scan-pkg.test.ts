@@ -12,6 +12,7 @@ import {
     clearPkgCache,
     createCtx,
     detectFormat,
+    detectPackageJsonFormat,
     resolveExports,
     resolveImports,
     resolveMain,
@@ -220,6 +221,36 @@ Deno.test('cts pkg: no-package.json format cache is not poisoned by query order'
         const sibling = write(root, 'b/nested/deeper/other.js');
         strictEqual(detectFormat(sibling, 'import'), 'esm');
         strictEqual(detectFormat(sibling, 'require'), 'cjs');
+    } finally {
+        clearPkgCache();
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts pkg: an unrecognized package type keeps the CJS metadata default', () => {
+    const root = makePosixTempDir('pkg-invalid-type');
+    try {
+        writeFileSync(joinPaths(root, 'package.json'), JSON.stringify({ type: 'module' }));
+        for (const [index, value] of ['invalid', ''].entries()) {
+            const dir = joinPaths(root, `case-${index}`);
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(joinPaths(dir, 'package.json'), JSON.stringify({ type: value }));
+            const file = write(dir, 'index.js', 'export const value = 1;\n');
+            clearPkgCache();
+            strictEqual(detectFormat(file), 'cjs');
+            strictEqual(detectPackageJsonFormat(file), 'cjs');
+        }
+        for (const [index, value] of [null, 1, true, []].entries()) {
+            const dir = joinPaths(root, `invalid-${index}`);
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(joinPaths(dir, 'package.json'), JSON.stringify({ type: value }));
+            const file = write(dir, 'index.js', 'export const value = 1;\n');
+            clearPkgCache();
+            throws(
+                () => detectFormat(file),
+                (error: unknown) => (error as { code?: unknown }).code === 'ERR_INVALID_PACKAGE_CONFIG',
+            );
+        }
     } finally {
         clearPkgCache();
         rmSync(root, { recursive: true, force: true });
