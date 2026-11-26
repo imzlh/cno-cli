@@ -1,6 +1,7 @@
 import { deepStrictEqual, strictEqual, ok, throws } from 'node:assert';
 import * as crypto from 'node:crypto';
 import { Readable, pipeline } from 'node:stream';
+import * as vm from 'node:vm';
 
 // --- 1. AES-256-CBC cipher/decipher round-trip -----------------------------
 
@@ -87,6 +88,17 @@ Deno.test('crypto: BufferSource inputs use internal slots, not mutable brand hel
         else Reflect.deleteProperty(ArrayBuffer, 'isView');
         if (hasInstance) Object.defineProperty(ArrayBuffer, Symbol.hasInstance, hasInstance);
         else Reflect.deleteProperty(ArrayBuffer, Symbol.hasInstance);
+    }
+});
+
+Deno.test('crypto: BufferSource inputs accept cross-realm views', () => {
+    const expected = crypto.createHash('sha256').update(new Uint8Array([2, 3])).digest('hex');
+    for (const source of [
+        'new DataView(new Uint8Array([1, 2, 3, 4]).buffer, 1, 2)',
+        'new Uint8Array([1, 2, 3, 4]).subarray(1, 3)',
+    ]) {
+        const view = vm.runInNewContext(source) as DataView | Uint8Array;
+        strictEqual(crypto.createHash('sha256').update(view).digest('hex'), expected);
     }
 });
 
@@ -388,6 +400,36 @@ Deno.test('crypto upstream: secret KeyObject export supports raw and JWK formats
     const key = crypto.createSecretKey(material);
     deepStrictEqual(Buffer.from(key.export()), material);
     deepStrictEqual(key.export({ format: 'jwk' }), { kty: 'oct', k: 'c2VjcmV0' });
+});
+
+Deno.test('crypto: KeyObjects snapshot caller-owned key bytes', () => {
+    const secretBytes = Buffer.from('pad:secret snapshot:pad');
+    const secretView = new DataView(secretBytes.buffer, secretBytes.byteOffset + 4, secretBytes.length - 8);
+    const secretKey = crypto.createSecretKey(secretView);
+    secretBytes.fill(0);
+    deepStrictEqual(Buffer.from(secretKey.export()), Buffer.from('secret snapshot'));
+    strictEqual(
+        crypto.createHmac('sha256', secretKey).update('payload').digest('hex'),
+        crypto.createHmac('sha256', Buffer.from('secret snapshot')).update('payload').digest('hex'),
+    );
+
+    const transferable = new Uint8Array([1, 2, 3, 4]);
+    const transferredKey = crypto.createSecretKey(transferable);
+    structuredClone(transferable.buffer, { transfer: [transferable.buffer] });
+    strictEqual(transferable.byteLength, 0);
+    deepStrictEqual(Buffer.from(transferredKey.export()), Buffer.from([1, 2, 3, 4]));
+
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const privateDer = Buffer.from(privateKey.export({ type: 'pkcs8', format: 'der' }) as Uint8Array);
+    const publicDer = Buffer.from(publicKey.export({ type: 'spki', format: 'der' }) as Uint8Array);
+    const importedPrivateKey = crypto.createPrivateKey({ key: privateDer, type: 'pkcs8', format: 'der' });
+    const importedPublicKey = crypto.createPublicKey({ key: publicDer, type: 'spki', format: 'der' });
+    privateDer.fill(0);
+    publicDer.fill(0);
+    const payload = Buffer.from('key snapshot');
+    const signature = crypto.sign('sha256', payload, importedPrivateKey);
+    strictEqual(crypto.verify('sha256', payload, importedPublicKey, signature), true);
+    deepStrictEqual(importedPrivateKey.asymmetricKeyDetails, { namedCurve: 'prime256v1' });
 });
 
 Deno.test('crypto: createSign/createVerify support hex signature encoding', () => {
