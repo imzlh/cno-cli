@@ -72,6 +72,7 @@ ${C.bold('CORE OPTIONS (before the command)')}
   ${C.dim(`Example: ${C.cyan('cno --require=./init.cjs run app.ts')}`)}
 
 ${C.bold('RUN OPTIONS')}
+  ${C.cyan('--cwd')}=${C.dim('<path>')}                   Working directory for the file or task ${C.dim('(run/task only; before the entry)')}
   ${C.cyan('--ext')}=${C.dim('<lang>')}                   Language for an extensionless entry or ${C.cyan('-')} ${C.dim('(default: ts)')}
   ${C.cyan('--env')}, ${C.cyan('--env-file')}=${C.dim('<path>')}       Load an env file before the entry ${C.dim('(repeatable)')}
   ${C.cyan('--preload')}=${C.dim('<module>')}             Evaluate a module before the entry ${C.dim('(repeatable)')}
@@ -108,7 +109,7 @@ ${C.bold('TEST OPTIONS')}
   ${C.dim(`Everything after ${C.cyan('--')} reaches the test files as ${C.cyan('Deno.args')}.`)}
 
 ${C.bold('TASK OPTIONS')}
-  ${C.cyan('--cwd')}=${C.dim('<path>')}                   Directory to run the task in ${C.dim('(task only)')}
+  ${C.cyan('--cwd')}=${C.dim('<path>')}                   Task lookup and execution directory ${C.dim('(also supported by run)')}
   ${C.cyan('--config')}=${C.dim('<path>')}                Task configuration file
 
 ${C.bold('PACK OPTIONS')}

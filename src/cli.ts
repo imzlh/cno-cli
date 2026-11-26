@@ -78,7 +78,8 @@ define(['timeout', 'jobs'], { value: 'required', commands: ['test'] });
 define(['shuffle', 'parallel'], { commands: ['test'] });
 define(['fail-fast', 'no-run', 'permit-no-files'], { commands: ['test'] });
 define(['out'], { value: 'optional', commands: ['pack'] });
-define(['cwd'], { value: 'required', commands: ['task'] });
+// `run` applies cwd to file execution as well as its task fallback.
+define(['cwd'], { value: 'required', commands: ['task', 'run'] });
 define(['eval'], { value: 'optional', commands: ['task', 'eval'] });
 define(['print'], { commands: ['eval'] });
 define(['npm-mode'], { value: 'required', commands: ['cache'] });

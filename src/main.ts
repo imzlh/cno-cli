@@ -28,7 +28,7 @@
 import { fatal } from '../cts/src/errors';
 import { LockStore } from '../cts/src/lock';
 import type { ConfigOptions } from '../cts/src/types';
-import { cwd, isAbsolute, joinPaths, toPosixPath } from '../cts/src/utils/path';
+import { cwd, isAbsolute, joinPaths, resolvePath, toPosixPath } from '../cts/src/utils/path';
 import { log } from '../cts/src/utils/log';
 import { errMsg, isRecord } from '../cts/src/utils/misc';
 import { EV, installEventReceiver, PRIORITY_FALLBACK } from '../cts/src/runtime/event-mux';
@@ -57,13 +57,13 @@ const console = import.meta.use('console');
 const worker = import.meta.use('worker');
 const os = import.meta.use('os');
 
-function looksLikeFileTarget(raw: string): boolean {
+function looksLikeFileTarget(raw: string, dir = cwd()): boolean {
     const normalized = toPosixPath(raw);
     if (raw.startsWith('.') || normalized.includes('/') || isAbsolute(raw)) return true;
     if (!isAbsolute(raw) && /^[a-z][a-z0-9+\-.]*:/i.test(raw)) return true;
     if (/\.(?:mjs|cjs|js|jsx|ts|tsx|json)$/i.test(raw)) return true;
 
-    return fs.exists(raw) || fs.exists(joinPaths(cwd(), normalized));
+    return fs.exists(joinPaths(dir, normalized));
 }
 
 function makeRunArgs(
@@ -326,10 +326,14 @@ async function dispatch(): Promise<void> {
             const { runTask } = await import('./commands/task');
             return runTask(args, flags, cli.kernelArgs);
         }
-        if (cli.cmd === 'run' && !looksLikeFileTarget(file)) {
+        const runCwd = typeof flags.cwd === 'string' ? resolvePath(flags.cwd) : cwd();
+        if (cli.cmd === 'run' && !looksLikeFileTarget(file, runCwd)) {
             const { runTaskIfMatched } = await import('./commands/task');
             if (await runTaskIfMatched(file, args, flags, cli.kernelArgs)) return;
         }
+        // Task lookup keeps the invocation cwd for --config and INIT_CWD.
+        // File execution changes the real cwd before resolving the entry.
+        if (typeof flags.cwd === 'string') os.chdir(runCwd);
         return runEntry(file, args, cli.flags, cli.rawArgs, kernel);
     }
     default:

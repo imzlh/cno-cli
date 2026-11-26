@@ -84,13 +84,39 @@ required values are rejected in both option regions.
 
 Runtime options such as `--cache-dir` can establish prefix defaults. A value in
 the owning command's region overrides that default. Command-specific options
-such as `test --filter` and `task --cwd` remain scoped to their commands.
+such as `test --filter` remain scoped to their commands. `--cwd` is accepted
+in the `run` and `task` command regions, before the entry or task name; it is
+not a prefix option.
 
 `run`, `serve`, `eval`, `task`, `exec`, and implicit run stop option parsing at
 their entry, source text, task name, or binary name. Every subsequent token,
 including `--`, empty strings, and apparent cno options, is forwarded unchanged.
 `test`, `cache`, and `pack` accept options among their targets until `--`;
 `test` uses that separator to begin the test module's arguments.
+
+### Run Working Directory
+
+`cno run --cwd <dir> <file>` executes with `<dir>` as the process working
+directory. A relative `<dir>` is resolved from the invocation directory.
+Relative file entries are resolved from the new directory; absolute entries
+keep their identity. `Deno.cwd()`, `process.cwd()`, relative filesystem I/O,
+preloads, and command-region runtime paths use the new directory. Project
+configuration is still discovered from the resolved entry's directory, and
+relative imports and `require()` remain relative to their importing module.
+The directory remains in effect for timers and other work after entry evaluation.
+A missing directory or a non-directory fails before the entry runs.
+
+`run <name>` still falls back to a matching task when the target is not a
+file. File detection uses the requested working directory, including for
+extensionless files. Task discovery and execution honor `--cwd`; an explicit
+task `--config` path and the default `INIT_CWD` retain their invocation-directory
+base. `run` without a target lists tasks using these same task rules.
+
+Environment files and prefix `--import-map` files are read before command
+dispatch, so their relative paths retain the invocation-directory base. For example,
+`cno run --env-file=.env --cwd=app main.ts` reads `.env` from the invocation
+directory and executes `app/main.ts` with `app` as its working directory.
+Tokens after the entry, including `--cwd`, are script arguments.
 
 ## Core Preparation
 

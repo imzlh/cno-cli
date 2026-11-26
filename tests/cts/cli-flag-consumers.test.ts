@@ -2,7 +2,7 @@
 // consumer. See applyMaxOldSpaceSize / flagsToConfig for the measurements.
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import { join } from 'node:path';
-import { parseArgv, unknownFlags } from '../../src/cli.ts';
+import { missingFlagValues, parseArgv, unknownFlags } from '../../src/cli.ts';
 import { buildCacheConfig } from '../../src/commands/cache-utils.ts';
 import { applyMaxOldSpaceSize, decodeWorkerRuntimeConfig, flagsToConfig, publishWorkerRuntimeConfig, WORKER_RUNTIME_CONFIG_KEYS } from '../../src/config.ts';
 import { effectiveRuntimeFlags, prepareKernel } from '../../src/kernel.ts';
@@ -340,7 +340,7 @@ Deno.test('cli: --loader belongs to the kernel option region', () => {
     strictEqual(spaced.kernelFlags.loader, './hook.mjs');
 });
 
-Deno.test('cli: --cwd requires a value and is task-scoped', () => {
+Deno.test('cli: --cwd requires a value and belongs to run/task command regions', () => {
     const cli = parseArgv(['--cwd=/tmp', 'main.ts']);
     strictEqual(cli.kernelFlags.cwd, '/tmp');
     deepStrictEqual(unknownFlags(cli), ['--cwd']);
@@ -349,6 +349,13 @@ Deno.test('cli: --cwd requires a value and is task-scoped', () => {
     strictEqual(spaced.flags.cwd, '/tmp');
     strictEqual(spaced.rawArgs.entry, 'build');
     deepStrictEqual(unknownFlags(spaced), []);
+
+    const run = parseArgv(['run', '--cwd', 'project', 'main.ts', '--cwd', 'script-value']);
+    strictEqual(run.flags.cwd, 'project');
+    strictEqual(run.rawArgs.entry, 'main.ts');
+    deepStrictEqual(run.scriptArgs, ['--cwd', 'script-value']);
+    deepStrictEqual(unknownFlags(run), []);
+    deepStrictEqual(missingFlagValues(parseArgv(['run', '--cwd'])), ['cwd']);
 });
 
 Deno.test('cli: max-old-space-size accepts both = and space forms', () => {
@@ -421,7 +428,7 @@ Deno.test('flag scoping: a flag valid elsewhere is rejected for this command', (
     deepStrictEqual(unknownFlags(parseArgv(['repl', '--out=x.jspack'])), ['--out']);
     deepStrictEqual(unknownFlags(parseArgv(['run', '--out=x', 'main.ts'])), ['--out']);
 
-    // Task-only --cwd must not be accepted by test.
+    // Run/task --cwd must not be accepted by test.
     deepStrictEqual(unknownFlags(parseArgv(['test', '--cwd=/tmp'])), ['--cwd']);
     deepStrictEqual(unknownFlags(parseArgv(['cache', '--no-lock', 'main.ts'])), ['--no-lock']);
     // serve-only TLS/socket flags must not leak into other commands.
