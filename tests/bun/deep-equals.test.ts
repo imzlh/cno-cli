@@ -37,6 +37,59 @@ Deno.test('bun: deepEquals collections, views, cycles and builtins', () => {
     strictEqual(deepEquals(new Date(NaN), new Date(NaN)), false);
 });
 
+Deno.test('bun: deepEquals compares web collection entries and duplicate values', () => {
+    const cases: [Headers | URLSearchParams, Headers | URLSearchParams, boolean][] = [
+        [new Headers({ a: '1' }), new Headers({ a: '2' }), false],
+        [new Headers({ A: '1', b: '2' }), new Headers({ b: '2', a: '1' }), true],
+        [new Headers([['a', '1'], ['a', '2']]), new Headers({ a: '1, 2' }), true],
+        [new Headers([['a', '1'], ['a', '2']]), new Headers([['a', '2'], ['a', '1']]), false],
+        [new Headers([['set-cookie', 'a=1'], ['set-cookie', 'b=2']]), new Headers([['set-cookie', 'a=1'], ['set-cookie', 'b=2']]), false],
+        [new URLSearchParams('a=1'), new URLSearchParams('a=2'), false],
+        [new URLSearchParams('a=1&b=2'), new URLSearchParams('b=2&a=1'), true],
+        [new URLSearchParams('A=1'), new URLSearchParams('a=1'), false],
+        [new URLSearchParams('a=1&a=2'), new URLSearchParams('a=1&a=2'), false],
+        [new URLSearchParams('a=1&a=1'), new URLSearchParams('a=1&a=1'), true],
+        [new URLSearchParams('a=1&a=1'), new URLSearchParams('a=1'), false],
+        [new URLSearchParams('a=1&a=1&b=2'), new URLSearchParams('a=1&b=2&b=2'), true],
+    ];
+    for (const [left, right, expected] of cases) {
+        for (const strict of [false, true]) {
+            strictEqual(deepEquals(left, right, strict), expected);
+            strictEqual(deepEquals(right, left, strict), expected);
+            strictEqual(deepEquals({ value: left }, { value: right }, strict), expected);
+        }
+    }
+});
+
+Deno.test('bun: deepEquals preserves web collection brands and recursive properties', () => {
+    class CustomHeaders extends Headers {}
+    class CustomParams extends URLSearchParams {}
+    const pairs = [
+        [new CustomHeaders({ a: '1' }), new Headers({ a: '1' })],
+        [new CustomParams('a=1'), new URLSearchParams('a=1')],
+    ];
+    for (const [left, right] of pairs) {
+        strictEqual(deepEquals(left, right), true);
+        strictEqual(deepEquals(left, right, true), false);
+        Object.setPrototypeOf(left, null);
+        strictEqual(deepEquals(left, right, true), true);
+        Object.setPrototypeOf(right, null);
+        strictEqual(deepEquals(left, right, true), true);
+
+        const first = Object.assign(left, { self: left, nested: { value: 1 } });
+        const second = Object.assign(right, { self: right, nested: { value: 1 } });
+        strictEqual(deepEquals(first, second, true), true);
+        second.nested.value = 2;
+        strictEqual(deepEquals(first, second), false);
+    }
+    for (const value of [new Headers({ a: '1' }), new URLSearchParams('a=1')]) {
+        strictEqual(deepEquals(value, {}), true);
+        strictEqual(deepEquals(value, {}, true), false);
+    }
+    strictEqual(deepEquals(new Headers(), new URLSearchParams()), true);
+    strictEqual(deepEquals(new Headers(), new URLSearchParams(), true), false);
+});
+
 Deno.test('bun: deepEquals own properties and strict prototypes', () => {
     const inherited = Object.create({ get x() { throw new Error('must not read inherited x'); } });
     strictEqual(deepEquals({ x: undefined }, inherited), true);
