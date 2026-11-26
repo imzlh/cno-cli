@@ -824,21 +824,32 @@ Deno.test({ name: 'http: server.close lets an active response finish', timeout: 
     });
     let closed = false;
     let closeDone: Promise<void> | null = null;
+    const closeEvents: string[] = [];
+    server.on('close', () => closeEvents.push('close'));
     try {
         await entered.promise;
         closeDone = new Promise<void>((resolve, reject) => {
             server.close((err?: Error) => {
                 if (err) { reject(err); return; }
                 closed = true;
+                closeEvents.push('first');
+            });
+            server.close((err?: Error) => {
+                if (err) { reject(err); return; }
+                closeEvents.push('second');
                 resolve();
             });
         });
+        closeEvents.push('returned');
+        strictEqual(server.listening, false, 'close must stop reporting the server as listening immediately');
         await new Promise<void>((resolve) => setTimeout(resolve, 20));
         strictEqual(closed, false, 'close callback must wait for the active request');
+        strictEqual(closeEvents.join(','), 'returned', 'close event and callbacks must wait for the active request');
         release.resolve();
         strictEqual(await response, 'complete');
         await closeDone;
         strictEqual(closed, true);
+        strictEqual(closeEvents.join(','), 'returned,close,first,second', 'close must emit once before callbacks in registration order');
     } finally {
         release.resolve();
         if (closeDone) await closeDone.catch(() => {});

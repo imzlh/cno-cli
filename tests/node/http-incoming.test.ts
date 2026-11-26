@@ -250,6 +250,7 @@ Deno.test({ name: 'http: server emits upgrade event on Connection: Upgrade', tim
         ok(typeof req.url === 'string');
         ok(socket);
         ok(head instanceof Uint8Array);
+        socket.pipe(socket);
     });
     await listen(server);
     try {
@@ -278,12 +279,25 @@ Deno.test({ name: 'http: server emits upgrade event on Connection: Upgrade', tim
             ok(upgraded, 'server must emit upgrade event');
             ok(upgradedSocket, 'server must expose the upgraded socket');
             strictEqual(upgradedSocket.destroyed, false, 'ordinary H1 completion must not close an upgraded socket');
+            server.closeAllConnections();
+            server.closeIdleConnections();
+            strictEqual(upgradedSocket.destroyed, false, 'HTTP connection cleanup must exclude upgraded sockets');
+            await new Promise<void>((resolve, reject) => {
+                server.close((err?: Error) => err ? reject(err) : resolve());
+            });
+            strictEqual(upgradedSocket.destroyed, false, 'server.close must finish without closing an upgraded socket');
+            const echoed = new Promise<string>((resolve, reject) => {
+                client.once('data', chunk => resolve(chunk.toString()));
+                client.once('error', reject);
+            });
+            client.write('after-close');
+            strictEqual(await echoed, 'after-close', 'upgraded socket must remain usable after server.close');
         } finally {
             client.destroy();
         }
     } finally {
         upgradedSocket?.destroy();
-        await close(server);
+        if (server.listening) await close(server);
     }
 });
 

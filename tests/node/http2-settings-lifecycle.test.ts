@@ -115,6 +115,62 @@ Deno.test('http2: closing a session cancels pings before close with only an erro
     deepStrictEqual(events, ['ping', 'close']);
 });
 
+for (const terminal of ['close', 'destroy'] as const) {
+    Deno.test(`http2: ${terminal} completes teardown when cancellation and error listeners throw`, async () => {
+        const session = new Http2Session(0);
+        const events: string[] = [];
+        const callbackFailure = new Error('ping listener failed');
+        const transportFailure = new Error('transport failed');
+        Reflect.set(session, 'conn', {
+            session: {
+                localSettings: getDefaultSettings(),
+                remoteSettings: getDefaultSettings(),
+                configure() {},
+                ping() {},
+            },
+            close() { events.push('transport'); },
+            destroy() { events.push('transport'); },
+        });
+        Reflect.get(session, 'onTransportAttached').call(session, false);
+        session.settings({ maxConcurrentStreams: 1 }, () => {});
+        session.setTimeout(60_000);
+        session.on('error', error => {
+            strictEqual(error, transportFailure);
+            events.push('error');
+            throw new Error('error listener failed');
+        });
+        session.on('close', () => events.push('close'));
+        const payload = new Uint8Array(8);
+        session.ping(payload, error => {
+            strictEqual((error as NodeJS.ErrnoException | null)?.code, 'ERR_HTTP2_PING_CANCEL');
+            events.push('first');
+            throw callbackFailure;
+        });
+        session.ping(payload, error => {
+            strictEqual((error as NodeJS.ErrnoException | null)?.code, 'ERR_HTTP2_PING_CANCEL');
+            events.push('second');
+        });
+        let callbackRan = false;
+        try {
+            throws(() => terminal === 'close'
+                ? session.close(() => { callbackRan = true; })
+                : session.destroy(transportFailure), error => error === callbackFailure);
+            strictEqual(Reflect.get(session, 'conn'), null);
+            strictEqual(Reflect.get(session, 'timeoutTimer'), null);
+            strictEqual(Reflect.get(session, 'settingsAckWaiters').length, 0);
+            strictEqual(session.pendingSettingsAck, false);
+            strictEqual(events.filter(event => event === 'transport').length, 1);
+            deepStrictEqual(events.filter(event => event !== 'transport'),
+                terminal === 'close' ? ['first', 'second', 'close'] : ['first', 'second', 'error', 'close']);
+            await Promise.resolve();
+            strictEqual(callbackRan, terminal === 'close');
+        } finally {
+            session.setTimeout(0);
+            session.destroy();
+        }
+    });
+}
+
 Deno.test('http2: repeated settings calls keep one ACK handler and one event per ACK', () => {
     const session = new Http2Session(0);
     const events: string[] = [];

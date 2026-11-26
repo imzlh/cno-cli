@@ -81,6 +81,38 @@ Deno.test({ name: 'deno tls: listenTls and connectTls negotiate ALPN and exchang
     }
 });
 
+Deno.test({ name: 'deno tls: handshake maps transport EOF to a Deno error', timeout: 10000 }, async () => {
+    let listener: Deno.TcpListener | undefined;
+    let serverConn: Deno.TcpConn | undefined;
+    let clientConn: Deno.TlsConn | undefined;
+
+    try {
+        listener = Deno.listen({ hostname: '127.0.0.1', port: 0 });
+    } catch (error) {
+        if (isSandboxSocketError(error)) return;
+        throw error;
+    }
+
+    try {
+        const accepted = listener.accept();
+        clientConn = await Deno.connectTls({ hostname: '127.0.0.1', port: listener.addr.port });
+        serverConn = await withTimeout(accepted);
+        serverConn.close();
+
+        await rejects(
+            () => withTimeout(clientConn!.handshake()),
+            (error: unknown) => error instanceof Deno.errors.UnexpectedEof || error instanceof Deno.errors.ConnectionReset,
+        );
+    } catch (error) {
+        if (isSandboxSocketError(error)) return;
+        throw error;
+    } finally {
+        try { serverConn?.close(); } catch {}
+        try { clientConn?.close(); } catch {}
+        try { listener?.close(); } catch {}
+    }
+});
+
 Deno.test({ name: 'deno tls: startTls upgrades and consumes a TCP connection', timeout: 10000 }, async () => {
     const { cert, key } = createTlsMaterial();
     let listener: Deno.TlsListener | undefined;

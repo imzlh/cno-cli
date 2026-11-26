@@ -51,6 +51,33 @@ function retainedConnections(server: Server): number {
         + core.connections.size + core.inflight.size;
 }
 
+for (const cleanup of ['idle', 'all', 'socket'] as const) {
+    Deno.test({ name: `http: ${cleanup} cleanup closes a keep-alive connection after its response detached`, timeout: 10000 }, async () => {
+        let accepted: import('node:net').Socket | undefined;
+        const server = createServer((request, response) => {
+            accepted = request.socket;
+            response.end('ready');
+        });
+        const port = await listen(server);
+        const conn = await Deno.connect({ hostname: '127.0.0.1', port });
+        try {
+            await writeAll(conn, encode('GET / HTTP/1.1\r\nHost: local\r\n\r\n'));
+            await readUntil(conn, 'ready');
+            await waitFor(() => Reflect.get(server, '_httpActiveSockets').size === 0);
+            ok(accepted);
+            strictEqual(accepted.destroyed, false);
+            if (cleanup === 'idle') server.closeIdleConnections();
+            else if (cleanup === 'all') server.closeAllConnections();
+            else accepted.destroy();
+            strictEqual(await conn.read(new Uint8Array(1024)), null);
+            await waitFor(() => accepted!.destroyed && retainedConnections(server) === 0);
+        } finally {
+            try { conn.close(); } catch { /* Already closed. */ }
+            await close(server);
+        }
+    });
+}
+
 for (const mode of ['GET', 'POST', 'SSE'] as const) {
     Deno.test({ name: `http: disconnect releases an idle ${mode} response`, timeout: 10000 }, async () => {
         let ready = false;

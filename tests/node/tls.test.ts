@@ -709,11 +709,36 @@ Deno.test({ name: 'tls: getPeerCertificate uses Node field names', timeout: 1500
         // Node's keys are valid_from / valid_to, not validFrom / validTo.
         ok(typeof peer.valid_from === 'string', 'valid_from must be present');
         ok(typeof peer.valid_to === 'string', 'valid_to must be present');
-        // `fingerprint` is SHA-1 in Node. The C layer computes only SHA-256, so
-        // the field must stay unset rather than carry the wrong digest under it.
-        strictEqual(peer.fingerprint, undefined);
+        ok(typeof peer.fingerprint === 'string', 'fingerprint must be the SHA-1 digest');
+        ok(peer.fingerprint!.length === 59, 'SHA-1 fingerprints are 20 colon-separated bytes');
         ok(typeof peer.fingerprint256 === 'string');
+        ok(peer.raw!.length > 0, 'raw must carry the DER encoding');
     } finally { server.close(); }
+});
+
+Deno.test('tls: getPeerCertificate decodes RFC2253 UTF-8 byte escapes', () => {
+    const fake = {
+        _sslPipe: {
+            certificate: {
+                info: {
+                    subject: 'CN=m\\C3\\BCnchen.local\nO=Acme\\+Labs',
+                    issuer: 'CN=Issuer\\C3\\BC',
+                    subjectAltName: undefined,
+                    serialNumber: '01',
+                    validFrom: 'today',
+                    validTo: 'tomorrow',
+                },
+                fingerprint: 'AA:BB',
+                fingerprint256: 'CC:DD',
+                raw: Buffer.from([1, 2, 3]),
+            },
+        },
+    } as unknown as tls.TLSSocket;
+
+    const peer = tls.TLSSocket.prototype.getPeerCertificate.call(fake);
+    strictEqual(peer.subject?.CN, 'm\u00FCnchen.local');
+    strictEqual(peer.subject?.O, 'Acme+Labs');
+    strictEqual(peer.issuer?.CN, 'Issuer\u00FC');
 });
 
 Deno.test({ name: 'tls: getProtocol reports the negotiated version and alpnProtocol is false when unnegotiated', timeout: 15000 }, async () => {
