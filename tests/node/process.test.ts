@@ -912,6 +912,12 @@ Deno.test('process upstream: binding("uv") exposes errno lookup maps', () => {
     strictEqual(uv.errname(EPERM), 'EPERM');
     strictEqual(uv.getErrorMessage(EPERM), 'operation not permitted');
     deepStrictEqual(uv.getErrorMap().get(EPERM), ['EPERM', 'operation not permitted']);
+    const exposed = uv.getErrorMap();
+    exposed.get(EPERM)![0] = 'changed';
+    exposed.get(EPERM)![1] = 'changed';
+    strictEqual(uv.errname(EPERM), 'EPERM');
+    strictEqual(uv.getErrorMessage(EPERM), 'operation not permitted');
+    deepStrictEqual(uv.getErrorMap().get(EPERM), ['EPERM', 'operation not permitted']);
 
     // An unmapped code is reported as unknown rather than guessed at. On win32 -1 is
     // exactly such a code; real Node v24.18.0 returns 'Unknown system error -1' from

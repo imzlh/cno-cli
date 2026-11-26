@@ -214,14 +214,27 @@ Deno.test('util: system error helpers expose errno map and validate arguments', 
     const [code, [name, message]] = map.entries().next().value;
     strictEqual(getSystemErrorName(code), name);
     strictEqual(getSystemErrorMessage(code), message);
+    map.get(code)![0] = 'changed';
+    map.get(code)![1] = 'changed';
+    strictEqual(getSystemErrorName(code), name);
+    strictEqual(getSystemErrorMessage(code), message);
+    deepStrictEqual(getSystemErrorMap().get(code), [name, message]);
     // Unmapped errno values get a synthetic name/message, never undefined.
     // Verified against Node v24.18.
     strictEqual(getSystemErrorName(-424242), 'Unknown system error -424242');
     strictEqual(getSystemErrorMessage(-424242), 'Unknown system error -424242');
+    for (const code of [-0x80000001, -0x100000000]) {
+        strictEqual(getSystemErrorName(code), `Unknown system error ${code}`);
+        strictEqual(getSystemErrorMessage(code), `Unknown system error ${code}`);
+    }
     throws(() => (getSystemErrorName as (err?: unknown) => unknown)(), TypeError);
     throws(() => (getSystemErrorName as (err: unknown) => unknown)(1), RangeError);
     throws(() => (getSystemErrorMessage as (err?: unknown) => unknown)(), TypeError);
     throws(() => (getSystemErrorMessage as (err: unknown) => unknown)(1), RangeError);
+    for (const invalid of [NaN, Infinity, -Infinity, -1.5, -Number.MAX_SAFE_INTEGER - 1]) {
+        throws(() => getSystemErrorName(invalid), RangeError);
+        throws(() => getSystemErrorMessage(invalid), RangeError);
+    }
 });
 
 Deno.test('util: MIMEType parses essence params and serializes updates', () => {
