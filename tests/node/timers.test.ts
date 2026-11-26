@@ -55,6 +55,26 @@ Deno.test('timers: Immediate ref state toggles like Node', () => {
     }
 });
 
+Deno.test('timers: Immediate callback receives its handle and sees completed state', async () => {
+    let immediate!: NodeJS.Immediate;
+    const observed = await new Promise<{ receiver: unknown; destroyed: boolean; hasRef: boolean }>((resolve) => {
+        immediate = timers.setImmediate(function(this: unknown) {
+            resolve({
+                receiver: this,
+                destroyed: immediate._destroyed,
+                hasRef: immediate.hasRef(),
+            });
+        });
+    });
+
+    strictEqual(observed.receiver, immediate);
+    strictEqual(observed.destroyed, true);
+    strictEqual(observed.hasRef, false);
+    strictEqual(immediate.ref(), immediate);
+    strictEqual(immediate.unref(), immediate);
+    strictEqual(immediate.hasRef(), false);
+});
+
 Deno.test('timers: setImmediate runs after queued microtasks', async () => {
     const order: string[] = [];
     const done = new Promise<void>((resolve) => {
@@ -152,6 +172,16 @@ Deno.test('timers.promises: setTimeout resolves', async () => {
 Deno.test('timers.promises: setImmediate resolves', async () => {
     const v = await timersP.setImmediate('imm');
     strictEqual(v, 'imm');
+});
+
+Deno.test('timers.promises: unref immediate resolves with ref false', async () => {
+    const keepAlive = setTimeout(() => {}, 1000);
+    try {
+        const v = await timersP.setImmediate('unref', { ref: false });
+        strictEqual(v, 'unref');
+    } finally {
+        clearTimeout(keepAlive);
+    }
 });
 
 Deno.test('timers.promises: setImmediate runs after queued microtasks', async () => {
@@ -384,16 +414,32 @@ Deno.test('timers.promises: setInterval return() ends the iterator', async () =>
 // from inside its own handler (the `if (t._destroyed) return;` guard).
 
 Deno.test('timers: one-shot _destroyed is false during the callback', async () => {
-    const seen = await new Promise<{ inCb: boolean; after: boolean }>((resolve) => {
+    const seen = await new Promise<{ inCb: boolean; after: boolean; inCbRef: boolean; afterRef: boolean }>((resolve) => {
         const t = timers.setTimeout(() => {
             const inCb = (t as unknown as { _destroyed: boolean })._destroyed;
+            const inCbRef = t.hasRef();
             timers.setTimeout(() => {
-                resolve({ inCb, after: (t as unknown as { _destroyed: boolean })._destroyed });
+                resolve({ inCb, after: (t as unknown as { _destroyed: boolean })._destroyed, inCbRef, afterRef: t.hasRef() });
             }, 10);
         }, 5);
     });
     strictEqual(seen.inCb, false, '_destroyed must be false while the callback runs');
     strictEqual(seen.after, true, '_destroyed must be true after the callback returns');
+    strictEqual(seen.inCbRef, true, 'execution must preserve the handle ref preference');
+    strictEqual(seen.afterRef, true, 'completion must preserve the handle ref preference');
+});
+
+Deno.test('timers: clearing a Timeout preserves its ref preference', () => {
+    for (const refed of [true, false]) {
+        const t = timers.setTimeout(() => {}, 60_000);
+        if (!refed) t.unref();
+        timers.clearTimeout(t);
+        strictEqual(t.hasRef(), refed);
+        strictEqual(t.ref(), t);
+        strictEqual(t.hasRef(), true);
+        strictEqual(t.unref(), t);
+        strictEqual(t.hasRef(), false);
+    }
 });
 
 Deno.test('timers: interval _destroyed stays false across ticks', async () => {
@@ -414,21 +460,24 @@ Deno.test('timers: interval _destroyed stays false across ticks', async () => {
 });
 
 Deno.test('timers: refresh() from inside the callback keeps the timer live', async () => {
-    const seen = await new Promise<{ runs: number; destroyedAfterRefresh: boolean }>((resolve) => {
+    const seen = await new Promise<{ runs: number; destroyedAfterRefresh: boolean; refAfterRefresh: boolean }>((resolve) => {
         let runs = 0;
         let destroyedAfterRefresh = true;
+        let refAfterRefresh = false;
         const t = timers.setTimeout(() => {
             runs++;
             if (runs === 1) {
                 (t as unknown as { refresh(): void }).refresh();
                 destroyedAfterRefresh = (t as unknown as { _destroyed: boolean })._destroyed;
+                refAfterRefresh = t.hasRef();
                 return;
             }
-            resolve({ runs, destroyedAfterRefresh });
+            resolve({ runs, destroyedAfterRefresh, refAfterRefresh });
         }, 5);
     });
     strictEqual(seen.runs, 2, 'refresh() inside the callback must re-arm the timer');
     strictEqual(seen.destroyedAfterRefresh, false, 'refresh() must leave _destroyed false');
+    strictEqual(seen.refAfterRefresh, true, 'refresh() must preserve the handle ref preference');
 });
 
 // --- cross-boundary cancellation -------------------------------------------
