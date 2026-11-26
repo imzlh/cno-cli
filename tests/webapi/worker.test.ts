@@ -1,4 +1,4 @@
-import { ok, strictEqual } from 'node:assert';
+import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { writeFileSync, unlinkSync } from 'node:fs';
 
 const decodeUtf8 = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
@@ -16,6 +16,49 @@ function writeWorker(source: string): string {
     const file = Deno.makeTempFileSync({ prefix: 'cno-web-worker-', suffix: '.ts' });
     writeFileSync(file, source);
     return file;
+}
+
+async function waitForQueuedMessages(worker: Worker): Promise<void> {
+    const channel = new MessageChannel();
+    const ready = Promise.withResolvers<void>();
+    const fail = (event: Event) => ready.reject(
+        event instanceof ErrorEvent ? event.error : new Error('Worker message could not be decoded'),
+    );
+    const timer = setTimeout(() => ready.reject(new Error('Worker queue handshake timed out')), 3000);
+    worker.addEventListener('error', fail);
+    worker.addEventListener('messageerror', fail);
+    channel.port2.onmessage = (event) => {
+        if (event.data === 'queued') ready.resolve();
+        else ready.reject(new Error('Unexpected Worker queue handshake'));
+    };
+    try {
+        // The reply follows the payloads on the same native pipe, so the parent
+        // has queued them without ever installing a Worker message listener.
+        worker.postMessage(undefined, [channel.port1]);
+        await ready.promise;
+    } finally {
+        clearTimeout(timer);
+        worker.removeEventListener('error', fail);
+        worker.removeEventListener('messageerror', fail);
+        channel.port1.close();
+        channel.port2.close();
+    }
+}
+
+async function waitForWorkerExit(worker: Worker): Promise<void> {
+    const deadline = performance.now() + 5000;
+    while (performance.now() < deadline) {
+        try {
+            // An uncloneable payload checks lifecycle state without writing to the pipe.
+            worker.postMessage(() => {});
+        } catch (error) {
+            const name = (error as Error).name;
+            if (name === 'InvalidStateError') return;
+            strictEqual(name, 'DataCloneError');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('Worker did not exit');
 }
 
 async function runWorkerProcess(source: string, timeoutMs = 10000): Promise<{
@@ -406,6 +449,184 @@ Deno.test({ name: 'Worker: message listener cleanup releases its control pipe', 
         strictEqual(result.timedOut, false, `${testCase.name}: process did not exit`);
         strictEqual(result.code, 0, `${testCase.name}: ${result.stderr}`);
         strictEqual(result.stdout.trim(), testCase.output, `${testCase.name}: ${result.stdout}`);
+    }
+});
+
+Deno.test({ name: 'Worker: self.close completes teardown when a BroadcastChannel close listener throws', timeout: 10000 }, async () => {
+    for (const thrown of ["new Error('close listener failed')", 'undefined', 'null']) {
+        const file = writeWorker(`
+            const { pipe } = import.meta.use('worker');
+            const receive = pipe.onmessage;
+            const receiveError = pipe.onmessageerror;
+            const firstError = ${thrown};
+            const first = new BroadcastChannel('cno-worker-close-throw-first-${Deno.pid}-${Date.now()}');
+            const second = new BroadcastChannel('cno-worker-close-throw-second-${Deno.pid}-${Date.now()}');
+            let secondCloseEvents = 0;
+            let messages = 0;
+            let messageErrors = 0;
+            first.addEventListener('close', () => {
+                receive('reentrant-close');
+                receiveError(new TypeError('reentrant error'));
+                self.close();
+                throw firstError;
+            });
+            second.addEventListener('close', () => {
+                secondCloseEvents++;
+                throw new Error('later close error');
+            });
+            self.onmessageerror = () => { messageErrors++; };
+            self.onmessage = () => {
+                messages++;
+                let preservedError = false;
+                try { self.close(); } catch (error) { preservedError = error === firstError; }
+                self.postMessage({
+                    firstClosed: first.closed, secondClosed: second.closed, secondCloseEvents,
+                    messages, messageErrors, preservedError,
+                    receiving: typeof pipe.onmessage === 'function' || typeof pipe.onmessageerror === 'function',
+                });
+            };
+            self.postMessage('ready');
+        `);
+        const worker = new Worker(file, { type: 'module' });
+        try {
+            const ready = new Promise<unknown>((resolve, reject) => {
+                worker.onmessage = (event) => resolve(event.data);
+                worker.onerror = reject;
+            });
+            strictEqual(await ready, 'ready');
+
+            const closed = new Promise<unknown>((resolve, reject) => {
+                worker.onmessage = (event) => resolve(event.data);
+                worker.onerror = reject;
+            });
+            worker.postMessage('close');
+            deepStrictEqual(await closed, {
+                firstClosed: true, secondClosed: true, secondCloseEvents: 1,
+                messages: 1, messageErrors: 0, preservedError: true, receiving: false,
+            });
+            await waitForWorkerExit(worker);
+        } finally {
+            worker.terminate();
+            unlinkSync(file);
+        }
+    }
+});
+
+Deno.test({ name: 'Worker: self.close discards queued messages before and during flush', timeout: 10000 }, async () => {
+    for (const closeBeforeFlush of [false, true]) {
+        const file = writeWorker(`
+            const { pipe } = import.meta.use('worker');
+            const receive = pipe.onmessage;
+            const messages = [];
+            receive('first');
+            receive('second');
+            self.onmessage = (event) => {
+                messages.push(event.data);
+                try { self.close(); } catch {}
+            };
+            if (${closeBeforeFlush}) {
+                try { self.close(); } catch {}
+            }
+            queueMicrotask(() => {
+                receive('after-close');
+                self.postMessage(messages);
+            });
+        `);
+        const worker = new Worker(file, { type: 'module' });
+        try {
+            const messages = await new Promise<unknown>((resolve, reject) => {
+                worker.onmessage = event => resolve(event.data);
+                worker.onerror = reject;
+            });
+            deepStrictEqual(messages, closeBeforeFlush ? [] : ['first']);
+            await waitForWorkerExit(worker);
+        } finally {
+            worker.terminate();
+            unlinkSync(file);
+        }
+    }
+});
+
+Deno.test({ name: 'Worker: recoverable messageerror preserves pipe leases and local channels', timeout: 10000 }, async () => {
+    const channelName = `cno-worker-messageerror-${Deno.pid}-${Date.now()}`;
+    const file = writeWorker(`
+        const { pipe } = import.meta.use('worker');
+        const channel = new BroadcastChannel(${JSON.stringify(channelName)});
+        channel.onmessage = (event) => self.postMessage({ type: 'broadcast', data: event.data });
+        let transferredPort: MessagePort | undefined;
+        self.onmessageerror = () => self.postMessage({ type: 'messageerror' });
+        self.onmessage = (event) => {
+            if (event.data === 'init') {
+                transferredPort = event.ports[0];
+                transferredPort.onmessage = (message) => transferredPort?.postMessage('port:' + message.data);
+                self.postMessage({ type: 'port-ready' });
+            } else if (event.data === 'bad-frame') {
+                pipe.onmessageerror?.(new TypeError('invalid structured clone'));
+                self.postMessage({ type: 'worker-message', data: 'after-messageerror' });
+            } else if (event.data === 'release-channels') {
+                channel.close();
+                transferredPort?.close();
+                self.postMessage({ type: 'channels-released' });
+            } else {
+                self.postMessage({ type: 'worker-message', data: event.data });
+            }
+        };
+    `);
+    const worker = new Worker(file, { type: 'module' });
+    const channel = new BroadcastChannel(channelName);
+    const ports = new MessageChannel();
+    type WorkerReply = { type: string; data?: unknown };
+    const received: WorkerReply[] = [];
+    const waiters: Array<(data: WorkerReply) => void> = [];
+    worker.onmessage = (event) => {
+        const waiter = waiters.shift();
+        const data = event.data as WorkerReply;
+        if (waiter) waiter(data);
+        else received.push(data);
+    };
+    const nextMessage = (): Promise<WorkerReply> => {
+        const queued = received.shift();
+        if (queued !== undefined) return Promise.resolve(queued);
+        return new Promise((resolve) => waiters.push(resolve));
+    };
+    try {
+        const portReady = nextMessage();
+        worker.postMessage('init', [ports.port1]);
+        strictEqual((await portReady).type, 'port-ready');
+
+        worker.postMessage('bad-frame');
+        strictEqual((await nextMessage()).type, 'messageerror');
+        const afterMessageError = await nextMessage();
+        strictEqual(afterMessageError.type, 'worker-message');
+        strictEqual(afterMessageError.data, 'after-messageerror');
+
+        worker.postMessage('still-listening');
+        const workerMessage = await nextMessage();
+        strictEqual(workerMessage.type, 'worker-message');
+        strictEqual(workerMessage.data, 'still-listening');
+
+        channel.postMessage('still-subscribed');
+        const broadcast = await nextMessage();
+        strictEqual(broadcast.type, 'broadcast');
+        strictEqual(broadcast.data, 'still-subscribed');
+
+        const portReply = new Promise<unknown>((resolve) => {
+            ports.port2.onmessage = (event) => resolve(event.data);
+        });
+        ports.port2.postMessage('ping');
+        strictEqual(await portReply, 'port:ping');
+
+        worker.postMessage('release-channels');
+        strictEqual((await nextMessage()).type, 'channels-released');
+        worker.postMessage('still-referenced');
+        const afterChannelRelease = await nextMessage();
+        strictEqual(afterChannelRelease.type, 'worker-message');
+        strictEqual(afterChannelRelease.data, 'still-referenced');
+    } finally {
+        worker.terminate();
+        channel.close();
+        ports.port2.close();
+        unlinkSync(file);
     }
 });
 
@@ -1172,6 +1393,58 @@ Deno.test({ name: 'Worker: postMessage exposes multiple transferred ports in ord
     }
 });
 
+Deno.test({ name: 'Worker: transferred ports retain a listener-free worker until all peers close', timeout: 10000 }, async () => {
+    const file = writeWorker(`
+        const pipe = import.meta.use('worker').pipe;
+        const nativeUnref = pipe.unref;
+        pipe.unref = () => {
+            self.postMessage('released');
+            nativeUnref.call(pipe);
+        };
+        self.addEventListener('message', (event) => {
+            const [first, second] = event.ports;
+            if (event.data.first !== first || event.data.second !== second) {
+                throw new Error('Transferred port identity was lost');
+            }
+            second.onmessage = (message) => {
+                if (!(message instanceof MessageEvent) || !(message instanceof Event)) {
+                    throw new Error('Transferred port dispatched an invalid event');
+                }
+                second.postMessage('second:' + message.data);
+            };
+            self.postMessage('ready');
+        }, { once: true });
+    `);
+    const worker = new Worker(file);
+    const first = new MessageChannel();
+    const second = new MessageChannel();
+    try {
+        const ready = new Promise<string>((resolve, reject) => {
+            worker.onmessage = (event) => resolve(event.data);
+            worker.onerror = reject;
+        });
+        worker.postMessage({ first: first.port1, second: second.port1 }, { transfer: [first.port1, second.port1] });
+        strictEqual(await ready, 'ready');
+
+        const released = new Promise<string>((resolve) => {
+            worker.onmessage = (event) => resolve(event.data);
+        });
+        const reply = new Promise<string>((resolve) => {
+            second.port2.onmessage = (event) => resolve(event.data);
+        });
+        first.port2.close();
+        second.port2.postMessage('remaining');
+        strictEqual(await reply, 'second:remaining');
+        second.port2.close();
+        strictEqual(await released, 'released');
+    } finally {
+        worker.terminate();
+        first.port2.close();
+        second.port2.close();
+        unlinkSync(file);
+    }
+});
+
 Deno.test({ name: 'Worker: self.postMessage transfers MessagePort to main', timeout: 10000 }, async () => {
     const file = writeWorker(`
         const channel = new MessageChannel();
@@ -1599,11 +1872,15 @@ Deno.test({ name: 'Worker: queued messages survive GC before message listener re
     const file = writeWorker(`
         const value = { marker: 'queued-before-listener' };
         value.self = value;
+        self.onmessage = (event) => {
+            event.ports[0].postMessage('queued');
+            event.ports[0].close();
+        };
         self.postMessage(value);
     `);
     const worker = new Worker(file, { type: 'module' });
     try {
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await waitForQueuedMessages(worker);
         const allocations: Uint8Array[] = [];
         for (let i = 0; i < 256; i++) {
             allocations.push(new Uint8Array(256 * 1024));
@@ -1617,6 +1894,71 @@ Deno.test({ name: 'Worker: queued messages survive GC before message listener re
         ok(allocations.length > 0);
     } finally {
         worker.terminate();
+        unlinkSync(file);
+    }
+});
+
+Deno.test({ name: 'Worker: late message listeners do not replay queued messages after natural exit', timeout: 10000 }, async () => {
+    const file = writeWorker(`
+        for (let i = 0; i < 3; i++) self.postMessage(i);
+    `);
+    try {
+        for (const registration of ['onmessage', 'addEventListener'] as const) {
+            const worker = new Worker(file, { type: 'module' });
+            try {
+                await waitForWorkerExit(worker);
+                const messages: number[] = [];
+                const listener = (event: MessageEvent) => { messages.push(event.data); };
+                if (registration === 'onmessage') worker.onmessage = listener;
+                else worker.addEventListener('message', listener);
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                strictEqual(JSON.stringify(messages), '[]', registration);
+            } finally {
+                worker.terminate();
+            }
+        }
+    } finally {
+        unlinkSync(file);
+    }
+});
+
+Deno.test({ name: 'Worker: terminate discards queued messages before and during flush', timeout: 10000 }, async () => {
+    const file = writeWorker(`
+        self.onmessage = (event) => {
+            event.ports[0].postMessage('queued');
+            event.ports[0].close();
+        };
+        for (let i = 0; i < 3; i++) self.postMessage(i);
+    `);
+    try {
+        for (const registration of ['onmessage', 'addEventListener'] as const) {
+            for (const duringFlush of [false, true]) {
+                const worker = new Worker(file, { type: 'module' });
+                try {
+                    await waitForQueuedMessages(worker);
+                    const messages: number[] = [];
+                    const listener = (event: MessageEvent) => {
+                        messages.push(event.data);
+                        worker.terminate();
+                    };
+                    if (!duringFlush) worker.terminate();
+                    if (registration === 'onmessage') worker.onmessage = listener;
+                    else worker.addEventListener('message', listener);
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                    const expected = duringFlush ? '[0]' : '[]';
+                    strictEqual(JSON.stringify(messages), expected, `${registration}, duringFlush=${duringFlush}`);
+
+                    if (registration === 'onmessage') worker.onmessage = null;
+                    else worker.removeEventListener('message', listener);
+                    worker.addEventListener('message', (event) => { messages.push(event.data); });
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                    strictEqual(JSON.stringify(messages), expected, 'terminated queue must not replay');
+                } finally {
+                    worker.terminate();
+                }
+            }
+        }
+    } finally {
         unlinkSync(file);
     }
 });

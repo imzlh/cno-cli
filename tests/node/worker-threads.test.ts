@@ -1,4 +1,5 @@
-import { strictEqual, ok } from 'node:assert';
+import { deepStrictEqual, strictEqual, ok } from 'node:assert';
+import process from 'node:process';
 import { BroadcastChannel, MessageChannel, MessagePort, Worker, parentPort, isMainThread, postMessageToThread, resourceLimits, threadId, workerData } from 'node:worker_threads';
 
 const ADD_WASM = new Uint8Array([
@@ -24,6 +25,92 @@ Deno.test({ name: 'worker_threads: main-thread globals match Node defaults', tim
     strictEqual(workerData, null);
     strictEqual(Object.keys(resourceLimits).length, 0);
     strictEqual(BroadcastChannel, globalThis.BroadcastChannel);
+});
+
+Deno.test({ name: 'worker_threads: a closed native parentPort drops later messages', timeout: 10000 }, async () => {
+    const worker = new Worker(`
+        const { parentPort } = require('node:worker_threads');
+        parentPort.postMessage('ready');
+        parentPort.close();
+        parentPort.postMessage('late');
+    `, { eval: true });
+    const messages: unknown[] = [];
+    worker.on('message', message => messages.push(message));
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const onMessage = (message: unknown) => {
+                if (message !== 'ready') return;
+                worker.off('message', onMessage);
+                worker.off('error', onError);
+                resolve();
+            };
+            const onError = (error: Error) => {
+                worker.off('message', onMessage);
+                reject(error);
+            };
+            worker.on('message', onMessage);
+            worker.on('error', onError);
+        });
+        await new Promise(resolve => setTimeout(resolve, 30));
+        deepStrictEqual(messages, ['ready']);
+    } finally {
+        await worker.terminate();
+    }
+});
+
+Deno.test({ name: 'worker_threads: a closed native parentPort still commits ArrayBuffer transfers', timeout: 10000 }, async () => {
+    const worker = new Worker(`
+        const { parentPort } = require('node:worker_threads');
+        const buffer = new ArrayBuffer(4);
+        parentPort.close();
+        parentPort.postMessage({ dropped: true }, [buffer]);
+        process.exitCode = buffer.byteLength === 0 ? 0 : 42;
+    `, { eval: true });
+    try {
+        const exitCode = await new Promise<number>((resolve, reject) => {
+            worker.once('exit', resolve);
+            worker.once('error', reject);
+        });
+        strictEqual(exitCode, 0, 'closed native ports must commit valid transfers');
+    } finally {
+        await worker.terminate();
+    }
+});
+
+Deno.test({ name: 'worker_threads: explicit parentPort ref survives listener removal', timeout: 10000 }, async () => {
+    const worker = new Worker(`
+        const { parentPort } = require('node:worker_threads');
+        const onMessage = () => {
+            parentPort.ref();
+            parentPort.off('message', onMessage);
+            parentPort.postMessage('explicit-ref-retained');
+        };
+        parentPort.on('message', onMessage);
+    `, { eval: true });
+
+    let exited = false;
+    worker.on('exit', () => { exited = true; });
+    try {
+        worker.postMessage('remove-listener');
+        const reply = await new Promise<unknown>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                reject(new Error('worker did not confirm explicit ref'));
+            }, 5000);
+            worker.once('message', (value: unknown) => {
+                clearTimeout(timer);
+                resolve(value);
+            });
+            worker.once('error', (error: Error) => {
+                clearTimeout(timer);
+                reject(error);
+            });
+        });
+        strictEqual(reply, 'explicit-ref-retained');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        strictEqual(exited, false, 'removing the message listener must not undo parentPort.ref()');
+    } finally {
+        await worker.terminate();
+    }
 });
 
 Deno.test({ name: 'worker_threads: MessageChannel two-way round-trip', timeout: 10000 }, async () => {
@@ -70,6 +157,42 @@ Deno.test({ name: 'worker_threads: closed local MessagePort still validates and 
         const buffer = new ArrayBuffer(4);
         port1.postMessage({ buffer }, [buffer]);
         strictEqual(buffer.byteLength, 0, 'closed ports must still commit valid transfers');
+    } finally {
+        port1.close();
+        port2.close();
+    }
+});
+
+Deno.test({ name: 'worker_threads: closing a local MessagePort drops queued messages', timeout: 10000 }, async () => {
+    const { port1, port2 } = new MessageChannel();
+    const received: unknown[] = [];
+    try {
+        port2.on('message', (value) => received.push(value));
+        port1.postMessage('queued');
+        port2.close();
+        await new Promise((resolve) => setImmediate(resolve));
+        strictEqual(received.length, 0);
+    } finally {
+        port1.close();
+        port2.close();
+    }
+});
+
+Deno.test({ name: 'worker_threads: closing during a MessagePort drain preserves its captured batch', timeout: 10000 }, async () => {
+    const { port1, port2 } = new MessageChannel();
+    const received: unknown[] = [];
+    try {
+        port2.on('message', (value) => {
+            received.push(value);
+            if (value === 0) {
+                port1.postMessage(2);
+                port2.close();
+            }
+        });
+        port1.postMessage(0);
+        port1.postMessage(1);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        deepStrictEqual(received, [0, 1, 2]);
     } finally {
         port1.close();
         port2.close();
@@ -313,7 +436,113 @@ Deno.test({ name: 'worker_threads: parentPort is null on main thread', timeout: 
 //   alive.terminate() -> 1 | second terminate() -> undefined | exited.terminate() -> undefined
 Deno.test({ name: 'worker_threads: Worker terminate resolves with exit code 1 for a live worker', timeout: 10000 }, async () => {
     const worker = new Worker('setInterval(() => {}, 1000);', { eval: true });
-    strictEqual(await worker.terminate(), 1);
+    const first = worker.terminate();
+    const concurrent = worker.terminate();
+    strictEqual(await first, 1);
+    strictEqual(await concurrent, 1);
+    strictEqual(await worker.terminate(), undefined);
+});
+
+Deno.test({ name: 'worker_threads: listener errors do not strand queued messages or terminate join', timeout: 10000 }, async () => {
+    // Isolate the process-wide exception handler and bound a stranded join.
+    const child = new Deno.Command(process.execPath, {
+        args: ['eval', `
+        import { deepStrictEqual, strictEqual } from 'node:assert';
+        import { MessageChannel, Worker } from 'node:worker_threads';
+        const { port1, port2 } = new MessageChannel();
+        const events = [];
+        const messageFailure = new Error('message listener failed');
+        process.once('uncaughtException', error => {
+            strictEqual(error, messageFailure);
+            events.push('error');
+        });
+        try {
+            const drained = new Promise(resolve => {
+                port2.on('message', value => {
+                    events.push(value);
+                    if (value === 0) throw messageFailure;
+                    if (value === 2) resolve();
+                });
+            });
+            port1.postMessage(0);
+            port1.postMessage(1);
+            port1.postMessage(2);
+            await drained;
+            deepStrictEqual(events, [0, 'error', 1, 2]);
+        } finally {
+            port1.close();
+            port2.close();
+        }
+        const worker = new Worker(
+            "require('node:worker_threads').parentPort.postMessage('ready'); setInterval(() => {}, 1000);",
+            { eval: true },
+        );
+        await new Promise((resolve, reject) => {
+            const onExit = code => reject(new Error('worker exited before readiness: ' + code));
+            worker.once('error', reject);
+            worker.once('exit', onExit);
+            worker.once('message', value => {
+                worker.off('error', reject);
+                worker.off('exit', onExit);
+                strictEqual(value, 'ready');
+                resolve();
+            });
+        });
+        const failure = new Error('exit listener failed');
+        const observed = new Promise(resolve => process.once('uncaughtException', resolve));
+        worker.once('exit', () => { throw failure; });
+        strictEqual(await worker.terminate(), 1);
+        strictEqual(await observed, failure);
+        console.log('exit-listener-join-complete');
+        `],
+        stdout: 'piped',
+        stderr: 'piped',
+    }).spawn();
+    let timedOut = false;
+    const deadline = setTimeout(() => {
+        timedOut = true;
+        try { child.kill('SIGKILL'); } catch { /* child already exited */ }
+    }, 5000);
+    const result = await child.output().finally(() => clearTimeout(deadline));
+    const stderr = new TextDecoder().decode(result.stderr);
+    strictEqual(timedOut, false, `worker join timed out: ${stderr}`);
+    strictEqual(result.code, 0, stderr);
+    strictEqual(new TextDecoder().decode(result.stdout).trim(), 'exit-listener-join-complete', stderr);
+});
+
+Deno.test({ name: 'worker_threads: terminate on an exited worker resolves undefined', timeout: 10000 }, async () => {
+    const worker = new Worker('', { eval: true });
+    await new Promise<void>((resolve, reject) => {
+        worker.once('exit', () => resolve());
+        worker.once('error', reject);
+    });
+    strictEqual(await worker.terminate(), undefined);
+});
+
+Deno.test({ name: 'worker_threads: an uncaught error stops a worker waiting for its parent', timeout: 10000 }, async () => {
+    const worker = new Worker(`
+        const { parentPort } = require('node:worker_threads');
+        process.exitCode = 7;
+        parentPort.on('message', () => {});
+        parentPort.postMessage('ready');
+        throw new TypeError('worker failed');
+    `, { eval: true });
+    const events: unknown[] = [];
+    worker.on('message', (value: unknown) => events.push(value));
+    worker.on('error', (err: Error) => events.push([err.name, err.message]));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        const code = await new Promise<number>((resolve, reject) => {
+            worker.once('exit', resolve);
+            timer = setTimeout(() => reject(new Error('failed worker never exited')), 5000);
+        });
+        deepStrictEqual(events, ['ready', ['TypeError', 'worker failed']]);
+        strictEqual(code, 1);
+        strictEqual(await worker.terminate(), undefined);
+    } finally {
+        clearTimeout(timer);
+        await worker.terminate();
+    }
 });
 
 Deno.test({ name: 'worker_threads: Worker postMessage transfer detaches source ArrayBuffer', timeout: 10000 }, async () => {
@@ -1110,10 +1339,13 @@ Deno.test({ name: 'worker_threads: Worker exposes threadName and resourceLimits'
         const { parentPort, threadName, resourceLimits } = require('node:worker_threads');
         parentPort.postMessage({ threadName, resourceLimits });
     `;
+    // 8 MB cannot hold the polyfill bootstrap, so the worker would die before
+    // reporting anything; the point here is that the limits are carried across
+    // the boundary, which any runnable value proves.
     const worker = new wt.Worker(src, {
         eval: true,
         name: 'named-worker',
-        resourceLimits: { maxOldGenerationSizeMb: 8 },
+        resourceLimits: { maxOldGenerationSizeMb: 64 },
     } as unknown as ConstructorParameters<typeof Worker>[1]);
     try {
         strictEqual((worker as typeof worker & { threadName?: unknown }).threadName, 'named-worker');
@@ -1122,7 +1354,7 @@ Deno.test({ name: 'worker_threads: Worker exposes threadName and resourceLimits'
             worker.once('error', reject);
         });
         strictEqual(msg.threadName, 'named-worker');
-        strictEqual(msg.resourceLimits.maxOldGenerationSizeMb, 8);
+        strictEqual(msg.resourceLimits.maxOldGenerationSizeMb, 64);
     } finally {
         await worker.terminate();
     }

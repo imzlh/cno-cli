@@ -71,7 +71,7 @@ Deno.test({
     const first = await worker.terminate();
     const second = await worker.terminate();
     strictEqual(first, 1, 'first terminate() resolves with 1');
-    strictEqual(second, 1, 'second terminate() resolves with the same code, not a hang');
+    strictEqual(second, undefined, 'a repeated terminate() resolves without a second exit code');
 
     await new Promise((resolve) => setTimeout(resolve, 150));
     strictEqual(exitCodes.length, 1, `exit must fire exactly once, got ${JSON.stringify(exitCodes)}`);
