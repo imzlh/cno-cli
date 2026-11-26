@@ -18,10 +18,11 @@
  *         only into real directories, so no reparse point is ever walked.
  */
 
-import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
+import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import { join } from 'node:path';
+import { createAsyncDir } from '../../cno/src/node/fs/utils-dir.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
 const isWindows = Deno.build.os === 'windows';
@@ -290,6 +291,131 @@ Deno.test({
             }
         });
     },
+});
+
+Deno.test('fs opendir: disposal is idempotent after disposal, explicit close, and iterator return', async () => {
+    await withTempDir('fs-dir-dispose', async root => {
+        fs.writeFileSync(join(root, 'entry'), 'entry');
+        const closedError = (error: unknown) => {
+            strictEqual((error as NodeJS.ErrnoException).code, 'ERR_DIR_CLOSED');
+            return true;
+        };
+        const openDirectories = [
+            () => fs.opendirSync(root),
+            () => fsp.opendir(root),
+            () => fsp.opendir(root, { recursive: true }),
+            () => opendirCb(root),
+            () => opendirCb(root, { recursive: true }),
+        ];
+
+        for (const open of openDirectories) {
+            for (const boundary of ['dispose', 'close', 'iterator'] as const) {
+                const dir = await open();
+                try {
+                    if (boundary === 'dispose') {
+                        await Promise.all([dir[Symbol.asyncDispose](), dir[Symbol.asyncDispose]()]);
+                    } else if (boundary === 'close') {
+                        const closing = dir.close();
+                        await Promise.all([closing, dir[Symbol.asyncDispose]()]);
+                    } else {
+                        let entries = 0;
+                        for await (const entry of dir) {
+                            strictEqual(entry.name, 'entry');
+                            entries++;
+                            break;
+                        }
+                        strictEqual(entries, 1);
+                    }
+                    await dir[Symbol.asyncDispose]();
+                    await dir[Symbol.asyncDispose]();
+                    dir[Symbol.dispose]();
+                    await rejects(dir.read(), closedError);
+                    await rejects(dir.close(), closedError);
+                } finally {
+                    try { await dir.close(); } catch {}
+                }
+            }
+        }
+
+        const dir = fs.opendirSync(root);
+        dir[Symbol.dispose]();
+        dir[Symbol.dispose]();
+        await dir[Symbol.asyncDispose]();
+        throws(() => dir.readSync(), closedError);
+        throws(() => dir.closeSync(), closedError);
+
+        const concurrentlyClosed = fs.opendirSync(root);
+        const closing = concurrentlyClosed.close();
+        concurrentlyClosed.closeSync();
+        await closing;
+        await concurrentlyClosed[Symbol.asyncDispose]();
+    });
+});
+
+Deno.test('fs opendir: concurrent disposal waits for the shared native close result', async () => {
+    for (const initiator of ['close', 'callback', 'dispose'] as const) {
+        for (const failClose of [false, true]) {
+            const failure = new Error('deferred directory close failed');
+            let resolveClose!: () => void;
+            let rejectClose!: (error: Error) => void;
+            const nativeClose = new Promise<void>((resolve, reject) => {
+                resolveClose = resolve;
+                rejectClose = reject;
+            });
+            const releaseClose = () => failClose ? rejectClose(failure) : resolveClose();
+            let closeCalls = 0;
+            const handle: CModuleAsyncFS.DirHandle = {
+                path: 'deferred-dir',
+                close() {
+                    closeCalls++;
+                    return nativeClose;
+                },
+                async next() { return { done: true, value: undefined }; },
+                async *[Symbol.asyncIterator]() {},
+                [Symbol.toStringTag]: 'DirHandle',
+            };
+            const dir = createAsyncDir(handle.path, handle);
+            const first = initiator === 'dispose'
+                ? dir[Symbol.asyncDispose]()
+                : initiator === 'close'
+                    ? dir.close()
+                    : new Promise<void>((resolve, reject) => {
+                        dir.close(error => error ? reject(error) : resolve());
+                    });
+            const settled: number[] = [];
+            const results = Promise.all([first, dir[Symbol.asyncDispose](), dir[Symbol.asyncDispose]()]
+                .map((pending, index) => pending.then(
+                    () => { settled.push(index); return null; },
+                    error => { settled.push(index); return error; },
+                )));
+            try {
+                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                strictEqual(closeCalls, 1);
+                deepStrictEqual(settled, []);
+                await rejects(dir.close(), error => {
+                    strictEqual((error as NodeJS.ErrnoException).code, 'ERR_DIR_CLOSED');
+                    return true;
+                });
+                const duplicateError = await new Promise<NodeJS.ErrnoException | null>(resolve => dir.close(resolve));
+                strictEqual(duplicateError?.code, 'ERR_DIR_CLOSED');
+                deepStrictEqual(settled, []);
+                releaseClose();
+                for (const result of await results) strictEqual(result, failClose ? failure : null);
+                strictEqual(closeCalls, 1);
+                if (failClose) {
+                    await rejects(dir[Symbol.asyncDispose](), error => {
+                        strictEqual(error, failure);
+                        return true;
+                    });
+                } else {
+                    await dir[Symbol.asyncDispose]();
+                }
+            } finally {
+                releaseClose();
+                await results;
+            }
+        }
+    }
 });
 
 Deno.test({
