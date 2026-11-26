@@ -157,7 +157,7 @@ export function startServer(opts: ServerOptions): Promise<ServerHandle> {
 				['Sec-WebSocket-Accept', accept],
 			])
 			const rawConn = res.upgrade()
-			const ws = createWebSocketFromConnection(Promise.resolve(rawConn));
+			const ws = createWebSocketFromConnection(Promise.resolve({ socket: rawConn }));
 			ws.onopen = (): void => {
 				log.debug('debug', () => `devtools ws: new connection to ${wsPath}`)
 				onConnect(ws)
