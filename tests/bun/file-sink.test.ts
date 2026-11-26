@@ -1,7 +1,7 @@
 import { rejects, strictEqual, throws } from 'node:assert';
 import Bun, { stderr, stdin, stdout } from 'bun';
 import { join } from 'node:path';
-import { closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 
@@ -112,18 +112,45 @@ Deno.test({ name: 'bun.file.writer: retries partial flushes without replay and p
         } finally {
             closeSync(fd);
         }
+
+        const readonlyFd = openSync(path, 'r');
+        try {
+            const sink = Bun.file(readonlyFd).writer();
+            sink.write('blocked');
+            throws(() => sink.flush(), (error: unknown) => {
+                const failure = error as NodeJS.ErrnoException;
+                strictEqual(failure.code, 'EBADF');
+                strictEqual(failure.syscall, 'write');
+                strictEqual(failure.path, undefined);
+                strictEqual(typeof failure.errno, 'number');
+                return true;
+            });
+            throws(() => sink.end(), { code: 'EBADF', syscall: 'write' });
+            strictEqual(fstatSync(readonlyFd).size, 4096);
+        } finally {
+            closeSync(readonlyFd);
+        }
     });
 });
 
 Deno.test({ name: 'bun.file.writer: overwrites without truncation and end(error) flushes pending data', timeout: 10000 }, async () => {
     await withFileSinkFixture('file-sink-trunc', async (dir) => {
         const path = join(dir, 'trunc.txt');
-        await Bun.write(path, 'previous content');
+        writeFileSync(path, 'previous content');
+        const before = statSync(path);
+        if (Deno.build.os !== 'windows') chmodSync(path, 0o200);
         const sink = Bun.file(path).writer();
         strictEqual(sink.flush(), 0);
-        // Truncation happens on the first real flush.
         sink.write('new');
         sink.flush();
+        strictEqual(sink.end(), 0);
+        const after = statSync(path);
+        strictEqual(after.ino, before.ino);
+        strictEqual(after.size, before.size);
+        if (Deno.build.os !== 'windows') {
+            strictEqual(after.mode & 0o777, 0o200);
+            chmodSync(path, 0o600);
+        }
         strictEqual(readFileSync(path, 'utf8'), 'newvious content');
 
         const errorPath = join(dir, 'error.txt');
@@ -151,6 +178,15 @@ Deno.test({ name: 'bun.file.writer: rejects Blob chunks and creates the target e
         strictEqual(sink.write(new DataView(new Uint8Array([1, 2]).buffer)), 2);
         strictEqual(sink.end(null as never), 2);
         strictEqual(readFileSync(path).toString('hex'), '0102');
+    });
+});
+
+Deno.test({ name: 'bun.file.writer: FIFO open fails without blocking when no reader exists', ignore: Deno.build.os === 'windows', timeout: 10000 }, async () => {
+    await withFileSinkFixture('file-sink-fifo', async (dir) => {
+        const path = join(dir, 'pipe');
+        const created = await new Deno.Command('mkfifo', { args: [path] }).output();
+        strictEqual(created.code, 0);
+        throws(() => Bun.file(path).writer(), { code: 'ENXIO', syscall: 'open', path });
     });
 });
 
