@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,6 +82,7 @@ test('release verification rejects stale Bun payloads in tar and zip archives', 
     for (const file of ['cno', 'cno.exe', 'ext/oxc.so', 'ext/oxc.dylib', 'ext/oxc.dll', 'lib/example.so']) {
         writeFileSync(join(stage, file), 'fixture');
     }
+    chmodSync(join(stage, 'cno'), 0o755);
     const tar = join(directory, 'clean.tar.gz');
     const zip = join(directory, 'clean.zip');
     execFileSync('tar', ['-czf', tar, '-C', stage, '.']);
