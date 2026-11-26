@@ -351,6 +351,46 @@ Deno.test('bun: file reports missing and empty files without fabricated contents
     });
 });
 
+Deno.test('bun: text and JSON reads detect BOMs after slicing and file replacement', async () => {
+    await withTempDir('bun-file-text-encoding', async root => {
+        const path = join(root, 'encoded.bin');
+        const source = file(path);
+        const cases: Array<[number[], string]> = [
+            [[65, 0xc3, 0xa9, 0xf0, 0x9f, 0x98, 0x80], 'Aé😀'],
+            [[0xef, 0xbb, 0xbf, 65], 'A'],
+            [[0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 65], '\ufeffA'],
+            [[0xed, 0xa0, 0x80, 0xe2, 40, 0xa1, 0xf0, 0x9f], '����(��'],
+            [[0xff, 0xfe, 65, 0, 0xe9, 0, 0x3d, 0xd8, 0, 0xde], 'Aé😀'],
+            [[0xff, 0xfe, 0, 0xd8, 65, 0, 0], '\ud800A'],
+            [[0xff, 0xfe, 0xff, 0xfe, 65, 0], '\ufeffA'],
+            [[0xff, 0xfe, 65], ''],
+            [[0xff, 0xfe], '��'],
+            [[0xfe, 0xff, 0, 65], '��\0A'],
+        ];
+        for (const [input, expected] of cases) {
+            const bytes = new Uint8Array(input);
+            await write(path, bytes);
+            strictEqual(await source.text(), expected);
+            deepStrictEqual(await source.bytes(), bytes);
+            await write(path, new Uint8Array([9, ...input, 9]));
+            strictEqual(await file(path).slice(1, input.length + 1).text(), expected);
+        }
+
+        const json = new Uint8Array([0xff, 0xfe, 123, 0, 34, 0, 120, 0, 34, 0, 58, 0, 49, 0, 125, 0]);
+        await write(path, json);
+        deepStrictEqual(await source.json(), { x: 1 });
+        const fd = openSync(path, 'r');
+        try {
+            const borrowed = file(fd);
+            strictEqual(await borrowed.text(), '{"x":1}');
+            strictEqual(await borrowed.text(), '');
+            strictEqual(fstatSync(fd).size, json.byteLength);
+        } finally {
+            closeSync(fd);
+        }
+    });
+});
+
 Deno.test('bun: file formData uses its content type and remains repeatable', async () => {
     await withTempDir('bun-file-formdata', async (root) => {
         const urlEncodedPath = join(root, 'values.data');
