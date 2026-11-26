@@ -4,6 +4,17 @@ import { join } from 'node:path';
 import { decodeUtf8 } from '../_helpers/bytes.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
+const nativeError = import.meta.use('error');
+
+function fileWithHandle(handle: object, tty?: object): Record<string, unknown> {
+    const ctor = Reflect.get(Deno, 'FsFile') as { prototype: object };
+    const file = Object.create(ctor.prototype) as Record<string, unknown>;
+    Reflect.set(file, '$closed', false);
+    Reflect.set(file, '$handle', handle);
+    Reflect.set(file, '$tty', tty);
+    return file;
+}
+
 Deno.test('deno FsFile upstream: stdio keeps legacy rid descriptors', () => {
     // @ts-ignore Deno 2 soft-removed rid from the public types, but Deno still tests it.
     strictEqual(Deno.stdin.rid, 0);
@@ -445,6 +456,26 @@ Deno.test('deno FsFile: lock tryLock unlock and disposal are callable', async ()
             asyncFile[Symbol.dispose]();
         }
     });
+});
+
+Deno.test('deno FsFile: low-level errors from lock and close methods use Deno error types', async () => {
+    const failWithNotFound = () => {
+        throw nativeError.Error(nativeError.errno.ENOENT);
+    };
+    const file = fileWithHandle({ fileno: failWithNotFound });
+    const tryLockSync = Reflect.get(file, 'tryLockSync') as (this: object, exclusive?: boolean) => boolean;
+    const tryLock = Reflect.get(file, 'tryLock') as (this: object, exclusive?: boolean) => Promise<boolean>;
+
+    throws(() => tryLockSync.call(file, true), Deno.errors.NotFound);
+    await rejects(() => tryLock.call(file, true), Deno.errors.NotFound);
+
+    const rawFile = fileWithHandle({}, { setRaw: failWithNotFound });
+    const setRaw = Reflect.get(rawFile, 'setRaw') as (this: object, mode: boolean) => void;
+    throws(() => setRaw.call(rawFile, true), Deno.errors.NotFound);
+
+    const closeFile = fileWithHandle({ close: failWithNotFound });
+    const close = Reflect.get(closeFile, 'close') as (this: object) => void;
+    throws(() => close.call(closeFile), Deno.errors.NotFound);
 });
 
 Deno.test('deno FsFile: wrong access mode raises PermissionDenied without closing the handle', async () => {

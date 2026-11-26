@@ -475,6 +475,55 @@ Deno.test({
 });
 
 Deno.test({
+    name: 'deno FsFile: character-device reads and writable streams use fd I/O',
+    ignore: Deno.build.os !== 'linux',
+    fn: async () => {
+        const readSyncFile = Deno.openSync('/dev/zero', { read: true });
+        try {
+            const bytes = new Uint8Array(4);
+            strictEqual(readSyncFile.readSync(bytes), bytes.byteLength);
+            deepStrictEqual([...bytes], [0, 0, 0, 0]);
+        } finally {
+            readSyncFile.close();
+        }
+
+        const readFile = await Deno.open('/dev/zero', { read: true });
+        try {
+            const bytes = new Uint8Array(4);
+            strictEqual(await readFile.read(bytes), bytes.byteLength);
+            deepStrictEqual([...bytes], [0, 0, 0, 0]);
+        } finally {
+            readFile.close();
+        }
+
+        const streamFile = await Deno.open('/dev/zero', { read: true });
+        const reader = streamFile.readable.getReader();
+        try {
+            const result = await reader.read();
+            strictEqual(result.done, false);
+            ok(result.value instanceof Uint8Array);
+            ok(result.value.length > 0);
+            ok(result.value.every(byte => byte === 0));
+        } finally {
+            await reader.cancel();
+        }
+
+        for (const size of [0, 1]) {
+            const writeFile = await Deno.open('/dev/full', { write: true });
+            const writer = writeFile.writable.getWriter();
+            try {
+                await rejects(() => writer.write(new Uint8Array(size)), error => {
+                    return Reflect.get(error, 'name') === 'Error' && Reflect.get(error, 'code') === 'ENOSPC';
+                });
+            } finally {
+                try { writer.releaseLock(); } catch {}
+                writeFile[Symbol.dispose]();
+            }
+        }
+    },
+});
+
+Deno.test({
     name: 'deno FsFile: tty handles use stream I/O and expose terminal controls',
     ignore: Deno.build.os !== 'linux',
     fn: async () => {

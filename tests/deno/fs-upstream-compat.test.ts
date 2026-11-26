@@ -728,14 +728,22 @@ Deno.test('deno fs upstream: hard links share content and report exists or missi
 Deno.test('deno fs upstream: symlink and readLink support string and URL paths', async () => {
     await withTempDir('deno-upstream-fs', async (root) => {
         const target = join(root, 'target');
+        const regularFile = join(root, 'regular-file');
         const syncLink = join(root, 'sync-link');
+        const brokenLink = join(root, 'broken-link');
         const asyncLink = join(root, 'async-link');
         Deno.mkdirSync(target);
+        Deno.writeTextFileSync(regularFile, 'not a symlink');
 
         Deno.symlinkSync(new URL(`file://${target}`), new URL(`file://${syncLink}`), { type: 'dir' });
         strictEqual(Deno.lstatSync(syncLink).isSymlink, true);
         strictEqual(Deno.statSync(syncLink).isDirectory, true);
         strictEqual(Deno.readLinkSync(new URL(`file://${syncLink}`)), target);
+
+        throws(() => Deno.readLinkSync(regularFile), Deno.errors.InvalidData);
+        throws(() => Deno.readLinkSync(join(root, 'missing-link')), Deno.errors.NotFound);
+        Deno.symlinkSync('missing-target', brokenLink);
+        strictEqual(Deno.readLinkSync(brokenLink), 'missing-target');
 
         await Deno.symlink(target, asyncLink, { type: 'dir' });
         strictEqual((await Deno.lstat(asyncLink)).isSymlink, true);
