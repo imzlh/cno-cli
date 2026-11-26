@@ -180,8 +180,10 @@ Deno.test('deno process upstream: inspect handles cross-realm built-in objects',
     ]`) as unknown[];
 
     const inspected = values.map((value) => Deno.inspect(value, { colors: false })).join('\n');
-    ok(inspected.includes('Map(1) {x => 1}'));
-    ok(inspected.includes('Set(2) {a, b}'));
+    strictEqual(Deno.inspect(values[0], { colors: false }), Deno.inspect(new Map([['x', 1]]), { colors: false }));
+    strictEqual(Deno.inspect(values[1], { colors: false }), Deno.inspect(new Set(['a', 'b']), { colors: false }));
+    ok(inspected.includes('Map(1)'));
+    ok(inspected.includes('Set(2)'));
     ok(inspected.includes('2018-12-10T02:26:59.002Z'));
     ok(inspected.includes('Error: cross realm'));
 });
