@@ -409,6 +409,24 @@ Deno.test('sqlite upstream: empty blobs and large integer rows keep Node shapes'
     }
 });
 
+Deno.test('sqlite: ArrayBuffer views bind as blob bytes', () => {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    try {
+        db.exec('CREATE TABLE blobs (data BLOB NOT NULL)');
+        const backing = new Uint8Array([9, 1, 2, 8]);
+        db.prepare('INSERT INTO blobs (data) VALUES (?)').run(new DataView(backing.buffer, 1, 2));
+        db.prepare('INSERT INTO blobs (data) VALUES (?)').run(new Uint8ClampedArray([3, 4]));
+        db.prepare('INSERT INTO blobs (data) VALUES (?)').run(new Uint8Array([5, 6]).buffer);
+        deepStrictEqual(
+            db.prepare('SELECT data FROM blobs ORDER BY rowid').all().map((row: { data: Uint8Array }) => Array.from(row.data)),
+            [[1, 2], [3, 4], [5, 6]],
+        );
+    } finally {
+        db.close();
+    }
+});
+
 Deno.test('sqlite upstream: reset after reads does not lock later schema changes', () => {
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(':memory:');

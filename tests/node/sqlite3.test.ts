@@ -1,4 +1,4 @@
-import { strictEqual, ok, throws } from 'node:assert';
+import { strictEqual, ok, throws, deepStrictEqual } from 'node:assert';
 import { Backup, Database, Statement, verbose, OPEN_READONLY } from 'node:sqlite3';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -111,6 +111,27 @@ Deno.test('sqlite3: Statement.each visits rows', async () => {
         );
     });
     ok(ids.length >= 2);
+    db.close();
+});
+
+Deno.test('sqlite3: Statement.each treats its only callback as the row callback', async () => {
+    const db = new Database(DB);
+    db.exec('CREATE TABLE IF NOT EXISTS t6_single_callback (id INTEGER)');
+    db.exec('DELETE FROM t6_single_callback');
+    db.exec('INSERT INTO t6_single_callback VALUES (1), (2)');
+    const stmt = db.prepare('SELECT id FROM t6_single_callback ORDER BY id');
+    const ids: number[] = [];
+    await new Promise<void>((resolve, reject) => {
+        stmt.each((err: Error | null, row: any) => {
+            if (err) {
+                reject(err);
+                return;
+            }
+            ids.push(row.id);
+        });
+        queueMicrotask(resolve);
+    });
+    deepStrictEqual(ids, [1, 2]);
     db.close();
 });
 
