@@ -6,6 +6,8 @@ import * as fs from 'node:fs';
 import { decodeUtf8 } from '../_helpers/bytes.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 
+const nativeError = import.meta.use('error');
+
 // Generic children only need "a process that exits/writes/signals", and booting
 // /bin/sh is nearly free next to a full cno self-spawn. Windows has no /bin/sh,
 // so it keeps the previous cno -e children (second payload).
@@ -667,12 +669,6 @@ Deno.test({
     });
 });
 
-// The PATHEXT trap: `spawn('D:/tools/build')` where only `build.bat` exists. A guard
-// that tested the raw string would miss it, but Node does NOT run it either — it
-// reports ENOENT, because CreateProcess cannot launch a batch file (measured on
-// v24.18: ENOENT, not EINVAL). So the batch file must never execute AND the code
-// must be ENOENT. resolveCommandFile enforces this by refusing to let the PATHEXT
-// probe resolve onto .bat/.cmd.
 Deno.test({
     name: 'child_process: extensionless command resolving to .bat is ENOENT and never runs (PATHEXT)',
     ignore: Deno.build.os !== 'windows',
@@ -750,26 +746,65 @@ Deno.test({
     });
 });
 
-// A directory is not a runnable command: Node reports ENOENT for `spawn('./adir')`
-// (measured on v24.18). An existence check that counts directories would let it
-// through to the native layer and surface a codeless InternalError instead.
-Deno.test({ name: 'child_process: spawning a directory reports ENOENT', timeout: 15000 }, async () => {
+Deno.test({ name: 'child_process: native spawn failures preserve errno and delivery', timeout: 15000 }, async () => {
     await withTempDir('child-process-dirspawn', async (dir) => {
         const sub = join(dir, 'adir');
-        fs.mkdirSync(sub, { recursive: true });
+        const file = join(dir, 'file');
+        const missing = join(dir, 'missing');
+        fs.mkdirSync(sub);
+        fs.writeFileSync(file, 'not a directory');
+        const windows = Deno.build.os === 'windows';
+        for (const { command, cwd, code } of [
+            { command: sub, cwd: undefined, code: windows ? 'ENOENT' : 'EACCES' },
+            { command: join(file, 'missing'), cwd: undefined, code: windows ? 'ENOENT' : 'ENOTDIR' },
+            { command: missing, cwd: undefined, code: 'ENOENT' },
+            { command: process.execPath, cwd: file, code: windows ? 'ENOENT' : 'ENOTDIR' },
+            { command: process.execPath, cwd: missing, code: 'ENOENT' },
+        ]) {
+            const args = ['x'];
+            const options = { cwd, stdio: 'ignore' as const };
+            const result = spawnSync(command, args, options);
+            const error = result.error as NodeJS.ErrnoException;
+            ok(error, `${command} must fail`);
+            strictEqual(error.code, code);
+            strictEqual(error.errno, Reflect.get(nativeError.errno, code));
+            strictEqual(error.syscall, `spawnSync ${command}`);
+            strictEqual(error.path, command);
+            strictEqual(error.message, `spawnSync ${command} ${code}`);
+            deepStrictEqual(error.spawnargs, args);
+            strictEqual(result.status, null);
 
-        const r = spawnSync(sub, ['x'], { encoding: 'utf8' });
-        const err = r.error as NodeJS.ErrnoException | undefined;
-        strictEqual(err?.code, 'ENOENT');
-        strictEqual(err?.path, sub);
-        strictEqual(r.status, null);
-
-        const asyncErr = await new Promise<NodeJS.ErrnoException>((resolve, reject) => {
-            const child = spawn(sub, ['x']);
-            child.on('error', (e) => resolve(e as NodeJS.ErrnoException));
-            child.on('exit', () => reject(new Error('must not exit normally')));
-        });
-        strictEqual(asyncErr.code, 'ENOENT');
+            if (code === 'ENOTDIR') {
+                throws(() => spawn(command, args, options), (error: NodeJS.ErrnoException) => {
+                    strictEqual(error.code, code);
+                    strictEqual(error.errno, nativeError.errno.ENOTDIR);
+                    strictEqual(error.message, 'spawn ENOTDIR');
+                    strictEqual(error.syscall, 'spawn');
+                    strictEqual(error.path, undefined);
+                    strictEqual(error.spawnargs, undefined);
+                    return true;
+                });
+            } else {
+                const asyncError = await new Promise<NodeJS.ErrnoException>((resolve, reject) => {
+                    const child = spawn(command, args, options);
+                    let failure: NodeJS.ErrnoException | undefined;
+                    child.once('error', error => { failure = error as NodeJS.ErrnoException; });
+                    child.once('spawn', () => reject(new Error('must not spawn')));
+                    child.once('exit', () => reject(new Error('must not exit')));
+                    child.once('close', () => {
+                        if (failure) resolve(failure);
+                        else reject(new Error('close must follow error'));
+                    });
+                });
+                strictEqual(asyncError.code, code);
+                strictEqual(asyncError.errno, error.errno);
+                strictEqual(asyncError.message, `spawn ${command} ${code}`);
+                strictEqual(asyncError.syscall, `spawn ${command}`);
+                strictEqual(asyncError.path, command);
+                deepStrictEqual(asyncError.spawnargs, args);
+                deepStrictEqual(Object.keys(asyncError), ['errno', 'code', 'syscall', 'path', 'spawnargs']);
+            }
+        }
     });
 });
 
