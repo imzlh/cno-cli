@@ -284,6 +284,51 @@ Deno.test('fs streams: WriteStream emits finish before close', async () => {
     });
 });
 
+Deno.test('fs streams: destroying a pending open preserves the cause for queued writes', async () => {
+    await withTempDir('fs-stream-pending-destroy', async (root) => {
+        for (const autoClose of [false, true]) {
+            for (const hasCause of [false, true]) {
+                const file = join(root, `${autoClose}-${hasCause}.txt`);
+                const cause = new Error('destroy before open');
+                const stream = fs.createWriteStream(file, { autoClose });
+                const events: string[] = [];
+                const failures: Array<Error | null | undefined> = [];
+                stream.on('error', error => {
+                    strictEqual(error, cause);
+                    events.push('error');
+                });
+                const closed = new Promise<void>(resolve => stream.once('close', () => {
+                    events.push('close');
+                    resolve();
+                }));
+                for (const chunk of ['first', 'second']) {
+                    stream.write(chunk, error => {
+                        failures.push(error);
+                        events.push(chunk);
+                    });
+                }
+                stream.end((error?: Error | null) => {
+                    failures.push(error);
+                    events.push('end');
+                });
+                stream.destroy(hasCause ? cause : undefined);
+                strictEqual(failures.length, 0);
+                await closed;
+                deepStrictEqual(events, ['first', 'second', 'end', ...(hasCause ? ['error'] : []), 'close']);
+                strictEqual(failures.length, 3);
+                for (const error of failures) {
+                    if (hasCause) strictEqual(error, cause);
+                    else strictEqual((error as NodeJS.ErrnoException).code, 'ERR_STREAM_DESTROYED');
+                }
+                strictEqual(stream.bytesWritten, 0);
+                strictEqual(stream.fd, null);
+                strictEqual(stream.closed, true);
+                strictEqual(fs.readFileSync(file, 'utf8'), '');
+            }
+        }
+    });
+});
+
 Deno.test('fs streams: WriteStream flags and start position', async () => {
     await withTempDir('fs-stream-wflags', async (root) => {
         const appendTarget = join(root, 'a.txt');

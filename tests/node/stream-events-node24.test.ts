@@ -177,6 +177,64 @@ Deno.test('node24 stream: synchronous write callbacks run after write returns', 
     deepStrictEqual(order, ['before', 'write', 'after', 'callback']);
 });
 
+Deno.test('node24 stream: destroying an active write separates I/O and queued callback errors', async () => {
+    for (const writeFails of [false, true]) {
+        for (const hasCause of [false, true]) {
+            const cause = new Error('destroy cause');
+            const ioError = new Error('write failed');
+            const events: string[] = [];
+            const callbacks: Array<Error | null | undefined> = [];
+            let starts = 0;
+            let completeWrite!: (error?: Error | null) => void;
+            let completeDestroy!: (error?: Error | null) => void;
+            const target = new Writable({
+                write(_chunk, _encoding, callback) {
+                    starts++;
+                    completeWrite = callback;
+                },
+                destroy(error, callback) {
+                    strictEqual(error, hasCause ? cause : null);
+                    completeDestroy = callback;
+                },
+            });
+            target.on('error', error => {
+                strictEqual(error, cause);
+                events.push('error');
+            });
+            const closed = new Promise<void>(resolve => target.once('close', () => {
+                events.push('close');
+                resolve();
+            }));
+            for (const chunk of ['first', 'second']) {
+                target.write(chunk, error => {
+                    callbacks.push(error);
+                    events.push(chunk);
+                });
+            }
+            target.end((error?: Error | null) => {
+                callbacks.push(error);
+                events.push('end');
+            });
+            target.destroy(hasCause ? cause : undefined);
+            strictEqual(callbacks.length, 0);
+            completeWrite(writeFails ? ioError : null);
+            strictEqual(starts, 1, 'destroyed streams must not start buffered writes');
+            deepStrictEqual(events, ['first', 'second', 'end']);
+            strictEqual(callbacks[0] ?? null, writeFails ? ioError : null);
+            for (const error of callbacks.slice(1)) {
+                if (hasCause || writeFails) strictEqual(error, hasCause ? cause : ioError);
+                else strictEqual((error as NodeJS.ErrnoException).code, 'ERR_STREAM_DESTROYED');
+            }
+            strictEqual(target.errored ?? null, hasCause ? cause : writeFails ? ioError : null);
+            strictEqual(target.writableLength, 0);
+            completeDestroy(hasCause ? cause : null);
+            deepStrictEqual(events, ['first', 'second', 'end']);
+            await closed;
+            deepStrictEqual(events, ['first', 'second', 'end', ...(hasCause ? ['error'] : []), 'close']);
+        }
+    }
+});
+
 Deno.test('node24 stream: autoDestroy closes a completed Writable by default', async () => {
     const order: string[] = [];
     const writable = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
