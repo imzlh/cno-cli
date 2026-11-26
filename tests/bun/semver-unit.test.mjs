@@ -12,10 +12,21 @@ test('semver ordering handles prerelease, build, and partial versions', () => {
     assert.equal(order('1.2', '1.2.99'), 1);
     assert.equal(order('*', '999.999.999'), 1);
     assert.equal(order('1.2.3-01', '1.2.3-1'), 0);
+    assert.equal(order('1.2.3-01.alpha', '1.2.3-1.beta'), -1);
+    assert.equal(order('1.2.3-1.00.alpha', '1.2.3-1.0.beta'), -1);
+    assert.equal(order('1.2.3-01', '1.2.3-1.alpha'), -1);
+    assert.equal(order('1.2.3-18446744073709551615', '1.2.3-18446744073709551616'), -1);
+    assert.equal(order('1.2.3-18446744073709551616', '1.2.3-100000000000000000000'), 1);
+    assert.equal(order('18446744073709551615.0.0', '1.0.0'), 1);
     assert.equal(order('1.2.3-alpha..2', '1.2.3-alpha..10'), -1);
     assert.throws(() => order('not a version', '1.0.0'), /Invalid SemVer: not a version\n/);
     assert.throws(() => order(Symbol('version'), '1.0.0'), TypeError);
     assert.equal(order({ toString: () => '1.0.0' }, '1.0.0'), 0);
+    for (const component of ['18446744073709551616', '9999999999999999999999999']) {
+        for (const version of [`${component}.0.0`, `0.${component}.0`, `0.0.${component}`, `1.x.${component}`]) {
+            assert.throws(() => order(version, '1.0.0'), { message: `Invalid SemVer: ${version}\n` });
+        }
+    }
 });
 
 test('semver methods match Bun shape and preserve coercion exceptions', () => {
@@ -82,6 +93,16 @@ test('semver ranges handle common npm range forms and prereleases', () => {
         ['1.2.4-alpha', '>1.2.3-alpha <2', false],
         ['1.2.3-alpha..2', '>1.2.3-alpha..1 <1.2.3', true],
         ['1.2.3-01', '1.2.3-1', false], ['1.2.3-01', '>=1.2.3-1', true],
+        ['1.2.3-01.alpha', '>=1.2.3-1.alpha <1.2.3-1.beta', true],
+        ['1.2.3-01.alpha', '>=1.2.3-1.beta <1.2.3', false],
+        ['1.2.3-1.00.alpha', '>=1.2.3-1.0.beta', false],
+        ['1.2.3-01', '>1.2.3-1 <1.2.3-1.beta', false],
+        ['1.2.3-01.alpha', '1.2.3-1.alpha', false],
+        ['1.2.3-01.alpha', '1.2.3-1.alpha || *', true],
+        ['18446744073709551615.0.0', '^18446744073709551615.0.0', true],
+        ['18446744073709551616.0.0', '*', false],
+        ['1.2.3', '<18446744073709551616.0.0', false],
+        ['1.2.3', '18446744073709551616.0.0 || *', false],
         ['01.2.3+build', '1.2.3', true], ['invalid', '*', false],
         ['1.0.0', 'not a range', true], ['1.0.0-alpha', 'not a range', false],
         ['1.0.0', null, true], ['1.0.0', '', true],

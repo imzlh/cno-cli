@@ -7,6 +7,12 @@ Deno.test('bun: semver orders versions and prerelease identifiers', () => {
         ['1.2.3', '1.2.4', -1],
         ['1.2.3-alpha.2', '1.2.3-alpha.11', -1],
         ['1.2.3-01', '1.2.3-1', 0],
+        ['1.2.3-01.alpha', '1.2.3-1.beta', -1],
+        ['1.2.3-1.00.alpha', '1.2.3-1.0.beta', -1],
+        ['1.2.3-01', '1.2.3-1.alpha', -1],
+        ['1.2.3-18446744073709551615', '1.2.3-18446744073709551616', -1],
+        ['1.2.3-18446744073709551616', '1.2.3-100000000000000000000', 1],
+        ['18446744073709551615.0.0', '1.0.0', 1],
         ['1.2.3-1', '1.2.3-alpha', -1],
         ['1.2.3-alpha', '1.2.3', -1],
         ['1.2.3-alpha..2', '1.2.3-alpha..10', -1],
@@ -20,6 +26,11 @@ Deno.test('bun: semver orders versions and prerelease identifiers', () => {
     }
     throws(() => order('invalid', '1.0.0'), /Invalid SemVer: invalid\n/);
     throws(() => order(Symbol('version'), '1.0.0'), TypeError);
+    for (const component of ['18446744073709551616', '9999999999999999999999999']) {
+        for (const version of [`${component}.0.0`, `0.${component}.0`, `0.0.${component}`, `1.x.${component}`]) {
+            throws(() => order(version, '1.0.0'), { message: `Invalid SemVer: ${version}\n` });
+        }
+    }
 });
 
 Deno.test('bun: semver exposes native-like method shape and coercion order', () => {
@@ -80,6 +91,16 @@ Deno.test('bun: semver range alternatives distinguish wildcards from empty branc
         ['1.2.3-01', '1.2.3-1', false],
         ['1.2.3-01', '1.2.3-1 || *', true],
         ['1.2.3-01', '>=1.2.3-1', true],
+        ['1.2.3-01.alpha', '>=1.2.3-1.alpha <1.2.3-1.beta', true],
+        ['1.2.3-01.alpha', '>=1.2.3-1.beta <1.2.3', false],
+        ['1.2.3-1.00.alpha', '>=1.2.3-1.0.beta', false],
+        ['1.2.3-01', '>1.2.3-1 <1.2.3-1.beta', false],
+        ['1.2.3-01.alpha', '1.2.3-1.alpha', false],
+        ['1.2.3-01.alpha', '1.2.3-1.alpha || *', true],
+        ['18446744073709551615.0.0', '^18446744073709551615.0.0', true],
+        ['18446744073709551616.0.0', '*', false],
+        ['1.2.3', '<18446744073709551616.0.0', false],
+        ['1.2.3', '18446744073709551616.0.0 || *', false],
         ['1.2.9', '1.2 - 1.3', true],
         ['1.4.0', '1.2 - 1.3', false],
         ['1.2.3-a', '^1.2.3-a', true],
