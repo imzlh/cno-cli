@@ -1,4 +1,4 @@
-import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
+import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert';
 import vm from 'node:vm';
 import {
     Database,
@@ -335,6 +335,84 @@ Deno.test('bun:sqlite transactions commit, roll back, and nest with savepoints',
             { value: 4 },
             { value: 6 },
         ]);
+    } finally {
+        db.close();
+    }
+});
+
+Deno.test('bun:sqlite transaction modes preserve receivers and decide promise outcomes synchronously', async () => {
+    const db = new Database(':memory:');
+    try {
+        db.run('CREATE TABLE events (value INTEGER)');
+        const receiver = { offset: 10 };
+        const insert = db.transaction(function(this: typeof receiver, value: number) {
+            db.run('INSERT INTO events VALUES (?)', value + this.offset);
+            return this;
+        });
+        for (const [index, transaction] of [insert, insert.deferred, insert.immediate, insert.exclusive].entries()) {
+            strictEqual(transaction.call(receiver, index), receiver);
+            strictEqual(transaction.default, insert);
+            strictEqual(transaction.database, db);
+        }
+
+        const failure = new Error('rejected before commit');
+        const rejection = Promise.reject(failure);
+        void rejection.catch(() => {});
+        const rejected = db.transaction(() => {
+            db.run('INSERT INTO events VALUES (20)');
+            return rejection;
+        });
+        for (const transaction of [rejected, rejected.deferred, rejected.immediate, rejected.exclusive]) {
+            strictEqual(transaction(), rejection);
+            strictEqual(db.inTransaction, false);
+        }
+        await rejects(rejection, error => error === failure);
+        for (const reason of [null, undefined]) {
+            const primitiveRejection = Promise.reject(reason);
+            void primitiveRejection.catch(() => {});
+            strictEqual(db.transaction(() => {
+                db.run('INSERT INTO events VALUES (21)');
+                return primitiveRejection;
+            })(), primitiveRejection);
+            await rejects(primitiveRejection, error => error === reason);
+        }
+        deepStrictEqual(db.query('SELECT value FROM events').values(), [[10], [11], [12], [13]]);
+
+        db.transaction(() => {
+            db.run('INSERT INTO events VALUES (30)');
+            strictEqual(rejected(), rejection);
+            strictEqual(db.inTransaction, true);
+            db.run('INSERT INTO events VALUES (31)');
+        })();
+
+        const fulfilled = Promise.resolve(null);
+        strictEqual(db.transaction(() => {
+            db.run('INSERT INTO events VALUES (39)');
+            return fulfilled;
+        })(), fulfilled);
+        let release!: () => void;
+        const pending = new Promise<void>(resolve => { release = resolve; });
+        const result = db.transaction(async () => {
+            db.run('INSERT INTO events VALUES (40)');
+            await pending;
+            db.run('INSERT INTO events VALUES (41)');
+            throw failure;
+        })();
+        strictEqual(db.inTransaction, false);
+        deepStrictEqual(db.query('SELECT value FROM events').values(), [[10], [11], [12], [13], [30], [31], [39], [40]]);
+        release();
+        await rejects(result, error => error === failure);
+        deepStrictEqual(db.query('SELECT value FROM events').values(), [[10], [11], [12], [13], [30], [31], [39], [40], [41]]);
+
+        const thenable = { get then(): never { throw new Error('unexpected thenable access'); } };
+        strictEqual(db.transaction(() => thenable)(), thenable);
+        for (const control of ['COMMIT', 'ROLLBACK']) {
+            strictEqual(db.transaction(() => {
+                db.run(control);
+                return rejection;
+            })(), rejection);
+            strictEqual(db.inTransaction, false);
+        }
     } finally {
         db.close();
     }
