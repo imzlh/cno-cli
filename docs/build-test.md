@@ -19,9 +19,12 @@ The root build requires:
 - a C compiler
 - pnpm
 - a host `cjsc` when cross-compiling, or the ability to build one
+- nghttp2 headers and library when built-in HTTP/2 support is enabled
+- OpenSSL and recursive `ext-quic` submodules when Unix QUIC support is enabled
 
-Optional extensions may require extra dependencies such as Rust, OpenSSL, or
-nghttp2.
+Install nghttp2 with `libnghttp2-dev` on Debian/Ubuntu, `nghttp2-dev` on Alpine,
+or `nghttp2` with Homebrew. Windows' vcpkg manifest supplies it automatically.
+The optional OXC extension additionally requires Rust.
 
 ## GitHub Actions
 
@@ -33,10 +36,11 @@ Linux release matrix. `Release` runs when a stable version tag such as `v2.0.0`
 is pushed. It reuses `build.yml` for macOS/Windows and `build-linux.yml` for
 both Linux container and cross builds. CI checks types,
 bundles JavaScript, tests the staged runtime, and uploads its archive. Release
-passes `run-tests: false` to both build workflows: it only bundles, compiles,
-packages, and publishes. Type checks and runtime tests stay in CI; checks that
-Linux linkage and shared dependency bundles match the selected variant remain
-part of packaging.
+passes `run-tests: false` to both build workflows to skip type checks and the
+broader CI tests. Every release build still runs the native protocol lifecycle
+test, sets up the staged runtime, and exercises Node.js HTTP/2 over cleartext
+and TLS, plus QUIC on Unix, before packaging. Linux packaging checks that
+linkage and shared dependency bundles match the selected variant.
 Release verifies and publishes all 34 archives and `SHA256SUMS.txt` after every build
 succeeds. No extra repository secrets are required; publication uses
 the job's `GITHUB_TOKEN` with `contents: write`.
@@ -75,7 +79,7 @@ The glibc release archives target Debian 12 or compatible distributions. Standar
 archives bundle external shared dependencies as described below. Default CI's
 Linux artifacts use Ubuntu 24.04 instead; release builds preserve the Debian
 baseline. macOS packages depend on Homebrew's libffi, sqlite, openssl@3, zlib,
-expat, curl, and brotli. Install
+expat, curl, brotli, and nghttp2. Install
 these dependencies before running an archive on a different machine.
 
 Every CI/release archive includes OXC in `ext/` (`oxc.dll`, `oxc.dylib`, or
@@ -152,7 +156,7 @@ The Windows vcpkg checkout in `build.yml` must match `builtin-baseline` in
 `vcpkg.json`. Windows CI uses the `x64-windows-release` or
 `arm64-windows-release` overlay triplet and installs into
 `build/vcpkg_installed/`, avoiding unused Debug builds and keeping developer
-dependencies separate. The seven manifest libraries are all required by the
+dependencies separate. The manifest libraries are all required by the
 runtime; removing them would disable functionality or fail configuration.
 Compiled vcpkg packages use an explicit file binary cache persisted by Actions,
 keyed by runner, architecture, MSVC/SDK version, manifest and triplets. Compatible
@@ -182,8 +186,17 @@ node scripts/ci/smoke.mjs build-ci/stage
 On macOS, supply the Homebrew prefixes through `CNO_CMAKE_PREFIX_PATH` as in
 the workflow. The smoke script creates a private cache, installs Node
 polyfills from this checkout, checks the native OXC transform and the Sucrase
-fallback, and runs the CLI flag regression tests. Missing artifacts, native
-load failures, nonzero exits, and timeouts fail the job.
+fallback, verifies real HTTP/2 and Unix QUIC round trips, and runs the CLI flag
+regression tests. The protocol fixture is mandatory in native, container, and
+QEMU smoke tests and before the packaged-runtime test shards; missing protocol
+modules fail rather than skip. Missing artifacts, native load failures,
+nonzero exits, and timeouts fail the job.
+CI also builds and runs `protocol_runtime_test`, including through QEMU on
+cross targets, to check runtime-local classes, network capability hooks and
+teardown with live protocol handles.
+Native-platform CI runs `node --test tests/node/http2-interop.test.mjs` against
+the staged binary and the real Node.js runtime in both client/server directions,
+covering concurrent cleartext and TLS requests plus `Deno.serve` over TLS.
 
 ### Windows native dependencies
 
@@ -293,8 +306,13 @@ Common root options:
 -DCNO_EXT_DIR=/abs/path/to/ext
 ```
 
-`CNO_EMBED_EXT_H2` requires nghttp2. `CNO_EMBED_EXT_QUIC` requires the quicly
-submodule and OpenSSL.
+Both protocol options default to `OFF` in direct CMake builds. CI and release
+builds explicitly enable HTTP/2 on every platform and QUIC on Unix. HTTP/2
+requires nghttp2; QUIC requires OpenSSL and the recursive quicly submodules.
+The pinned quicly backend requires POSIX, so CI disables QUIC on Windows.
+When enabled, these built-in modules are available in workers as well as the
+main runtime. Custom builds can leave either option off.
+QUIC transport support does not provide an HTTP/3 server.
 
 ## Setup After Node Or Bun Polyfill Changes
 

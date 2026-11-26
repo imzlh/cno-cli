@@ -5,7 +5,7 @@ README files at the repository root and in subprojects give quick orientation;
 these docs explain the active code paths and operational rules in more detail.
 
 For agent-specific workflow rules, coding constraints, and durable debugging
-notes, read `../AGENT.md`. Do not duplicate those rules here unless the same
+notes, read `../AGENTS.md`. Do not duplicate those rules here unless the same
 information is useful to human maintainers.
 
 ## Contents

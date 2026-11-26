@@ -102,6 +102,12 @@ cmake -B build -DCNO_EMBED_EXT_H2=ON
 cmake -B build -DCNO_EMBED_EXT_QUIC=ON
 ```
 
+Both options default to `OFF` in direct CMake builds. CI and release builds
+explicitly enable HTTP/2 on every platform and QUIC on Unix; the pinned quicly
+backend requires POSIX, so CI disables QUIC on Windows. Enabled modules are
+registered for the main runtime and workers without loading a separate shared
+extension.
+
 ## OXC Extension
 
 `../ext-oxc/` builds the optional `oxc` native module. CTS uses it through
@@ -118,24 +124,36 @@ with `ENABLE_EXPORTS` or equivalent linker settings.
 
 ## HTTP/2 Extension
 
-`../http/ext-h2/` contains the optional HTTP/2 extension. Embed with:
+`../http/ext-h2/` contains the HTTP/2 native module. CI and release builds embed
+it; enable it in a direct CMake build with:
 
 ```sh
 cmake -B build -DCNO_EMBED_EXT_H2=ON
 ```
 
-This path requires nghttp2.
+This path requires nghttp2 headers and library. The shared HTTP server uses it
+for TLS ALPN negotiation when available, and Node's `http2` uses the same
+native implementation. Packaged-runtime CI exercises actual HTTP/2 requests.
 
 ## QUIC Extension
 
-`../ext-quic/` contains the optional QUIC extension used by WebTransport and
-Deno QUIC integration. Embed with:
+`../ext-quic/` contains the QUIC native module used by WebTransport and Deno
+QUIC integration. CI and release builds embed it on Unix; enable it in a
+direct CMake build with:
 
 ```sh
 cmake -B build -DCNO_EMBED_EXT_QUIC=ON
 ```
 
-This path requires the quicly submodule and OpenSSL.
+This path requires OpenSSL and the recursive quicly submodules:
+
+```sh
+git submodule update --init --recursive ext-quic
+```
+
+Only the protocol and TLS library sources are built into cno; upstream quicly
+CLI tools and tests are not required. Packaged-runtime CI requires real QUIC
+connections on Unix. QUIC transport support does not add an HTTP/3 server.
 
 ## Type Surface
 

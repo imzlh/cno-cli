@@ -42,7 +42,7 @@ implemented. Do not invent an upstream URL or publish anything.
 
 ## Baseline And Worktree Safety
 
-- Read `AGENT.md`, `cts/AGENT.md`, and any applicable directory instructions.
+- Read `AGENTS.md`, `cts/AGENT.md`, and any applicable directory instructions.
 - Existing `readme.md` changes predate this task. Do not overwrite, reformat,
   stage, or remove them. The maintainer confirmed that previously observed
   missing, unrelated untracked docs and website files are not a blocker.
