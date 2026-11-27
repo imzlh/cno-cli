@@ -1,5 +1,6 @@
 import { deepStrictEqual, ok, strictEqual } from 'node:assert';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { decodeUtf8 } from '../_helpers/bytes.ts';
 import { withTempDir } from '../_helpers/temp.ts';
 import { runCno, runCnoWithInput, ADD_WASM } from '../_helpers/cli-stage-run.ts';
@@ -122,6 +123,90 @@ Deno.test({ name: 'cli stage: run and implicit run pass script arguments after e
         const implicit = await runCno([script, 'positional'], root);
         strictEqual(implicit.code, 0, implicit.stderr);
         ok(implicit.stdout.includes('"args":["positional"]'), implicit.stdout);
+    });
+});
+
+// A clean source-only cache can spend over 20 seconds in the first runtime
+// startup and transform; the second run is warm. Keep the test below the
+// outer worker deadline while allowing the measured cold path to complete.
+Deno.test({ name: 'cli stage: run --cwd resolves files, config, preloads and argv from the execution directory', timeout: 45000 }, async () => {
+    await withTempDir('cli-run-cwd', async (root) => {
+        const cacheDir = join(root, 'cache');
+        const setup = await runCno(['setup', `--cache-dir=${cacheDir}`], root);
+        strictEqual(setup.code, 0, setup.stderr);
+
+        const app = join(root, 'app');
+        const source = join(app, 'src');
+        await Deno.mkdir(source, { recursive: true });
+        await Deno.writeTextFile(join(root, '.env'), 'CNO_RUN_CWD_ENV=invocation\n');
+        await Deno.writeTextFile(join(app, '.env'), 'CNO_RUN_CWD_ENV=wrong-directory\n');
+        await Deno.writeTextFile(join(app, 'data.txt'), 'execution-directory');
+        await Deno.writeTextFile(join(app, 'preload.ts'), 'Deno.env.set("CNO_RUN_PRELOAD_CWD", Deno.cwd());');
+        await Deno.writeTextFile(join(source, 'deno.json'), JSON.stringify({
+            imports: { 'cwd-dependency': './dep.ts' },
+        }));
+        await Deno.writeTextFile(join(source, 'dep.ts'), 'export default "entry-config";');
+        await Deno.writeTextFile(join(source, 'local.cjs'), 'module.exports = "relative-require";');
+        const entry = join(source, 'main.ts');
+        await Deno.writeTextFile(entry, `
+            import process from 'node:process';
+            import dependency from 'cwd-dependency';
+            import { value } from './relative.ts';
+            setTimeout(() => console.log(JSON.stringify({
+                cwd: Deno.cwd(), nodeCwd: process.cwd(), argv: process.argv.slice(1),
+                args: Deno.args, main: Deno.mainModule, dependency, value,
+                required: require('./local.cjs'), data: Deno.readTextFileSync('data.txt'),
+                env: Deno.env.get('CNO_RUN_CWD_ENV'), preload: Deno.env.get('CNO_RUN_PRELOAD_CWD'),
+            })), 0);
+        `);
+        await Deno.writeTextFile(join(source, 'relative.ts'), 'export const value = "relative-import";');
+        for (const [runDir, target] of [['app', 'src/main.ts'], [app, entry]]) {
+            const result = await runCno([
+                'run', '--no-lock', '--no-oxc', '--cache-dir', cacheDir,
+                '--env-file=.env', '--preload=./preload.ts', '--cwd', runDir, target,
+                '--cwd', 'script-argument',
+            ], root);
+            strictEqual(result.code, 0, result.stderr);
+            const output = JSON.parse(result.stdout);
+            const normalizedApp = app.replaceAll('\\', '/');
+            strictEqual(output.cwd.replaceAll('\\', '/'), normalizedApp);
+            strictEqual(output.nodeCwd.replaceAll('\\', '/'), normalizedApp);
+            strictEqual(output.preload.replaceAll('\\', '/'), normalizedApp);
+            strictEqual(output.argv[0].replaceAll('\\', '/'), entry.replaceAll('\\', '/'));
+            deepStrictEqual(output.args, ['--cwd', 'script-argument']);
+            deepStrictEqual(output.argv.slice(1), output.args);
+            strictEqual(output.main, pathToFileURL(entry).href);
+            strictEqual(output.dependency, 'entry-config');
+            strictEqual(output.value, 'relative-import');
+            strictEqual(output.required, 'relative-require');
+            strictEqual(output.data, 'execution-directory');
+            strictEqual(output.env, 'invocation');
+        }
+    });
+});
+
+Deno.test({ name: 'cli stage: run --cwd detects extensionless files before task fallback and rejects invalid directories', timeout: 15000 }, async () => {
+    await withTempDir('cli-run-cwd-routing', async (root) => {
+        const cacheDir = join(root, 'cache');
+        const setup = await runCno(['setup', `--cache-dir=${cacheDir}`], root);
+        strictEqual(setup.code, 0, setup.stderr);
+
+        const app = join(root, 'app');
+        await Deno.mkdir(app);
+        await Deno.writeTextFile(join(app, 'deno.json'), JSON.stringify({ tasks: { probe: 'echo WRONG_TASK' } }));
+        await Deno.writeTextFile(join(root, 'probe'), 'throw new Error("WRONG_FILE");');
+        await Deno.writeTextFile(join(app, 'probe'), 'console.log("CWD_FILE");');
+        const file = await runCno(['run', '--no-lock', `--cache-dir=${cacheDir}`, '--cwd=app', 'probe'], root);
+        strictEqual(file.code, 0, file.stderr);
+        strictEqual(file.stdout.trim(), 'CWD_FILE');
+
+        await Deno.writeTextFile(join(app, 'not-a-directory'), '');
+        for (const dir of ['missing', join(app, 'not-a-directory')]) {
+            const failed = await runCno(['run', '--no-lock', `--cache-dir=${cacheDir}`, '--cwd', dir, join(app, 'probe')], root);
+            strictEqual(failed.code, 1, failed.stdout + failed.stderr);
+            ok(!failed.stdout.includes('CWD_FILE'), failed.stdout);
+            ok(failed.stderr.trim().length > 0, 'invalid cwd must report an error');
+        }
     });
 });
 
