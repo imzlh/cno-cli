@@ -8,18 +8,14 @@
 
 - 根仓 OXC decorators/Bun bundle 测试与锁文件：`6cf6d92`；`ext-oxc`：`471575f`。
 - `circu.js` native teardown、asyncfs、streams、process 等改动：`1b98fca`。
-- OXC Rust 测试 12/12、定向 decorators/Bun 测试、根与 CTS type-check 通过。
-- 根 native binary 已重建；根 CTest 15/15 通过。
-- Deno QUIC 集成测试、Bun CLI cache 测试（显式延长超时）通过。
+- `ext-quic` handshake/socket cleanup 与跨 runtime class ID：`d1ce8ec`；独立 runtime-class 测试已通过。
+- 根与 CTS type-check、根 CTest 15/15、Deno QUIC 集成测试通过。
+- Bun CLI cache 测试（显式延长超时）及 fs errno parity 测试通过。
 
 ### 待收口工作区
 
-- `circu.js` 子仓已干净；根仓仍需单独提交 `circu.js` gitlink 更新。
-- `ext-quic` 子仓仍有 `CMakeLists.txt`、`native.c`、`native.h` 和 `tests/` 改动；需先完成审计与测试，再提交子仓及根仓 gitlink。
-- `tests/deno/fixtures/quic-worker.ts` 是现有 QUIC 测试依赖，必须随 QUIC 批次保留。
-- `tests/node/fs-errno-parity.test.ts` 的 `fchmod` 契约修改需与对应 native gitlink 一起提交；不能单独提交测试契约。
-- `tests/bun/cli-cache.test.ts` 的超时预算调整待确认是否作为测试稳定性修复提交。
-- `tests/node/fixtures/stream-read-oom.ts` 的 headroom 修改未通过 32/64 MB 复现，不提交。
+- 仅待根仓提交 `circu.js`、`ext-quic` gitlink 更新、Bun core-runtime 断言和 QUIC worker fixture。
+- OOM fixture headroom 未通过 32/64 MB 复现，已撤回，不纳入提交。
 
 ### 提交与验证规则
 

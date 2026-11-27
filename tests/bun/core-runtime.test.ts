@@ -12,8 +12,8 @@ Deno.test({ name: 'bun: fetch and isMainThread share the main runtime namespace'
     strictEqual(Object.hasOwn(bunFetch, 'prototype'), false);
     throws(() => Reflect.construct(bunFetch as never, []), TypeError);
     await rejects(
-        bunFetch('http://127.0.0.1/', { proxy: false } as BunFetchRequestInit),
-        /unsupported Bun-specific option "proxy"/,
+        bunFetch('http://127.0.0.1/', { timeout: 1 } as BunFetchRequestInit),
+        /unsupported Bun-specific option "timeout"/,
     );
 
     const fetchDescriptor = Object.getOwnPropertyDescriptor(Bun, 'fetch');
