@@ -1,145 +1,29 @@
 # TODO
 
-记录检查 evbus 接线过程中发现的问题与原因。已修复的条目保留原委，供后续追溯；
-未解决条目按影响排列。复核方式：跑对应测试文件即可复现/确认。
+## 当前状态（2026-11-27）
 
-## 未解决
+本文件只记录当前工作区的收口事项；历史审查记录不再作为当前状态依据。
 
-### 1. cli-stage.test.ts 贴着文件级 60s 预算（2026-11-06 已解决）
-- 拆分为三个主题套件：`cli-stage.test.ts`（basics/modules，6.3s）、
-  `cli-stage-npm.test.ts`（test-cmd + upstream npm，7.8s）、
-  `cli-stage-repl.test.ts`（repl + upstream-run，3.3s）。spawn helpers 移入
-  `tests/_helpers/cli-stage-run.ts`。93 个用例（含嵌套）零丢失。
-- 根治方式：按主题拆文件，避免再依赖 `--timeout` flag。
+### 已提交并验证
 
-### 5. async_hooks 的 AsyncLocalStorage 跨 promise/timer 边界丢失
-- 现象：`tests/node/async-hooks*.test.ts` propagation 用例拿到 `undefined`。
-- 原因：ALS 传播依赖的 async hook 装载/续接点缺失，属于 async_hooks 域，
-  与 evbus 接线无关。
-- 建议：在 promise job 与 uv timer 的续接处补 store 传递。
-- 2026-11-06 复核：确认**必须 C 侧**。实测 await 不经 `Promise.prototype.then`，
-  `engine.promiseHook`（`JS_SetPromiseHook`）的派发走 `JS_EnqueueJob`
-  （circu.js/src/mod_engine.c:88），作为更晚的微任务在续接恢复之后才跑——
-  结构上无法在恢复前设置上下文。需要 circu.js 提供同步 promise hook 或
-  引擎级 per-async-context 槽。诊断与已试并回退的方案记录在
-  tests/node/async-hooks-concurrency.test.ts 头注释，勿再尝试 TS 层修复。
+- 根仓 OXC decorators/Bun bundle 测试与锁文件：`6cf6d92`；`ext-oxc`：`471575f`。
+- `circu.js` native teardown、asyncfs、streams、process 等改动：`1b98fca`。
+- OXC Rust 测试 12/12、定向 decorators/Bun 测试、根与 CTS type-check 通过。
+- 根 native binary 已重建；根 CTest 15/15 通过。
+- Deno QUIC 集成测试、Bun CLI cache 测试（显式延长超时）通过。
 
-### 6. 其余 tests/cts、tests/webapi 的预先存在失败（与接线无关，均为进行中的
-    Bun/npm/dns 改动引入）
-- `tests/cts/linker.test.ts` — "store-read-only contract"：npm-mode linker
-  向 store 包内写了 node_modules，违反存储只读契约。
-- `tests/cts/http-core.test.ts` — dns-cache 字面量地址命中时仍触达缓存。
-- `tests/cts/kernel-lifecycle.test.ts` — `src/kernel.ts:139` 解构
-  `kernel.modules` 为 undefined（openKernelRuntime 在部分路径下未填充 modules）。
-- `tests/cts/require-resolve-no-fetch.test.ts` /
-  `precache-compile-policy.test.ts` — 结构断言测试：源码里被依赖的注释/早退
-  分支被后续编辑移除（这两个测试本质是源码形状的回归钉，改代码时要同步改钉）。
-- `tests/cts/resource-limits.test.ts` — 两个纯内存分配用例（"refuses
-  allocation past the cap"、"OOM is a catchable exception"）行为变化。
-- `tests/cts/cache-command.test.ts`、`task-shell.test.ts` — 超时类，随机器
-  负载波动，需复核是否真实回归。
-- `tests/webapi/` — h1/h2-body-cap、locks-broadcast（BroadcastChannel 跨
-  worker 消息超时）、abort-signal-lifetime、console-upstream、
-  finalization-registry-lifetime、proxy-env-precedence、streams-terminal-lifetime、
-  worker.test.ts（"queued messages survive GC before message listener
-  registration" 超时，隔离复现，同为 GC/lifetime 时序类，随 Bun 改动出现）。
-  多为 lifetime/timing 类，建议逐个与 Node oracle 差分后定性。
+### 待收口工作区
 
-## 本轮已修复（保留原因，防回归）
+- `circu.js` 子仓已干净；根仓仍需单独提交 `circu.js` gitlink 更新。
+- `ext-quic` 子仓仍有 `CMakeLists.txt`、`native.c`、`native.h` 和 `tests/` 改动；需先完成审计与测试，再提交子仓及根仓 gitlink。
+- `tests/deno/fixtures/quic-worker.ts` 是现有 QUIC 测试依赖，必须随 QUIC 批次保留。
+- `tests/node/fs-errno-parity.test.ts` 的 `fchmod` 契约修改需与对应 native gitlink 一起提交；不能单独提交测试契约。
+- `tests/bun/cli-cache.test.ts` 的超时预算调整待确认是否作为测试稳定性修复提交。
+- `tests/node/fixtures/stream-read-oom.ts` 的 headroom 修改未通过 32/64 MB 复现，不提交。
 
-### 2. `scheduler.postTask` 未接入 bootstrap（已修复）
-- 原因：`cno/src/webapi/scheduler.ts` 安装全局，但没有 bootstrap import，模块
-  从未执行。
-- 修复：Web API 在 Abort API 之后加载 scheduler；
-  `tests/webapi/scheduler.test.ts` 通过。
+### 提交与验证规则
 
-### 3. structuredClone 读取了视图可覆盖属性（已修复）
-- 原因：`cloneView` 直接读取 `buffer` / `byteOffset` / `byteLength`，own
-  property 可伪造内部槽并造成 invalid offset；同一回归还暴露 RegExp
-  source/flags 的同类问题。
-- 修复：通过缓存的 %TypedArray%、DataView、RegExp intrinsic getters 读取
-  内部槽；`tests/webapi/basic.test.ts` 通过。
-
-### 4. CDP 重定向响应使用发起 URL（已修复）
-- 原因：最终 `onResponse` 固定上报 `url.href`，把重定向前 URL 与最终 200
-  状态配对。
-- 修复：从 `CURLINFO_EFFECTIVE_URL` 读取终态 URL，并让回归测试等待
-  `/final`；`tests/node/cdp-network-lifecycle.test.ts` 通过。
-
-### 7. node 宿主测试误扫诊断与实际发现范围不符（已澄清）
-- 检查结果：原 `TEST_RE` 只发现 js/jsx/ts/tsx，三个 `.test.mjs` 从未被递归
-  扫描；原问题描述不成立。若为解决它而扩展到 mjs，会额外纳入仓库中其余
-  Node 宿主测试，反而造成范围回归。
-- 修复：保留原发现范围，并为递归候选增加头部 `// @cno-host: false`
-  跳过约定；显式文件路径仍绕过扩展名和 marker 过滤。三个 mjs 上的 marker
-  作为宿主 lane 元数据保留。
-
-### 8. bridge.ts 在沙箱 realm 使用 `Set`（真回归）
-- 现象：`tests/cts/evbus-module-bridge-native.test.mjs` 在 node 与 cno 双宿主
-  失败，报 `Set is not defined`。
-- 原因：`cts/src/compile/bridge.ts` 的 `installInternalBridge` 新增
-  `[...new Set([...builtinModuleNames(), ...BUN_MODULES])]`，而
-  `engine.Sandbox` 只加 BaseObjects+Eval intrinsic（`mod_engine.c:540`），
-  桥必须在沙箱内可安装。
-- 修复：改为无 Set 的 `includes` 合并。该测试就是防此约束的，改 bridge 时
-  必须保持沙箱安全。
-
-### 9. 陈旧 polyfill 缓存与二进制混合 → process 事件双桥
-- 现象：`tests/cts/process-event-bridge.test.ts` 每个 process 事件触发两次
-  （`2 !== 1`），且 `getEventMux().has('node-process')` 为 true。
-- 原因：`~/.cts/node/process/mod.ts` 是 10-29 的旧版（经 CTS mux 注册
-  `'node-process'` 角色），与新二进制里直连 evbus 的新版同时存活，形成两个
-  桥。修复手段是 `cno setup` 刷新缓存。
-- 教训：Node polyfill 编辑后必须 `setup`；"混合版本故障看起来像接线 bug"
-  已写入 AGENT.md。
-
-### 10. CTS rejection 桥是冗余接线（已删除）
-- 原因：旧设计里 `process` 懒加载、bridge 靠 `retryEventBridge` 补装，CTS
-  需要经 `Symbol.for('cno.node.process.default')` 全局槽探测 node emitter
-  兜底。`inject.ts` 改为急切安装 `process` 后，CNO 的桥必然先于任何事件
-  订阅，CTS 副本使每个 rejection 被投递两次、靠 `ctx.rejectionEmitted`
-  去重，并构成分层违规（cts 感知 node 对象）。
-- 修复：删除 `installNodeProcessRejectionBridge` 与探测路径；rejection
-  投递由 `cno/src/node/process/mod.ts` 独占。返回极性文档已移入
-  `event-mux.d.ts`（UNHANDLED_REJECTION `false`=不中止，与 JOB_EXCEPTION
-  相反，曾因写反发过真 bug）。
-
-### 11. 跨子模块接线残留全局对象 / C 模块对象（已全部收归 evbus）
-- 清单（迁移前）：裸全局 `__mainScript`、`__cno_worker_runtime_config`、
-  `__cno_resolve_blob_url`、`__cno_applyLocation`；C 模块对象通道
-  `http.__cno`、`debug.__cnoNetworkHooks`、`os.__cno_args` /
-  `os.__cno_process_args_refresh`；legacy 双写槽
-  `Symbol.for('cno.runtime.requestExitCode')`、`Symbol.for('cts.internal')`；
-  死接线 `cno.node.process.lazy`（无写入方）、`cno.runtime.inTeardown`
-  （注释称 CLI 读取，实际无读者，HEAD 亦然）。
-- 现契约：全部走 evbus 值通道（`cno.runtime` / `cno.inspector` / `cno.node` /
-  `cno.args` / `cts.internal`），无 globalThis/Symbol 回退；版本偏差靠
-  `cno setup` 纪律。契约表在 AGENT.md "evbus" 一节，新增通道须先入表。
-
-### 12. internal-registry 无 bus 时身份不稳定
-- 原因：`ensureInternalBridge` 在 evbus 缺失分支每次返回新 `{}`，同一 realm
-  两次调用得到不同桥对象，下游 `nodeModuleInterop` 判定失效。
-- 修复：补模块级 `localBridge` 回退，缺失 bus 时退化为 realm 内单例。
-
-### 13. 裸 CJS 无法解析 `import.meta`（测试踩坑，非运行时 bug）
-- 现象：worker-runtime-config 测试的 `worker.cjs` 用 `import.meta.use` 读
-  配置，worker 报 `SyntaxError: import.meta only valid in module code`。
-- 原因：polyfill 源码经 CTS transform 重写 `import.meta.use`，而用户侧裸
-  .cjs 文件不走该重写。
-- 修复：测试 worker 改用 ESM（.mjs / eval ESM）。给用户侧代码写文档时
-  注意：`import.meta.*` 只能出现在模块源，不能出现在裸 CJS。
-
-### 14. inspector 启动解码 ~130KiB：拆分方案已调查，待 circu.js 发版窗口（2026-11-06）
-- 现状：esbuild 单 chunk 内联全部动态 import，cjsc 单 blob 自 attach；
-  `circu.js/src/vm.c` 一次 `JS_ReadObject` 全量反序列化，CMakeLists 注明
-  启动成本被 blob 解码主导。inspector 主线程图+worker 图每次启动都解码，
-  但仅 --inspect 会话需要。
-- 调查结论（方案 B，最小可行）：debug worker 由 C 直接 eval 第二 blob
-  （新 entry = polyfill + worker bootstrap）。仓内改动小（bundle.mjs 双
-  entry + CMakeLists 第二条 cjsc 命令 + 新 entry 文件），但绕不开 circu.js：
-  `mod_worker.c:1268` 硬编码 worker 跑同一 blob、`binary.c` 单一 blob 符号、
-  无第二 blob 装载机制——需要一次 circu.js 发版 + 子模块指针更新 + 6 CI
-  目标回归。
-- 方案 C（splitting:true 全量拆）不推荐：运行时无内嵌 chunk 注册表，
-  需在 modules.c 新增子系统，风险远超收益。
-- 前置动作：落地前先带 `CNO_BUNDLE_METAFILE=1` 构建实测两个图的精确字节。
+1. 先提交并验证嵌套仓，再更新根仓 gitlink。
+2. 只暂存所属批次；保留无关 dirty 改动，不重置、不清理、不提交生成物。
+3. native 构建保持单一 owner，最多使用 `-j2`；测试结果需对应当前源码和新鲜产物。
+4. 最终检查根仓及全部嵌套仓状态、`git diff --check`，确认没有遗漏未跟踪测试或混入无关文件。
