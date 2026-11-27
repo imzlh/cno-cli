@@ -123,6 +123,16 @@ Deno.test('timers this-binding: global setImmediate/clearImmediate/queueMicrotas
     strictEqual(qmFailures.length, 0, `queueMicrotask rejected receivers: ${qmFailures.join('; ')}`);
 });
 
+Deno.test('timers this-binding: global Immediate callback receives its handle', async () => {
+    let handle: unknown;
+    const receiver = await new Promise<unknown>((resolve) => {
+        handle = globalThis.setImmediate(function(this: unknown) {
+            resolve(this);
+        });
+    });
+    strictEqual(receiver, handle);
+});
+
 // --- 3. Same matrix for the node:timers exports ----------------------------
 
 Deno.test('timers this-binding: node:timers exports accept every receiver', () => {

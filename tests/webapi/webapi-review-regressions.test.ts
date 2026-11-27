@@ -98,3 +98,14 @@ Deno.test('Web API regressions: WebSocket validates protocols and connecting sen
         socket.close();
     }
 });
+
+Deno.test('Web API regressions: WebSocket URL plus true stays on the client path', () => {
+    const socket = new WebSocket('ws://127.0.0.1:1/', true as unknown as string[]);
+    socket.onerror = () => {};
+    try {
+        strictEqual(socket.url, 'ws://127.0.0.1:1/');
+        strictEqual(socket.readyState, WebSocket.CONNECTING);
+    } finally {
+        socket.close();
+    }
+});

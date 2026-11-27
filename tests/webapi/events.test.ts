@@ -233,3 +233,76 @@ Deno.test('EventTarget upstream: prototype methods reject invalid receivers', ()
     throws(() => EventTarget.prototype.removeEventListener.call(receiver, 'test', null), TypeError);
     throws(() => EventTarget.prototype.dispatchEvent.call(receiver, new Event('test')), TypeError);
 });
+
+Deno.test({ name: 'Event source imports preserve globals and own ResourceTiming/XHR events', timeout: 15000 }, async () => {
+    const source = `
+        const { strictEqual, notStrictEqual, ok } = await import('node:assert');
+        const names = ['Event', 'EventTarget', 'CustomEvent', 'ErrorEvent', 'PromiseRejectionEvent',
+            'CloseEvent', 'MessageEvent', 'DOMException', 'ProgressEvent', 'StorageEvent'];
+        const globals = names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
+        const assertGlobals = () => {
+            for (const [name, descriptor] of globals) {
+                const current = Object.getOwnPropertyDescriptor(globalThis, name);
+                strictEqual(current?.value, descriptor?.value, name);
+                strictEqual(current?.get, descriptor?.get, name);
+                strictEqual(current?.set, descriptor?.set, name);
+            }
+        };
+        const events = await import(${JSON.stringify(new URL('../../cno/src/webapi/events.ts', import.meta.url).href)});
+        assertGlobals();
+        notStrictEqual(events.Event, globalThis.Event);
+        notStrictEqual(events.EventTarget, globalThis.EventTarget);
+        const target = new events.EventTarget();
+        strictEqual(target.dispatchEvent(new events.Event('source')), true);
+
+        // Performance intentionally installs its own globals; isolate those in this child.
+        await import(${JSON.stringify(new URL('../../cno/src/webapi/performance.ts', import.meta.url).href)});
+        assertGlobals();
+        const perf = globalThis.performance;
+        const resourceEvents = [];
+        let resourceHandlerEvent;
+        perf.onresourcetimingbufferfull = event => { resourceHandlerEvent = event; };
+        perf.addEventListener('resourcetimingbufferfull', event => {
+            notStrictEqual(event.constructor, globalThis.Event, 'ResourceTiming owns its Event');
+            strictEqual(event.target, perf);
+            strictEqual(event, resourceHandlerEvent);
+            resourceEvents.push(event);
+        });
+        perf.setResourceTimingBufferSize(1);
+        perf.markResourceTiming({ startTime: 1, endTime: 2 }, 'https://events.test/resource', 'fetch');
+        ok(resourceEvents.length > 0, 'ResourceTiming reaches its listener');
+        const beforeTrim = resourceEvents.length;
+        perf.setResourceTimingBufferSize(0);
+        ok(resourceEvents.length > beforeTrim, 'ResourceTiming trimming reaches its listener');
+
+        const { XMLHttpRequest } = await import(${JSON.stringify(new URL('../../cno/src/webapi/fetch/xhr.ts', import.meta.url).href)});
+        assertGlobals();
+        const xhr = new XMLHttpRequest();
+        const stateEvents = [];
+        let stateHandlerEvent;
+        xhr.onreadystatechange = event => { stateHandlerEvent = event; };
+        xhr.addEventListener('readystatechange', event => {
+            notStrictEqual(event.constructor, globalThis.Event, 'XHR owns its Event');
+            strictEqual(event.target, xhr);
+            strictEqual(event, stateHandlerEvent);
+            stateEvents.push(event);
+        });
+        let loadEndEvent;
+        xhr.addEventListener('loadend', event => { loadEndEvent = event; });
+        xhr.open('GET', 'data:text/plain,source-event');
+        strictEqual(stateEvents.length, 1);
+        xhr.abort();
+        ok(loadEndEvent, 'XHR loadend reaches its listener');
+        notStrictEqual(loadEndEvent.constructor, globalThis.ProgressEvent, 'XHR owns its ProgressEvent');
+        strictEqual(loadEndEvent.target, xhr);
+        assertGlobals();
+        console.log('source-events-ok');
+    `;
+    const output = await new Deno.Command(Deno.execPath(), {
+        args: ['eval', '--ext=js', source],
+        stdout: 'piped',
+        stderr: 'piped',
+    }).output();
+    strictEqual(output.code, 0, new TextDecoder().decode(output.stderr));
+    ok(new TextDecoder().decode(output.stdout).includes('source-events-ok'));
+});
