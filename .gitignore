@@ -4,6 +4,7 @@ vcpkg_installed/
 package-lock.json
 build/
 .claude/
+.nop/
 dist/
 cts.lock
 *.lock
