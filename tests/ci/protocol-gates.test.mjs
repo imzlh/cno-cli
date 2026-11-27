@@ -23,10 +23,11 @@ function fixture(t) {
         "Object.defineProperty(process, 'platform', { value: process.env.CNO_GATE_PLATFORM });",
         "Object.defineProperty(process, 'arch', { value: 'x64' });",
         'childProcess.spawnSync = (command, args, options) => {',
-        '    appendFileSync(process.env.CNO_GATE_RECORD, JSON.stringify({ command, args, cache: options.env?.CTS_CACHE_DIR }) + "\\n");',
+        '    appendFileSync(process.env.CNO_GATE_RECORD, JSON.stringify({ command, args, cache: options.env?.CTS_CACHE_DIR, childTimeout: options.env?.CNO_TEST_CHILD_TIMEOUT_MS }) + "\\n");',
         "    if (command === 'cmake') return { status: 0 };",
         "    if (args[0] === '--version') return { status: 0, stdout: 'cno 1.0.0\\n' };",
         "    if (args[0] === 'setup') return { status: 0, stdout: 'Node polyfills ready at: fixture\\n' };",
+        "    if (args[0] === 'test') return { status: args.includes(process.env.CNO_GATE_FAIL_BUCKET) ? 27 : 0 };",
         "    if (!args.includes('tests/ci/fixtures/protocols.ts')) throw new Error('unexpected runtime command');",
         "    if (process.env.CNO_GATE_RESULT === 'failure') return { status: 27, stderr: 'protocol failed' };",
         "    if (process.env.CNO_GATE_RESULT === 'signal') return { status: null, signal: 'SIGKILL' };",
@@ -84,6 +85,27 @@ test('release protocol-only smoke rejects missing markers, failures and terminat
         assert.match(result.stderr, /built-in protocol round trips/);
         assert.equal(f.calls().length, 3);
     }
+});
+
+test('runtime CI keeps package file budgets above their individual test deadlines and runs every bucket after a failure', t => {
+    const f = fixture(t);
+    const result = f.run(join(repository, 'scripts/ci/run-tests.mjs'), [
+        `--stage=${f.stage}`, '--shards=core,node,web,compat', '--concurrency=2',
+    ], { CNO_GATE_FAIL_BUCKET: 'tests/node', CNO_TEST_CHILD_TIMEOUT_MS: '60000' });
+    assert.equal(result.status, 1, result.stderr || result.error?.message);
+    const calls = f.calls();
+    assert.deepEqual(calls.slice(0, 2).map(call => call.args), [
+        ['setup'], ['run', '--no-lock', 'tests/ci/fixtures/protocols.ts'],
+    ]);
+    assert.deepEqual(calls.slice(2).map(call => [call.args, call.childTimeout]), [
+        [['test', 'tests/cno', 'tests/cjs', 'tests/cts', '--concurrency=2'], '60000'],
+        [['test', 'tests/node', '--concurrency=2'], '60000'],
+        [['test', 'tests/deno', 'tests/webapi', '--concurrency=2'], '60000'],
+        [['test', 'tests/bun', '--concurrency=2'], '300000'],
+        [['test', 'tests/jsr', '--concurrency=2'], '60000'],
+        [['test', 'tests/npm', '--concurrency=2'], '600000'],
+    ]);
+    assert.ok(calls.every(call => call.cache === join(f.directory, 'cache')));
 });
 
 test('Linux release protocol-only smoke fails before packaging on a failed or empty fixture', {

@@ -89,7 +89,12 @@ for (const name of shardNames) {
                 paths: ['tests/bun'],
                 env: { ...env, CNO_TEST_CHILD_TIMEOUT_MS: '300000' },
             },
-            { label: 'compat/jsr-npm', paths: ['tests/jsr', 'tests/npm'], env },
+            { label: 'compat/jsr', paths: ['tests/jsr'], env },
+            {
+                label: 'compat/npm',
+                paths: ['tests/npm'],
+                env: { ...env, CNO_TEST_CHILD_TIMEOUT_MS: '600000' },
+            },
         ]
         : [{ label: name, paths, env }];
     for (const run of runs) {

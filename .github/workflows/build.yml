@@ -138,6 +138,21 @@ jobs:
         if: failure() && steps.native-build.outcome == 'failure'
         run: node scripts/ci/report-build-errors.mjs native-build.log
 
+      - name: Build native FFI test fixture
+        if: inputs.run-tests
+        run: cmake --build build --config Release --target ffi_fixture
+
+      - name: Upload native test fixtures
+        if: inputs.run-tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: cno-test-fixtures-${{ matrix.target }}
+          path: |
+            build/circu.js/libffi_fixture.so
+            build/circu.js/libffi_fixture.dylib
+            build/circu.js/ffi_fixture.dll
+          if-no-files-found: error
+
       - name: Check cycle guards and packing against the staged runtime
         if: inputs.run-tests
         shell: bash
@@ -230,6 +245,10 @@ jobs:
         with:
           name: cno-${{ matrix.target }}
           path: build/stage
+      - uses: actions/download-artifact@v4
+        with:
+          name: cno-test-fixtures-${{ matrix.target }}
+          path: build/circu.js
       - name: Unpack staged runtime
         if: runner.os != 'Windows'
         run: tar -xzf "build/stage/cno-${{ matrix.target }}.tar.gz" -C build/stage
