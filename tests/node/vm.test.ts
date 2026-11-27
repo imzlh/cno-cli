@@ -109,6 +109,24 @@ Deno.test('vm upstream: new contexts expose standard intrinsics without process'
     ].join('\n'));
 });
 
+Deno.test('vm: sandbox stack wrapping stays lazy', () => {
+    const sandbox: Record<string, unknown> = {};
+    const context = vm.createContext(sandbox);
+    const reads = vm.runInContext(`
+        globalThis.stackReads = 0;
+        Object.defineProperty(Error.prototype, 'stack', {
+            configurable: true,
+            get() { globalThis.stackReads++; return 'RAW_FRAMES'; },
+            set() {},
+        });
+        globalThis.sandboxError = new Error('boom');
+        globalThis.stackReads;
+    `, context);
+    strictEqual(reads, 0, 'creating a sandbox error must not read its stack');
+    strictEqual(vm.runInContext('sandboxError.stack', context), 'Error: boom\nRAW_FRAMES');
+    strictEqual(vm.runInContext('stackReads', context), 1);
+});
+
 Deno.test('vm upstream: Deno.inspect handles common values from new contexts', () => {
     ok(stripAnsi(Deno.inspect(vm.runInNewContext('new Error("This is an error")'))).includes('Error: This is an error'));
     ok(stripAnsi(Deno.inspect(vm.runInNewContext('new AggregateError([], "This is an error")'))).includes('AggregateError: This is an error'));
