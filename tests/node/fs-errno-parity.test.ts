@@ -7,9 +7,9 @@
  * surfaced with an unrelated `code`. That has been fixed in C (`fs_errno2uv`),
  * so the raw values are now real UV codes. What remains is *classification*:
  * Windows returns one coarse error (usually EACCES) where Node reports a
- * specific one, and the sync C layer throws a bare TypeError with no errno for
- * the reparse-point / copy family. `cno/src/node/fs/errno-fix.ts` closes that
- * gap by probing the filesystem; these assertions lock in the result.
+ * specific one. `cno/src/node/fs/errno-fix.ts` still classifies some path
+ * failures. The fd syscalls and libuv-backed copy/rename/readlink operations
+ * report their UV codes directly; fd coverage also lives in fs-fd-errors.test.ts.
  *
  * Note that a correction keyed on the *old* mangled value silently stops firing
  * once the C layer is fixed — that is exactly how `readFileSync(dir)` regressed
@@ -262,10 +262,9 @@ Deno.test('fs errno: promises errors expose a string code, never a raw UV number
  *   closeSync(bogus)      ENOENT            EBADF
  *   openSync(missing)     ENOENT            EBADF
  *
- * A plausible-but-wrong ENOENT is worse than UNKNOWN: retry logic keyed on
- * ENOENT acts on a path that is perfectly fine. `errno-fix.ts` now probes the
- * descriptor with `fstat` (the one fd call that reports EBADF correctly) and
- * returns EBADF whenever the fd is provably closed.
+ * The native layer now reports UV_EBADF at handle conversion and saves Win32
+ * failures before restoring positions or releasing fd pins. No subsequent
+ * fstat is needed to decide the original call's error.
  * ---------------------------------------------------------------------------
  */
 Deno.test('fs errno: fd-syscall code does not depend on the preceding call', () => {
@@ -286,18 +285,16 @@ Deno.test('fs errno: fd-syscall code does not depend on the preceding call', () 
     }
 });
 
-Deno.test('fs errno: errno-less fd throws still report EBADF', () => {
+Deno.test('fs errno: fd metadata failures report EBADF from the native call', () => {
     const BOGUS = 99999;
-    // These reach C paths that throw a bare TypeError with no errno at all
-    // ("futimes: invalid file descriptor", "fchmod not supported on Windows"), so
-    // `code` arrived as UNKNOWN and no `err.code === 'EBADF'` check could match.
+    // These native paths carry a numeric UV code before Node error wrapping.
     strictEqual(codeOf(() => fs.futimesSync(BOGUS, new Date(), new Date())), 'EBADF');
     strictEqual(codeOf(() => fs.ftruncateSync(BOGUS, 0)), 'EBADF');
     strictEqual(codeOf(() => fs.fstatSync(BOGUS)), 'EBADF');
 });
 
 Deno.test('fs errno: fd-syscall messages quote no synthetic path', () => {
-    // fd errors carry `path` as the internal `fd:N` form. Node never prints that:
+    // fd errors have no filesystem path. Node never prints a synthetic one:
     // measured v24.18.0, `fsyncSync(99999)` reports exactly
     // "EBADF: bad file descriptor, fsync". A rebuilt message used to append
     // ", fsync 'fd:99999'", inventing a path string no real Node ever emits.
@@ -483,40 +480,9 @@ Deno.test('fs errno: openSync(dir, r) returns a directory fd', async () => {
     });
 });
 
-/*
- * ---------------------------------------------------------------------------
- * PENDING REBUILD — the mod_fs.c change is applied but not yet compiled.
- *
- * fchmod: libuv's fs__fchmod (deps/libuv/src/win/fs.c:2567) implements this on
- * Windows with ReOpenFile(FILE_WRITE_ATTRIBUTES) + NtSetInformationFile, so Node
- * succeeds. tjs_syncfs_fchmod used to return a bare
- * JS_ThrowInternalError("fchmod not supported on Windows") — errno-less, so it
- * surfaced as code UNKNOWN — and the mode was left untouched. It now delegates
- * to uv_fs_fchmod (mod_fs.c:2733).
- *
- * Measured 2026-08-04 vs node v24.18.0, mode read back with statSync:
- *
- *   route                      node          cno (pre-rebuild)
- *   fs.fchmodSync(fd, 0o444)   OK, 666->444  UNKNOWN, stays 666
- *   fs.fchmod(fd, 0o444, cb)   OK, 666->444  UNKNOWN, stays 666
- *   FileHandle.chmod(0o444)    OK, 666->444  OK, 666->444  <- already correct
- *
- * The async row is the tell: uv_fs_fchmod already produced the right result
- * in-process, so this was never a Windows limitation.
- *
- * Contrast the chown family above, which is genuinely a no-op on Windows —
- * libuv's fs__fchown (:3105) is a bare SET_REQ_RESULT(req, 0). Only fchmod was
- * misgrouped.
- *
- * ACTION: drop `ignore: true` after the next rebuild. Asserting the mode is
- * actually applied, not merely that the call does not throw, is deliberate — the
- * old code could have been "fixed" into a silent no-op and still passed a
- * throw-only check.
- * ---------------------------------------------------------------------------
- */
+// fchmod must change the mode; a successful no-op cannot satisfy this contract.
 Deno.test({
-    name: 'fs errno: fchmodSync applies the mode (needs rebuild)',
-    ignore: true,
+    name: 'fs errno: fchmodSync applies the mode',
     fn: async () => {
         await withTempDir('fserrno-fchmod', (dir) => {
             const f = join(dir, 'f.txt');
@@ -536,11 +502,8 @@ Deno.test({
 });
 
 /*
- * A closed fd must give EBADF, not UNKNOWN. Pre-rebuild this passed for the
- * wrong reason: the errno-less InternalError was rewritten to EBADF by
- * errno-fix.ts's failedOnBadFd rule. Post-rebuild it must pass because
- * uv_fs_fchmod's VERIFY_FD reports UV_EBADF directly. Ungated: correct either
- * way, so it is the canary that the JS fallback removal did not regress.
+ * uv_fs_fchmod reports UV_EBADF directly for a closed descriptor, without
+ * reconstructing the error from a later fstat probe.
  */
 Deno.test('fs errno: fchmodSync on a closed fd is EBADF', async () => {
     await withTempDir('fserrno-fchmod-bad', (dir) => {

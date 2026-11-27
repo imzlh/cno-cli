@@ -3,7 +3,10 @@ import { join } from 'node:path';
 import { withTempDir } from '../_helpers/temp.ts';
 import { jsonLine, outputOf, prepareCache, prepareLocalSetupSource, runCno } from '../_helpers/bun-cli.ts';
 
-Deno.test({ name: 'bun cli: cache, precache, and frozen runs keep bun out of the lock boundary', timeout: 110000 }, async () => {
+// This case deliberately uses source-only setup caches. The first --precache
+// run compiles the Bun/Node polyfill graph on demand, so it needs the compat
+// shard's extended child timeout rather than the generic 60-second guard.
+Deno.test({ name: 'bun cli: cache, precache, and frozen runs keep bun out of the lock boundary', timeout: 300000 }, async () => {
     await withTempDir('bun-cache-frozen', async (root) => {
         prepareLocalSetupSource(root);
         const entry = join(root, 'entry.ts');
