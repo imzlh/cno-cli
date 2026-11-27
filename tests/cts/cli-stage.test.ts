@@ -48,6 +48,49 @@ Deno.test({ name: 'cli stage: eval supports print and extension modes', timeout:
     });
 });
 
+Deno.test({ name: 'cli stage: ESM require retains module context across async calls and bytecode', timeout: 30000 }, async () => {
+    await withTempDir('cli-esm-require', async (root) => {
+        for (const name of ['first', 'second']) {
+            const dir = join(root, name);
+            Deno.mkdirSync(dir);
+            Deno.writeTextFileSync(join(dir, 'local.cjs'), `module.exports = ${JSON.stringify(name)};`);
+            Deno.writeTextFileSync(join(dir, 'loader.ts'), `
+                export const saved = require;
+                export async function load() {
+                    await Promise.resolve();
+                    return [require('./local.cjs'), require.resolve('./local.cjs')];
+                }
+            `);
+        }
+        const entry = join(root, 'main.ts');
+        Deno.writeTextFileSync(join(root, 'local.cjs'), 'module.exports = "entry";');
+        Deno.writeTextFileSync(entry, `
+            import { saved as first, load as loadFirst } from './first/loader.ts';
+            import { saved as second, load as loadSecond } from './second/loader.ts';
+            const loaded = await Promise.all([loadFirst(), loadSecond()]);
+            console.log(JSON.stringify({
+                saved: [first('./local.cjs'), second('./local.cjs')],
+                loaded,
+                entry: require('./local.cjs'),
+                identity: first === (await import('./first/loader.ts')).saved,
+            }));
+        `);
+        for (const flags of [[], [], ['--disable-cache']]) {
+            const result = await runCno(['run', '--no-lock', ...flags, entry], root);
+            strictEqual(result.code, 0, result.stderr);
+            deepStrictEqual(JSON.parse(result.stdout), {
+                saved: ['first', 'second'],
+                loaded: [
+                    ['first', join(root, 'first/local.cjs')],
+                    ['second', join(root, 'second/local.cjs')],
+                ],
+                entry: 'entry',
+                identity: true,
+            });
+        }
+    });
+});
+
 Deno.test({ name: 'cli stage: run and implicit run pass script arguments after entry', timeout: 10000 }, async () => {
     await withTempDir('cli-run', async (root) => {
         const script = join(root, 'main.ts');
@@ -617,6 +660,29 @@ Deno.test({ name: 'cli stage: run requires sync ESM from CJS and rejects TLA ESM
             'true',
             'true',
         ]);
+    });
+});
+
+Deno.test({ name: 'cli stage: runtime SyntaxError in implicit CJS is not retried as ESM', timeout: 15000 }, async () => {
+    await withTempDir('cli-run-cjs-runtime-syntax', async (root) => {
+        await Deno.writeTextFile(join(root, 'child.js'), `
+            globalThis.__cnoRuntimeSyntaxRuns = (globalThis.__cnoRuntimeSyntaxRuns || 0) + 1;
+            globalThis.__cnoRuntimeSyntaxCjs = module.exports === exports && this === exports;
+            throw new SyntaxError('user runtime error');
+        `);
+        const main = join(root, 'main.cjs');
+        await Deno.writeTextFile(main, `
+            try {
+                require('./child.js');
+            } catch (error) {
+                console.log(error instanceof SyntaxError, error.message,
+                    globalThis.__cnoRuntimeSyntaxRuns, globalThis.__cnoRuntimeSyntaxCjs);
+            }
+        `);
+
+        const result = await runCno(['run', main], root);
+        strictEqual(result.code, 0, result.stdout + result.stderr);
+        strictEqual(result.stdout.trim(), 'true user runtime error 1 true');
     });
 });
 
