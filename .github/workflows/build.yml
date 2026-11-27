@@ -128,21 +128,25 @@ jobs:
 
       - name: Build cno and OXC
         id: native-build
-        run: node scripts/ci/build.mjs
+        shell: bash
+        run: node scripts/ci/build.mjs 2>&1 | tee native-build.log
 
       - name: Check cycle guards and packing against the staged runtime
         if: inputs.run-tests
-        run: node --test tests/cts/module-id-cycle-guard.test.mjs tests/cts/pack-command.test.mjs
+        shell: bash
+        run: node --test tests/cts/module-id-cycle-guard.test.mjs tests/cts/pack-command.test.mjs 2>&1 | tee cycle-pack.log
 
       - name: Check native protocol runtime ownership
+        shell: bash
         run: |
-          cmake --build build --config Release --target protocol_runtime_test
-          ctest --test-dir build -C Release -R '^protocol_runtime_test$' --output-on-failure
+          cmake --build build --config Release --target protocol_runtime_test 2>&1 | tee protocol-build.log
+          ctest --test-dir build -C Release -R '^protocol_runtime_test$' --output-on-failure 2>&1 | tee protocol-test.log
 
       - name: Check HTTP/2 interoperability with Node.js
+        shell: bash
         env:
           CNO_TEST_BINARY: ${{ runner.os == 'Windows' && 'build/stage/cno.exe' || 'build/stage/cno' }}
-        run: node --test tests/node/http2-interop.test.mjs
+        run: node --test tests/node/http2-interop.test.mjs 2>&1 | tee http2-interop.log
 
       - name: Save Windows native dependencies
         if: always() && !cancelled() && runner.os == 'Windows' && steps.vcpkg-cache.outputs.cache-hit != 'true' && steps.vcpkg-cache.outputs.cache-primary-key != ''
@@ -155,15 +159,17 @@ jobs:
 
       - name: Smoke test staged runtime
         if: inputs.run-tests
+        shell: bash
         env:
           CTS_CACHE_DIR: ${{ runner.temp }}/cno-smoke-cache
-        run: node scripts/ci/smoke.mjs build/stage
+        run: node scripts/ci/smoke.mjs build/stage 2>&1 | tee smoke.log
 
       - name: Smoke test built-in protocols
         if: ${{ !inputs.run-tests }}
+        shell: bash
         env:
           CTS_CACHE_DIR: ${{ runner.temp }}/cno-smoke-cache
-        run: node scripts/ci/smoke.mjs build/stage --protocols-only
+        run: node scripts/ci/smoke.mjs build/stage --protocols-only 2>&1 | tee smoke.log
 
       - name: Package
         if: runner.os != 'Windows'
@@ -187,6 +193,14 @@ jobs:
           name: cno-${{ matrix.target }}
           path: artifacts/*
           if-no-files-found: error
+
+      - name: Upload failure diagnostics
+        if: failure() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.target }}
+          path: '*.log'
+          if-no-files-found: ignore
 
   test:
     name: test ${{ matrix.target }}
@@ -214,6 +228,15 @@ jobs:
         shell: pwsh
         run: Expand-Archive -Path "build/stage/cno-${{ matrix.target }}.zip" -DestinationPath build/stage -Force
       - name: Run runtime test suite
+        shell: bash
         env:
           CTS_CACHE_DIR: ${{ runner.temp }}/cno-test-cache
-        run: node scripts/ci/run-tests.mjs --stage=build/stage --shards=core,node,web,compat
+        run: node scripts/ci/run-tests.mjs --stage=build/stage --shards=core,node,web,compat 2>&1 | tee runtime-tests.log
+
+      - name: Upload failure diagnostics
+        if: failure() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-test-${{ matrix.target }}
+          path: '*.log'
+          if-no-files-found: ignore
