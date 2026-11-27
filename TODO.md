@@ -12,9 +12,9 @@
 - 根与 CTS type-check、根 CTest 15/15、Deno QUIC 集成测试通过。
 - Bun CLI cache 测试（显式延长超时）及 fs errno parity 测试通过。
 
-### 待收口工作区
+### 当前工作区
 
-- 仅待根仓提交 `circu.js`、`ext-quic` gitlink 更新、Bun core-runtime 断言和 QUIC worker fixture。
+- 当前提交批次已收口，根仓与已初始化嵌套仓工作区干净。
 - OOM fixture headroom 未通过 32/64 MB 复现，已撤回，不纳入提交。
 
 ### 提交与验证规则
