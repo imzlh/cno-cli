@@ -260,6 +260,28 @@ Deno.test('process: kill(veryLargePid) throws ESRCH', () => {
     ok(threw, 'kill on nonexistent pid must throw');
 });
 
+Deno.test('process: kill(pid, 0) preserves permission errors', () => {
+    if (process.platform !== 'linux' || process.getuid?.() === 0) return;
+
+    const nativeProcess = import.meta.use('process') as { probe(pid: number): void };
+
+    let expectedCode: string | undefined;
+    try {
+        nativeProcess.probe(1);
+        return;
+    } catch (error) {
+        expectedCode = (error as NodeJS.ErrnoException).code;
+    }
+    if (expectedCode !== 'EPERM' && expectedCode !== 'EACCES') return;
+
+    throws(
+        () => process.kill(1, 0),
+        (error: unknown) => error !== null && typeof error === 'object'
+            && Reflect.get(error, 'code') === expectedCode
+            && Reflect.get(error, 'syscall') === 'kill',
+    );
+});
+
 Deno.test('process upstream: kill validates pid and signal shapes', () => {
     for (const pid of [1.5, '1.5', NaN, Infinity]) {
         throws(

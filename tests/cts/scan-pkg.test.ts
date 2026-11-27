@@ -17,6 +17,8 @@ import {
     resolveImports,
     resolveMain,
     resolveSubpath,
+    readPkg,
+    readPkgFresh,
 } from '../../cts/src/resolve/pkg.ts';
 import { joinPaths } from '../../cts/src/utils/path.ts';
 
@@ -251,6 +253,29 @@ Deno.test('cts pkg: an unrecognized package type keeps the CJS metadata default'
                 (error: unknown) => (error as { code?: unknown }).code === 'ERR_INVALID_PACKAGE_CONFIG',
             );
         }
+    } finally {
+        clearPkgCache();
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+Deno.test('cts pkg: malformed package.json is not treated as a missing manifest', () => {
+    const root = makePosixTempDir('pkg-malformed-json');
+    try {
+        const dir = joinPaths(root, 'broken');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(joinPaths(dir, 'package.json'), '{\n');
+        const file = write(dir, 'index.js', 'export const value = 1;\n');
+        const hasInvalidConfigCode = (error: unknown): boolean =>
+            (error as { code?: unknown }).code === 'ERR_INVALID_PACKAGE_CONFIG';
+
+        throws(() => readPkg(dir), hasInvalidConfigCode);
+        throws(() => readPkgFresh(dir), hasInvalidConfigCode);
+        throws(() => detectFormat(file), hasInvalidConfigCode);
+
+        const notDirectory = write(root, 'not-a-directory', 'file');
+        strictEqual(readPkg(notDirectory), null);
+        strictEqual(readPkgFresh(notDirectory), null);
     } finally {
         clearPkgCache();
         rmSync(root, { recursive: true, force: true });
