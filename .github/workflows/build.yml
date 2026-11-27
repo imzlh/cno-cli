@@ -67,10 +67,11 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install cmake ninja pkgconf libffi sqlite openssl@3 zlib expat curl brotli nghttp2
-          prefixes="$(brew --prefix)"
+          prefixes=""
           for formula in libffi sqlite openssl@3 zlib expat curl brotli nghttp2; do
-            prefixes="$prefixes;$(brew --prefix "$formula")"
+            prefixes="${prefixes:+$prefixes;}$(brew --prefix "$formula")"
           done
+          prefixes="$prefixes;$(brew --prefix)"
           printf 'CNO_CMAKE_PREFIX_PATH=%s\n' "$prefixes" >> "$GITHUB_ENV"
           printf 'CNO_OPENSSL_ROOT_DIR=%s\n' "$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
 

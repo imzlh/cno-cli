@@ -262,6 +262,11 @@ Deno.test('cts pkg: an unrecognized package type keeps the CJS metadata default'
 Deno.test('cts pkg: malformed package.json is not treated as a missing manifest', () => {
     const root = makePosixTempDir('pkg-malformed-json');
     try {
+        strictEqual(readPkg(root), null);
+        strictEqual(readPkgFresh(root), null);
+        const missingDirectory = joinPaths(root, 'missing');
+        strictEqual(readPkg(missingDirectory), null);
+        strictEqual(readPkgFresh(missingDirectory), null);
         const dir = joinPaths(root, 'broken');
         mkdirSync(dir, { recursive: true });
         writeFileSync(joinPaths(dir, 'package.json'), '{\n');
