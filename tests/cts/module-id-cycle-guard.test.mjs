@@ -27,7 +27,7 @@ test('CTS cycle guards cover aliases, explicit views, compilation and evaluation
     // methods and the staged binary's native Module implementation.
     await build({
         absWorkingDir: repository, bundle: true, format: 'esm', platform: 'node',
-        target: 'es2024', keepNames: true, outfile: bundle,
+        target: 'es2024', keepNames: true, minifySyntax: true, minifyWhitespace: true, outfile: bundle,
         plugins: [{
             name: 'bundle-runtime-assertions',
             setup(plugin) {
