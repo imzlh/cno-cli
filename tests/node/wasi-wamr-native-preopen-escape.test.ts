@@ -275,18 +275,42 @@ Deno.test({
     },
 });
 
+/* Drive-absolute guest paths, split per host platform because the refusal
+ * reason is genuinely different and only one of them is a sandbox decision.
+ *
+ * WAMR's path_get splits a path on '/' (and '\\' on Windows only), so the
+ * leading component of "d:/x" is the literal string "d:". On POSIX that names
+ * no directory, the first openat() fails, and the caller sees ENOENT: the
+ * sandbox is intact, there is simply nothing to reach. On Windows "d:" IS a
+ * drive, so a host that resolved it would walk outside the preopen -- there
+ * the only acceptable answer is ENOTCAPABLE. On POSIX, a synthetic drive
+ * prefix is just a missing relative path component and returns ENOENT.
+ */
+/* The backslash form is the drive-vector: only Windows has a separator there.
+ * Off Windows the guest sees a single component "d:\...-secret.txt", which path_get
+ * splits on '/' alone, so it names no directory and the open fails with ENOENT.
+ * Either way nothing outside the preopen is reachable; the errno differs because
+ * only Windows ever asks the drive question. */
+const DRIVE_ERRNO = Deno.build.os === 'windows' ? WASI_ENOTCAPABLE : 44 /* ENOENT */;
+const DRIVE = 'Q';
+
+function driveAbsolutePath(hostPath: string, separator: '/' | '\\'): string {
+    const normalized = hostPath.replace(/\\/g, '/');
+    const absolute = Deno.build.os === 'windows' ? normalized : `${DRIVE}:${normalized}`;
+    return separator === '/' ? absolute : absolute.replace(/\//g, '\\');
+}
+
 Deno.test({
     name: 'wasi/WAMR-native: a drive-absolute path must NOT read outside the preopen',
     fn: () => {
         const c = nativeGuest();
-        const guestPath = c.secretPath.replace(/\\/g, '/');
-        ok(/^[A-Za-z]:\//.test(guestPath), `fixture must be drive-absolute, got ${guestPath}`);
+        const guestPath = driveAbsolutePath(c.secretPath, '/');
         const r = openRead(c, guestPath);
         ok(
             !r.content.includes(SECRET),
             `SANDBOX ESCAPE: read ${r.content.length} bytes from outside the preopen via ${guestPath}`,
         );
-        strictEqual(r.errno, WASI_ENOTCAPABLE, 'a path outside every preopen must be ENOTCAPABLE');
+        strictEqual(r.errno, DRIVE_ERRNO, `no read outside the preopen for ${guestPath}`);
     },
 });
 
@@ -294,13 +318,13 @@ Deno.test({
     name: 'wasi/WAMR-native: a drive-absolute path with backslashes must NOT read outside',
     fn: () => {
         const c = nativeGuest();
-        const guestPath = c.secretPath.replace(/\//g, '\\');
+        const guestPath = driveAbsolutePath(c.secretPath, '\\');
         const r = openRead(c, guestPath);
         ok(
             !r.content.includes(SECRET),
             `SANDBOX ESCAPE: read ${r.content.length} bytes from outside the preopen via ${guestPath}`,
         );
-        strictEqual(r.errno, WASI_ENOTCAPABLE);
+        strictEqual(r.errno, DRIVE_ERRNO, `no read outside the preopen for ${guestPath}`);
     },
 });
 
@@ -309,12 +333,12 @@ Deno.test({
     fn: () => {
         const c = nativeGuest();
         const target = c.root + '/created-by-guest.txt';
-        const len = writePath(c, 0x100, target.replace(/\\/g, '/'));
+        const len = writePath(c, 0x100, driveAbsolutePath(target, '/'));
         const dv = new DataView(c.mem);
         dv.setUint32(0x200, 0xffffffff, true);
         /* oflags bit 0 = O_CREAT, bit 3 = O_TRUNC */
         const rc = c.call('w_path_open', 3, 1, 0x100, len, 1 | 8, RIGHTS, RIGHTS, 0, 0x200);
-        strictEqual(rc, WASI_ENOTCAPABLE, 'creating a file outside the preopen must be refused');
+        strictEqual(rc, DRIVE_ERRNO, 'creating a file outside the preopen must be refused');
         strictEqual(fs.existsSync(target), false, `SANDBOX ESCAPE: guest created ${target}`);
     },
 });
@@ -325,7 +349,7 @@ Deno.test({
         const c = nativeGuest();
         const victim = c.root + '/victim.txt';
         fs.writeFileSync(victim, 'ORIGINAL-CONTENT-UNTOUCHED');
-        const len = writePath(c, 0x100, victim.replace(/\\/g, '/'));
+        const len = writePath(c, 0x100, driveAbsolutePath(victim, '/'));
         const dv = new DataView(c.mem);
         dv.setUint32(0x200, 0xffffffff, true);
         c.call('w_path_open', 3, 1, 0x100, len, 1 | 8, RIGHTS, RIGHTS, 0, 0x200);
@@ -343,7 +367,7 @@ Deno.test({
         const c = nativeGuest();
         const victim = c.root + '/to-delete.txt';
         fs.writeFileSync(victim, 'DO-NOT-DELETE-ME');
-        const len = writePath(c, 0x100, victim.replace(/\\/g, '/'));
+        const len = writePath(c, 0x100, driveAbsolutePath(victim, '/'));
         const rc = c.call('w_path_unlink_file', 3, 0x100, len);
         ok(rc !== 0, 'unlink outside the preopen must be refused');
         strictEqual(fs.existsSync(victim), true, 'SANDBOX ESCAPE: guest deleted a file outside the preopen');
@@ -355,7 +379,7 @@ Deno.test({
     fn: () => {
         const c = nativeGuest();
         const target = c.root + '/dir-by-guest';
-        const len = writePath(c, 0x100, target.replace(/\\/g, '/'));
+        const len = writePath(c, 0x100, driveAbsolutePath(target, '/'));
         const rc = c.call('w_path_create_directory', 3, 0x100, len);
         ok(rc !== 0, 'mkdir outside the preopen must be refused');
         strictEqual(fs.existsSync(target), false, `SANDBOX ESCAPE: guest created directory ${target}`);

@@ -26,6 +26,16 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
+/* A drive letter is a Windows notion, but the guest-side check must refuse it
+ * wherever the host runs: the vector is the input shape, not the host OS. */
+const DRIVE = 'Q';
+
+function driveAbsolutePath(hostPath: string, separator: '/' | '\\'): string {
+    const normalized = hostPath.replace(/\\/g, '/');
+    const absolute = Deno.build.os === 'windows' ? normalized : `${DRIVE}:${normalized}`;
+    return separator === '/' ? absolute : absolute.replace(/\//g, '\\');
+}
+
 /* ---- minimal wasm emitter (no toolchain needed) ---- */
 function uleb(n: number): number[] {
     const out: number[] = [];
@@ -164,7 +174,9 @@ Deno.test('wasi: a path inside the preopen is reachable (negative control)', () 
 
 Deno.test('wasi: a drive-absolute path with forward slashes is refused', () => {
     const sb = makeSandbox();
-    const guestPath = sb.secretPath.replace(/\\/g, '/');
+    // Synthesised, not derived from tmpdir: on POSIX the fixture would otherwise
+    // start with '/', which is the POSIX-absolute vector a different test covers.
+    const guestPath = driveAbsolutePath(sb.secretPath, '/');
     ok(/^[A-Za-z]:\//.test(guestPath), `fixture must be drive-absolute, got ${guestPath}`);
     const r = attempt(probe(sb), guestPath);
     strictEqual(r.errno, WASI_ENOTCAPABLE, `expected ENOTCAPABLE for ${guestPath}`);
@@ -173,7 +185,7 @@ Deno.test('wasi: a drive-absolute path with forward slashes is refused', () => {
 
 Deno.test('wasi: a drive-absolute path with backslashes is refused', () => {
     const sb = makeSandbox();
-    const guestPath = sb.secretPath.replace(/\//g, '\\');
+    const guestPath = driveAbsolutePath(sb.secretPath, '\\');
     ok(/^[A-Za-z]:\\/.test(guestPath), `fixture must be drive-absolute, got ${guestPath}`);
     const r = attempt(probe(sb), guestPath);
     strictEqual(r.errno, WASI_ENOTCAPABLE, `expected ENOTCAPABLE for ${guestPath}`);
@@ -199,7 +211,7 @@ Deno.test('wasi: a UNC path is refused', () => {
 Deno.test('wasi: path_filestat_get on a drive-absolute path leaks no metadata', () => {
     const sb = makeSandbox();
     const x = probe(sb);
-    const guestPath = sb.secretPath.replace(/\\/g, '/');
+    const guestPath = driveAbsolutePath(sb.secretPath, '/');
     const bytes = new TextEncoder().encode(guestPath);
     new Uint8Array(x.memory.buffer).set(bytes, 0x100);
     new Uint8Array(x.memory.buffer).fill(0, 0x800, 0x840);
@@ -212,7 +224,7 @@ Deno.test('wasi: path_filestat_get on a drive-absolute path leaks no metadata', 
 Deno.test('wasi: a drive-absolute path cannot be created for writing', () => {
     const sb = makeSandbox();
     const x = probe(sb);
-    const target = path.join(sb.root, 'created-outside.txt').replace(/\\/g, '/');
+    const target = driveAbsolutePath(path.join(sb.root, 'created-outside.txt'), '/');
     const bytes = new TextEncoder().encode(target);
     new Uint8Array(x.memory.buffer).set(bytes, 0x100);
     const dv = new DataView(x.memory.buffer);
