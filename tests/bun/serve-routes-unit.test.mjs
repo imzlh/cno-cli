@@ -12,6 +12,15 @@ const bundled = await build({
     platform: 'node',
     target: 'es2024',
     write: false,
+    banner: {
+        js: `import { types as nativeTypes } from 'node:util';
+        const testUse = name => {
+            if (name === 'engine') return nativeTypes;
+            if (name === 'algorithm') return {};
+            throw new Error('Unexpected native binding: ' + name);
+        };`,
+    },
+    define: { 'import.meta.use': 'testUse' },
 });
 const { serve } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`);
 
