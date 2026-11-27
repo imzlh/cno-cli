@@ -193,6 +193,11 @@ test('error stack: assigning a stack does not make it enumerable', () => {
     te!.stack = 'S';
     assert.deepStrictEqual(Object.keys(te!), [], 'engine-thrown: stack must stay non-enumerable');
     assert.strictEqual(JSON.stringify(te!), '{}', 'engine-thrown: an assigned stack must not serialise');
+
+    const spoof = Object.create(Error.prototype) as { stack?: unknown; [Symbol.toStringTag]?: string };
+    spoof[Symbol.toStringTag] = 'Error';
+    spoof.stack = 'S';
+    assert.deepStrictEqual(Object.keys(spoof), ['stack'], 'a forged Error tag must not get native Error stack shape');
 });
 
 test('error stack: the header is formatted once, on first read', () => {
