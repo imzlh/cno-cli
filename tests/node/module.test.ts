@@ -362,11 +362,14 @@ Deno.test('module upstream: empty package main falls back to index.js', () => {
     });
 });
 
-Deno.test('module upstream: no-type package js with ESM syntax is detected as ESM', async () => {
-    await withTempDir('node-module-detect-esm-syntax', async (root) => {
+Deno.test('module upstream: typed package js resolves as ESM', async () => {
+    await withTempDir('node-module-typed-esm', async (root) => {
         const pkgDir = path.join(root, 'node_modules', 'syntax-detected-package');
         Deno.mkdirSync(pkgDir, { recursive: true });
-        Deno.writeTextFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'syntax-detected-package' }));
+        Deno.writeTextFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({
+            name: 'syntax-detected-package',
+            type: 'module',
+        }));
         Deno.writeTextFileSync(path.join(pkgDir, 'index.js'), `
             export function add(a, b) {
                 return a + b;
@@ -379,6 +382,41 @@ Deno.test('module upstream: no-type package js with ESM syntax is detected as ES
 
         const ns = await import(pathToFileURL(path.join(root, 'entry.mjs')).href);
         strictEqual(ns.result, 3);
+    });
+});
+
+Deno.test('module upstream: require-first typed ESM keeps live bindings for later import', async () => {
+    await withTempDir('node-module-require-first-implicit-esm', async (root) => {
+        const packageDir = path.join(root, 'node_modules', 'implicit-esm-cache-shape');
+        Deno.mkdirSync(packageDir, { recursive: true });
+        const source = path.join(packageDir, 'index.js');
+        Deno.writeTextFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+            name: 'implicit-esm-cache-shape',
+            type: 'module',
+        }));
+        Deno.writeTextFileSync(source, `
+            export let value = 0;
+            export function bump() { value += 1; }
+        `);
+        const importer = path.join(root, 'importer.mjs');
+        Deno.writeTextFileSync(importer, `
+            import * as module from 'implicit-esm-cache-shape';
+            export default module;
+        `);
+
+        const req = module.createRequire(path.join(root, 'entry.cjs'));
+        const required = req('implicit-esm-cache-shape') as {
+            value: number;
+            bump(): void;
+        };
+        strictEqual(required.value, 0);
+        required.bump();
+        strictEqual(required.value, 1);
+
+        const { default: imported } = await import(pathToFileURL(importer).href);
+        strictEqual(imported.value, 1);
+        imported.bump();
+        strictEqual(imported.value, 2, 'the later import must retain the ESM live binding');
     });
 });
 
