@@ -1,4 +1,5 @@
 import { deepStrictEqual, ok, rejects, strictEqual, throws } from 'node:assert';
+import { DOMException as SourceDOMException } from '../../cno/src/webapi/dom-exception.ts';
 import {
     WebTransport,
     WebTransportError,
@@ -8,6 +9,9 @@ import {
 } from '../../cno/src/webapi/webtransport.ts';
 
 class FakeConnection implements CModuleExternalQuic.Connection {
+    readonly peerAddress = { ip: '127.0.0.1', port: 4433 };
+    readonly protocol = 'cno-quic';
+    readonly serverName = 'localhost';
     onstream: CModuleExternalQuic.Callback<[number, boolean]> | null = null;
     ondata: CModuleExternalQuic.Callback<[number, Uint8Array, boolean]> | null = null;
     onstreamreset: CModuleExternalQuic.Callback<[number, number]> | null = null;
@@ -120,18 +124,22 @@ Deno.test('WebTransport streams: route incoming data, reset, stop and datagrams'
     invoke(conn.ondatagram, new Uint8Array([7, 8]));
     deepStrictEqual(await datagramRead, { done: false, value: new Uint8Array([7, 8]) });
     const datagramWriter = session.datagrams.writable.getWriter();
+    const datagramClosed = datagramWriter.closed.then(() => null, error => error);
     await datagramWriter.write(new Uint8Array([6]));
     deepStrictEqual(conn.datagrams, [new Uint8Array([6])]);
     await rejects(datagramWriter.write(new Uint8Array(1201)), RangeError);
+    ok(await datagramClosed instanceof RangeError);
+    datagramWriter.releaseLock();
+    session.close();
 });
 
 Deno.test('WebTransport: rejects insecure URLs and unsupported certificate hashes', () => {
     throws(() => new WebTransport('http://example.com/'), error => {
-        return error instanceof DOMException && error.name === 'SyntaxError';
+        return error instanceof SourceDOMException && error.name === 'SyntaxError';
     });
     throws(() => new WebTransport('https://example.com/', {
         serverCertificateHashes: [{ algorithm: 'sha-256', value: new Uint8Array(32) }],
-    }), error => error instanceof DOMException && error.name === 'NotSupportedError');
+    }), error => error instanceof SourceDOMException && error.name === 'NotSupportedError');
 });
 
 Deno.test('WebTransportSession: releases a native connection after an error', async () => {

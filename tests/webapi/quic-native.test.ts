@@ -8,7 +8,10 @@ import {
     requireQuic,
     tryLoadQuic,
     __forceQuicUnavailable,
-} from '../../cno/src/quic-native.ts';
+} from '../../cno/src/utils/quic-native.ts';
+import { within } from '../_helpers/quic.ts';
+
+const ssl = import.meta.use('ssl');
 
 Deno.test({
     name: 'quic: tryLoadQuic returns module when embedded',
@@ -138,6 +141,16 @@ Deno.test({
         () => Reflect.construct(Socket, [{ transport: { cc: 'bbr' } }]),
         /unknown congestion control algorithm/i,
     );
+    for (const alpnProtocols of [[''], ['a'.repeat(256)], [1], 'h3']) {
+        throws(
+            () => Reflect.construct(Socket, [{ alpnProtocols }]),
+            /ALPN|alpnProtocols/,
+        );
+    }
+    const protocolMarker = new Error('ALPN getter marker');
+    const protocols = ['cno-quic'];
+    Object.defineProperty(protocols, '0', { get() { throw protocolMarker; } });
+    throws(() => new Socket({ alpnProtocols: protocols }), error => error === protocolMarker);
 });
 
 Deno.test({
@@ -166,36 +179,20 @@ Deno.test({
     ignore: !quicAvailable(),
     timeout: 15000,
 }, async () => {
-    const dir = await Deno.makeTempDir({ prefix: 'cno-quic-' });
     let server: CModuleExternalQuic.Socket | undefined;
     let client: CModuleExternalQuic.Socket | undefined;
     let peer: CModuleExternalQuic.Connection | null = null;
     let conn: CModuleExternalQuic.Connection | undefined;
     try {
-        const keyPath = `${dir}/key.pem`;
-        const certPath = `${dir}/cert.pem`;
-        const cmd = new Deno.Command('openssl', {
-            args: [
-                'req', '-x509', '-newkey', 'rsa:2048',
-                '-keyout', keyPath, '-out', certPath,
-                '-days', '1', '-nodes', '-subj', '/CN=127.0.0.1',
-                '-addext', 'subjectAltName=IP:127.0.0.1',
-            ],
-            stdout: 'piped',
-            stderr: 'piped',
-        });
-        const { code } = await cmd.output();
-        ok(code === 0, 'openssl for UAF test');
-        const cert = await Deno.readTextFile(certPath);
-        const key = await Deno.readTextFile(keyPath);
+        const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
         const { Socket } = requireQuic();
-        const port = 19600 + (Math.floor(Math.random() * 100) | 0);
         server = new Socket({
-            isServer: true, host: '127.0.0.1', port, cert, key, alpn: 'cno-quic',
+            isServer: true, host: '127.0.0.1', port: 0, cert, key, alpn: 'cno-quic',
         });
         server.onconnection = (connection) => { peer = connection; };
-        client = new Socket({ host: '127.0.0.1', port, alpn: 'cno-quic' });
-        conn = client.connect('127.0.0.1', port);
+        const port = server.localAddress!.port;
+        client = new Socket({ host: '127.0.0.1', port: 0, alpn: 'cno-quic', caCerts: [cert] });
+        conn = client.connect('127.0.0.1', port, 'localhost');
         await new Promise<void>((resolve, reject) => {
             const t = setTimeout(() => reject(new Error('hs timeout')), 8000);
             conn!.onconnected = () => { clearTimeout(t); resolve(); };
@@ -214,6 +211,32 @@ Deno.test({
         try { peer?.close(); } catch { /* already closed */ }
         try { client?.close(); } catch { /* already closed */ }
         try { server?.close(); } catch { /* already closed */ }
-        await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+    }
+});
+
+Deno.test({
+    name: 'quic: address-in-use is catchable and preserves the original listener',
+    ignore: !quicAvailable(),
+    timeout: 15000,
+}, async () => {
+    const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
+    const { Socket } = requireQuic();
+    const options = { isServer: true, host: '127.0.0.1', port: 0, cert, key, alpn: 'cno-quic' };
+    const server = new Socket(options);
+    let client: CModuleExternalQuic.Socket | undefined;
+    try {
+        const port = server.localAddress!.port;
+        throws(() => new Socket({ ...options, port }), /EADDRINUSE|address already in use/i);
+        strictEqual(server.localAddress!.port, port);
+        client = new Socket({ host: '127.0.0.1', port: 0, caCerts: [cert], alpn: 'cno-quic' });
+        const conn = client.connect('127.0.0.1', port, 'localhost');
+        await within(new Promise<void>((resolve, reject) => {
+            conn.onconnected = resolve;
+            conn.onerror = message => reject(new Error(message));
+        }), 'handshake after address-in-use', 10000);
+        strictEqual(conn.protocol, 'cno-quic');
+    } finally {
+        client?.close();
+        server.close();
     }
 });
