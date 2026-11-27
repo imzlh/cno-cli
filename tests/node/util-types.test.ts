@@ -1,4 +1,4 @@
-import { strictEqual } from 'node:assert';
+import { strictEqual, throws } from 'node:assert';
 import { types as utilTypes } from 'node:util';
 import * as types from 'node:util/types';
 
@@ -95,6 +95,31 @@ Deno.test('util.types: internal-only brands cannot be forged with public propert
     strictEqual(types.isModuleNamespaceObject(fakeNamespace), false);
     strictEqual(types.isModuleNamespaceObject(types), true);
     strictEqual(types.isGeneratorObject((async function* () {})()), true);
+});
+
+Deno.test('util.types: crypto key predicates require internal brands', async () => {
+    const fakeKeyObject = { [Symbol.toStringTag]: 'KeyObject' };
+    const keyObject = (await import('node:crypto')).createSecretKey(new Uint8Array([1, 2, 3]));
+    const fakeCryptoKey = { [Symbol.toStringTag]: 'CryptoKey' };
+    const cryptoKey = await crypto.subtle.importKey(
+        'raw',
+        new Uint8Array([1, 2, 3]),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign'],
+    );
+
+    strictEqual(types.isKeyObject(keyObject), true);
+    strictEqual(types.isKeyObject(fakeKeyObject), false);
+    strictEqual(types.isKeyObject(new Proxy(keyObject, {})), false);
+    Object.defineProperty(keyObject, Symbol.toStringTag, { value: 'Wrong' });
+    strictEqual(types.isKeyObject(keyObject), true);
+    const cryptoModule = await import('node:crypto');
+    throws(() => new cryptoModule.KeyObject('secret', undefined, new Uint8Array([1, 2, 3]), 'raw'), TypeError);
+
+    strictEqual(types.isCryptoKey(cryptoKey), true);
+    strictEqual(types.isCryptoKey(fakeCryptoKey), false);
+    strictEqual(types.isCryptoKey(new Proxy(cryptoKey, {})), false);
 });
 
 Deno.test('util.types: built-in predicates use internal brands, not Symbol.hasInstance or tags', () => {
