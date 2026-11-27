@@ -22,7 +22,7 @@ Deno.test({ name: 'cli stage: eval runs inline code with Deno args empty', timeo
             'eval',
             'console.log("EVAL:" + JSON.stringify({ args: Deno.args, main: Deno.mainModule.endsWith("<eval>.ts") }))',
         ], root);
-        strictEqual(result.code, 0, result.stderr);
+        strictEqual(result.code, 0, result.stdout + result.stderr);
         ok(result.stdout.includes('EVAL:{"args":[]'), result.stdout);
     });
 });
