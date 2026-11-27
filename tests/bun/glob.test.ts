@@ -19,6 +19,7 @@ Deno.test('bun Glob: lexical matching and validation', () => {
         ['**/*.ts', 'a.ts', true], ['**/*.ts', 'dir/a.ts', true],
         ['a/?[0-9].ts', 'a/x2.ts', true], ['a/?[!0-9].ts', 'a/x2.ts', false],
         ['{src,test}/**/*.{ts,js}', 'src/a.ts', true],
+        ['**/*', 'a/', false], ['**/*', 'a', true], ['**/*', 'a/b', true],
         ['file{01..03}.ts', 'file02.ts', true], ['{a..e..2}', 'c', true],
         ['{a}', 'a', true], ['{}', '', true],
         ['@(foo|bar).ts', 'bar.ts', true], ['+(a|b).ts', 'abba.ts', true],
