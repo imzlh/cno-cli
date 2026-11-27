@@ -258,12 +258,14 @@ Deno.test('deno: HttpClient exposes proxy helpers and rejects connections after 
         shouldUseProxy(url: URL): boolean;
         getProxyUrl(): URL | null;
         getProxyAuth(): string | null;
+        getSSLContext(): unknown;
         connect(hostname: string, port: number, isSecure: boolean): Promise<unknown>;
     };
 
     strictEqual(client.shouldUseProxy(new URL('https://example.test/')), true);
     strictEqual(client.getProxyUrl()?.href, 'http://proxy.local:8080/');
     strictEqual(client.getProxyAuth(), 'Basic dXNlcjpwYXNz');
+    strictEqual(client.getSSLContext(), null);
 
     client.close();
     let err: Error | null = null;
@@ -274,18 +276,77 @@ Deno.test('deno: HttpClient exposes proxy helpers and rejects connections after 
     }
     ok(err);
     strictEqual(err!.message, 'HttpClient is closed');
+
+    const ssl = import.meta.use('ssl');
+    const { cert } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
+    const tlsClient = new Deno.HttpClient({ caCerts: [cert] }) as Deno.HttpClient & {
+        getSSLContext(): CModuleSSL.Context | null;
+    };
+    try {
+        const context = tlsClient.getSSLContext();
+        ok(context);
+        strictEqual(tlsClient.getSSLContext(), context);
+    } finally {
+        tlsClient.close();
+    }
+});
+
+Deno.test({ name: 'deno: HttpClient CONNECT preserves bytes pipelined by an HTTP proxy', timeout: 5000 }, async () => {
+    if (!await canListenTcp()) return;
+    const listener = Deno.listen({ hostname: '127.0.0.1', port: 0 });
+    const client = new Deno.HttpClient({
+        proxy: {
+            url: `http://127.0.0.1:${listener.addr.port}`,
+            basicAuth: { username: '', password: 'secret' },
+        },
+    }) as Deno.HttpClient & {
+        connect(hostname: string, port: number, isSecure: boolean): Promise<{
+            read(buffer: Uint8Array): Promise<number>;
+            close(): void;
+        }>;
+    };
+    let proxy: Deno.Conn | undefined;
+    let socket: Awaited<ReturnType<typeof client.connect>> | undefined;
+    try {
+        const accept = listener.accept();
+        const connecting = client.connect('example.test', 443, true);
+        proxy = await withTimeout(accept);
+        const request = await readUntil(proxy, '\r\n\r\n');
+        ok(request.startsWith('CONNECT example.test:443 HTTP/1.1\r\n'));
+        ok(request.includes('Proxy-Authorization: Basic OnNlY3JldA==\r\n'));
+        await proxy.write(new TextEncoder().encode('HTTP/1.1 200 Connection Established\r\n'));
+        await proxy.write(new TextEncoder().encode('\r\nearly bytes'));
+        socket = await withTimeout(connecting);
+        const buffer = new Uint8Array(32);
+        const bytesRead = await withTimeout(socket.read(buffer));
+        strictEqual(new TextDecoder().decode(buffer.subarray(0, bytesRead)), 'early bytes');
+    } finally {
+        socket?.close();
+        proxy?.close();
+        listener.close();
+        client.close();
+    }
 });
 
 Deno.test('deno: HttpClient uses the shared NO_PROXY matcher', () => {
     const previousUpper = Deno.env.get('NO_PROXY');
     const previousLower = Deno.env.get('no_proxy');
-    const client = new Deno.HttpClient({ proxy: { url: 'http://proxy.local:8080' } }) as Deno.HttpClient & {
+    const client = new Deno.HttpClient({
+        proxy: {
+            url: 'http://proxy.local:8080',
+            basicAuth: { username: 'user', password: 'pass' },
+        },
+    }) as Deno.HttpClient & {
+        options: { proxy?: { url: string; basicAuth?: { username: string; password: string } } };
+        getProxyUrl(): URL | null;
         shouldUseProxy(url: URL): boolean;
     };
     try {
         Deno.env.delete('no_proxy');
         Deno.env.set('NO_PROXY', 'example.test:443; <local>; [::1]:8080');
 
+        strictEqual(client.getProxyUrl()?.href, 'http://proxy.local:8080/');
+        deepStrictEqual(client.options.proxy?.basicAuth, { username: 'user', password: 'pass' });
         strictEqual(client.shouldUseProxy(new URL('https://api.example.test/')), false);
         strictEqual(client.shouldUseProxy(new URL('http://intranet/')), false);
         strictEqual(client.shouldUseProxy(new URL('http://[::1]:8080/')), false);
@@ -297,6 +358,28 @@ Deno.test('deno: HttpClient uses the shared NO_PROXY matcher', () => {
         if (previousLower === undefined) Deno.env.delete('no_proxy');
         else Deno.env.set('no_proxy', previousLower);
     }
+});
+
+Deno.test('deno: fetch rejects a closed HttpClient with BadResource before connecting', async () => {
+    const client = Deno.createHttpClient();
+    client.close();
+
+    let error: unknown;
+    try {
+        await fetch('http://127.0.0.1:1/closed-client', { client } as RequestInit);
+    } catch (caught) {
+        error = caught;
+    }
+
+    ok(error instanceof Deno.errors.BadResource, `expected BadResource, got ${String(error)}`);
+});
+
+Deno.test('deno: Deno.serve rejects a non-function handler before listening', () => {
+    const serve = Deno.serve as unknown as (options: Deno.ServeOptions, handler: unknown) => Deno.HttpServer;
+    throws(
+        () => serve({ hostname: '127.0.0.1', port: 0 }, {}),
+        /Handler must be a function/,
+    );
 });
 
 Deno.test({ name: 'deno: Deno.serve lifecycle exposes addr onListen finished abort and onError', timeout: 10000 }, async () => {
@@ -712,9 +795,7 @@ Deno.test({ name: 'deno: cno serve --unix listens on a socket file and answers f
 Deno.test({ name: 'deno: cno serve --cert/--key completes a TLS handshake with the pinned CA', timeout: SPAWN_TEST_TIMEOUT_MS }, async () => {
     if (!await canListenTcp()) return;
     const dir = await Deno.makeTempDir();
-    const target = startTarget([
-        'serve', `--port=${PORT}`, `--cert=${dir}/cert.pem`, `--key=${dir}/key.pem`, CLI_TARGET,
-    ]);
+    let target: Target | undefined;
     let conn: Deno.TlsConn | null = null;
     try {
         // The round trip needs a self-signed pair; skip where openssl is not
@@ -730,11 +811,16 @@ Deno.test({ name: 'deno: cno serve --cert/--key completes a TLS handshake with t
         }).output();
         if (!gen.success) return;
         const caCerts = [new TextDecoder().decode(await Deno.readFile(`${dir}/cert.pem`))];
+        target = startTarget([
+            'serve', `--port=${PORT}`, `--cert=${dir}/cert.pem`, `--key=${dir}/key.pem`, CLI_TARGET,
+        ]);
 
         const deadline = Date.now() + SERVER_START_BUDGET_MS;
         let lastError: unknown = null;
         while (Date.now() < deadline) {
-            if (target.failure) throw target.failure;
+            if (target.failure) {
+                throw new DefinitiveError(`${target.failure.message}\n${target.stderr}`, { cause: target.failure });
+            }
             try {
                 conn = await Deno.connectTls({ hostname: '127.0.0.1', port: PORT, caCerts });
                 break;
@@ -758,7 +844,7 @@ Deno.test({ name: 'deno: cno serve --cert/--key completes a TLS handshake with t
         ok(raw.includes('cli-ok'));
     } finally {
         try { conn?.close(); } catch {}
-        await target.stop();
+        await target?.stop();
         removeTree(dir);
     }
 });
