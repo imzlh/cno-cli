@@ -1,23 +1,13 @@
 /**
- * Native nghttp2 flow-control surface.
+ * Native nghttp2 flow control, callback ownership, and feature-disabled behavior.
  *
- * COVERAGE WARNING — the nine flow-control tests below are gated
- * `ignore: !h2Available()`, and `h2Available()` is false in this binary for a
- * BUILD reason, not a platform one: `build/CMakeCache.txt` carries
- * `CNO_EMBED_EXT_H2:BOOL=OFF`, so the native nghttp2 extension was never
- * compiled in. (OBSERVED 2026-08-04: 0 ok / 9 skipped.)
+ * COVERAGE WARNING: every protocol test below is gated by `h2Available()`. A
+ * green file with CNO_EMBED_EXT_H2=OFF means only the unconditional gates ran;
+ * native HTTP/2 behavior remains unmeasured. Build with
+ * -DCNO_EMBED_EXT_H2=ON to execute the protocol tests.
  *
- * That matters because sibling files DO exercise the JS-side h2 path against the
- * real H2Stream class and pass (tests/webapi/h2-body-cap.test.ts 12 ok,
- * tests/webapi/h2-truncation.test.ts 15 ok). So a green verdict here would imply
- * native-flow coverage that does not exist. Re-enable by building with
- * -DCNO_EMBED_EXT_H2=ON; until then treat native H2 flow control as UNMEASURED.
- *
- * This file used to report a file-level PASS while executing ZERO tests, which is
- * worse than failing. The two GATE tests at the bottom therefore run
- * unconditionally and assert the fail-closed contract, so the file always
- * executes at least one real assertion in either build configuration. Same shape
- * as tests/webapi/quic-native.test.ts — do not add `ignore:` to them.
+ * The two GATE tests at the bottom intentionally run in every build and assert
+ * the fail-closed contract. Do not add `ignore:` to them.
  */
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
 import {
@@ -114,6 +104,83 @@ Deno.test({
         strictEqual(body.byteLength, 256 * 1024);
         deepStrictEqual(body, new Uint8Array(body.byteLength).fill(0x61));
         strictEqual(remoteEnded, true);
+    } finally {
+        client.destroy();
+        server.destroy();
+    }
+});
+
+Deno.test({
+    name: 'native h2: connection-only consumption does not release the stream window',
+    ignore: !h2Available(),
+}, () => {
+    const native = requireH2();
+    const windowSize = 65535;
+    const client = new native.Session(false);
+    const server = new native.Session(true, { initialWindowSize: windowSize }, {
+        manualWindowUpdate: true,
+    });
+    const { drain } = wirePair(client, server);
+    let received = 0;
+    server.ondata = (_streamId, chunk) => { received += chunk.byteLength; };
+    try {
+        drain();
+        const streamId = client.request(requestHeaders('POST'), false);
+        client.write(streamId, new Uint8Array(256 * 1024).fill(0x61), true);
+        drain();
+        strictEqual(received, windowSize);
+        strictEqual(client.remoteWnd, 0);
+
+        server.consume(0, received);
+        drain();
+        strictEqual(client.remoteWnd, windowSize);
+        strictEqual(received, windowSize);
+    } finally {
+        client.destroy();
+        server.destroy();
+    }
+});
+
+Deno.test({
+    name: 'native h2: manual stream consumption advances flow-controlled DATA',
+    ignore: !h2Available(),
+}, () => {
+    const native = requireH2();
+    const windowSize = 65535;
+    const client = new native.Session(false);
+    const server = new native.Session(true, { initialWindowSize: windowSize }, {
+        manualWindowUpdate: true,
+    });
+    const { drain } = wirePair(client, server);
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    server.ondata = (_streamId, chunk) => {
+        chunks.push(copyBytes(chunk));
+        received += chunk.byteLength;
+    };
+    try {
+        drain();
+        const streamId = client.request(requestHeaders('POST'), false);
+        const payload = new Uint8Array(256 * 1024).fill(0x61);
+        client.write(streamId, payload, true);
+        drain();
+        strictEqual(received, windowSize);
+        strictEqual(client.remoteWnd, 0);
+
+        let consumed = 0;
+        const maxUpdates = Math.ceil(payload.byteLength / windowSize) + 1;
+        for (let update = 0; update < maxUpdates && received < payload.byteLength; update++) {
+            const before = received;
+            const available = received - consumed;
+            ok(available > 0);
+            server.consume(streamId, available);
+            consumed = received;
+            drain();
+            if (received < payload.byteLength) ok(received > before);
+        }
+
+        strictEqual(received, payload.byteLength);
+        deepStrictEqual(joinBytes(chunks), payload);
     } finally {
         client.destroy();
         server.destroy();
@@ -257,7 +324,7 @@ Deno.test({
         drain();
         strictEqual(sendReentered, false);
         strictEqual(ended, true);
-        deepStrictEqual(received, [new Uint8Array([0x6f, 0x6b])]);
+        deepStrictEqual(joinBytes(received), new Uint8Array([0x6f, 0x6b]));
     } finally {
         client.destroy();
         server.destroy();
@@ -336,7 +403,7 @@ Deno.test({
         client.request(requestHeaders(), true);
         client.request(requestHeaders(), true);
         drain();
-        deepStrictEqual(received, [new Uint8Array([0x61])]);
+        deepStrictEqual(joinBytes(received), new Uint8Array([0x61]));
         strictEqual(streamCount, 2);
         strictEqual(rejectionMessages.length, 2);
         strictEqual(rejectionMessages.every(message => /END_STREAM/i.test(message)), true);
@@ -450,11 +517,90 @@ Deno.test({
         drain();
         client.request(requestHeaders(), true);
         drain();
-        deepStrictEqual(received, [new Uint8Array([0x61]), new Uint8Array([0x62])]);
+        deepStrictEqual(joinBytes(received), new Uint8Array([0x61, 0x62]));
         strictEqual(ended, true);
     } finally {
         client.destroy();
         server.destroy();
+    }
+});
+
+Deno.test({
+    name: 'native h2: callback exceptions propagate to the receive caller',
+    ignore: !h2Available(),
+}, () => {
+    const h2 = requireH2();
+    const client = new h2.Session(false);
+    const server = new h2.Session(true);
+    const { drain } = wirePair(client, server);
+    const sentinel = new Error('settings callback failed');
+    server.onsettings = () => { throw sentinel; };
+    try {
+        throws(drain, error => error === sentinel);
+    } finally {
+        client.destroy();
+        server.destroy();
+    }
+});
+
+Deno.test({
+    name: 'native h2: the package entry resolves the embedded module',
+    ignore: !h2Available(),
+}, async () => {
+    const module = await import('@cnojs/http/ext-h2');
+    strictEqual(module.default, requireH2());
+});
+
+Deno.test({
+    name: 'native h2: workers exchange flow-controlled DATA using their own sessions',
+    ignore: !h2Available(),
+    timeout: 15000,
+}, async () => {
+    const source = `
+        const { Session, constants } = import.meta.use('@cnojs/http/ext-h2');
+        const client = new Session(false);
+        const server = new Session(true);
+        const toClient = [];
+        const toServer = [];
+        let bytes = 0;
+        let ended = false;
+        client.onsend = data => toServer.push(data.slice());
+        server.onsend = data => toClient.push(data.slice());
+        server.onstream = id => {
+            server.respond(id, [[':status', '200']], false);
+            server.write(id, new Uint8Array(256 * 1024).fill(0x61), true);
+        };
+        client.ondata = (_id, data) => {
+            for (const value of data) if (value !== 0x61) throw new Error('corrupt DATA');
+            bytes += data.byteLength;
+        };
+        client.onframe = (type, _id, flags) => {
+            if (type === constants.DATA && (flags & constants.FLAG_END_STREAM)) ended = true;
+        };
+        client.request([
+            [':method', 'GET'], [':path', '/'],
+            [':scheme', 'http'], [':authority', 'localhost'],
+        ], true);
+        for (let turn = 0; turn < 1000 && (toClient.length || toServer.length); turn++) {
+            while (toServer.length) server.receive(toServer.shift());
+            while (toClient.length) client.receive(toClient.shift());
+        }
+        client.destroy();
+        server.destroy();
+        self.postMessage({ bytes, ended });
+        self.close();
+    `;
+    const worker = new Worker(`data:application/typescript;base64,${btoa(source)}`, { type: 'module' });
+    try {
+        const reply = await new Promise<{ bytes: number; ended: boolean }>((resolve, reject) => {
+            worker.onmessage = event => resolve(event.data);
+            worker.onerror = reject;
+        });
+        deepStrictEqual(reply, { bytes: 256 * 1024, ended: true });
+        const session = new (requireH2().Session)(false);
+        session.destroy();
+    } finally {
+        worker.terminate();
     }
 });
 

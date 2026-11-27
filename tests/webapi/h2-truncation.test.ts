@@ -16,28 +16,15 @@
  * answers without draining the request legitimately leaves the peer's half open,
  * and nghttp2 then reports close code 0).
  *
- * METHOD — read this before trusting any of it. The native nghttp2 extension is
- * NOT available in this binary (`h2Available() === false`, verified in-test
- * below), so a real HTTP/2 connection cannot be established and `H2Connection` is
- * unconstructible: its constructor calls requireH2(), which throws. These tests
- * therefore construct the REAL `H2Stream` class directly and drive the callbacks
- * nghttp2 would drive (acceptHeaders / acceptData / acceptEnd / acceptClose), with
- * a stub object standing in for the connection.
- *
- * What that does and does not prove:
- *   - PROVEN: the END_STREAM-vs-RST_STREAM(0) accounting in H2Stream, which is
- *     where the entire defect lives and is pure JS bookkeeping.
- *   - NOT PROVEN: nghttp2 frame parsing, and that the C layer calls these methods
- *     with the flags asserted here. A previous agent's h2-body-cap tests passed
- *     12/12 against a stubbed *H2Connection* while proving nothing about the real
- *     path; the difference here is that the class under test is the real one and
- *     the stub is only its collaborator.
- * Deliberately does NOT import node:http2 — that module is independently broken in
- * this tree (duplicate invalidArgType) and would mask these results as a syntax error.
+ * State-machine cases drive H2Stream directly in every build. The final test
+ * sends a real RST_STREAM(NO_ERROR) over TCP when native HTTP/2 is enabled.
  */
 import { ok, strictEqual, throws } from 'node:assert';
 import { H2Stream } from '@cnojs/http/h2';
 import { h2Available } from '@cnojs/http/h2-native';
+import { createServer } from '@cnojs/http/server';
+import { HttpVersion } from '@cnojs/http/protocol';
+import * as http2 from 'node:http2';
 
 type Reset = { id: number; code: number | string };
 
@@ -72,16 +59,6 @@ async function drain(s: H2Stream): Promise<{ bytes: number; code: string | null;
     }
 }
 
-/* ── the method disclosure is itself an assertion ───────────────────────────── */
-
-Deno.test('h2 truncation: METHOD — native h2 is unavailable, so these drive H2Stream directly', () => {
-    strictEqual(
-        h2Available(), false,
-        'if this ever becomes true, rewrite these tests against a real connection — ' +
-        'direct construction stops being the honest method',
-    );
-});
-
 /* ── the defect: RST_STREAM(0) mid-body must not look like a clean finish ───── */
 
 Deno.test('h2 truncation: RST_STREAM(NO_ERROR) mid-body raises ECONNRESET, not a clean end', async () => {
@@ -101,6 +78,45 @@ Deno.test('h2 stream: outbound END_STREAM rejects later writes', () => {
     s.respond([[':status', '204']], true);
     throws(() => s.sendData(enc.encode('late')), /already ended|END_STREAM/i);
     throws(() => s.respond([[':status', '200']], false), /headers already sent/i);
+});
+
+Deno.test('h2 cancellation: input cancellation waits for sent response frames and wakes pending reads', async () => {
+    const resets: Reset[] = [];
+    const stream = rawStream(true, resets);
+    stream.acceptHeaders(POST, 0);
+    const body = stream.bodyChunks();
+    const pending = body.next();
+    stream.cancelBody();
+    strictEqual((await pending).done, true);
+    // Cancelled uploads must not accumulate bytes while the response is blocked.
+    for (let index = 0; index < 20; index++) stream.acceptData(new Uint8Array(1024 * 1024), false);
+    stream.respond([[':status', '200']]);
+    stream.sendData(enc.encode('accepted'), true);
+    let complete = false;
+    const sent = stream.waitForLocalEnd().then(() => { complete = true; });
+    await Promise.resolve();
+    strictEqual(complete, false, 'submitting END_STREAM is not completion');
+    strictEqual(resets.length, 0);
+    stream.acceptLocalEnd(Promise.resolve());
+    await sent;
+    strictEqual(resets.length, 1);
+    strictEqual(resets[0]!.code, 0);
+    stream.acceptClose(0);
+    strictEqual((await drain(stream)).code, null);
+});
+
+Deno.test('h2 cancellation: cancelling completed input preserves clean stream completion', async () => {
+    const resets: Reset[] = [];
+    const stream = rawStream(true, resets);
+    stream.acceptHeaders(POST, 0);
+    stream.acceptData(enc.encode('0123456789'), true);
+    stream.cancelBody();
+    stream.respond([[':status', '204']], true);
+    stream.acceptLocalEnd(Promise.resolve());
+    stream.acceptClose(0);
+    await stream.waitForLocalEnd();
+    strictEqual(resets.length, 0);
+    strictEqual((await drain(stream)).bytes, 0);
 });
 
 Deno.test('h2 truncation: a truncated stream is now DISTINGUISHABLE from a complete one', async () => {
@@ -237,6 +253,53 @@ Deno.test('h2 truncation: the first error wins — a real code is not overwritte
     s.acceptClose(0);
     const r = await drain(s);
     strictEqual(r.code, 'ERR_HTTP2_SESSION_ERROR', 'setStreamError keeps the first, more specific cause');
+});
+
+Deno.test({
+    name: 'h2 truncation: a wire RST_STREAM(NO_ERROR) rejects a partial request body',
+    ignore: !h2Available(),
+    timeout: 15000,
+}, async () => {
+    const partial = Promise.withResolvers<void>();
+    const outcome = Promise.withResolvers<{ bytes: number; code: unknown }>();
+    const failure = Promise.withResolvers<never>();
+    const server = createServer(async (request) => {
+        let bytes = 0;
+        try {
+            for (;;) {
+                const chunk = await request.body?.();
+                if (!chunk) break;
+                bytes += chunk.byteLength;
+                partial.resolve();
+            }
+            outcome.resolve({ bytes, code: null });
+        } catch (error) {
+            outcome.resolve({ bytes, code: Reflect.get(error as object, 'code') });
+        }
+    }, { hostname: '127.0.0.1', port: 0, protocols: [HttpVersion.HTTP2] });
+    server.listen();
+    await server.acceptLoop();
+    const address = server.address();
+    ok(address && 'port' in address);
+    const session = http2.connect(`http://127.0.0.1:${address.port}`);
+    session.on('error', failure.reject);
+    try {
+        await Promise.race([
+            new Promise<void>(resolve => session.once('connect', resolve)),
+            failure.promise,
+        ]);
+        const request = session.request({ ':method': 'POST', ':path': '/partial', 'content-length': '10' }, { endStream: false });
+        request.on('error', failure.reject);
+        request.write('0123');
+        await Promise.race([partial.promise, failure.promise]);
+        request.close(http2.constants.NGHTTP2_NO_ERROR);
+        const received = await Promise.race([outcome.promise, failure.promise]);
+        strictEqual(received.bytes, 4);
+        strictEqual(received.code, 'ECONNRESET');
+    } finally {
+        session.destroy();
+        await server.shutdown();
+    }
 });
 
 /* ── client side: a server that cuts a response short is the same defect ────── */

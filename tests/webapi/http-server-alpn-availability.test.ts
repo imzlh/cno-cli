@@ -1,36 +1,9 @@
-/**
- * ALPN advertisement must not outrun what the build can actually serve.
- *
- * DEFECT (OBSERVED 2026-08-04 against build/stage/cno.exe, CNO_EMBED_EXT_H2=OFF):
- * with the h2 native absent, a TLS server configured `protocols: [HTTP2, HTTP11]`
- * still advertised `h2` in its ALPN list, the client selected `h2`, the handshake
- * COMPLETED, and only then did `handleConnection` throw
- * `Unsupported HTTP protocol version: 2` (server.ts, PROTOCOL_MODULES.get site)
- * and drop the socket. A client that would have been perfectly happy with
- * HTTP/1.1 got an unexplained connection close instead of being steered during
- * negotiation. Measured: handshake ok, ALPN "h2", then EOF, handler never ran.
- *
- * Availability now reaches all three decision points — the advertised ALPN list,
- * negotiateProtocol()'s `allow` predicate, and the protocol-module lookup — so
- * `h2` is never offered on a build that cannot serve it.
- *
- * EXPECTED TO PASS NOW, WITHOUT A REBUILD. `@cnojs/http` resolves through the
- * `node_modules/@cnojs/http` junction straight to this repo's `http/` directory
- * (`package.json`: "@cnojs/http": "workspace:./http"), so `http/src/**` is NOT
- * baked-only — edits there are live. Verified by canary: a unique marker added to
- * `http/src/server.ts` took effect with the binary's md5 unchanged, while
- * `grep -a -c` found the marker 0x in `build/stage/cno.exe` and 0x in the CTS
- * cache copy, with positive controls nonzero. Each test branches on
- * h2Available() rather than assuming it is false, so it stays correct in either
- * build configuration.
- *
- * NEGATIVE CONTROL: with `http/src/server.ts` reverted to its pre-fix state,
- * test 1 fails with `ALPN selected "h2"` instead of `"http/1.1"`. See the report.
- */
+/** ALPN advertisement and dispatch must match the protocols available in this build. */
 import { ok, strictEqual, deepStrictEqual } from 'node:assert';
 import { createServer } from '@cnojs/http/server';
 import { HttpVersion } from '@cnojs/http/protocol';
 import { h2Available } from '@cnojs/http/h2-native';
+import * as http2 from 'node:http2';
 import * as tls from 'node:tls';
 
 const ssl = import.meta.use('ssl');
@@ -68,8 +41,8 @@ interface Probe {
 }
 
 /**
- * Stand up a TLS server with `protocols`, connect offering `clientAlpn`, send one
- * HTTP/1.1 request, and report what happened.
+ * Stand up a TLS server with `protocols`, connect offering `clientAlpn`, send the
+ * matching protocol preface, and report negotiation/dispatch state.
  */
 async function probe(protocols: HttpVersion[], clientAlpn: string[]): Promise<Probe> {
     const { cert, key } = ssl.createSelfSignedCert({ commonName: '127.0.0.1', days: 1 });
@@ -101,7 +74,14 @@ async function probe(protocols: HttpVersion[], clientAlpn: string[]): Promise<Pr
 
         const raw = (sock as unknown as { alpnProtocol: string | false | null }).alpnProtocol;
         const alpn = raw === false || raw === undefined ? null : raw;
-        sock.write('GET /probe HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
+        if (alpn === 'h2') {
+            sock.write(Buffer.concat([
+                Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'),
+                Buffer.from([0, 0, 0, 4, 0, 0, 0, 0, 0]),
+            ]));
+        } else {
+            sock.write('GET /probe HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n');
+        }
         const outcome = await readOnce(sock, 6000);
         try { sock.destroy(); } catch { /* peer may already be gone */ }
         return {
@@ -124,6 +104,8 @@ Deno.test({
         // Complete build: h2 is preferred and nothing is dropped.
         strictEqual(p.alpn, 'h2', 'a build with the native must still select h2');
         deepStrictEqual(p.unavailable, [], 'nothing is unavailable on a complete build');
+        strictEqual(p.outcome.kind, 'bytes');
+        if (p.outcome.kind === 'bytes') strictEqual(p.outcome.text.charCodeAt(3), 4, 'server SETTINGS');
     } else {
         // THE DEFECT. Advertising h2 here steered the client into a protocol we
         // cannot serve; it must not be offered at all.
@@ -137,6 +119,55 @@ Deno.test({
         ok(/^HTTP\/1\.1 200 /.test((p.outcome as { text: string }).text),
             `expected 200, got ${(p.outcome as { text: string }).text.slice(0, 40)}`);
         strictEqual(p.handlerRan, true, 'the request handler must run');
+    }
+});
+
+Deno.test({
+    name: 'ALPN: negotiated h2 dispatches a request to the handler',
+    ignore: !h2Available(),
+    timeout: 20000,
+}, async () => {
+    const { cert, key } = ssl.createSelfSignedCert({ commonName: '127.0.0.1', days: 1 });
+    let handlerCalls = 0;
+    const server = createServer(async (_request, response) => {
+        handlerCalls++;
+        await response.end('h2-handler-ok');
+    }, {
+        hostname: '127.0.0.1', port: 0, cert, key, protocols: [HttpVersion.HTTP2],
+    });
+    let session: http2.ClientHttp2Session | undefined;
+    try {
+        server.listen();
+        await server.acceptLoop();
+        const address = server.address();
+        ok(address && 'port' in address);
+        const client = http2.connect(`https://127.0.0.1:${address.port}`, {
+            rejectUnauthorized: false,
+            ALPNProtocols: ['h2'],
+        });
+        session = client;
+        await new Promise<void>((resolve, reject) => {
+            client.once('connect', resolve);
+            client.once('error', reject);
+        });
+        strictEqual(client.alpnProtocol, 'h2');
+
+        const request = client.request({ ':method': 'GET', ':path': '/alpn-dispatch' });
+        let status: unknown;
+        const chunks: Buffer[] = [];
+        const responseDone = new Promise<void>((resolve, reject) => {
+            request.once('response', headers => { status = headers[':status']; });
+            request.on('data', chunk => chunks.push(chunk));
+            request.once('error', reject);
+            request.once('end', resolve);
+        });
+        await responseDone;
+        strictEqual(String(status), '200');
+        strictEqual(Buffer.concat(chunks).toString(), 'h2-handler-ok');
+        strictEqual(handlerCalls, 1);
+    } finally {
+        session?.destroy();
+        await server.shutdown();
     }
 });
 
@@ -173,9 +204,9 @@ Deno.test({
     const p = await probe([HttpVersion.HTTP2], ['http/1.1']);
 
     if (h2Available()) {
-        // Nothing in common: the server advertises only h2. Current behaviour is a
-        // completed handshake with no ALPN, then negotiateProtocol picks HTTP2.
         deepStrictEqual(p.unavailable, []);
+        strictEqual(p.handlerRan, false);
+        ok(p.outcome.kind === 'eof' || p.outcome.kind === 'reset', `expected refusal, got ${p.outcome.kind}`);
     } else {
         deepStrictEqual(p.effective, []);
         strictEqual(p.handlerRan, false, 'the handler must never run');
