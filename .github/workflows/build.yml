@@ -63,17 +63,8 @@ jobs:
             libcurl4-openssl-dev libltdl-dev libffi-dev libsqlite3-dev \
             libssl-dev zlib1g-dev libexpat1-dev libbrotli-dev libnghttp2-dev
 
-      - name: Install macOS dependencies
+      - uses: ./.github/actions/setup-macos
         if: runner.os == 'macOS'
-        run: |
-          brew install cmake ninja pkgconf libffi sqlite openssl@3 zlib expat curl brotli nghttp2
-          prefixes=""
-          for formula in libffi sqlite openssl@3 zlib expat curl brotli nghttp2; do
-            prefixes="${prefixes:+$prefixes;}$(brew --prefix "$formula")"
-          done
-          prefixes="$prefixes;$(brew --prefix)"
-          printf 'CNO_CMAKE_PREFIX_PATH=%s\n' "$prefixes" >> "$GITHUB_ENV"
-          printf 'CNO_OPENSSL_ROOT_DIR=%s\n' "$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
 
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
@@ -232,6 +223,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - uses: ./.github/actions/setup-js
+      - uses: ./.github/actions/setup-macos
+        if: runner.os == 'macOS'
       - uses: actions/download-artifact@v4
         with:
           name: cno-${{ matrix.target }}

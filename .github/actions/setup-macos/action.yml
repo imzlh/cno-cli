@@ -1,0 +1,15 @@
+name: Install macOS dependencies
+description: Use the same Homebrew dependencies for native builds and runtime tests.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        brew install cmake ninja pkgconf libffi sqlite openssl@3 zlib expat curl brotli nghttp2
+        prefixes=""
+        for formula in libffi sqlite openssl@3 zlib expat curl brotli nghttp2; do
+          prefixes="${prefixes:+$prefixes;}$(brew --prefix "$formula")"
+        done
+        prefixes="$prefixes;$(brew --prefix)"
+        printf 'CNO_CMAKE_PREFIX_PATH=%s\n' "$prefixes" >> "$GITHUB_ENV"
+        printf 'CNO_OPENSSL_ROOT_DIR=%s\n' "$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
