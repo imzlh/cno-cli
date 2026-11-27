@@ -72,11 +72,22 @@ jobs:
             prefixes="$prefixes;$(brew --prefix "$formula")"
           done
           printf 'CNO_CMAKE_PREFIX_PATH=%s\n' "$prefixes" >> "$GITHUB_ENV"
+          printf 'CNO_OPENSSL_ROOT_DIR=%s\n' "$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
 
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
         with:
           arch: ${{ matrix.target == 'windows-arm64' && 'arm64' || 'x64' }}
+
+      - name: Configure Rust MSVC linker
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
+          $linker = Join-Path (Split-Path $compiler) 'link.exe'
+          if (-not (Test-Path $linker)) { throw "MSVC linker not found beside $compiler" }
+          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
 
       - name: Configure Windows dependency cache
         if: runner.os == 'Windows'
@@ -130,6 +141,10 @@ jobs:
         id: native-build
         shell: bash
         run: node scripts/ci/build.mjs 2>&1 | tee native-build.log
+
+      - name: Report native build diagnostics
+        if: failure() && steps.native-build.outcome == 'failure'
+        run: node scripts/ci/report-build-errors.mjs native-build.log
 
       - name: Check cycle guards and packing against the staged runtime
         if: inputs.run-tests

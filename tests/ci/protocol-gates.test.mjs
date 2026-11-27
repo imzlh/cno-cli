@@ -51,11 +51,16 @@ test('native CI configure overrides cached protocol options on every native plat
         const build = join(f.directory, 'build');
         mkdirSync(join(build, 'oxc-ci'), { recursive: true });
         writeFileSync(join(build, 'oxc-ci', platform === 'win32' ? 'oxc.dll' : 'oxc.so'), 'extension fixture');
-        const result = f.run(join(repository, 'scripts/ci/build.mjs'), [build], { CNO_GATE_PLATFORM: platform });
+        const opensslRoot = join(f.directory, 'openssl@3');
+        const result = f.run(join(repository, 'scripts/ci/build.mjs'), [build], {
+            CNO_GATE_PLATFORM: platform,
+            CNO_OPENSSL_ROOT_DIR: opensslRoot,
+        });
         assert.equal(result.status, 0, result.stderr || result.error?.message);
         const configure = f.calls().find(call => call.args[0] === '-S');
         assert.ok(configure.args.includes('-DCNO_EMBED_EXT_H2=ON'));
         assert.ok(configure.args.includes(`-DCNO_EMBED_EXT_QUIC=${platform === 'win32' ? 'OFF' : 'ON'}`));
+        assert.equal(configure.args.includes(`-DOPENSSL_ROOT_DIR=${opensslRoot}`), platform === 'darwin');
     }
 });
 

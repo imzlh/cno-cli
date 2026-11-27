@@ -43,6 +43,9 @@ if (macos) {
     if (process.env.CNO_CMAKE_PREFIX_PATH) {
         configure.push(`-DCMAKE_PREFIX_PATH=${process.env.CNO_CMAKE_PREFIX_PATH}`);
     }
+    if (process.env.CNO_OPENSSL_ROOT_DIR) {
+        configure.push(`-DOPENSSL_ROOT_DIR=${process.env.CNO_OPENSSL_ROOT_DIR}`);
+    }
 }
 
 cmake('-S', root, '-B', buildDir, ...configure, ...native);
