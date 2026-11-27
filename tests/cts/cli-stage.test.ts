@@ -717,6 +717,7 @@ Deno.test({ name: 'cli stage: run supports multiple require preloads with CJS me
 
 Deno.test({ name: 'cli stage: run requires sync ESM from CJS and rejects TLA ESM', timeout: 15000 }, async () => {
     await withTempDir('cli-run-require-esm', async (root) => {
+        await Deno.writeTextFile(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
         await Deno.writeTextFile(join(root, 'sync.js'), 'export const sync_js = 1;\n');
         await Deno.writeTextFile(join(root, 'sync.mjs'), 'export const sync_mjs = 1;\n');
         await Deno.writeTextFile(join(root, 'async.js'), 'export const async_js = 1;\nawait {};\n');
@@ -946,6 +947,7 @@ Deno.test({ name: 'cli stage: run imports CJS files from ESM package entry point
 
 Deno.test({ name: 'cli stage: run lets package CJS require local JS ESM sources', timeout: 15000 }, async () => {
     await withTempDir('cli-run-npm-pkg-requires-esm-js', async (root) => {
+        await Deno.writeTextFile(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
         await Deno.mkdir(join(root, 'node_modules', 'package'), { recursive: true });
         await Deno.writeTextFile(join(root, 'node_modules', 'package', 'package.json'), JSON.stringify({
             name: 'package',
