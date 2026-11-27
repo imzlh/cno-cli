@@ -151,6 +151,47 @@ Deno.test('cts resolver: inspection misses do not survive a later successful res
     }
 });
 
+for (const method of ['resolve', 'resolveAsync'] as const) {
+    Deno.test(`cts ${method}: local path formats follow the require context`, async () => {
+        const root = makePosixTempDir('resolver-local-cjs-format');
+        const baseUrl = joinPaths(root, 'src');
+        const parent = canonicalizePath(joinPaths(root, 'entry.ts'));
+        const relative = canonicalizePath(joinPaths(root, 'relative.js'));
+        const absolute = canonicalizePath(joinPaths(root, 'absolute.js'));
+        const alias = canonicalizePath(joinPaths(baseUrl, 'aliased.js'));
+        const resolver = new ModuleResolver(createConfig({
+            cacheDir: joinPaths(root, 'cache'),
+            disableLock: true,
+            baseUrl,
+            pathAliases: { '@alias/*': ['./*'] },
+        }), root);
+        try {
+            writeFileSync(parent, '');
+            writeFileSync(relative, 'module.exports = 1;');
+            writeFileSync(absolute, 'module.exports = 2;');
+            mkdirSync(baseUrl, { recursive: true });
+            writeFileSync(alias, 'module.exports = 3;');
+
+            for (const [specifier, expectedPath] of [
+                ['./relative.js', relative],
+                [absolute, absolute],
+                ['@alias/aliased.js', alias],
+            ]) {
+                const imported = await resolver[method](specifier, parent);
+                strictEqual(imported.localPath, expectedPath);
+                strictEqual(imported.format, 'esm');
+
+                const required = await resolver[method](specifier, parent, { cjs: true });
+                strictEqual(required.localPath, expectedPath);
+                strictEqual(required.format, 'cjs');
+            }
+        } finally {
+            resolver.close();
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+}
+
 Deno.test('cts resolver: lifecycle retry clears local npm package misses', async () => {
     const root = makePosixTempDir('resolver-local-npm-retry');
     const resolver = new ModuleResolver(createConfig({
