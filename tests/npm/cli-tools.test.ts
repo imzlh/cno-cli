@@ -52,10 +52,14 @@ Deno.test({ name: 'prettier: formats source through parser plugins', timeout: 60
     strictEqual(formatted, 'const x = { a: 1 };\n');
 });
 
+// `cno exec <bin> --flag` hands every token after the bin name straight to it,
+// which is what npm exec / npx / deno run npm: do. A literal `--` is itself
+// forwarded (not stripped), so `exec prettier -- --version` would hand prettier
+// a file pattern of "--version" exactly like `npx prettier -- --version` does.
 Deno.test({ name: 'prettier bin: cno exec runs CJS CLI dynamic import path', timeout: 60000 }, async () => {
     await import('npm:prettier');
 
-    const result = await runCno(['exec', 'prettier', '--', '--version']);
+    const result = await runCno(['exec', 'prettier', '--version']);
     strictEqual(result.code, 0, result.stderr);
     ok(/^3\.\d+\.\d+/.test(result.stdout.trim()), result.stdout);
 });
@@ -78,7 +82,7 @@ Deno.test({ name: 'eslint: lints text through config and parser stack', timeout:
 Deno.test({ name: 'eslint bin: cno exec runs package binary with forwarded args', timeout: 60000 }, async () => {
     await import('npm:eslint');
 
-    const result = await runCno(['exec', 'eslint', '--', '--version']);
+    const result = await runCno(['exec', 'eslint', '--version']);
     strictEqual(result.code, 0, result.stderr);
     ok(/\bv\d+\.\d+\.\d+\b/.test(result.stdout), result.stdout);
 });
@@ -90,11 +94,11 @@ Deno.test({ name: 'typescript bin: cno exec resolves tsc and strips arg separato
     try {
         await Deno.writeTextFile(join(dir, 'index.ts'), 'const value: number = 1;\n');
 
-        const version = await runCno(['exec', tsc, '--', '--version']);
+        const version = await runCno(['exec', tsc, '--version']);
         strictEqual(version.code, 0, version.stderr);
         ok(version.stdout.includes(ts.version), version.stdout);
 
-        const check = await runCno(['exec', tsc, '--', '--noEmit', '--ignoreConfig', '--target', 'es2022', join(dir, 'index.ts')]);
+        const check = await runCno(['exec', tsc, '--noEmit', '--ignoreConfig', '--target', 'es2022', join(dir, 'index.ts')]);
         strictEqual(check.code, 0, check.stderr);
     } finally {
         await Deno.remove(dir, { recursive: true });

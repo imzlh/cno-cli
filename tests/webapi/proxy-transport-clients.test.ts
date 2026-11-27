@@ -1,24 +1,8 @@
 /**
  * EventSource / WebSocket over a proxy.
  *
- * These cases previously lived in proxy-transport.test.ts and could never pass
- * there. The global `EventSource` / `WebSocket` are the *baked* classes; they
- * resolve `getRawConnectionHook()` against the baked copy of
- * cno/src/utils/network-hooks.ts, whereas a test importing
- * `../../cno/src/utils/network-hooks.ts` writes to a second, disk-loaded copy of
- * that module. Nothing connects the two module instances, so the baked globals
- * dialled the target directly and every proxy counter stayed at 0 — the failure
- * looked like a broken proxy but was a broken harness.
- *
- * The fix is to drive the *disk-imported* EventSource / WebSocket, so the client
- * and the hook are the same instance. That has one side effect worth naming:
- * cno/src/webapi/events.ts installs its classes onto globalThis at module scope
- * (`Reflect.set(globalThis, name, cls)`), so importing the disk graph replaces
- * the global Event / EventTarget / MessageEvent / ... . Left in place, the baked
- * `bridgeEvent` teardown path then dispatches a disk `Event` at a baked
- * `EventTarget` and throws `TypeError: Invalid event object` at worker exit,
- * killing 'beforeunload' / 'unload' for this file. The dynamic import below is
- * therefore bracketed by a snapshot/restore of those globals.
+ * Load the clients from the same source graph as the connection hook so the
+ * proxy fixtures control the clients under test.
  */
 import { ok, strictEqual } from 'node:assert';
 import { createHash } from 'node:crypto';
@@ -30,39 +14,17 @@ import { createProxyConnector, type ProxyConfig, type ProxyType } from '../../cn
 
 const ssl = import.meta.use('ssl');
 
-// --- disk client classes, with the global event classes preserved -------------
-
-const BAKED_EVENT_GLOBALS = {
+const runtimeGlobals = {
     Event: globalThis.Event,
     EventTarget: globalThis.EventTarget,
-    CustomEvent: globalThis.CustomEvent,
-    ErrorEvent: globalThis.ErrorEvent,
-    PromiseRejectionEvent: globalThis.PromiseRejectionEvent,
     CloseEvent: globalThis.CloseEvent,
     MessageEvent: globalThis.MessageEvent,
-    DOMException: globalThis.DOMException,
-    ProgressEvent: globalThis.ProgressEvent,
+    EventSource: globalThis.EventSource,
+    WebSocket: globalThis.WebSocket,
 } as const;
 
 const { EventSource } = await import('../../cno/src/webapi/sse.ts');
 const { WebSocket } = await import('../../cno/src/webapi/websocket.ts');
-
-Deno.test.afterAll(() => {
-    for (const [name, cls] of Object.entries(BAKED_EVENT_GLOBALS)) Reflect.set(globalThis, name, cls);
-});
-
-/**
- * True when the disk graph really did overwrite the globals.
- *
- * The globals must stay clobbered for the duration of the tests: the disk
- * classes `extends EventTarget` against whatever the global was at module-eval
- * time (the disk one), but construct `new Event(...)` from the global at *call*
- * time. Restoring the baked classes up front therefore makes every dispatch
- * throw `Invalid event object` from inside the disk EventTarget. The final test
- * in this file performs the restore, so teardown's `bridgeEvent` sees a matched
- * pair again.
- */
-const clobberedGlobals = globalThis.Event !== BAKED_EVENT_GLOBALS.Event;
 
 // --- fixtures ----------------------------------------------------------------
 
@@ -236,12 +198,10 @@ function firstMessage(source: { onmessage: unknown; onerror: unknown }, label: s
 
 // --- tests -------------------------------------------------------------------
 
-Deno.test('proxy clients: disk import replaced the global event classes', () => {
-    // Documents the hazard the header describes, and keeps the restore at the
-    // bottom of this file from becoming dead weight unnoticed: if the import
-    // graph ever stops installing globals, this says so.
-    strictEqual(clobberedGlobals, true);
-    strictEqual(globalThis.Event === BAKED_EVENT_GLOBALS.Event, false);
+Deno.test('proxy clients: importing source clients preserves the installed Web APIs', () => {
+    for (const [name, ctor] of Object.entries(runtimeGlobals)) {
+        strictEqual(Reflect.get(globalThis, name), ctor, name);
+    }
 });
 
 Deno.test({ name: 'EventSource: receives SSE through HTTP proxy', timeout: 15000 }, async () => {

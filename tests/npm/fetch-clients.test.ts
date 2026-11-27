@@ -72,8 +72,8 @@ async function withBehaviorServer(fn: (baseUrl: string) => Promise<void>): Promi
     }
 }
 
-Deno.test({ name: 'undici: fetches JSON from a local http server', timeout: 30000 }, async () => {
-    const mod = await import('npm:undici');
+Deno.test({ name: 'undici@5: fetches JSON from a local http server', timeout: 30000 }, async () => {
+    const mod = await import('npm:undici@5.28.5');
     await withJsonServer((url) => assertFetch(mod.fetch, url));
 });
 
@@ -95,12 +95,12 @@ Deno.test({ name: 'cross-fetch: fetches JSON from a local http server', timeout:
 });
 
 Deno.test({ name: 'fetch clients: send POST bodies and follow redirects', timeout: 30000 }, async () => {
-    const undici = await import('npm:undici');
     const nodeFetch2Mod = await import('npm:node-fetch@2');
     const nodeFetch3Mod = await import('npm:node-fetch@3');
     const crossFetchMod = await import('npm:cross-fetch');
+    const undici = await import('npm:undici@5.28.5');
     const clients: Array<[string, (url: string, init?: Record<string, unknown>) => Promise<any>]> = [
-        ['undici', undici.fetch],
+        ['undici@5', undici.fetch],
         ['node-fetch@2', nodeFetch2Mod.default ?? nodeFetch2Mod],
         ['node-fetch@3', nodeFetch3Mod.default],
         ['cross-fetch', crossFetchMod.fetch ?? crossFetchMod.default ?? crossFetchMod],

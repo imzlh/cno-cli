@@ -35,7 +35,7 @@
  * PROXY — i.e. they witness the silent drop directly.
  */
 
-import { ok, rejects, strictEqual } from 'node:assert';
+import { ok, rejects, strictEqual, throws } from 'node:assert';
 import { createServer, type Server, type Socket } from 'node:net';
 
 interface ListeningServer { server: Server; port: number; }
@@ -109,6 +109,50 @@ async function stopFixture(fixture: Fixture): Promise<void> {
     await closeServer(fixture.proxy.server);
 }
 
+interface KeepAliveFixture {
+    server: Server;
+    port: number;
+    sockets: Socket[];
+}
+
+async function startKeepAliveFixture(): Promise<KeepAliveFixture | null> {
+    const sockets: Socket[] = [];
+    const server = createServer(socket => {
+        sockets.push(socket);
+        let pending = Buffer.alloc(0);
+        socket.on('data', (chunk: Buffer) => {
+            pending = Buffer.concat([pending, chunk]);
+            while (true) {
+                const headerEnd = pending.indexOf('\r\n\r\n');
+                if (headerEnd === -1) return;
+                pending = pending.subarray(headerEnd + 4);
+                socket.write('HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok');
+            }
+        });
+        socket.on('error', () => socket.destroy());
+    });
+    try {
+        await new Promise<void>((resolve, reject) => server.listen(0, '127.0.0.1', resolve).once('error', reject));
+    } catch (error) {
+        if (String(error).includes('EPERM') || String(error).includes('operation not permitted')) return null;
+        throw error;
+    }
+    return { server, port: (server.address() as { port: number }).port, sockets };
+}
+
+async function stopKeepAliveFixture(fixture: KeepAliveFixture): Promise<void> {
+    for (const socket of fixture.sockets) socket.destroy();
+    await closeServer(fixture.server);
+}
+
+async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+    const deadline = Date.now() + 5000;
+    while (!predicate()) {
+        if (Date.now() >= deadline) throw new Error(`Timed out: ${label}`);
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
+}
+
 Deno.test({ name: 'fetch client: a client proxy is applied, so traffic arrives at the proxy not the origin', timeout: 20000 }, async () => {
     const fixture = await startFixture();
     if (!fixture) return;
@@ -127,6 +171,66 @@ Deno.test({ name: 'fetch client: a client proxy is applied, so traffic arrives a
     } finally {
         client.close();
         await stopFixture(fixture);
+    }
+});
+
+Deno.test({ name: 'fetch client: a closed client rejects before contacting the server', timeout: 20000 }, async () => {
+    const fixture = await startFixture();
+    if (!fixture) return;
+    const { origin, originHits } = fixture;
+    const client = Deno.createHttpClient();
+    client.close();
+    try {
+        await rejects(
+            () => fetch(`http://127.0.0.1:${origin.port}/closed-client`, { client } as RequestInit),
+            Deno.errors.BadResource,
+        );
+        strictEqual(originHits.length, 0, 'a closed client must be rejected before opening a connection');
+    } finally {
+        await stopFixture(fixture);
+    }
+});
+
+Deno.test({ name: 'fetch client: curl surfaces a real proxy transport failure', timeout: 20000 }, async () => {
+    let proxyHits = 0;
+    const proxy = await listen(socket => {
+        proxyHits++;
+        socket.destroy();
+    });
+    if (!proxy) return;
+    const client = Deno.createHttpClient({ proxy: { url: `http://127.0.0.1:${proxy.port}` } });
+    const previousNoProxy = Deno.env.get('NO_PROXY');
+    const previousNoProxyLower = Deno.env.get('no_proxy');
+    try {
+        Deno.env.set('NO_PROXY', '');
+        Deno.env.set('no_proxy', '');
+        await rejects(() => fetch('http://example.invalid/proxy-failure', { client } as RequestInit));
+        strictEqual(proxyHits, 1, 'the request must reach the configured proxy before failing');
+    } finally {
+        client.close();
+        if (previousNoProxy === undefined) Deno.env.delete('NO_PROXY');
+        else Deno.env.set('NO_PROXY', previousNoProxy);
+        if (previousNoProxyLower === undefined) Deno.env.delete('no_proxy');
+        else Deno.env.set('no_proxy', previousNoProxyLower);
+        await closeServer(proxy.server);
+    }
+});
+
+Deno.test({ name: 'fetch client: poolIdleTimeout closes idle keep-alive sockets', timeout: 20000 }, async () => {
+    const fixture = await startKeepAliveFixture();
+    if (!fixture) return;
+    const client = Deno.createHttpClient({ http2: false, poolIdleTimeout: 20 });
+    try {
+        const url = `http://127.0.0.1:${fixture.port}/idle-timeout`;
+        strictEqual(await (await fetch(url, { client } as RequestInit)).text(), 'ok');
+        strictEqual(fixture.sockets.length, 1);
+        await waitFor(() => fixture.sockets[0]?.destroyed === true, 'poolIdleTimeout to close the idle socket');
+
+        strictEqual(await (await fetch(url, { client } as RequestInit)).text(), 'ok');
+        strictEqual(fixture.sockets.length, 2, 'the next request must establish a new connection');
+    } finally {
+        client.close();
+        await stopKeepAliveFixture(fixture);
     }
 });
 
@@ -252,34 +356,9 @@ Deno.test({ name: 'fetch client: null and undefined mean "no client" and are acc
  * one, hence no test.
  */
 
-/**
- * Construction-time validation.
- *
- * Only the "not silent" property is pinned here, because `Deno.createHttpClient`
- * lives in cno/src/deno/07_http.ts, outside this change's scope. Measured
- * divergences from Deno 2.9.3 there, all still OPEN and all measured on the
- * 13:00 binary, for whoever owns that file:
- *
- *   createHttpClient({cert:'x'})           Deno: TypeError (key required)   cno: NO THROW
- *   createHttpClient({key:'y'})            Deno: TypeError (cert required)  cno: NO THROW
- *   createHttpClient({proxy:{}})           Deno: TypeError missing `url`    cno: NO THROW
- *   createHttpClient({proxy:{url:'bogus'}) Deno: URIError at construction   cno: throws later, at getProxyUrl()
- *   createHttpClient({caCerts:['junk']})   Deno: accepted (TLS validates)   cno: THROWS TypeError  <- inverted
- *
- * The cert-without-key case is the same class of defect as the one this file fixes:
- * a client certificate is accepted and then silently not used, so a caller believes
- * it configured mTLS and did not.
- */
-Deno.test({ name: 'fetch client: an unusable proxy url is reported, not ignored', timeout: 20000 }, async () => {
-    // cno defers URL parsing to getProxyUrl(), so force the lazy path. Either point
-    // is acceptable; silence is not.
-    const client = Deno.createHttpClient({ proxy: { url: 'bogus' } });
-    try {
-        await rejects(
-            () => fetch('http://127.0.0.1:1/', { client } as RequestInit),
-            'a relative proxy url must surface an error somewhere, as Deno 2.9.3 does',
-        );
-    } finally {
-        client.close();
-    }
+Deno.test('fetch client: invalid constructor options are rejected eagerly', () => {
+    throws(() => Deno.createHttpClient({ cert: 'x' }), TypeError);
+    throws(() => Deno.createHttpClient({ key: 'y' }), TypeError);
+    throws(() => Deno.createHttpClient({ proxy: {} as { url: string } }), TypeError);
+    throws(() => Deno.createHttpClient({ proxy: { url: 'bogus' } }), TypeError);
 });

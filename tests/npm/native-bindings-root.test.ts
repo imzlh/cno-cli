@@ -6,7 +6,33 @@ function packageDir(spec: string): string {
     return pkg.slice(0, pkg.lastIndexOf('/'));
 }
 
-Deno.test({ name: 'bindings: better-sqlite3 searches native addon from package root', timeout: 30000 }, async () => {
+// These cases need native addon packages present in the local npm cache; they
+// are not repo fixtures. Check each package independently so one installed
+// addon does not accidentally unskip unrelated cases.
+function packageInstalled(spec: string): boolean {
+    try {
+        require.resolve(`${spec}/package.json`);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// The better-sqlite3 and cpu-features cases assert the FAILURE mode of legacy
+// Node/V8 addons and branch on existsSync(addon), so a source-only package
+// (no compiled .node) still exercises them. The sqlite3 cases actually open a
+// database through the compiled addon, so gate those on the expected build
+// artifact. Once it exists, a require/ABI failure is a test failure, not a skip.
+
+const betterSqlite3Installed = packageInstalled('better-sqlite3');
+const cpuFeaturesInstalled = packageInstalled('cpu-features');
+const sqlite3PackageInstalled = packageInstalled('sqlite3');
+const sqlite3Addon = sqlite3PackageInstalled
+    ? `${packageDir('sqlite3')}/build/Release/node_sqlite3.node`
+    : '';
+const sqlite3Installed = sqlite3PackageInstalled && existsSync(sqlite3Addon);
+
+Deno.test({ ignore: !betterSqlite3Installed, name: 'bindings: better-sqlite3 searches native addon from package root', timeout: 30000 }, async () => {
     const root = packageDir('better-sqlite3');
     const addon = `${root}/build/Release/better_sqlite3.node`;
     const cwdBuild = `${Deno.cwd()}/build/better_sqlite3.node`;
@@ -26,7 +52,7 @@ Deno.test({ name: 'bindings: better-sqlite3 searches native addon from package r
     }
 });
 
-Deno.test({ name: 'sqlite3: native Node-API addon opens an in-memory database', timeout: 30000 }, async () => {
+Deno.test({ ignore: !sqlite3Installed, name: 'sqlite3: native Node-API addon opens an in-memory database', timeout: 30000 }, async () => {
     const sqlite3 = require('sqlite3');
     const db = new sqlite3.Database(':memory:');
     try {
@@ -58,11 +84,8 @@ Deno.test({ name: 'sqlite3: native Node-API addon opens an in-memory database', 
     }
 });
 
-Deno.test({ name: 'sqlite3: prepared statements insert and query multiple rows', timeout: 30000 }, async () => {
+Deno.test({ ignore: !sqlite3Installed, name: 'sqlite3: prepared statements insert and query multiple rows', timeout: 30000 }, async () => {
     const root = packageDir('sqlite3');
-    const addon = `${root}/build/Release/node_sqlite3.node`;
-    if (!existsSync(addon)) return;
-
     const sqlite3 = require(`${root}/lib/sqlite3.js`);
     const db = new sqlite3.Database(':memory:');
     try {
@@ -94,7 +117,7 @@ Deno.test({ name: 'sqlite3: prepared statements insert and query multiple rows',
     }
 });
 
-Deno.test({ name: 'cpu-features: built legacy native addon reports unsupported Node ABI', timeout: 30000 }, async () => {
+Deno.test({ ignore: !cpuFeaturesInstalled, name: 'cpu-features: built legacy native addon reports unsupported Node ABI', timeout: 30000 }, async () => {
     const root = packageDir('cpu-features');
     const addon = `${root}/build/Release/cpufeatures.node`;
     const cwdBuild = `${Deno.cwd()}/build/Release/cpufeatures.node`;
