@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 const WATCH_DIR = path.join(os.tmpdir(), `cno-fswatch-${process.pid}`);
 
@@ -156,6 +157,103 @@ Deno.test('fs.watchFile + unwatchFile', async () => {
 
     ok(sawStatsObjects, 'watchFile listener must receive fs.Stats objects');
     ok(changes >= 1, `watchFile must report >=1 change, got ${changes}`);
+});
+
+Deno.test('fs.watchFile preserves the registration AsyncLocalStorage context', async () => {
+    await fsp.mkdir(WATCH_DIR, { recursive: true });
+    const target = path.join(WATCH_DIR, 'watch-file-async-context.txt');
+    await fsp.writeFile(target, 'before');
+    const storage = new AsyncLocalStorage<string>();
+    let secondStore: string | undefined;
+    let resolveStore!: (value: string | undefined) => void;
+    const observedStore = new Promise<string | undefined>(resolve => { resolveStore = resolve; });
+    const listener = () => {
+        resolveStore(storage.getStore());
+        fs.unwatchFile(target, listener);
+    };
+
+    storage.run('watch-file-context', () => {
+        fs.watchFile(target, { interval: 10 }, listener);
+    });
+    storage.run('second-listener-context', () => {
+        fs.watchFile(target, { interval: 10 }, () => { secondStore = storage.getStore(); });
+    });
+    try {
+        await new Promise(resolve => setTimeout(resolve, 40));
+        await fsp.writeFile(target, 'after');
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+            const store = await Promise.race([
+                observedStore,
+                new Promise<undefined>((_, reject) => {
+                    timeout = setTimeout(() => reject(new Error('watchFile timed out')), 2000);
+                }),
+            ]);
+            strictEqual(store, 'watch-file-context');
+            strictEqual(secondStore, 'watch-file-context');
+        } finally {
+            if (timeout !== undefined) clearTimeout(timeout);
+        }
+    } finally {
+        fs.unwatchFile(target);
+        await fsp.rm(WATCH_DIR, { recursive: true, force: true });
+    }
+});
+
+Deno.test('fs.watchFile: missing file reports zero stats once before creation', async () => {
+    await fsp.mkdir(WATCH_DIR, { recursive: true });
+    const target = path.join(WATCH_DIR, 'missing-watch-file-baseline.txt');
+    try {
+        for (const bigint of [false, true]) {
+            const changes: Array<[fs.Stats | fs.BigIntStats, fs.Stats | fs.BigIntStats]> = [];
+            let registering = true;
+            let synchronous = false;
+            fs.watchFile(target, { interval: 20, bigint }, (curr, prev) => {
+                synchronous ||= registering;
+                changes.push([curr, prev]);
+            });
+            registering = false;
+            try {
+                await new Promise(resolve => setTimeout(resolve, 250));
+                strictEqual(synchronous, false);
+                strictEqual(changes.length, 1);
+                for (const stat of changes[0]) {
+                    for (const key of ['dev', 'ino', 'mode', 'nlink', 'uid', 'gid', 'rdev', 'size', 'blksize', 'blocks', 'atimeMs', 'mtimeMs', 'ctimeMs', 'birthtimeMs'] as const) {
+                        strictEqual(stat[key], bigint ? 0n : 0, key);
+                    }
+                    strictEqual(stat.mtime.getTime(), 0);
+                }
+                await fsp.writeFile(target, 'created');
+                await new Promise(resolve => setTimeout(resolve, 250));
+                strictEqual(changes.length, 2);
+                strictEqual(changes[1][0].size, bigint ? 7n : 7);
+                strictEqual(changes[1][1].size, bigint ? 0n : 0);
+            } finally {
+                fs.unwatchFile(target);
+                await fsp.rm(target, { force: true });
+            }
+        }
+    } finally {
+        fs.unwatchFile(target);
+        await fsp.rm(WATCH_DIR, { recursive: true, force: true });
+    }
+});
+
+Deno.test('fs.watchFile: an immediate mutation is compared with registration state', async () => {
+    await fsp.mkdir(WATCH_DIR, { recursive: true });
+    const target = path.join(WATCH_DIR, 'watch-file-immediate-mutation.txt');
+    await fsp.writeFile(target, 'before');
+    let calls = 0;
+    const listener = () => { calls++; };
+    fs.watchFile(target, { interval: 20 }, listener);
+    try {
+        await fsp.writeFile(target, 'after-registration');
+        await new Promise(resolve => setTimeout(resolve, 250));
+        strictEqual(calls, 1);
+    } finally {
+        fs.unwatchFile(target, listener);
+        await fsp.rm(WATCH_DIR, { recursive: true, force: true });
+    }
 });
 
 // --- 6. fs.unwatchFile without listener is safe -----------------------------

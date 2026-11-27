@@ -137,6 +137,9 @@ Deno.test('fs streams: invalid start/end/highWaterMark throw like Node', async (
         expectCode(() => fs.createReadStream(file, { start: '3' as unknown as number }), 'ERR_INVALID_ARG_TYPE', 'string start');
         expectCode(() => fs.createReadStream(file, { end: null as unknown as number }), 'ERR_INVALID_ARG_TYPE', 'null end');
         expectCode(() => fs.createReadStream(file, { highWaterMark: -1 }), 'ERR_INVALID_ARG_VALUE', 'negative hwm');
+        expectCode(() => fs.createReadStream(file, { highWaterMark: 0.5 }), 'ERR_INVALID_ARG_VALUE', 'fractional hwm');
+        expectCode(() => fs.createReadStream(file, { highWaterMark: Infinity }), 'ERR_INVALID_ARG_VALUE', 'infinite hwm');
+        expectCode(() => fs.createWriteStream(join(root, 'w.txt'), { highWaterMark: 1.5 }), 'ERR_INVALID_ARG_VALUE', 'fractional write hwm');
         expectCode(() => fs.createWriteStream(join(root, 'w.txt'), { start: -1 }), 'ERR_OUT_OF_RANGE', 'negative ws start');
     });
 });
@@ -782,4 +785,42 @@ Deno.test('fs metadata: opendir, Dirent and mkdir recursive', async () => {
         strictEqual(String(deeper).replace(/\\/g, '/').endsWith('/a/b/c/d'), true, `got ${deeper}`);
         strictEqual(String(await fsp.mkdir(join(root, 'x', 'y'), { recursive: true })).replace(/\\/g, '/').endsWith('/x'), true);
     });
+});
+
+Deno.test('fs readFile with flags reads zero-size sources and stops at early EOF', async () => {
+    const asyncfs = import.meta.use('asyncfs');
+    const descriptor = Object.getOwnPropertyDescriptor(asyncfs, 'open')!;
+    try {
+        for (const size of [0, 100]) {
+            let closes = 0;
+            Object.defineProperty(asyncfs, 'open', {
+                ...descriptor,
+                value: async () => {
+                    const bytes = Buffer.from('source bytes');
+                    let offset = 0;
+                    return {
+                        async stat() { return { size }; },
+                        async read(buffer: Uint8Array) {
+                            if (offset === bytes.length) return null;
+                            const count = Math.min(buffer.length, 3, bytes.length - offset);
+                            buffer.set(bytes.subarray(offset, offset + count));
+                            offset += count;
+                            return count;
+                        },
+                        async close() { closes++; },
+                    };
+                },
+            });
+            strictEqual(await fsp.readFile('ignored-path', { flag: 'r', encoding: 'utf8' }), 'source bytes');
+            strictEqual(await new Promise<string>((resolve, reject) => {
+                fs.readFile('ignored-path', { flag: 'r', encoding: 'utf8' }, (error, data) => {
+                    if (error) reject(error);
+                    else resolve(data);
+                });
+            }), 'source bytes');
+            strictEqual(closes, 2);
+        }
+    } finally {
+        Object.defineProperty(asyncfs, 'open', descriptor);
+    }
 });
