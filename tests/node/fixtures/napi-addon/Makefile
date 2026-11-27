@@ -13,8 +13,10 @@ UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 ifeq ($(UNAME_S),Darwin)
   PLATFORM := darwin
+  SHARED_LDFLAGS := -undefined dynamic_lookup
 else
   PLATFORM := linux
+  SHARED_LDFLAGS := -Wl,--allow-shlib-undefined
 endif
 ifeq ($(UNAME_M),x86_64)
   ARCH := x64
@@ -31,7 +33,7 @@ OUT ?= cno_napi_fixture-$(PLATFORM)-$(ARCH).node
 all: $(OUT)
 
 $(OUT): addon.c
-	$(CC) -shared -fPIC -O2 -o $@ $< -I$(INC) -Wl,--allow-shlib-undefined
+	$(CC) -shared -fPIC -O2 -o $@ $< -I$(INC) $(SHARED_LDFLAGS)
 
 clean:
 	rm -f cno_napi_fixture*.node

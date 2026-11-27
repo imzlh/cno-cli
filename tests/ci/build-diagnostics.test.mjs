@@ -48,3 +48,54 @@ test('build failure reporter falls back to the log tail when no compiler error m
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /cmake failed before compiler diagnostics/);
 });
+
+test('runtime failure reporter groups failures across buckets without annotating expected errors', t => {
+    const directory = mkdtempSync(join(tmpdir(), 'cno-test-diagnostics-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const log = join(directory, 'runtime-tests.log');
+    const summary = join(directory, 'summary.md');
+    writeFileSync(log, [
+        '=== shard core: tests/cts ===',
+        '  ok expected Error: invalid input',
+        'Failed tests:',
+        '  tests/cts/example.test.ts  retains module identity',
+        '    AssertionError: mismatched value %25',
+        '+ actual - expected',
+        "+ 'actual-path'",
+        "- 'expected-path'",
+        '    at strictEqual (node:assert/mod:321:15)',
+        '  tests/cts/example.test.ts  rejects invalid input',
+        '    TypeError: unexpected value',
+        '\u001b[31m✖ 3/4\u001b[0m',
+        '=== shard compat/npm: tests/npm ===',
+        '  ok expected parse error',
+        'Failed tests:',
+        '  tests/npm/example.test.ts  test module failed',
+        '    test worker timed out after 600000ms without reporting a result',
+        '✖ 1/2',
+    ].join('\n'));
+    const result = spawnSync(process.execPath, [join(repository, 'scripts/ci/report-test-errors.mjs'), log], {
+        encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: summary },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.match(/::error /g)?.length, 2);
+    assert.match(result.stdout, /file=tests\/cts\/example.test.ts/);
+    assert.match(result.stdout, /mismatched value %2525%0A\+ actual - expected/);
+    assert.match(result.stdout, /\+ 'actual-path'%0A- 'expected-path'%0Arejects invalid input/);
+    assert.match(result.stdout, /test worker timed out after 600000ms/);
+    assert.doesNotMatch(result.stdout, /expected Error|expected parse error|at strictEqual/);
+    assert.match(readFileSync(summary, 'utf8'), /example.test.ts`: 2 failed cases/);
+    assert.match(readFileSync(summary, 'utf8'), /tests\/npm\/example.test.ts`: 1 failed case/);
+});
+
+test('runtime failure reporter surfaces preflight failures without per-file results', t => {
+    const directory = mkdtempSync(join(tmpdir(), 'cno-test-diagnostics-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const log = join(directory, 'runtime-tests.log');
+    writeFileSync(log, 'built-in protocol preflight failed: 1\n');
+    const result = spawnSync(process.execPath, [join(repository, 'scripts/ci/report-test-errors.mjs'), log], {
+        encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: '' },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /::error title=Runtime test failure::Runtime tests failed before a per-file failure report/);
+});

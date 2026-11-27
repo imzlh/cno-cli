@@ -94,12 +94,13 @@ for (const name of shardNames) {
                 label: 'compat/npm',
                 paths: ['tests/npm'],
                 env: { ...env, CNO_TEST_CHILD_TIMEOUT_MS: '600000' },
+                concurrency: '1',
             },
         ]
         : [{ label: name, paths, env }];
     for (const run of runs) {
         console.log(`\n=== shard ${run.label}: ${run.paths.join(' ')} ===`);
-        const r = spawnSync(binary, ['test', ...run.paths, `--concurrency=${concurrency}`], {
+        const r = spawnSync(binary, ['test', ...run.paths, `--concurrency=${run.concurrency ?? concurrency}`], {
             stdio: 'inherit',
             env: run.env,
             cwd: process.cwd(),

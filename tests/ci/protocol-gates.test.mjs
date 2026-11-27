@@ -103,7 +103,7 @@ test('runtime CI keeps package file budgets above their individual test deadline
         [['test', 'tests/deno', 'tests/webapi', '--concurrency=2'], '60000'],
         [['test', 'tests/bun', '--concurrency=2'], '300000'],
         [['test', 'tests/jsr', '--concurrency=2'], '60000'],
-        [['test', 'tests/npm', '--concurrency=2'], '600000'],
+        [['test', 'tests/npm', '--concurrency=1'], '600000'],
     ]);
     assert.ok(calls.every(call => call.cache === join(f.directory, 'cache')));
 });
