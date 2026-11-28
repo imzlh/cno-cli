@@ -256,6 +256,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: Expand-Archive -Path "build/stage/cno-${{ matrix.target }}.zip" -DestinationPath build/stage -Force
+      - name: Record Node platform expectations
+        timeout-minutes: 1
+        shell: bash
+        run: node scripts/ci/platform-oracle.mjs 2>&1 | tee platform-oracle.log
       - name: Run runtime test suite
         id: runtime-tests
         shell: bash
@@ -266,6 +270,15 @@ jobs:
       - name: Report runtime test failures
         if: failure() && steps.runtime-tests.outcome == 'failure'
         run: node scripts/ci/report-test-errors.mjs runtime-tests.log
+
+      - name: Record runtime platform behavior
+        if: failure() && steps.runtime-tests.outcome == 'failure'
+        timeout-minutes: 1
+        shell: bash
+        env:
+          CTS_CACHE_DIR: ${{ runner.temp }}/cno-test-cache
+          CNO_TEST_BINARY: ${{ runner.os == 'Windows' && 'build/stage/cno.exe' || 'build/stage/cno' }}
+        run: '"$CNO_TEST_BINARY" run --no-lock scripts/ci/platform-oracle.mjs 2>&1 | tee runtime-platform.log'
 
       - name: Upload failure diagnostics
         if: failure() && !cancelled()
