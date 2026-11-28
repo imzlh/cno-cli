@@ -1,4 +1,5 @@
 import { ok, strictEqual } from 'node:assert';
+import { stripVTControlCharacters } from 'node:util';
 
 function apiFrom(mod: Record<string, any>): Record<string, any> {
     return mod.default && typeof mod.default.spawn === 'function' ? mod.default : mod;
@@ -51,7 +52,7 @@ Deno.test({ name: 'node-pty: runs shell when native addon exists or reports miss
         });
     });
 
-    strictEqual(output.replace(/\r?\n/g, ''), 'cno-node-pty');
+    strictEqual(stripVTControlCharacters(output).replace(/\r?\n/g, ''), 'cno-node-pty');
 });
 
 Deno.test({ name: 'node-pty: writes interactive input through the pseudo terminal', timeout: 30000 }, async () => {

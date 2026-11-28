@@ -265,23 +265,12 @@ Deno.test({ name: 'deno command upstream: invalid signals throw before native ki
     }).spawn();
 
     try {
-        throws(() => child.kill('SIGEMT' as Deno.Signal), TypeError);
         throws(() => child.kill('CNO_BAD_SIGNAL' as Deno.Signal), TypeError);
-
-        // Real Deno's Windows signal table has no SIGIO/SIGUNUSED either: both
-        // throw `Invalid signal`. Only assert the alias contract on unix.
-        if (Deno.build.os !== 'windows') {
-            for (const sig of ['SIGIO', 'SIGUNUSED'] as const) {
-                try {
-                    Deno.kill(999999999, sig as Deno.Signal);
-                } catch (err) {
-                    ok(!String((err as Error).message).includes('Invalid signal'), `${sig} should be accepted as a signal alias`);
-                }
-            }
-        } else {
-            for (const sig of ['SIGIO', 'SIGUNUSED'] as const) {
-                throws(() => Deno.kill(999999999, sig as Deno.Signal), TypeError);
-            }
+        const supported = Deno.build.os === 'linux' ? ['SIGIO', 'SIGUNUSED']
+            : Deno.build.os === 'darwin' ? ['SIGEMT', 'SIGIO'] : [];
+        for (const signal of ['SIGEMT', 'SIGIO', 'SIGUNUSED']) {
+            throws(() => Deno.kill(0x7fffffff, signal as Deno.Signal),
+                supported.includes(signal) ? Deno.errors.NotFound : TypeError);
         }
     } finally {
         try { child.kill('SIGKILL'); } catch {}

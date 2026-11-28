@@ -126,7 +126,8 @@ Deno.test('deno process: umask cache, uid gid and signal validation are observab
         ok(Number.isInteger(Deno.uid()));
         ok(Number.isInteger(Deno.gid()));
     }
-    throws(() => Deno.kill(Deno.pid, 'SIGEMT' as Deno.Signal), TypeError);
+    throws(() => Deno.kill(0x7fffffff, 'SIGEMT' as Deno.Signal),
+        Deno.build.os === 'darwin' ? Deno.errors.NotFound : TypeError);
     Deno.kill(Deno.pid, 0);
     throws(() => Deno.kill(999999, 0), Deno.errors.NotFound);
     throws(() => Deno.addSignalListener('CNO_NO_SUCH_SIGNAL' as Deno.Signal, () => {}), /Invalid signal/);

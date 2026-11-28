@@ -298,7 +298,8 @@ Deno.test('dgram: ttl and multicast options apply once bound', async () => {
         await new Promise<void>((resolve) => s.bind(0, '127.0.0.1', resolve));
         strictEqual(s.setTTL(64), 64);
         strictEqual(s.setMulticastTTL(1), 1);
-        strictEqual(s.setMulticastTTL(-1), -1);
+        if (process.platform === 'win32') strictEqual(s.setMulticastTTL(-1), -1);
+        else throws(() => s.setMulticastTTL(-1), { code: 'EINVAL', syscall: 'setMulticastTTL' });
         strictEqual(s.setMulticastLoopback(true), true);
         strictEqual(s.setMulticastInterface('0.0.0.0'), undefined);
         strictEqual(s.setBroadcast(true), undefined);
