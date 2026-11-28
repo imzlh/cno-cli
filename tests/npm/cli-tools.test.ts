@@ -18,7 +18,7 @@ async function runCnoWithTimeout(args: string[], timeoutMs?: number): Promise<{ 
     const dir = cacheDir();
     const execPath = Deno.execPath().replace(/ \(deleted\)$/, '');
     const command = new Deno.Command(execPath, {
-        args: dir ? [`--cache-dir=${dir}`, ...args] : args,
+        args,
         stdout: 'piped',
         stderr: 'piped',
         env: dir ? { CTS_CACHE_DIR: dir } : undefined,
