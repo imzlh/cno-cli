@@ -80,9 +80,9 @@ Deno.test({ name: 'sass: compiles disk entry with @use dependency', timeout: 300
         writeFileSync(entry, '@use "vars"; .a { color: vars.$color; }\n');
 
         const sass = await import('npm:sass');
-        const result = sass.compile(entry.replaceAll('\\', '/'), {
+        const result = sass.compile(entry, {
             style: 'compressed',
-            loadPaths: [root.replaceAll('\\', '/')],
+            loadPaths: [root],
         });
         strictEqual(result.css.trim(), '.a{color:#123456}');
     } finally {
