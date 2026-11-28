@@ -275,12 +275,13 @@ Deno.test({ name: 'cli stage: run exposes import.meta entry metadata', timeout: 
     await withTempDir('cli-run-import-meta', async (root) => {
         await Deno.writeTextFile(join(root, 'dep.ts'), 'export const value = 1;\n');
         const main = join(root, 'main.ts');
+        const expectedRoot = Deno.realPathSync(root).replaceAll('\\', '/');
         await Deno.writeTextFile(main, `
             if (!import.meta.main) throw new Error("entry must be main");
             console.log("META:" + JSON.stringify({
                 url: import.meta.url.startsWith("file://"),
                 filename: import.meta.filename.replace(/\\\\/g, "/").endsWith("/main.ts"),
-                dirname: import.meta.dirname.replace(/\\\\/g, "/").endsWith(${JSON.stringify(root.replaceAll('\\\\', '/'))}),
+                dirname: import.meta.dirname.replace(/\\\\/g, "/").endsWith(${JSON.stringify(expectedRoot)}),
                 resolve: import.meta.resolve("./dep.ts").endsWith("/dep.ts"),
             }));
         `);

@@ -203,7 +203,7 @@ Deno.test('DepScanner: warm cache reuses imports while pack-style scans bypass t
 
 Deno.test('DepScanner: warm import caches retain invalid runtime builtin edges', async () => {
     const root = makePosixTempDir('dep-runtime-builtin-cache');
-    const main = join(root, 'main.ts');
+    const main = `${root}/main.ts`;
     const invalid = 'bun:not-a-real-module';
     const config = () => createConfig({
         cacheDir: join(root, 'cache'),
