@@ -1,7 +1,12 @@
 import { join } from 'node:path';
 
 export function makeTempDir(prefix: string): string {
-    return Deno.makeTempDirSync({ prefix: `cno-${prefix}-${Deno.pid}-` });
+    const dir = Deno.makeTempDirSync({ prefix: `cno-${prefix}-${Deno.pid}-` });
+    try {
+        return Deno.realPathSync(dir);
+    } catch {
+        return dir;
+    }
 }
 
 export function makePosixTempDir(prefix: string): string {

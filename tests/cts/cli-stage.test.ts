@@ -160,6 +160,8 @@ Deno.test({ name: 'cli stage: run --cwd resolves files, config, preloads and arg
             })), 0);
         `);
         await Deno.writeTextFile(join(source, 'relative.ts'), 'export const value = "relative-import";');
+        const expectedApp = Deno.realPathSync(app).replaceAll('\\', '/');
+        const expectedEntry = Deno.realPathSync(entry).replaceAll('\\', '/');
         for (const [runDir, target] of [['app', 'src/main.ts'], [app, entry]]) {
             const result = await runCno([
                 'run', '--no-lock', '--no-oxc', '--cache-dir', cacheDir,
@@ -168,14 +170,13 @@ Deno.test({ name: 'cli stage: run --cwd resolves files, config, preloads and arg
             ], root);
             strictEqual(result.code, 0, result.stderr);
             const output = JSON.parse(result.stdout);
-            const normalizedApp = app.replaceAll('\\', '/');
-            strictEqual(output.cwd.replaceAll('\\', '/'), normalizedApp);
-            strictEqual(output.nodeCwd.replaceAll('\\', '/'), normalizedApp);
-            strictEqual(output.preload.replaceAll('\\', '/'), normalizedApp);
-            strictEqual(output.argv[0].replaceAll('\\', '/'), entry.replaceAll('\\', '/'));
+            strictEqual(output.cwd.replaceAll('\\', '/'), expectedApp);
+            strictEqual(output.nodeCwd.replaceAll('\\', '/'), expectedApp);
+            strictEqual(output.preload.replaceAll('\\', '/'), expectedApp);
+            strictEqual(output.argv[0].replaceAll('\\', '/'), expectedEntry);
             deepStrictEqual(output.args, ['--cwd', 'script-argument']);
             deepStrictEqual(output.argv.slice(1), output.args);
-            strictEqual(output.main, pathToFileURL(entry).href);
+            strictEqual(output.main, pathToFileURL(Deno.realPathSync(entry)).href);
             strictEqual(output.dependency, 'entry-config');
             strictEqual(output.value, 'relative-import');
             strictEqual(output.required, 'relative-require');
@@ -279,7 +280,7 @@ Deno.test({ name: 'cli stage: run exposes import.meta entry metadata', timeout: 
             console.log("META:" + JSON.stringify({
                 url: import.meta.url.startsWith("file://"),
                 filename: import.meta.filename.replace(/\\\\/g, "/").endsWith("/main.ts"),
-                dirname: import.meta.dirname.endsWith(${JSON.stringify(root)}),
+                dirname: import.meta.dirname.replace(/\\\\/g, "/").endsWith(${JSON.stringify(root.replaceAll('\\\\', '/'))}),
                 resolve: import.meta.resolve("./dep.ts").endsWith("/dep.ts"),
             }));
         `);

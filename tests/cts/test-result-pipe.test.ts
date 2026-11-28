@@ -24,6 +24,8 @@ class FakePipe {
     }
 }
 
+const posix = (path: string): string => path.replaceAll('\\', '/');
+
 Deno.test('test runner keeps Node IPC out of the CLI result path', () => {
     for (const path of ['../../src/commands/test.ts', '../../src/main.ts']) {
         const source = readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -126,9 +128,9 @@ Deno.test('test discovery preserves extension scope and honors cno-host false ma
         await Deno.writeTextFile(continuedBoundary, `${boundaryPrefix}${marker} for now\n`);
         await Deno.writeTextFile(explicitMjs, 'throw new Error("explicit node host test");\n');
 
-        deepStrictEqual(collectTests([root]), [continuedBoundary, lateMarker, markerWithSuffix, discovered]);
-        deepStrictEqual(collectTests([skipped]), [skipped]);
-        deepStrictEqual(collectTests([explicitMjs]), [explicitMjs]);
+        deepStrictEqual(collectTests([root]), [continuedBoundary, lateMarker, markerWithSuffix, discovered].map(posix));
+        deepStrictEqual(collectTests([skipped]), [posix(skipped)]);
+        deepStrictEqual(collectTests([explicitMjs]), [posix(explicitMjs)]);
     });
 });
 
@@ -153,12 +155,12 @@ Deno.test('test discovery excludes repeated paths and glob patterns', async () =
 
         try {
             Deno.chdir(root);
-            deepStrictEqual(collectTests([root], ['skip', '**/slow*.test.ts']), [keep, similar]);
+            deepStrictEqual(collectTests([root], ['skip', '**/slow*.test.ts']), [keep, similar].map(posix));
             deepStrictEqual(collectTests([skip], ['skip']), []);
-            deepStrictEqual(collectTests([root], ['nested/*']), [keep, skip, similar]);
-            deepStrictEqual(collectTests([root], ['**/deep/slow_????.test.ts']), [keep, slow, skip, similar]);
-            deepStrictEqual(collectTests([root], [skip]), [keep, deep, slow, similar]);
-            deepStrictEqual(collectTests([root], ['nested/slow**deep.test.ts']), [keep, deep, slow, skip, similar]);
+            deepStrictEqual(collectTests([root], ['nested/*']), [keep, skip, similar].map(posix));
+            deepStrictEqual(collectTests([root], ['**/deep/slow_????.test.ts']), [keep, slow, skip, similar].map(posix));
+            deepStrictEqual(collectTests([root], [skip]), [keep, deep, slow, similar].map(posix));
+            deepStrictEqual(collectTests([root], ['nested/slow**deep.test.ts']), [keep, deep, slow, skip, similar].map(posix));
 
             const alias = join(root, 'skip-alias');
             let linked = true;

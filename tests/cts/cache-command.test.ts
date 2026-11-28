@@ -244,12 +244,13 @@ Deno.test('cache command: rejects local entries from different project config ro
             stderr: 'piped',
         }).output();
         const text = decoder.decode(output.stdout) + decoder.decode(output.stderr);
+        const normalizedText = text.replaceAll('\\', '/');
 
         strictEqual(output.code, 1, text);
-        strictEqual(text.includes('different project config roots'), true, text);
-        strictEqual(text.includes(firstProject), true, text);
-        strictEqual(text.includes(secondProject), true, text);
-        strictEqual(text.includes('Run cno cache separately for each project.'), true, text);
+        strictEqual(normalizedText.includes('different project config roots'), true, text);
+        strictEqual(normalizedText.includes(firstProject), true, text);
+        strictEqual(normalizedText.includes(secondProject), true, text);
+        strictEqual(normalizedText.includes('Run cno cache separately for each project.'), true, text);
         strictEqual(existsSync(join(firstProject, 'cts.lock')), false, 'must fail before writing the first project lock');
         strictEqual(existsSync(join(secondProject, 'cts.lock')), false, 'must fail before writing the second project lock');
     } finally {

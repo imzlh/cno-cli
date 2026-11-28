@@ -33,7 +33,8 @@ Deno.test({ name: 'cli: task --env-file reaches the task shell', timeout: 15000 
     await withTempDir('cli-task-env', async (dir) => {
         await Deno.writeTextFile(join(dir, '.env'), 'CNO_TASK_ENV_MARKER=from-task-env\n');
         const { code, text } = await runCli([
-            'task', `--env-file=${join(dir, '.env')}`, '--eval', 'echo marker=$CNO_TASK_ENV_MARKER',
+            'task', `--env-file=${join(dir, '.env')}`, '--eval',
+            Deno.build.os === 'windows' ? 'echo marker=%CNO_TASK_ENV_MARKER%' : 'echo marker=$CNO_TASK_ENV_MARKER',
         ], dir);
         strictEqual(code, 0, text);
         ok(text.includes('marker=from-task-env'), text);

@@ -109,7 +109,7 @@ Deno.test('os upstream: arch and machine follow Deno.build mappings', () => {
     }
 
     if (Deno.build.arch === 'aarch64') {
-        strictEqual(os.machine(), 'arm64');
+        strictEqual(os.machine(), os.platform() === 'linux' ? 'aarch64' : 'arm64');
     } else {
         strictEqual(os.machine(), Deno.build.arch);
     }
