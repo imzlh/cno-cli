@@ -1,4 +1,5 @@
 import { deepStrictEqual, ok, strictEqual, throws } from 'node:assert';
+import { fileURLToPath } from 'node:url';
 import { decodeUtf8 } from '../_helpers/bytes.ts';
 
 const internal = Deno[Deno.internal] as unknown as {
@@ -7,8 +8,10 @@ const internal = Deno[Deno.internal] as unknown as {
 };
 
 Deno.test('deno upstream: internal pathFromURL converts file URLs and rejects non-file URLs', () => {
-    strictEqual(internal.pathFromURL(new URL('file:///test/directory')), '/test/directory');
-    strictEqual(internal.pathFromURL(new URL('file:///space_%20.txt')), '/space_ .txt');
+    const directoryUrl = new URL('file:///test/directory');
+    const spaceUrl = new URL('file:///space_%20.txt');
+    strictEqual(internal.pathFromURL(directoryUrl), fileURLToPath(directoryUrl));
+    strictEqual(internal.pathFromURL(spaceUrl), fileURLToPath(spaceUrl));
     throws(() => internal.pathFromURL(new URL('https://deno.land/welcome.ts')), TypeError);
 });
 

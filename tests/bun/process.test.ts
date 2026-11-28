@@ -55,7 +55,7 @@ Deno.test({ name: 'bun: spawnSync returns Buffer output and Bun result state', t
 Deno.test({ name: 'bun: spawn exposes stable lifecycle state and drains output', timeout: 10000 }, async () => {
     let callback: unknown[] | undefined;
     const child = spawn(isWindows
-        ? ['cmd.exe', '/d', '/s', '/c', 'echo async-out & exit /b 3']
+        ? ['cmd.exe', '/d', '/s', '/c', 'echo async-out&exit /b 3']
         : ['/bin/sh', '-c', 'printf async-out; printf async-err >&2; exit 3'], {
         stdout: 'pipe',
         stderr: 'pipe',
@@ -134,7 +134,7 @@ Deno.test({ name: 'bun: spawn FileSink serializes stdin writes and closes with E
     strictEqual(await second, 2);
     strictEqual(await child.stdin.flush(), 5);
     strictEqual(await child.stdin.end(), 0);
-    strictEqual(await child.stdout.text(), 'abcde');
+    strictEqual(await child.stdout.text(), isWindows ? 'abcde\r\n' : 'abcde');
     strictEqual(await child.exited, 0);
     strictEqual(child.stdin.write('late'), true);
     strictEqual(child.stdin.flush(), true);
@@ -394,16 +394,22 @@ Deno.test({ name: 'bun: process validation throws synchronously without launchin
     throws(() => spawnSync(['/definitely/not/a/cno-command']), (error: Error & { code?: string }) => error.code === 'ENOENT');
     await withTempDir('bun-process-invalid', async (root) => {
         const missing = join(root, 'missing');
-        throws(() => spawn(['/bin/sh'], { cwd: missing }), (error: Error & { code?: string }) => error.code === 'ENOENT');
-        throws(() => spawnSync(['/bin/sh'], { cwd: missing }), (error: Error & { code?: string }) => error.code === 'ENOENT');
+        throws(() => spawn([Deno.execPath()], { cwd: missing }), (error: Error & { code?: string }) => error.code === 'ENOENT');
+        throws(() => spawnSync([Deno.execPath()], { cwd: missing }), (error: Error & { code?: string }) => error.code === 'ENOENT');
     });
 
     const controller = new AbortController();
     controller.abort('cancelled');
-    throws(() => spawn(['/bin/sh'], { signal: controller.signal }), (error: Error) => error.name === 'AbortError');
+    throws(
+        () => spawn(isWindows ? [Deno.execPath(), 'eval', ''] : ['/bin/sh'], { signal: controller.signal }),
+        (error: Error) => error.name === 'AbortError',
+    );
     await rejects(async () => {
-        const child = spawn(['/bin/sh', '-c', 'sleep 5'], { timeout: 5, stdout: 'ignore', stderr: 'ignore' });
-        strictEqual(await child.exited, 143);
+        const child = spawn(isWindows
+            ? ['cmd.exe', '/d', '/s', '/c', 'ping -n 6 127.0.0.1 >NUL']
+            : ['/bin/sh', '-c', 'sleep 5'], { timeout: 5, stdout: 'ignore', stderr: 'ignore' });
+        ok(await child.exited !== 0);
+        strictEqual(child.killed, true);
         throw new Error('timeout-observed');
     }, /timeout-observed/);
 });

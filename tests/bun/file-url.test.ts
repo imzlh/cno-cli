@@ -1,9 +1,10 @@
 import { strictEqual, throws } from 'node:assert';
+import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { fileURLToPath, pathToFileURL } from '../../cno/src/bun/utils/file-url.ts';
 
 Deno.test('bun: file URLs round-trip paths and escape URL metacharacters', () => {
-    const path = `${Deno.cwd()}/bun file #%?.txt`;
+    const path = join(Deno.cwd(), 'bun file #%?.txt');
     const url = pathToFileURL(path);
     strictEqual(url.protocol, 'file:');
     strictEqual(url.href.includes('bun%20file%20%23%25%3F.txt'), true);
@@ -54,7 +55,7 @@ Deno.test('bun: pathToFileURL follows host separator rules', () => {
 });
 
 Deno.test('bun: fileURLToPath applies URL string preprocessing', () => {
-    const path = `${Deno.cwd()}/preprocessed-file-url`;
+    const path = join(Deno.cwd(), 'preprocessed-file-url');
     const href = pathToFileURL(path).href;
     strictEqual(fileURLToPath(` \0${href}\t\n`), path);
     strictEqual(fileURLToPath(href.replace('file:', 'fi\nle:')), path);

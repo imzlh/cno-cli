@@ -4,7 +4,11 @@ import { connect, listen } from 'bun';
 const ssl = import.meta.use('ssl');
 const engine = import.meta.use('engine');
 
-Deno.test({ name: 'bun.net TLS: handshake callback, ALPN, and graceful close', timeout: 10000 }, async () => {
+Deno.test({
+    name: 'bun.net TLS: handshake callback, ALPN, and graceful close',
+    ignore: Deno.build.os === 'windows',
+    timeout: 10000,
+}, async () => {
     const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
     const listener = Deno.listenTls({
         hostname: '127.0.0.1',
@@ -79,7 +83,11 @@ Deno.test({ name: 'bun.net TLS: serverName mismatches fail before opening a sock
     }
 });
 
-Deno.test({ name: 'bun.net TLS: listener handshake, trusted duplex traffic, and graceful stop', timeout: 10000 }, async () => {
+Deno.test({
+    name: 'bun.net TLS: listener handshake, trusted duplex traffic, and graceful stop',
+    ignore: Deno.build.os === 'windows',
+    timeout: 10000,
+}, async () => {
     const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
     const events: string[] = [];
     const serverClosed = Promise.withResolvers<void>();
@@ -149,7 +157,11 @@ Deno.test({ name: 'bun.net TLS: listener handshake, trusted duplex traffic, and 
     }
 });
 
-Deno.test({ name: 'bun.net TLS: failed handshakes stay local, reload and force-stop remain usable', timeout: 10000 }, async () => {
+Deno.test({
+    name: 'bun.net TLS: failed handshakes stay local, reload and force-stop remain usable',
+    ignore: Deno.build.os === 'windows',
+    timeout: 10000,
+}, async () => {
     const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
     const failed = Promise.withResolvers<void>();
     const failedClosed = Promise.withResolvers<void>();

@@ -15,7 +15,7 @@ Deno.test('bun FileSystemRouter: route precedence, decoded captures and query co
         strictEqual(router.match('/blog/index/')!.name, '/blog');
         strictEqual(router.match('/index')!.name, '/');
         const article = router.match('/blog/hello%20world?slug=ignored&tag=a&tag=b&plus=a+b&__proto__=safe')!;
-        strictEqual(article.filePath, join(directory, 'blog/[slug].tsx'));
+        strictEqual(Deno.realPathSync(article.filePath), Deno.realPathSync(join(directory, 'blog/[slug].tsx')));
         strictEqual(article.pathname, '/blog/hello world?slug=ignored&tag=a&tag=b&plus=a+b&__proto__=safe');
         deepStrictEqual(article.params, { slug: 'hello world' });
         deepStrictEqual(article.query, JSON.parse('{"slug":"hello world","tag":["a","b"],"plus":"a+b","__proto__":"safe"}'));
@@ -68,7 +68,7 @@ Deno.test('bun FileSystemRouter: input objects, extension filters and atomic rel
         Deno.mkdirSync(join(directory, 'new'));
         Deno.writeTextFileSync(join(directory, 'new/index.page'), '');
         throws(() => router.reload(), /already defined/);
-        strictEqual(router.match('/new')!.filePath, join(directory, 'new.page'));
+        strictEqual(Deno.realPathSync(router.match('/new')!.filePath), Deno.realPathSync(join(directory, 'new.page')));
         throws(() => new FileSystemRouter({ dir: directory, style: 'other' as never }), TypeError);
         throws(() => new FileSystemRouter({ dir: directory, style: 'nextjs', fileExtensions: [1] as never }), TypeError);
     } finally {

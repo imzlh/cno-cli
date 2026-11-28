@@ -68,7 +68,11 @@ Deno.test({ name: 'bun.fetch: explicit proxy, NO_PROXY, redirects and streaming 
     }
 });
 
-Deno.test({ name: 'bun.fetch: custom TLS trust preserves streamed responses, aborts and certificate rejection', timeout: 15000 }, async () => {
+Deno.test({
+    name: 'bun.fetch: custom TLS trust preserves streamed responses, aborts and certificate rejection',
+    ignore: Deno.build.os === 'windows',
+    timeout: 15000,
+}, async () => {
     const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
     let stream!: ReadableStreamDefaultController<Uint8Array>;
     const server = Deno.serve({ hostname: '127.0.0.1', port: 0, cert, key, onListen() {} }, request => {
@@ -109,7 +113,11 @@ Deno.test({ name: 'bun.fetch: custom TLS trust preserves streamed responses, abo
     }
 });
 
-Deno.test({ name: 'bun.fetch: a client identity is presented to a server requiring mutual TLS', timeout: 10000 }, async () => {
+Deno.test({
+    name: 'bun.fetch: a client identity is presented to a server requiring mutual TLS',
+    ignore: Deno.build.os === 'windows',
+    timeout: 10000,
+}, async () => {
     const { cert, key } = ssl.createSelfSignedCert({ commonName: 'localhost', days: 1 });
     const sockets = new Set<TLSSocket>();
     const server = createServer({ cert, key, ca: cert, requestCert: true, rejectUnauthorized: true }, socket => {

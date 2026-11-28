@@ -39,10 +39,11 @@ Deno.test('bun: deflateSync uses raw DEFLATE and gzip output is deterministic', 
     const expectedRaw = nodeDeflateRawSync('hello');
     deepStrictEqual(Array.from(deflated), Array.from(expectedRaw));
     strictEqual(Buffer.from(deflated).toString('hex'), 'cb48cdc9c90700');
-    strictEqual(
-        Buffer.from(gzipSync('hello')).toString('hex'),
-        '1f8b0800000000000003cb48cdc9c9070086a6103605000000',
-    );
+    const gzip = gzipSync('hello');
+    deepStrictEqual(gzip, gzipSync('hello'));
+    strictEqual(Buffer.from(gzip.subarray(0, 9)).toString('hex'), '1f8b08000000000000');
+    strictEqual(gzip[9], { linux: 3, darwin: 19, windows: 10 }[Deno.build.os]);
+    strictEqual(Buffer.from(gzip.subarray(10)).toString('hex'), 'cb48cdc9c9070086a6103605000000');
     strictEqual(
         Buffer.from(gzipSync('hello', { library: 'libdeflate' })).toString('hex'),
         '1f8b08000000000000ffcb48cdc9c9070086a6103605000000',

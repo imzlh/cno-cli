@@ -443,7 +443,7 @@ Deno.test({ name: 'deno command upstream: URL command and cwd paths are accepted
         }).output();
         strictEqual(output.success, true);
         strictEqual(decodeUtf8(output.stderr), '');
-        deepStrictEqual(decodeUtf8(output.stdout).trim().split(/\r?\n/), [root, 'visible']);
+        deepStrictEqual(decodeUtf8(output.stdout).trim().split(/\r?\n/), [Deno.realPathSync(root), 'visible']);
     } finally {
         Deno.removeSync(root, { recursive: true });
     }

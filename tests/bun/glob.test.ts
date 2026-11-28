@@ -182,8 +182,8 @@ Deno.test('bun Glob: scan options, paths, depth and iterator parity', async () =
         await scanBoth('**/*.ts', { cwd: root, dot: true }, ['a.ts', '.dot.ts', 'sub/c.ts', '.hidden/h.ts']);
         await scanBoth('*', { cwd: root, onlyFiles: false }, ['a.ts', 'b.js', 'sub']);
         await scanBoth('./*.ts', { cwd: root }, ['./a.ts']);
-        await scanBoth('*.ts', { cwd: root, absolute: true }, [join(root, 'a.ts')]);
-        await scanBoth(join(root, '*.ts'), { cwd: root }, [join(root, 'a.ts')]);
+        await scanBoth('*.ts', { cwd: root, absolute: true }, [join(root, 'a.ts').replaceAll('\\', '/')]);
+        await scanBoth(join(root, '*.ts'), { cwd: root }, [join(root, 'a.ts').replaceAll('\\', '/')]);
         await scanBoth('!*.ts', { cwd: root }, ['b.js']);
         await scanBoth('!sub/*.ts', { cwd: root }, []);
         await scanBoth('{a,b}.{ts,js}', { cwd: root }, ['a.ts', 'b.js']);

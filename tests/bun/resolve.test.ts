@@ -1,4 +1,5 @@
 import { deepStrictEqual, rejects, strictEqual, throws } from 'node:assert';
+import { resolve as resolvePath } from 'node:path';
 import { getCtsBridge } from '../../cno/src/node/_internal/cts-bridge.ts';
 import { resolve, resolveSync } from '../../cno/src/bun/resolve.ts';
 
@@ -13,7 +14,8 @@ Deno.test('Bun resolve wrapper passes a directory as a synthetic importer and re
     try {
         strictEqual(resolveSync('fs', '/tmp/project'), 'node:fs');
         strictEqual(await resolve('fs', '/tmp/project'), 'node:fs');
-        deepStrictEqual(calls, [['fs', '/tmp/project/__bun_resolve__.js', true], ['fs', '/tmp/project/__bun_resolve__.js', true]]);
+        const importer = resolvePath('/tmp/project/__bun_resolve__.js');
+        deepStrictEqual(calls, [['fs', importer, true], ['fs', importer, true]]);
         throws(() => Reflect.apply(resolveSync, undefined, []), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE', message: 'Expected a specifier and a from path' });
         throws(() => Reflect.apply(resolveSync, undefined, [undefined]), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE', message: 'specifier must be a string' });
         throws(() => Reflect.apply(resolveSync, undefined, ['fs']), { name: 'TypeError', code: 'ERR_INVALID_ARG_TYPE', message: 'Expected a from path' });
