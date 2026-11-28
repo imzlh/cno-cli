@@ -2,10 +2,7 @@ import { ok, strictEqual } from 'node:assert';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import { join } from 'node:path';
-
-function makeTempDir(name: string): string {
-    return Deno.makeTempDirSync({ prefix: `cno-${name}-` });
-}
+import { makeTempDir } from '../_helpers/temp.ts';
 
 function readFirstJsFile(dir: string): string {
     const entries = readdirSync(dir, { withFileTypes: true });
@@ -54,6 +51,7 @@ function getFreePort(): Promise<number> {
 
 Deno.test({ name: 'vite: builds a disk app through rolldown/native resolver path', timeout: 150000 }, async () => {
     const root = makeTempDir('vite-app');
+    const toolRoot = root.replaceAll('\\', '/');
     try {
         mkdirSync(join(root, 'src'), { recursive: true });
         writeFileSync(join(root, 'index.html'), '<div id="app"></div><script type="module" src="/src/main.js"></script>\n');
@@ -67,7 +65,7 @@ Deno.test({ name: 'vite: builds a disk app through rolldown/native resolver path
 
         const vite = await import('npm:vite');
         await vite.build({
-            root,
+            root: toolRoot,
             logLevel: 'silent',
             build: {
                 outDir: 'dist',
@@ -86,6 +84,7 @@ Deno.test({ name: 'vite: builds a disk app through rolldown/native resolver path
 
 Deno.test({ name: 'vite: dev server serves transformed TypeScript from disk', timeout: 90000 }, async () => {
     const root = makeTempDir('vite-dev');
+    const toolRoot = root.replaceAll('\\', '/');
     const port = await getFreePort();
     let server: any;
     try {
@@ -95,7 +94,7 @@ Deno.test({ name: 'vite: dev server serves transformed TypeScript from disk', ti
 
         const vite = await import('npm:vite');
         server = await vite.createServer({
-            root,
+            root: toolRoot,
             logLevel: 'silent',
             server: {
                 host: '127.0.0.1',

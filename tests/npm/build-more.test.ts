@@ -1,10 +1,7 @@
 import { ok, strictEqual } from 'node:assert';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-
-function makeTempDir(name: string): string {
-    return Deno.makeTempDirSync({ prefix: `cno-${name}-` });
-}
+import { makeTempDir } from '../_helpers/temp.ts';
 
 Deno.test({ name: 'less: renders nested rules and variables', timeout: 30000 }, async () => {
     const mod = await import('npm:less');
@@ -83,7 +80,10 @@ Deno.test({ name: 'sass: compiles disk entry with @use dependency', timeout: 300
         writeFileSync(entry, '@use "vars"; .a { color: vars.$color; }\n');
 
         const sass = await import('npm:sass');
-        const result = sass.compile(entry, { style: 'compressed', loadPaths: [root] });
+        const result = sass.compile(entry.replaceAll('\\', '/'), {
+            style: 'compressed',
+            loadPaths: [root.replaceAll('\\', '/')],
+        });
         strictEqual(result.css.trim(), '.a{color:#123456}');
     } finally {
         rmSync(root, { recursive: true, force: true });

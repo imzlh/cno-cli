@@ -12,7 +12,11 @@ Deno.test({ name: 'zeromq: native addon loads and exposes runtime capabilities',
     strictEqual(keys.secretKey.length, 40);
 });
 
-Deno.test({ name: 'ffi-napi and ref-napi: call libc and dereference native memory', timeout: 30000 }, async () => {
+Deno.test({
+    name: 'ffi-napi and ref-napi: call libc and dereference native memory',
+    ignore: Deno.build.os !== 'linux',
+    timeout: 30000,
+}, async () => {
     const ffiMod = await import('npm:ffi-napi');
     const refMod = await import('npm:ref-napi');
     const ffi = ffiMod.default ?? ffiMod;

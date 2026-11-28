@@ -1,10 +1,7 @@
 import { ok } from 'node:assert';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-
-function makeTempDir(name: string): string {
-    return Deno.makeTempDirSync({ prefix: `cno-${name}-` });
-}
+import { makeTempDir } from '../_helpers/temp.ts';
 
 Deno.test({ name: 'rollup: bundles virtual ESM modules', timeout: 30000 }, async () => {
     const { rollup } = await import('npm:rollup');

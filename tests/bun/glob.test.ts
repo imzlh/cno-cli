@@ -218,14 +218,20 @@ Deno.test('bun Glob: negated scans preserve suffix shape and depth', async () =>
 
 Deno.test('bun Glob: scan preserves escaped literal metacharacters', async () => {
     await withTempDir('bun-glob-escaped-literals', async root => {
-        Deno.mkdirSync(join(root, 'dir*'));
-        for (const name of ['file*.ts', 'file?.ts', 'file1.ts', '[draft].ts', 'dir*/inside.ts']) {
+        const windows = Deno.build.os === 'windows';
+        const names = windows
+            ? ['[draft].ts']
+            : ['file*.ts', 'file?.ts', 'file1.ts', '[draft].ts', 'dir*/inside.ts'];
+        if (!windows) Deno.mkdirSync(join(root, 'dir*'));
+        for (const name of names) {
             Deno.writeTextFileSync(join(root, name), 'x');
         }
-        await scanBoth('file\\*.ts', { cwd: root }, ['file*.ts']);
-        await scanBoth('file\\?.ts', { cwd: root }, ['file?.ts']);
         await scanBoth('\\[draft\\].ts', { cwd: root }, ['[draft].ts']);
-        await scanBoth('dir\\*/inside.ts', { cwd: root }, ['dir*/inside.ts']);
+        if (!windows) {
+            await scanBoth('file\\*.ts', { cwd: root }, ['file*.ts']);
+            await scanBoth('file\\?.ts', { cwd: root }, ['file?.ts']);
+            await scanBoth('dir\\*/inside.ts', { cwd: root }, ['dir*/inside.ts']);
+        }
     });
 });
 
