@@ -125,17 +125,39 @@ Deno.test({ name: 'cli stage: repl persists history immediately after each line'
         }).spawn();
 
         const writer = child.stdin.getWriter();
-        await writer.write(new TextEncoder().encode('99 + 1\n'));
-        // Give the REPL a moment to evaluate + SQLite INSERT before killing.
-        await new Promise((r) => setTimeout(r, 400));
+        const reader = child.stdout.getReader();
+        const marker = 'CNO_REPL_HISTORY_READY';
+        const line = 'console.log("CNO_REPL_HISTORY_" + "READY")';
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let stdout = '';
         try {
-            child.kill('SIGKILL');
-        } catch { /* already exited */ }
-        await writer.close().catch(() => {});
-        await child.output().catch(() => {});
+            await writer.write(new TextEncoder().encode(`${line}\n`));
+            await Promise.race([
+                (async () => {
+                    const decoder = new TextDecoder();
+                    while (!stdout.includes(marker)) {
+                        const { done, value } = await reader.read();
+                        if (done) throw new Error(`REPL exited before evaluating the line: ${stdout}`);
+                        stdout += decoder.decode(value, { stream: true });
+                    }
+                })(),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new Error(`REPL did not evaluate the line: ${stdout}`)), 5000);
+                }),
+            ]);
+        } finally {
+            if (timer !== undefined) clearTimeout(timer);
+            try { child.kill('SIGKILL'); } catch { /* already exited */ }
+            await reader.cancel().catch(() => {});
+            reader.releaseLock();
+            await writer.close().catch(() => {});
+            writer.releaseLock();
+            await child.status;
+            await child.stderr.cancel().catch(() => {});
+        }
 
         const history = readReplHistoryDb(root);
-        ok(history.includes('99 + 1'), history.join('\n'));
+        ok(history.includes(line), history.join('\n'));
     });
 });
 

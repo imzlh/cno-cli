@@ -203,6 +203,7 @@ Deno.test('fs.watchFile preserves the registration AsyncLocalStorage context', a
 Deno.test('fs.watchFile: missing file reports zero stats once before creation', async () => {
     await fsp.mkdir(WATCH_DIR, { recursive: true });
     const target = path.join(WATCH_DIR, 'missing-watch-file-baseline.txt');
+    const staging = `${target}.staging`;
     try {
         for (const bigint of [false, true]) {
             const changes: Array<[fs.Stats | fs.BigIntStats, fs.Stats | fs.BigIntStats]> = [];
@@ -223,7 +224,8 @@ Deno.test('fs.watchFile: missing file reports zero stats once before creation', 
                     }
                     strictEqual(stat.mtime.getTime(), 0);
                 }
-                await fsp.writeFile(target, 'created');
+                await fsp.writeFile(staging, 'created');
+                await fsp.rename(staging, target);
                 await new Promise(resolve => setTimeout(resolve, 250));
                 strictEqual(changes.length, 2);
                 strictEqual(changes[1][0].size, bigint ? 7n : 7);
@@ -231,6 +233,7 @@ Deno.test('fs.watchFile: missing file reports zero stats once before creation', 
             } finally {
                 fs.unwatchFile(target);
                 await fsp.rm(target, { force: true });
+                await fsp.rm(staging, { force: true });
             }
         }
     } finally {
