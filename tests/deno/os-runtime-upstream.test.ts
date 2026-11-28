@@ -8,8 +8,8 @@ const internal = Deno[Deno.internal] as unknown as {
 };
 
 Deno.test('deno upstream: internal pathFromURL converts file URLs and rejects non-file URLs', () => {
-    const directoryUrl = new URL('file:///test/directory');
-    const spaceUrl = new URL('file:///space_%20.txt');
+    const directoryUrl = new URL(Deno.build.os === 'windows' ? 'file:///C:/test/directory' : 'file:///test/directory');
+    const spaceUrl = new URL(Deno.build.os === 'windows' ? 'file:///C:/space_%20.txt' : 'file:///space_%20.txt');
     strictEqual(internal.pathFromURL(directoryUrl), fileURLToPath(directoryUrl));
     strictEqual(internal.pathFromURL(spaceUrl), fileURLToPath(spaceUrl));
     throws(() => internal.pathFromURL(new URL('https://deno.land/welcome.ts')), TypeError);

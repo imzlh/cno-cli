@@ -19,7 +19,7 @@ Deno.test({ name: 'bun.stdio: Blob writes stream their exact bytes', timeout: 15
         await Bun.write(Bun.stdout, ':' + String(first) + ':' + String(second));
     `], { stdout: 'pipe', stderr: 'pipe' });
     strictEqual(await child.exited, 0);
-    strictEqual(await child.stdout.text(), 'blob-view|é:12:11');
+    strictEqual(new TextDecoder().decode(await child.stdout.bytes()), 'blob-view|é:12:11');
     strictEqual(await child.stderr.text(), 'stderr-blob');
 });
 

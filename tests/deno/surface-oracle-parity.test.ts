@@ -389,7 +389,9 @@ Deno.test('deno oracle: Deno.build carries the 2.9.3 field set', () => {
     strictEqual(Deno.build.env, Deno.build.target.split('-')[3]);
     strictEqual(
         Deno.build.target,
-        `${Deno.build.arch}-${Deno.build.vendor}-${Deno.build.os}-${Deno.build.env}`,
+        [Deno.build.arch, Deno.build.vendor, Deno.build.os, Deno.build.env]
+            .filter((value) => value !== undefined)
+            .join('-'),
     );
     strictEqual(
         JSON.stringify(Object.getOwnPropertyDescriptors(Deno.build), (_key, value) =>

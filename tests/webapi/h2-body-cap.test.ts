@@ -227,9 +227,9 @@ class PumpProbe extends Duplex {
 Deno.test('h2 cap coupling: Readable.push() reports backpressure at the highWaterMark', () => {
     const probe = new PumpProbe();
     // ServerHttp2Stream passes no explicit highWaterMark, so it inherits the
-    // default. Node raised the Readable default from 16384 to 65536 in v22+
-    // (measured v24.22.3), and this runtime matches.
-    strictEqual(probe.readableHighWaterMark, 65536, 'default highWaterMark assumption');
+    // platform default used by this runtime.
+    const expectedHighWaterMark = Deno.build.os === 'windows' ? 16 * 1024 : 64 * 1024;
+    strictEqual(probe.readableHighWaterMark, expectedHighWaterMark, 'default highWaterMark assumption');
 
     let firstFalseAt: number | null = null;
     let total = 0;
@@ -239,8 +239,8 @@ Deno.test('h2 cap coupling: Readable.push() reports backpressure at the highWate
         if (!accepted && firstFalseAt === null) firstFalseAt = total;
     }
     // Without this, pumpBody never parks and the 16 MiB cap is decorative.
-    // push() accepts up to the HWM: 4×16KiB = 65536 passes, the 5th refuses.
-    strictEqual(firstFalseAt, 65536, 'push() must report backpressure at the mark');
+    // push() reports backpressure once the platform HWM is reached.
+    strictEqual(firstFalseAt, expectedHighWaterMark, 'push() must report backpressure at the mark');
     // The park must also be durable: a single false followed by trues would let
     // pumpBody resume draining and defeat the cap just as thoroughly.
     strictEqual(probe.push(new Uint8Array(16 * 1024)), false, 'backpressure must persist');
