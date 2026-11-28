@@ -765,7 +765,11 @@ async function connectUnixWithRetry(socketPath: string, budgetMs: number, target
 
 class SkipSignal extends Error {}
 
-Deno.test({ name: 'deno: cno serve --unix listens on a socket file and answers fetch', timeout: SPAWN_TEST_TIMEOUT_MS }, async () => {
+Deno.test({
+    name: 'deno: cno serve --unix listens on a socket file and answers fetch',
+    ignore: Deno.build.os === 'windows',
+    timeout: SPAWN_TEST_TIMEOUT_MS,
+}, async () => {
     const dir = await Deno.makeTempDir();
     const socketPath = `${dir}/cno.sock`;
     const target = startTarget(['serve', '--unix', socketPath, CLI_TARGET]);

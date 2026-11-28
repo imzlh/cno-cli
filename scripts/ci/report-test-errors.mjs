@@ -27,14 +27,17 @@ if (!input) {
             current = { name: header[2], details: [] };
             cases.push(current);
             failures.set(file, cases);
-        } else if (current && current.details.length < 12 && line.trim() && !/^\s+at /.test(line)) {
+        } else if (current && line.trim() && !/^\s+at /.test(line)) {
             current.details.push(line.trim());
         }
     }
 
     const escape = text => text.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
     for (const [file, cases] of failures) {
-        const message = cases.map(item => `${item.name}: ${item.details.join('\n')}`).join('\n').slice(0, 3000);
+        const details = cases.map(item => `${item.name}: ${item.details.join('\n')}`).join('\n');
+        const message = details.length > 3000
+            ? `${details.slice(0, 2900)}\n[Truncated; see complete failure details in the job summary.]`
+            : details;
         console.log(`::error file=${file},title=Runtime test failure::${escape(message)}`);
     }
     const message = failures.size
@@ -42,6 +45,11 @@ if (!input) {
         : 'Runtime tests failed before a per-file failure report. See the runtime log.';
     if (!failures.size) console.log(`::error title=Runtime test failure::${escape(message)}`);
     if (process.env.GITHUB_STEP_SUMMARY) {
-        appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Runtime test failures\n\n${message}\n`);
+        const details = [...failures].map(([file, cases]) => {
+            const output = cases.map(item => `${item.name}\n${item.details.join('\n')}`).join('\n\n');
+            const fence = '`'.repeat(Math.max(3, ...[...output.matchAll(/`+/g)].map(match => match[0].length + 1)));
+            return `<details>\n<summary>${file}</summary>\n\n${fence}text\n${output}\n${fence}\n\n</details>`;
+        }).join('\n\n');
+        appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Runtime test failures\n\n${message}\n\n${details}\n`);
     }
 }

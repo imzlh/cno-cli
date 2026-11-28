@@ -99,3 +99,35 @@ test('runtime failure reporter surfaces preflight failures without per-file resu
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /::error title=Runtime test failure::Runtime tests failed before a per-file failure report/);
 });
+
+test('runtime failure summary preserves later cases and long details beyond the annotation budget', t => {
+    const directory = mkdtempSync(join(tmpdir(), 'cno-test-diagnostics-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const log = join(directory, 'runtime-tests.log');
+    const summary = join(directory, 'summary.md');
+    writeFileSync(log, [
+        'Failed tests:',
+        '  tests/npm/example.test.ts  returns a failed transform response',
+        `    AssertionError: ${'response '.repeat(500)}`,
+        ...Array.from({ length: 20 }, (_, index) => `    response detail ${index}`),
+        '    ```text',
+        '    echoed source with a code fence',
+        '    ```',
+        '  tests/npm/example.test.ts  resolves Windows disk paths',
+        '    Error: original path was resolved relative to the repository',
+        '✖ 0/1',
+    ].join('\n'));
+
+    const result = spawnSync(process.execPath, [join(repository, 'scripts/ci/report-test-errors.mjs'), log], {
+        encoding: 'utf8', env: { ...process.env, GITHUB_STEP_SUMMARY: summary },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /\[Truncated; see complete failure details in the job summary\.\]/);
+    assert.ok(result.stdout.length < 3200);
+    const report = readFileSync(summary, 'utf8');
+    assert.match(report, /example.test.ts`: 2 failed cases/);
+    assert.match(report, /response detail 19/);
+    assert.match(report, /resolves Windows disk paths\nError: original path/);
+    assert.match(report, /````text\n/);
+    assert.match(report, /\n```\n\nresolves Windows disk paths/);
+});
