@@ -114,10 +114,10 @@ Deno.test('process upstream: env preserves empty strings and tolerates invalid a
 
     strictEqual(process.env[''], undefined);
     strictEqual(process.env['\0'], undefined);
-    strictEqual(process.env['=c:'], undefined);
+    strictEqual(process.env['CNO_INVALID=KEY'], undefined);
     strictEqual('' in process.env, false);
     strictEqual('\0' in process.env, false);
-    strictEqual('=c:' in process.env, false);
+    strictEqual('CNO_INVALID=KEY' in process.env, false);
 
     // Real Node v24.18.0/win32 THROWS here: the env setter applies ToString to
     // the key, and ToString of a symbol is a TypeError. Verified differentially

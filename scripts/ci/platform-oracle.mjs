@@ -41,6 +41,9 @@ try {
         depth: WriteStream.prototype.getColorDepth(env),
         hasColors: WriteStream.prototype.hasColors(env),
     }]));
+    const driveEnvironment = { before: process.env['=c:'], presentBefore: '=c:' in process.env };
+    if (process.platform === 'win32') process.chdir(process.cwd());
+    Object.assign(driveEnvironment, { after: process.env['=c:'], presentAfter: '=c:' in process.env });
     const childSource = [
         'console.log(JSON.stringify({',
         '    keys: Object.keys(process.env).sort(),',
@@ -87,10 +90,7 @@ try {
         colors,
         children,
         multicast,
-        driveEnvironment: {
-            value: process.env['=c:'],
-            present: '=c:' in process.env,
-        },
+        driveEnvironment,
     }, null, 2));
 } finally {
     fs.rmSync(directory, { recursive: true, force: true });
