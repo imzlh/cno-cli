@@ -4,7 +4,10 @@ import { join } from 'node:path';
 import { makeTempDir } from '../_helpers/temp.ts';
 
 Deno.test({ name: 'rollup: bundles virtual ESM modules', timeout: 30000 }, async () => {
+    const started = performance.now();
+    console.error('[rollup virtual] importing rollup');
     const { rollup } = await import('npm:rollup');
+    console.error(`[rollup virtual] import ready after ${Math.round(performance.now() - started)}ms`);
     const bundle = await rollup({
         input: 'entry',
         plugins: [{
@@ -21,6 +24,7 @@ Deno.test({ name: 'rollup: bundles virtual ESM modules', timeout: 30000 }, async
     });
 
     try {
+        console.error(`[rollup virtual] bundle ready after ${Math.round(performance.now() - started)}ms`);
         const generated = await bundle.generate({ format: 'esm' });
         const code = generated.output[0]?.code ?? '';
         ok(code.includes('const answer = 41'), `generated bundle should include virtual dependency: ${code}`);

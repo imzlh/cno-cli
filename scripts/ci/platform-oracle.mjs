@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import { createSocket } from 'node:dgram';
 import { constants, release, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getDefaultHighWaterMark } from 'node:stream';
@@ -40,13 +41,40 @@ try {
         depth: WriteStream.prototype.getColorDepth(env),
         hasColors: WriteStream.prototype.hasColors(env),
     }]));
-    const child = spawnSync(process.execPath, ['-e', [
+    const childSource = [
         'console.log(JSON.stringify({',
         '    keys: Object.keys(process.env).sort(),',
         '    platform: process.platform,',
         '    brand: Object.prototype.toString.call(process),',
+        '    A: process.env.A, B: process.env.B, C: process.env.C,',
         '}));',
-    ].join('\n')], { env: {}, encoding: 'utf8', timeout: 10_000 });
+    ].join('\n');
+    const children = Object.fromEntries([
+        ['empty', {}],
+        ['nullish', { A: undefined, B: null, C: 'ok' }],
+    ].map(([name, env]) => {
+        const child = spawnSync(process.execPath, ['-e', childSource], { env, encoding: 'utf8', timeout: 10_000 });
+        return [name, {
+            status: child.status,
+            signal: child.signal,
+            error: child.error?.message,
+            stdout: child.stdout,
+            stderr: child.stderr,
+        }];
+    }));
+    const socket = createSocket('udp4');
+    let multicast;
+    try {
+        multicast = await new Promise(resolve => {
+            socket.once('error', error => resolve({ error: error.message, code: error.code }));
+            socket.bind(0, '127.0.0.1', () => resolve({
+                normal: outcome(() => socket.setMulticastTTL(1)),
+                negative: outcome(() => socket.setMulticastTTL(-1)),
+            }));
+        });
+    } finally {
+        try { socket.close(); } catch {}
+    }
     console.log(JSON.stringify({
         node: process.version,
         platform: process.platform,
@@ -57,12 +85,11 @@ try {
         signals,
         filesystem,
         colors,
-        emptyEnvironmentChild: {
-            status: child.status,
-            signal: child.signal,
-            error: child.error?.message,
-            stdout: child.stdout,
-            stderr: child.stderr,
+        children,
+        multicast,
+        driveEnvironment: {
+            value: process.env['=c:'],
+            present: '=c:' in process.env,
         },
     }, null, 2));
 } finally {

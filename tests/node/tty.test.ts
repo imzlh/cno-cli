@@ -1,6 +1,7 @@
 import { strictEqual, ok, throws } from 'node:assert';
 import * as tty from 'node:tty';
 import * as fs from 'node:fs';
+import { release } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const thisFile = fileURLToPath(import.meta.url);
@@ -82,9 +83,7 @@ Deno.test('tty: WriteStream prototype color helpers match upstream shape', () =>
     // the runner's TERM/FORCE_COLOR (true in an interactive shell, false in a
     // piped runner). The env-driven variants below are deterministic.
     ok([true, false].includes(tty.WriteStream.prototype.hasColors()));
-    // A single object argument is the env form (v24.22.3: false here since the
-    // object carries no color hints).
-    strictEqual(tty.WriteStream.prototype.hasColors({}), false);
+    strictEqual(tty.WriteStream.prototype.hasColors({}), process.platform === 'win32');
     strictEqual(tty.WriteStream.prototype.hasColors(undefined, { FORCE_COLOR: '3' }), true);
     strictEqual(tty.WriteStream.prototype.hasColors(undefined, { NO_COLOR: '1' }), false);
     // An object count WITH an explicit env is an argument-type error, and a
@@ -108,10 +107,14 @@ Deno.test('tty: NO_COLOR and NODE_DISABLE_COLORS force depth 1', () => {
     strictEqual(colorProbe().getColorDepth({ NO_COLOR: '1' }), 1);
     strictEqual(colorProbe().getColorDepth({ NODE_DISABLE_COLORS: '1' }), 1);
     strictEqual(colorProbe().getColorDepth({ TERM: 'dumb' }), 1);
-    // An empty NO_COLOR is ignored by Node (verified against v24.18): with a
-    // color-capable TERM the depth stays above 1. A bare {NO_COLOR:''} env has
-    // no TERM and still reports 1 — the ambient-env value is not deterministic.
-    strictEqual(colorProbe().getColorDepth({ NO_COLOR: '', TERM: 'xterm-256color' }), 8);
+    let expectedDepth = 8;
+    if (process.platform === 'win32') {
+        const [majorVersion, , buildNumber] = release().split('.').map(Number);
+        expectedDepth = 4;
+        if (majorVersion >= 10 && buildNumber >= 10586) expectedDepth = 8;
+        if (majorVersion >= 10 && buildNumber >= 14931) expectedDepth = 24;
+    }
+    strictEqual(colorProbe().getColorDepth({ NO_COLOR: '', TERM: 'xterm-256color' }), expectedDepth);
 });
 
 Deno.test('tty: FORCE_COLOR levels match Node', () => {

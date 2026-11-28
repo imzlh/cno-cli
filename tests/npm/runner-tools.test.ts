@@ -49,7 +49,10 @@ Deno.test({ name: 'uvu bin: runs a directory test suite', timeout: 60000 }, asyn
 });
 
 Deno.test({ name: 'tape bin: runs a CommonJS test file', timeout: 60000 }, async () => {
+    const started = performance.now();
+    console.error('[tape bin] importing tape');
     await import('npm:tape');
+    console.error(`[tape bin] import ready after ${Math.round(performance.now() - started)}ms`);
     const dir = await Deno.makeTempDir({ prefix: 'cno-tape-' });
     try {
         await Deno.writeTextFile(join(dir, 'test.cjs'), [
@@ -57,6 +60,7 @@ Deno.test({ name: 'tape bin: runs a CommonJS test file', timeout: 60000 }, async
             'test("adds", (t) => { t.equal(1 + 1, 2); t.end(); });',
         ].join('\n'));
 
+        console.error(`[tape bin] executing CLI after ${Math.round(performance.now() - started)}ms`);
         const result = await runCno(['exec', 'tape', '--', 'test.cjs'], dir);
         strictEqual(result.code, 0, result.stderr);
         ok(result.stdout.includes('ok 1 should be strictly equal') || result.stdout.includes('# pass  1'), result.stdout);

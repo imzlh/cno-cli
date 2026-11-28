@@ -111,7 +111,7 @@ Deno.test({ name: 'vite: dev server serves transformed TypeScript from disk', ti
         ok(html.body.includes('/src/main.ts'), `vite should serve project HTML: ${html.body}`);
 
         const transformed = await requestText(`${baseUrl}/src/main.ts`);
-        strictEqual(transformed.status, 200);
+        strictEqual(transformed.status, 200, transformed.body);
         ok(transformed.body.includes('const value = 42'), `vite should transform TypeScript: ${transformed.body}`);
     } finally {
         if (server) await server.close();

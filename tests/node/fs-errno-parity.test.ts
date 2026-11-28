@@ -87,22 +87,16 @@ Deno.test('fs errno: sync EEXIST / ENOTEMPTY / EPERM match Node', async () => {
         fs.writeFileSync(join(nonEmpty, 'child'), 'x');
         strictEqual(codeOf(() => fs.rmdirSync(nonEmpty)), 'ENOTEMPTY');
 
-        // unlink of a directory: EPERM on Windows per Node; the Linux unlink(2)
-        // syscall itself reports EISDIR, which Node passes through (measured
-        // v24.22.3). Expect the value Node actually produces on this OS.
-        strictEqual(codeOf(() => fs.unlinkSync(sub)), Deno.build.os === 'windows' ? 'EPERM' : 'EISDIR');
+        strictEqual(codeOf(() => fs.unlinkSync(sub)), Deno.build.os === 'linux' ? 'EISDIR' : 'EPERM');
     });
 });
 
-Deno.test('fs errno: sync ENOTDIR when a directory op targets a file', async () => {
+Deno.test('fs errno: sync directory traversal errors match Node', async () => {
     await withTempDir('fserrno-enotdir', (dir) => {
         const file = join(dir, 'f.txt');
         fs.writeFileSync(file, 'x');
         strictEqual(codeOf(() => fs.readdirSync(file)), 'ENOTDIR');
-        // Traversing *through* a file: the kernel reports ENOTDIR and Node
-        // passes it through unchanged (measured v24.22.3 on Linux; an older
-        // note claimed ENOENT here, which Node no longer produces).
-        strictEqual(codeOf(() => fs.readFileSync(join(file, 'sub'))), 'ENOTDIR');
+        strictEqual(codeOf(() => fs.readFileSync(join(file, 'sub'))), Deno.build.os === 'windows' ? 'ENOENT' : 'ENOTDIR');
     });
 });
 
@@ -220,10 +214,7 @@ Deno.test('fs errno: truncate of a directory reports the kernel errno', async ()
     await withTempDir('fserrno-trunc', (dir) => {
         const sub = join(dir, 'sub');
         fs.mkdirSync(sub);
-        // The kernel rejects truncate(2) on a directory with EISDIR and Node
-        // passes it through (measured v24.22.3). An older note claimed EINVAL,
-        // measured on a different libc/host.
-        strictEqual(codeOf(() => fs.truncateSync(sub, 0)), 'EISDIR');
+        strictEqual(codeOf(() => fs.truncateSync(sub, 0)), Deno.build.os === 'windows' ? 'EINVAL' : 'EISDIR');
     });
 });
 
@@ -235,7 +226,7 @@ Deno.test('fs errno: promises errors expose a string code, never a raw UV number
         // `fsp.truncate` opens then ftruncates. The ftruncate step used to reject
         // unwrapped, so `code` arrived as the raw UV number (-4071) with errno and
         // syscall undefined — every `err.code === 'EISDIR'` check failed silently.
-        strictEqual(await asyncCodeOf(() => fsp.truncate(sub, 0)), 'EISDIR');
+        strictEqual(await asyncCodeOf(() => fsp.truncate(sub, 0)), Deno.build.os === 'windows' ? 'EINVAL' : 'EISDIR');
 
         // Same class of bug on the FileHandle: a closed handle used to reject with a
         // bare Error carrying no `code` at all. Node reports EBADF.

@@ -7,7 +7,7 @@ Deno.test({ name: 'ramda date-fns and dayjs: functional and date utilities execu
     const dayjs = dayjsMod.default ?? dayjsMod;
 
     deepStrictEqual(ramda.pipe(ramda.map((n: number) => n + 1), ramda.filter((n: number) => n > 2))([1, 2, 3]), [3, 4]);
-    strictEqual(dateFns.format(new Date('2020-01-02T00:00:00Z'), 'yyyy-MM-dd'), '2020-01-02');
+    strictEqual(dateFns.format(new Date(2020, 0, 2), 'yyyy-MM-dd'), '2020-01-02');
     strictEqual(dayjs('2020-01-02').add(1, 'day').format('YYYY-MM-DD'), '2020-01-03');
 });
 

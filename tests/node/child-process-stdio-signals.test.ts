@@ -405,25 +405,40 @@ Deno.test({ name: 'child_process: kill() accepts a lowercase signal name like No
 
 Deno.test({ name: 'child_process: accepts Node signal aliases and reports their canonical names', timeout: 20000 }, async () => {
     if (isWindows) return;
-    for (const [alias, canonical] of [['SIGIOT', 'SIGABRT'], ['SIGPOLL', 'SIGIO']] as const) {
+    const aliases = Deno.build.os === 'linux'
+        ? [['SIGIOT', 'SIGABRT'], ['SIGPOLL', 'SIGIO']] as const
+        : [['SIGIOT', 'SIGABRT']] as const;
+    for (const [alias, canonical] of aliases) {
         const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},15000)'], { stdio: ['ignore', 'ignore', 'ignore'] });
-        await new Promise((r) => setTimeout(r, 150));
-        strictEqual(child.kill(alias), true);
-        const result = await new Promise<{ code: number | null; signal: string | null }>((resolve) => {
-            child.on('close', (code, signal) => resolve({ code, signal: signal as string | null }));
-        });
-        strictEqual(result.code, null);
-        strictEqual(result.signal, canonical);
+        try {
+            if (Deno.build.os === 'darwin') {
+                throws(() => child.kill('SIGPOLL'), (error: NodeJS.ErrnoException) => error.code === 'ERR_UNKNOWN_SIGNAL');
+                strictEqual(child.killed, false);
+            }
+            await new Promise((r) => setTimeout(r, 150));
+            strictEqual(child.kill(alias), true);
+            const result = await new Promise<{ code: number | null; signal: string | null }>((resolve) => {
+                child.on('close', (code, signal) => resolve({ code, signal: signal as string | null }));
+            });
+            strictEqual(result.code, null);
+            strictEqual(result.signal, canonical);
+        } finally {
+            child.kill('SIGKILL');
+        }
     }
 });
 
 Deno.test({ name: 'process: signal listeners accept Node aliases', timeout: 20000 }, async () => {
     if (isWindows) return;
-    for (const [listenerSignal, sentSignal] of [
+    const signals = Deno.build.os === 'linux' ? [
         ['SIGIOT', 'SIGABRT'],
         ['SIGIO', 'SIGPOLL'],
         ['SIGPOLL', 'SIGIO'],
-    ] as const) {
+    ] as const : [
+        ['SIGIOT', 'SIGABRT'],
+        ['SIGIO', 'SIGIO'],
+    ] as const;
+    for (const [listenerSignal, sentSignal] of signals) {
         const script = `
             process.once(${JSON.stringify(listenerSignal)}, () => process.exit(42));
             setTimeout(() => process.kill(process.pid, ${JSON.stringify(sentSignal)}), 25);
